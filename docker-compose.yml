@@ -1,0 +1,128 @@
+# GrooveIQ – docker-compose.yml
+#
+# Usage:
+#   cp .env.example .env          # edit your settings
+#   docker compose up -d          # start
+#   docker compose logs -f        # follow logs
+#   docker compose down           # stop (data persists in ./data/)
+#
+# To use PostgreSQL instead of SQLite, uncomment the `db` service and
+# update DATABASE_URL in your .env file.
+
+services:
+
+  grooveiq:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: runtime
+      platforms:
+        - linux/amd64
+    image: grooveiq:latest
+    platform: linux/amd64
+    container_name: grooveiq
+    restart: unless-stopped
+
+    ports:
+      - "${GROOVEIQ_PORT:-8000}:8000"
+
+    environment:
+      # Core
+      APP_ENV:              ${APP_ENV:-production}
+      SECRET_KEY:           ${SECRET_KEY:?SECRET_KEY must be set in .env}
+      ENABLE_DOCS:          ${ENABLE_DOCS:-false}
+
+      # Auth & Security
+      API_KEYS:             ${API_KEYS:?API_KEYS must be set in .env}
+      ALLOWED_HOSTS:        ${ALLOWED_HOSTS:-*}
+      CORS_ORIGINS:         ${CORS_ORIGINS:-*}
+
+      # Database (SQLite by default; swap for Postgres below)
+      DATABASE_URL:         ${DATABASE_URL:-sqlite+aiosqlite:////data/grooveiq.db}
+
+      # Audio analysis
+      MUSIC_LIBRARY_PATH:   /music
+      ANALYSIS_WORKERS:     ${ANALYSIS_WORKERS:-2}
+      RESCAN_INTERVAL_HOURS: ${RESCAN_INTERVAL_HOURS:-6}
+
+      # Events
+      EVENT_RETENTION_DAYS: ${EVENT_RETENTION_DAYS:-365}
+
+      # Logging
+      LOG_LEVEL:            ${LOG_LEVEL:-INFO}
+      LOG_JSON:             ${LOG_JSON:-true}
+
+    volumes:
+      # Persistent database & state
+      - grooveiq_data:/data
+      # Essentia model cache (avoids re-download on restart)
+      - grooveiq_models:/cache/essentia
+      # Your music library (read-only – GrooveIQ never modifies your files)
+      - ${MUSIC_LIBRARY_PATH:-/mnt/music}:/music:ro
+
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 30s
+      timeout:  10s
+      retries:  3
+      start_period: 20s
+
+    # Limit CPU/RAM so analysis jobs don't starve other containers
+    deploy:
+      resources:
+        limits:
+          cpus: "${CPU_LIMIT:-2.0}"
+          memory: "${MEM_LIMIT:-2G}"
+        reservations:
+          memory: 256M
+
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "20m"
+        max-file: "5"
+
+  # ---------------------------------------------------------------------------
+  # Optional: PostgreSQL (uncomment for multi-user / production deployments)
+  # ---------------------------------------------------------------------------
+  # db:
+  #   image: postgres:16-alpine
+  #   container_name: grooveiq_db
+  #   restart: unless-stopped
+  #   environment:
+  #     POSTGRES_USER:     grooveiq
+  #     POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set in .env}
+  #     POSTGRES_DB:       grooveiq
+  #   volumes:
+  #     - grooveiq_pg:/var/lib/postgresql/data
+  #   healthcheck:
+  #     test: ["CMD-SHELL", "pg_isready -U grooveiq"]
+  #     interval: 10s
+  #     timeout:  5s
+  #     retries:  5
+
+  # ---------------------------------------------------------------------------
+  # Optional: Caddy reverse proxy (HTTPS with auto TLS via Let's Encrypt)
+  # ---------------------------------------------------------------------------
+  # caddy:
+  #   image: caddy:2-alpine
+  #   container_name: grooveiq_caddy
+  #   restart: unless-stopped
+  #   ports:
+  #     - "80:80"
+  #     - "443:443"
+  #   volumes:
+  #     - ./Caddyfile:/etc/caddy/Caddyfile:ro
+  #     - caddy_data:/data
+  #     - caddy_config:/config
+  #   depends_on:
+  #     grooveiq:
+  #       condition: service_healthy
+
+volumes:
+  grooveiq_data:
+  grooveiq_models:
+  # grooveiq_pg:
+  # caddy_data:
+  # caddy_config:

@@ -1,0 +1,37 @@
+# GrooveIQ – Caddyfile
+# Automatic HTTPS via Let's Encrypt. Replace grooveiq.yourdomain.com with your domain.
+#
+# Usage: uncomment the caddy service in docker-compose.yml and set your domain here.
+
+grooveiq.yourdomain.com {
+    # Reverse proxy to the GrooveIQ container
+    reverse_proxy grooveiq:8000
+
+    # Security headers
+    header {
+        Strict-Transport-Security "max-age=31536000; includeSubDomains"
+        X-Content-Type-Options    nosniff
+        X-Frame-Options           DENY
+        Referrer-Policy           no-referrer
+        -Server
+    }
+
+    # Rate limiting at the proxy level (belt-and-suspenders with app-level limits)
+    # Requires Caddy with the rate_limit module; comment out if not available.
+    # rate_limit {
+    #     zone dynamic {
+    #         key {remote_host}
+    #         events 200
+    #         window 1m
+    #     }
+    # }
+
+    # Access log
+    log {
+        output file /data/logs/caddy_access.log {
+            roll_size    20mb
+            roll_keep    5
+        }
+        format json
+    }
+}

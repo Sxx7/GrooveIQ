@@ -1,0 +1,37 @@
+# GrooveIQ – Python dependencies
+# Pin major versions; allow minor/patch updates for security fixes.
+
+# Web framework
+fastapi==0.115.*
+uvicorn[standard]==0.32.*
+python-multipart==0.0.*
+
+# Database
+sqlalchemy==2.0.*
+aiosqlite==0.20.*           # SQLite async driver (default)
+asyncpg==0.30.*             # PostgreSQL async driver (optional)
+alembic==1.14.*             # DB migrations
+
+# Validation & settings
+pydantic==2.10.*
+pydantic-settings==2.7.*
+
+# Scheduling
+apscheduler==3.10.*
+
+# Security
+python-jose[cryptography]==3.3.*  # JWT (future auth expansion)
+
+# Logging
+structlog==24.*
+
+# Audio analysis (Phase 3)
+# essentia-tensorflow includes pre-built wheels and TF model support
+essentia-tensorflow>=2.1b6.dev0,<2.1b7
+
+numpy>=1.26,<3              # essentia-tensorflow bundles its own numpy constraints
+
+# Testing
+pytest==8.*
+pytest-asyncio==0.24.*
+httpx==0.28.*               # async test client
