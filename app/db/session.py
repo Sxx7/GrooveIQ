@@ -51,7 +51,26 @@ async def init_db() -> None:
             await conn.exec_driver_sql("PRAGMA synchronous=NORMAL;")
             await conn.exec_driver_sql("PRAGMA foreign_keys=ON;")
 
+        # Lightweight schema migrations for columns added after initial release.
+        # SQLAlchemy create_all won't add columns to existing tables.
+        await _apply_column_migrations(conn)
+
     logger.info("Database initialized.")
+
+
+async def _apply_column_migrations(conn) -> None:
+    """Add missing columns to existing tables. Safe to run repeatedly."""
+    migrations = [
+        ("track_features", "external_track_id", "VARCHAR(128)"),
+    ]
+    for table, column, col_type in migrations:
+        try:
+            await conn.exec_driver_sql(
+                f"ALTER TABLE {table} ADD COLUMN {column} {col_type}"
+            )
+            logger.info(f"Migration: added {table}.{column}")
+        except Exception:
+            pass  # Column already exists
 
 
 async def get_session() -> AsyncSession:
