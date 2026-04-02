@@ -5,12 +5,15 @@ Entry point for FastAPI application.
 
 import logging
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
+from fastapi.responses import FileResponse, RedirectResponse, Response
+from fastapi.staticfiles import StaticFiles
 
-from app.api.routes import events, health, tracks, users
+from app.api.routes import events, health, stats, tracks, users
 from app.core.config import settings
 from app.core.logging import setup_logging
 from app.db.session import init_db
@@ -66,3 +69,28 @@ app.include_router(health.router, tags=["health"])
 app.include_router(events.router, prefix="/v1", tags=["events"])
 app.include_router(tracks.router, prefix="/v1", tags=["tracks"])
 app.include_router(users.router, prefix="/v1", tags=["users"])
+app.include_router(stats.router, prefix="/v1", tags=["stats"])
+
+# ---------------------------------------------------------------------------
+# Dashboard (static)
+# ---------------------------------------------------------------------------
+
+_static_dir = Path(__file__).parent / "static"
+
+
+@app.get("/", include_in_schema=False)
+async def root():
+    return RedirectResponse(url="/dashboard")
+
+
+@app.get("/dashboard", include_in_schema=False)
+async def dashboard():
+    return FileResponse(_static_dir / "dashboard.html")
+
+
+@app.get("/favicon.ico", include_in_schema=False)
+async def favicon():
+    return Response(status_code=204)
+
+
+app.mount("/static", StaticFiles(directory=str(_static_dir)), name="static")

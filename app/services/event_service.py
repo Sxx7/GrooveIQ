@@ -83,6 +83,36 @@ async def process_event(
         client_id  = event.client_id,
         session_id = event.session_id,
         timestamp  = event.timestamp,
+        # Rich signals
+        surface           = event.surface,
+        position          = event.position,
+        request_id        = event.request_id,
+        model_version     = event.model_version,
+        session_position  = event.session_position,
+        dwell_ms          = event.dwell_ms,
+        pause_duration_ms = event.pause_duration_ms,
+        num_seekfwd       = event.num_seekfwd,
+        num_seekbk        = event.num_seekbk,
+        shuffle           = event.shuffle,
+        context_type      = event.context_type,
+        context_id        = event.context_id,
+        context_switch    = event.context_switch,
+        reason_start      = event.reason_start,
+        reason_end        = event.reason_end,
+        device_id         = event.device_id,
+        device_type       = event.device_type,
+        # Local time context
+        hour_of_day       = event.hour_of_day,
+        day_of_week       = event.day_of_week,
+        timezone          = event.timezone,
+        # Audio output
+        output_type          = event.output_type,
+        output_device_name   = event.output_device_name,
+        bluetooth_connected  = event.bluetooth_connected,
+        # Location
+        latitude          = event.latitude,
+        longitude         = event.longitude,
+        location_label    = event.location_label,
     )
     session.add(row)
     # Commit is handled by the get_session dependency on request close.

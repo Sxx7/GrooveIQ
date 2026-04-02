@@ -160,3 +160,138 @@ class TestEventIngestion:
         data = resp.json()
         assert len(data) >= 1
         assert data[0]["user_id"] == "carol"
+
+    # ── Rich signal tests ────────────────────────────────────────────────
+
+    async def test_event_with_rich_signals(self, client: AsyncClient):
+        """POST with all new fields populated, verify roundtrip via GET."""
+        payload = {
+            "user_id": "dave",
+            "track_id": "track-rich",
+            "event_type": "play_end",
+            "value": 0.92,
+            "session_id": "sess-001",
+            "surface": "home",
+            "position": 3,
+            "request_id": "req-abc",
+            "model_version": "v1.2",
+            "session_position": 5,
+            "dwell_ms": 195000,
+            "pause_duration_ms": 2500,
+            "num_seekfwd": 1,
+            "num_seekbk": 0,
+            "shuffle": True,
+            "context_type": "playlist",
+            "context_id": "pl-xyz",
+            "context_switch": False,
+            "reason_start": "user_tap",
+            "reason_end": "track_done",
+            "device_id": "dev-001",
+            "device_type": "desktop",
+        }
+        resp = await client.post("/v1/events", json=payload)
+        assert resp.status_code == 202
+        assert resp.json()["accepted"] == 1
+
+        # Verify stored values
+        resp = await client.get("/v1/events?user_id=dave")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert len(data) == 1
+        ev = data[0]
+        assert ev["surface"] == "home"
+        assert ev["position"] == 3
+        assert ev["request_id"] == "req-abc"
+        assert ev["dwell_ms"] == 195000
+        assert ev["shuffle"] is True
+        assert ev["context_type"] == "playlist"
+        assert ev["reason_start"] == "user_tap"
+        assert ev["reason_end"] == "track_done"
+        assert ev["device_id"] == "dev-001"
+        assert ev["device_type"] == "desktop"
+        assert ev["model_version"] == "v1.2"
+
+    async def test_event_with_context_and_location_signals(self, client: AsyncClient):
+        """POST with time-context, audio output, and location fields."""
+        payload = {
+            "user_id": "iris",
+            "track_id": "track-ctx",
+            "event_type": "play_end",
+            "value": 0.85,
+            "hour_of_day": 14,
+            "day_of_week": 3,
+            "timezone": "Europe/Zurich",
+            "output_type": "bluetooth_speaker",
+            "output_device_name": "Sonos Living Room",
+            "bluetooth_connected": True,
+            "latitude": 47.3769,
+            "longitude": 8.5417,
+            "location_label": "home",
+        }
+        resp = await client.post("/v1/events", json=payload)
+        assert resp.status_code == 202
+        assert resp.json()["accepted"] == 1
+
+        resp = await client.get("/v1/events?user_id=iris")
+        ev = resp.json()[0]
+        assert ev["hour_of_day"] == 14
+        assert ev["day_of_week"] == 3
+        assert ev["timezone"] == "Europe/Zurich"
+        assert ev["output_type"] == "bluetooth_speaker"
+        assert ev["output_device_name"] == "Sonos Living Room"
+        assert ev["bluetooth_connected"] is True
+        assert ev["latitude"] == pytest.approx(47.3769)
+        assert ev["longitude"] == pytest.approx(8.5417)
+        assert ev["location_label"] == "home"
+
+    async def test_reco_impression_event(self, client: AsyncClient):
+        """The new reco_impression event type is accepted."""
+        resp = await client.post("/v1/events", json={
+            "user_id": "eve",
+            "track_id": "track-imp",
+            "event_type": "reco_impression",
+            "request_id": "req-imp-001",
+            "surface": "home",
+            "position": 0,
+            "model_version": "v1.0",
+        })
+        assert resp.status_code == 202
+        assert resp.json()["accepted"] == 1
+
+    async def test_backwards_compat_no_new_fields(self, client: AsyncClient):
+        """Old payload still works; new fields come back as null."""
+        await client.post("/v1/events", json={
+            "user_id": "frank", "track_id": "track-old", "event_type": "like"
+        })
+        resp = await client.get("/v1/events?user_id=frank")
+        ev = resp.json()[0]
+        assert ev["surface"] is None
+        assert ev["dwell_ms"] is None
+        assert ev["device_id"] is None
+        assert ev["shuffle"] is None
+
+    async def test_query_filter_by_device_id(self, client: AsyncClient):
+        """device_id query filter returns only matching events."""
+        await client.post("/v1/events", json={
+            "user_id": "gina", "track_id": "t1", "event_type": "play_end",
+            "value": 0.9, "device_id": "phone-1",
+        })
+        await client.post("/v1/events", json={
+            "user_id": "gina", "track_id": "t2", "event_type": "play_end",
+            "value": 0.8, "device_id": "desktop-1",
+        })
+        resp = await client.get("/v1/events?device_id=phone-1")
+        data = resp.json()
+        assert len(data) == 1
+        assert data[0]["device_id"] == "phone-1"
+
+    async def test_query_filter_by_request_id(self, client: AsyncClient):
+        """request_id groups impression + stream events."""
+        for etype in ("reco_impression", "play_end"):
+            await client.post("/v1/events", json={
+                "user_id": "hank", "track_id": "t-req",
+                "event_type": etype, "request_id": "req-shared",
+                "value": 0.95 if etype == "play_end" else None,
+            })
+        resp = await client.get("/v1/events?request_id=req-shared")
+        assert len(resp.json()) == 2

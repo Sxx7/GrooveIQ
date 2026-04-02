@@ -62,6 +62,57 @@ class ListenEvent(Base):
     timestamp   = Column(Integer,     nullable=False, index=True, default=lambda: int(time.time()))
     session_id  = Column(String(64),  nullable=True, index=True)
 
+    # --- Rich behavioral / session / context signals -------------------------
+    # Impression & exposure
+    surface          = Column(String(64),  nullable=True)   # home, search, now_playing, playlist_view
+    position         = Column(Integer,     nullable=True)   # rank position in reco list
+    request_id       = Column(String(128), nullable=True, index=True)  # ties impressions → streams
+    model_version    = Column(String(64),  nullable=True)   # reco model version
+
+    # Sessionization
+    session_position = Column(Integer,     nullable=True)   # track ordinal in session
+
+    # Satisfaction / dwell
+    dwell_ms         = Column(Integer,     nullable=True)   # ms listened
+
+    # Pause buckets
+    pause_duration_ms = Column(Integer,    nullable=True)   # inter-track gap ms
+
+    # Seek intensity
+    num_seekfwd      = Column(Integer,     nullable=True)
+    num_seekbk       = Column(Integer,     nullable=True)
+
+    # Shuffle state
+    shuffle          = Column(Boolean,     nullable=True)
+
+    # Context / source
+    context_type     = Column(String(32),  nullable=True)   # playlist, album, radio, search, home_shelf
+    context_id       = Column(String(128), nullable=True)   # playlist/album/radio ID
+    context_switch   = Column(Boolean,     nullable=True)   # user just switched context
+
+    # Start / end reason codes
+    reason_start     = Column(String(32),  nullable=True)   # autoplay, user_tap, forward_button, external
+    reason_end       = Column(String(32),  nullable=True)   # track_done, user_skip, error, new_track
+
+    # Cross-device identity
+    device_id        = Column(String(128), nullable=True, index=True)
+    device_type      = Column(String(32),  nullable=True)   # mobile, desktop, speaker, car, web
+
+    # Local time context (client-side)
+    hour_of_day      = Column(Integer,     nullable=True)   # 0–23
+    day_of_week      = Column(Integer,     nullable=True)   # 1=Mon … 7=Sun (ISO 8601)
+    timezone         = Column(String(64),  nullable=True)   # IANA, e.g. "Europe/Zurich"
+
+    # Audio output
+    output_type         = Column(String(32),  nullable=True)   # headphones, speaker, bluetooth_speaker, …
+    output_device_name  = Column(String(128), nullable=True)   # "AirPods Pro", "Sonos Living Room"
+    bluetooth_connected = Column(Boolean,     nullable=True)
+
+    # Location
+    latitude         = Column(Float,       nullable=True)
+    longitude        = Column(Float,       nullable=True)
+    location_label   = Column(String(32),  nullable=True)   # home, work, gym, commute
+
     __table_args__ = (
         Index("ix_events_user_track", "user_id", "track_id"),
         Index("ix_events_user_ts",    "user_id", "timestamp"),

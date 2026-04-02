@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import logging
 import time
-from typing import List, Optional
+from typing import List, Optional  # noqa: UP035 – List needed for response_model
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import select
@@ -20,7 +20,7 @@ from app.core.config import settings
 from app.core.security import require_api_key
 from app.db.session import get_session
 from app.models.db import ListenEvent, User
-from app.models.schemas import EventBatch, EventCreate, EventResponse
+from app.models.schemas import EventBatch, EventCreate, EventResponse, ListenEventRead
 from app.services.event_service import process_event
 
 logger = logging.getLogger(__name__)
@@ -51,6 +51,16 @@ Send a behavioral event from your music player.
 | seek_forward | seconds jumped forward     | 30.0     |
 | volume_up/dn | new volume level (0–100)   | 80       |
 | like/dislike | (no value needed)          | null     |
+| reco_impression | (no value needed)     | null     |
+
+For `reco_impression` events, the key fields are `request_id`, `surface`,
+`position`, and `model_version` — not `value`.
+
+All events also accept optional rich signal fields: `surface`, `position`,
+`request_id`, `model_version`, `session_position`, `dwell_ms`,
+`pause_duration_ms`, `num_seekfwd`, `num_seekbk`, `shuffle`,
+`context_type`, `context_id`, `context_switch`, `reason_start`,
+`reason_end`, `device_id`, `device_type`.
 
 The server returns **202 Accepted** immediately. Events are processed
 asynchronously in the background.
@@ -111,36 +121,37 @@ async def ingest_event_batch(
 
 @router.get(
     "/events",
+    response_model=List[ListenEventRead],
     summary="Query stored events (admin)",
     description="Returns raw events for a user/track. Useful for debugging.",
 )
 async def query_events(
-    user_id:   Optional[str] = Query(None),
-    track_id:  Optional[str] = Query(None),
-    limit:     int = Query(50, ge=1, le=500),
-    offset:    int = Query(0, ge=0),
-    session:   AsyncSession = Depends(get_session),
-    _key:      str = Depends(require_api_key),
+    user_id:      Optional[str] = Query(None),
+    track_id:     Optional[str] = Query(None),
+    event_type:   Optional[str] = Query(None),
+    device_id:    Optional[str] = Query(None),
+    context_type: Optional[str] = Query(None),
+    request_id:   Optional[str] = Query(None),
+    limit:        int = Query(50, ge=1, le=500),
+    offset:       int = Query(0, ge=0),
+    session:      AsyncSession = Depends(get_session),
+    _key:         str = Depends(require_api_key),
 ):
     q = select(ListenEvent).order_by(ListenEvent.timestamp.desc())
     if user_id:
         q = q.where(ListenEvent.user_id == user_id)
     if track_id:
         q = q.where(ListenEvent.track_id == track_id)
+    if event_type:
+        q = q.where(ListenEvent.event_type == event_type)
+    if device_id:
+        q = q.where(ListenEvent.device_id == device_id)
+    if context_type:
+        q = q.where(ListenEvent.context_type == context_type)
+    if request_id:
+        q = q.where(ListenEvent.request_id == request_id)
     q = q.limit(limit).offset(offset)
 
     result = await session.execute(q)
     rows = result.scalars().all()
-    return [
-        {
-            "id": r.id,
-            "user_id": r.user_id,
-            "track_id": r.track_id,
-            "event_type": r.event_type,
-            "value": r.value,
-            "context": r.context,
-            "timestamp": r.timestamp,
-            "session_id": r.session_id,
-        }
-        for r in rows
-    ]
+    return [ListenEventRead.model_validate(r) for r in rows]
