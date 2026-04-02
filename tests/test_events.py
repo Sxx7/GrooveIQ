@@ -52,8 +52,8 @@ async def client():
     async with AsyncClient(
         transport=ASGITransport(app=app),
         base_url="http://test",
-        headers={"Authorization": f"Bearer {settings.API_KEYS[0]}"}
-             if settings.API_KEYS else {},
+        headers={"Authorization": f"Bearer {settings.api_keys_list[0]}"}
+             if settings.api_keys_list else {},
     ) as c:
         yield c
 

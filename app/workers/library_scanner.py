@@ -143,7 +143,7 @@ async def _run_scan(scan_id: int) -> None:
             files_found=files_found,
             files_analyzed=files_analyzed,
             files_failed=files_failed,
-            ended_at=int(time.time()),
+            scan_ended_at=int(time.time()),
         )
         logger.info(
             f"Scan {scan_id} complete: {files_analyzed} analyzed, "
@@ -159,7 +159,7 @@ async def _run_scan(scan_id: int) -> None:
             files_found=files_found,
             files_analyzed=files_analyzed,
             files_failed=files_failed,
-            ended_at=int(time.time()),
+            scan_ended_at=int(time.time()),
             last_error=last_error,
         )
     finally:
@@ -267,7 +267,7 @@ def _iter_audio_files(root: Path):
     Follows symlinks, de-duplicates by resolved path.
     """
     seen = set()
-    extensions = set(settings.AUDIO_EXTENSIONS)
+    extensions = set(settings.audio_extensions_list)
 
     for dirpath, dirnames, filenames in os.walk(root, followlinks=True):
         # Prune hidden directories

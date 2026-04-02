@@ -35,7 +35,7 @@ def hash_key(raw_key: str) -> str:
 
 
 def _hashed_configured_keys() -> list[str]:
-    return [hash_key(k) for k in settings.API_KEYS]
+    return [hash_key(k) for k in settings.api_keys_list]
 
 
 # ---------------------------------------------------------------------------
@@ -78,7 +78,7 @@ async def require_api_key(
     Returns the raw API key on success (can be used as an identity token).
     """
     # If no keys are configured, allow all (dev mode)
-    if not settings.API_KEYS:
+    if not settings.api_keys_list:
         return "anonymous"
 
     if credentials is None or credentials.scheme.lower() != "bearer":

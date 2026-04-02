@@ -10,8 +10,13 @@ from __future__ import annotations
 import secrets
 from typing import List, Optional
 
-from pydantic import field_validator, model_validator
+from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+def _split_csv(v: str) -> List[str]:
+    """Split a comma-separated string into a list, stripping whitespace."""
+    return [item.strip() for item in v.split(",") if item.strip()]
 
 
 class Settings(BaseSettings):
@@ -43,18 +48,20 @@ class Settings(BaseSettings):
     # ------------------------------------------------------------------
     # Comma-separated list of API keys (hash-compared, never stored plain)
     # Generate with: python -c "import secrets; print(secrets.token_urlsafe(32))"
-    API_KEYS: List[str] = []
+    # Stored as a raw string to avoid pydantic-settings JSON parsing;
+    # split into a list in the model_validator below.
+    API_KEYS: str = ""
 
     # Rate limiting (requests per minute per API key)
     RATE_LIMIT_EVENTS: int = 120   # event ingestion endpoint
     RATE_LIMIT_DEFAULT: int = 60   # all other endpoints
 
     # Hosts allowed to reach this service (guards against Host header attacks)
-    # Example: ["grooveiq.yourdomain.com", "localhost"]
-    ALLOWED_HOSTS: List[str] = ["*"]
+    # Example: "grooveiq.yourdomain.com,localhost"
+    ALLOWED_HOSTS: str = "*"
 
     # CORS – restrict to your app origins in production
-    CORS_ORIGINS: List[str] = ["*"]
+    CORS_ORIGINS: str = "*"
 
     # ------------------------------------------------------------------
     # Audio analysis (Phase 3)
@@ -64,10 +71,8 @@ class Settings(BaseSettings):
     ANALYSIS_BATCH_SIZE: int = 50      # tracks per job batch
     RESCAN_INTERVAL_HOURS: int = 6     # how often to check for new files
 
-    # Supported audio extensions
-    AUDIO_EXTENSIONS: List[str] = [
-        ".mp3", ".flac", ".ogg", ".m4a", ".wav", ".aac", ".opus", ".wv"
-    ]
+    # Supported audio extensions (comma-separated)
+    AUDIO_EXTENSIONS: str = ".mp3,.flac,.ogg,.m4a,.wav,.aac,.opus,.wv"
 
     # ------------------------------------------------------------------
     # Event ingestion
@@ -88,33 +93,35 @@ class Settings(BaseSettings):
     LOG_JSON: bool = True   # structured JSON logs for prod; False for dev
 
     # ------------------------------------------------------------------
-    # Validators
+    # Parsed list accessors (derived from the raw CSV strings above)
     # ------------------------------------------------------------------
-    @field_validator("API_KEYS", mode="before")
-    @classmethod
-    def split_api_keys(cls, v):
-        if isinstance(v, str):
-            return [k.strip() for k in v.split(",") if k.strip()]
-        return v
+    @property
+    def api_keys_list(self) -> List[str]:
+        return _split_csv(self.API_KEYS)
 
-    @field_validator("CORS_ORIGINS", "ALLOWED_HOSTS", mode="before")
-    @classmethod
-    def split_list(cls, v):
-        if isinstance(v, str):
-            return [i.strip() for i in v.split(",") if i.strip()]
-        return v
+    @property
+    def allowed_hosts_list(self) -> List[str]:
+        return _split_csv(self.ALLOWED_HOSTS)
+
+    @property
+    def cors_origins_list(self) -> List[str]:
+        return _split_csv(self.CORS_ORIGINS)
+
+    @property
+    def audio_extensions_list(self) -> List[str]:
+        return _split_csv(self.AUDIO_EXTENSIONS)
 
     @model_validator(mode="after")
     def warn_insecure_defaults(self) -> "Settings":
         import warnings
         if self.APP_ENV == "production":
-            if not self.API_KEYS:
+            if not self.api_keys_list:
                 warnings.warn(
                     "⚠️  No API_KEYS configured. All endpoints are unprotected! "
                     "Set API_KEYS in your .env file.",
                     stacklevel=2,
                 )
-            if self.ALLOWED_HOSTS == ["*"]:
+            if self.allowed_hosts_list == ["*"]:
                 warnings.warn(
                     "⚠️  ALLOWED_HOSTS is set to '*'. "
                     "Set ALLOWED_HOSTS to your actual domain for security.",
