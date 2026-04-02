@@ -30,8 +30,9 @@ class EventType(str, Enum):
     LIKE         = "like"          # explicit thumbs-up / heart
     DISLIKE      = "dislike"       # explicit thumbs-down
     RATING       = "rating"        # star rating (value = 1–5)
-    PLAYLIST_ADD = "playlist_add"  # user added track to any playlist
-    QUEUE_ADD    = "queue_add"     # user manually added to queue
+    PLAYLIST_ADD    = "playlist_add"     # user added track to any playlist
+    PLAYLIST_REMOVE = "playlist_remove"  # user removed track from a playlist
+    QUEUE_ADD       = "queue_add"        # user manually added to queue
 
     # Playback adjustments (implicit quality signals)
     SEEK_BACK    = "seek_back"     # user scrubbed backward (value = seconds jumped back)
@@ -39,6 +40,9 @@ class EventType(str, Enum):
     REPEAT       = "repeat"        # user hit repeat on a single track
     VOLUME_UP    = "volume_up"     # significant volume increase during track
     VOLUME_DOWN  = "volume_down"   # significant volume decrease
+
+    # Recommendation / impression
+    RECO_IMPRESSION = "reco_impression"  # track was shown as a recommendation (not necessarily played)
 
 
 # ---------------------------------------------------------------------------
@@ -66,6 +70,136 @@ class EventCreate(BaseModel):
     )
     client_id:  Optional[str] = Field(None, max_length=64)
     session_id: Optional[str] = Field(None, max_length=64)
+
+    # --- Rich behavioral / session / context signals -------------------------
+    # Impression & exposure
+    surface:    Optional[str] = Field(
+        None, max_length=64,
+        description="UI surface where the track was shown. E.g. 'home', 'search', 'now_playing', 'playlist_view'."
+    )
+    position:   Optional[int] = Field(
+        None, ge=0,
+        description="Rank position if the track was part of a recommendation list."
+    )
+    request_id: Optional[str] = Field(
+        None, max_length=128,
+        description="Ties an impression to downstream streams/actions. Shared across events from one reco request."
+    )
+    model_version: Optional[str] = Field(
+        None, max_length=64,
+        description="Which recommendation model version produced this impression."
+    )
+
+    # Sessionization
+    session_position: Optional[int] = Field(
+        None, ge=0,
+        description="Track's ordinal position within the session (0-based)."
+    )
+
+    # Satisfaction / dwell
+    dwell_ms:   Optional[int] = Field(
+        None, ge=0,
+        description="Milliseconds the user actually listened to this track. Used to derive skip thresholds."
+    )
+
+    # Pause buckets
+    pause_duration_ms: Optional[int] = Field(
+        None, ge=0,
+        description="Inter-track pause duration in ms before this track started."
+    )
+
+    # Seek intensity
+    num_seekfwd: Optional[int] = Field(
+        None, ge=0,
+        description="Number of forward seeks during this track."
+    )
+    num_seekbk:  Optional[int] = Field(
+        None, ge=0,
+        description="Number of backward seeks during this track."
+    )
+
+    # Shuffle state
+    shuffle:    Optional[bool] = Field(
+        None,
+        description="Whether shuffle was active when this track played."
+    )
+
+    # Context / source
+    context_type: Optional[str] = Field(
+        None, max_length=32,
+        description="Source context: 'playlist', 'album', 'radio', 'search', 'home_shelf', etc."
+    )
+    context_id: Optional[str] = Field(
+        None, max_length=128,
+        description="ID of the source context (playlist ID, album ID, radio station ID)."
+    )
+    context_switch: Optional[bool] = Field(
+        None,
+        description="True if the user just switched to a new context before this track."
+    )
+
+    # Start / end reason codes
+    reason_start: Optional[str] = Field(
+        None, max_length=32,
+        description="Why playback started: 'autoplay', 'user_tap', 'forward_button', 'external', etc."
+    )
+    reason_end:   Optional[str] = Field(
+        None, max_length=32,
+        description="Why playback ended: 'track_done', 'user_skip', 'error', 'new_track', etc."
+    )
+
+    # Cross-device identity
+    device_id:   Optional[str] = Field(
+        None, max_length=128,
+        description="Stable device identifier."
+    )
+    device_type: Optional[str] = Field(
+        None, max_length=32,
+        description="Device class: 'mobile', 'desktop', 'speaker', 'car', 'web', etc."
+    )
+
+    # Local time context (client-side — server only has UTC timestamp)
+    hour_of_day: Optional[int] = Field(
+        None, ge=0, le=23,
+        description="Client's local hour (0–23)."
+    )
+    day_of_week: Optional[int] = Field(
+        None, ge=1, le=7,
+        description="Client's local day of week (1=Monday … 7=Sunday, ISO 8601)."
+    )
+    timezone: Optional[str] = Field(
+        None, max_length=64,
+        description="IANA timezone of the client, e.g. 'Europe/Zurich'."
+    )
+
+    # Audio output
+    output_type: Optional[str] = Field(
+        None, max_length=32,
+        description="Audio output type: 'headphones', 'speaker', 'bluetooth_speaker', 'car_audio', 'built_in', 'airplay', etc."
+    )
+    output_device_name: Optional[str] = Field(
+        None, max_length=128,
+        description="Friendly name of the audio output device, e.g. 'AirPods Pro', 'Sonos Living Room'."
+    )
+    bluetooth_connected: Optional[bool] = Field(
+        None,
+        description="Whether audio is routed over Bluetooth."
+    )
+
+    # Location
+    latitude:  Optional[float] = Field(
+        None, ge=-90, le=90,
+        description="GPS latitude of the client."
+    )
+    longitude: Optional[float] = Field(
+        None, ge=-180, le=180,
+        description="GPS longitude of the client."
+    )
+    location_label: Optional[str] = Field(
+        None, max_length=32,
+        description="Semantic location label: 'home', 'work', 'gym', 'commute', etc."
+    )
+
     timestamp:  Optional[int] = Field(
         None,
         description="Unix timestamp (UTC). Defaults to server time if omitted. "
@@ -171,6 +305,64 @@ class ScanStatusResponse(BaseModel):
     started_at:      int
     ended_at:        Optional[int]
     last_error:      Optional[str]
+
+
+# ---------------------------------------------------------------------------
+# User
+# ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# Outbound: full event read (GET /v1/events)
+# ---------------------------------------------------------------------------
+
+class ListenEventRead(BaseModel):
+    """All fields stored for a single event, returned by the query endpoint."""
+
+    id:           int
+    user_id:      str
+    track_id:     str
+    event_type:   str
+    value:        Optional[float] = None
+    context:      Optional[str] = None
+    client_id:    Optional[str] = None
+    session_id:   Optional[str] = None
+    timestamp:    int
+
+    # Rich signals
+    surface:          Optional[str] = None
+    position:         Optional[int] = None
+    request_id:       Optional[str] = None
+    model_version:    Optional[str] = None
+    session_position: Optional[int] = None
+    dwell_ms:         Optional[int] = None
+    pause_duration_ms: Optional[int] = None
+    num_seekfwd:      Optional[int] = None
+    num_seekbk:       Optional[int] = None
+    shuffle:          Optional[bool] = None
+    context_type:     Optional[str] = None
+    context_id:       Optional[str] = None
+    context_switch:   Optional[bool] = None
+    reason_start:     Optional[str] = None
+    reason_end:       Optional[str] = None
+    device_id:        Optional[str] = None
+    device_type:      Optional[str] = None
+
+    # Local time context
+    hour_of_day:      Optional[int] = None
+    day_of_week:      Optional[int] = None
+    timezone:         Optional[str] = None
+
+    # Audio output
+    output_type:         Optional[str] = None
+    output_device_name:  Optional[str] = None
+    bluetooth_connected: Optional[bool] = None
+
+    # Location
+    latitude:         Optional[float] = None
+    longitude:        Optional[float] = None
+    location_label:   Optional[str] = None
+
+    model_config = {"from_attributes": True}
 
 
 # ---------------------------------------------------------------------------
