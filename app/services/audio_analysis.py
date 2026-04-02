@@ -143,11 +143,28 @@ def analyze_track(file_path: str) -> dict:
 
         # ------------------------------------------------------------------
         # Loudness & dynamics
+        # LoudnessEBUR128 requires stereo; we have mono from MonoLoader,
+        # so use Loudness (Vickers) for integrated and per-frame for LRA.
         # ------------------------------------------------------------------
-        loudness_extractor = es.LoudnessEBUR128()
-        momentary, shortterm, integrated, lra = loudness_extractor(audio)
-        result["loudness"]       = float(round(float(integrated), 2))
-        result["dynamic_range"]  = float(round(float(lra), 2))
+        import numpy as np
+
+        integrated_loudness = es.Loudness()(audio)
+        result["loudness"] = float(round(float(integrated_loudness), 2))
+
+        # Approximate loudness range (LRA) from per-frame loudness
+        frame_size = 2048
+        hop_size = 1024
+        frame_loudness = []
+        for i in range(0, len(audio) - frame_size, hop_size):
+            frame_l = es.Loudness()(audio[i : i + frame_size])
+            frame_loudness.append(frame_l)
+        if frame_loudness:
+            arr = np.array(frame_loudness)
+            p95 = float(np.percentile(arr, 95))
+            p10 = float(np.percentile(arr, 10))
+            result["dynamic_range"] = float(round(p95 - p10, 2))
+        else:
+            result["dynamic_range"] = 0.0
 
         # ------------------------------------------------------------------
         # High-level descriptors via Essentia pre-trained models
