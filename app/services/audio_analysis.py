@@ -72,6 +72,23 @@ def compute_file_hash(path: str) -> str:
     return h.hexdigest()
 
 
+def generate_track_id(file_path: str) -> str:
+    """
+    Generate a stable track_id from the file's path relative to the music library root.
+
+    Uses SHA-256 of the relative path so that:
+    - Two files with the same name in different folders get different IDs
+    - The same file always gets the same ID across re-scans
+    - IDs are a fixed 16-char hex string (collision-safe for any realistic library)
+    """
+    from app.core.config import settings
+    try:
+        rel = os.path.relpath(file_path, settings.MUSIC_LIBRARY_PATH)
+    except ValueError:
+        rel = file_path
+    return hashlib.sha256(rel.encode("utf-8")).hexdigest()[:16]
+
+
 def analyze_track(file_path: str) -> dict:
     """
     Run the full Essentia analysis pipeline on a single audio file.
@@ -103,8 +120,8 @@ def analyze_track(file_path: str) -> dict:
         audio = loader()
         result["duration"] = len(audio) / 44100.0
 
-        if result["duration"] < 5.0:
-            result["analysis_error"] = "Track too short (<5 s), skipping"
+        if result["duration"] < 10.0:
+            result["analysis_error"] = "Track too short (<10 s), skipping"
             return result
 
         # ------------------------------------------------------------------

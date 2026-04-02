@@ -136,6 +136,9 @@ class TrackFeatures(Base):
     id              = Column(Integer, primary_key=True, autoincrement=True)
     track_id        = Column(String(128), nullable=False, unique=True, index=True)
 
+    # Media server mapping — populated when matching scanner tracks to Navidrome/Jellyfin IDs
+    external_track_id = Column(String(128), nullable=True, unique=True, index=True)
+
     # File metadata
     file_path       = Column(Text,    nullable=False)
     file_hash       = Column(String(64), nullable=True)  # SHA-256, detects file changes

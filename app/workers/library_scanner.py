@@ -32,7 +32,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import settings
 from app.db.session import AsyncSessionLocal
 from app.models.db import LibraryScanState, TrackFeatures
-from app.services.audio_analysis import analyze_track, compute_file_hash, ANALYSIS_VERSION
+from app.services.audio_analysis import analyze_track, compute_file_hash, generate_track_id, ANALYSIS_VERSION
 
 logger = logging.getLogger(__name__)
 
@@ -189,10 +189,11 @@ async def _process_batch(file_paths: list[str]) -> tuple[int, int]:
                 # File unchanged, skipped
                 continue
             if result.get("analysis_error"):
+                logger.warning(f"Analysis failed for {fp}: {result['analysis_error']}")
                 failed += 1
-            else:
-                ok += 1
+                continue
 
+            ok += 1
             await _upsert_track_features(session, result)
         await session.commit()
 
@@ -207,7 +208,6 @@ def _analyze_if_needed_sync(file_path: str) -> Optional[dict]:
     """
     # Re-import needed in subprocess context
     from app.services.audio_analysis import analyze_track, compute_file_hash, ANALYSIS_VERSION
-    import asyncio, time
     from pathlib import Path
 
     # Quick hash check via a synchronous DB connection
@@ -219,16 +219,19 @@ def _analyze_if_needed_sync(file_path: str) -> Optional[dict]:
 
         sync_url = cfg.DATABASE_URL.replace("+aiosqlite", "").replace("+asyncpg", "")
         engine = create_engine(sync_url, connect_args={"check_same_thread": False})
-        with engine.connect() as conn:
-            row = conn.execute(
-                sync_select(TF.file_hash, TF.analysis_version)
-                .where(TF.file_path == file_path)
-            ).fetchone()
+        try:
+            with engine.connect() as conn:
+                row = conn.execute(
+                    sync_select(TF.file_hash, TF.analysis_version)
+                    .where(TF.file_path == file_path)
+                ).fetchone()
 
-        if row:
-            current_hash = compute_file_hash(file_path)
-            if row.file_hash == current_hash and row.analysis_version == ANALYSIS_VERSION:
-                return None   # unchanged, skip
+            if row:
+                current_hash = compute_file_hash(file_path)
+                if row.file_hash == current_hash and row.analysis_version == ANALYSIS_VERSION:
+                    return None   # unchanged, skip
+        finally:
+            engine.dispose()
 
     except Exception:
         pass  # If check fails, proceed with analysis
@@ -239,17 +242,17 @@ def _analyze_if_needed_sync(file_path: str) -> Optional[dict]:
 async def _upsert_track_features(session: AsyncSession, data: dict) -> None:
     """Insert or update track_features row from analysis result dict."""
     from app.models.db import TrackFeatures
+    from app.services.audio_analysis import generate_track_id
 
     file_path = data.get("file_path", "")
+    track_id = data.get("track_id") or generate_track_id(file_path)
 
     result = await session.execute(
-        select(TrackFeatures).where(TrackFeatures.file_path == file_path)
+        select(TrackFeatures).where(TrackFeatures.track_id == track_id)
     )
     existing = result.scalar_one_or_none()
 
     if existing is None:
-        # Extract track_id from filename stem if not provided
-        track_id = data.get("track_id") or Path(file_path).stem
         row = TrackFeatures(track_id=track_id, **{
             k: v for k, v in data.items()
             if hasattr(TrackFeatures, k) and k != "track_id"
