@@ -18,7 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.security import require_api_key
 from app.db.session import get_session
-from app.models.db import TrackFeatures
+from app.models.db import ScanLog, TrackFeatures
 from app.models.schemas import ScanStatusResponse, ScanTriggerResponse, TrackFeaturesResponse
 from app.workers.library_scanner import get_scan_status, trigger_scan
 
@@ -70,6 +70,37 @@ async def get_library_scan_status(
     if result is None:
         raise HTTPException(status_code=404, detail=f"Scan {scan_id} not found.")
     return result
+
+
+@router.get(
+    "/library/scan/{scan_id}/logs",
+    summary="Get recent scan log entries",
+)
+async def get_scan_logs(
+    scan_id: int,
+    limit: int = Query(50, ge=1, le=200),
+    after_id: int = Query(0, ge=0),
+    session: AsyncSession = Depends(get_session),
+    _key: str = Depends(require_api_key),
+):
+    """Returns recent per-file log entries for a scan.
+    Use `after_id` to poll for new entries since the last fetch."""
+    q = select(ScanLog).where(ScanLog.scan_id == scan_id)
+    if after_id > 0:
+        q = q.where(ScanLog.id > after_id)
+    q = q.order_by(ScanLog.id.desc()).limit(limit)
+    result = await session.execute(q)
+    rows = result.scalars().all()
+    return [
+        {
+            "id": r.id,
+            "timestamp": r.timestamp,
+            "level": r.level,
+            "filename": r.filename,
+            "message": r.message,
+        }
+        for r in reversed(rows)  # oldest first
+    ]
 
 
 # ---------------------------------------------------------------------------

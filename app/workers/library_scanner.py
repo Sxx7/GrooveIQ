@@ -32,7 +32,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.db.session import AsyncSessionLocal
-from app.models.db import LibraryScanState, TrackFeatures
+from app.models.db import LibraryScanState, ScanLog, TrackFeatures
 from app.services.audio_analysis import analyze_track, compute_file_hash, generate_track_id, ANALYSIS_VERSION
 
 logger = logging.getLogger(__name__)
@@ -258,6 +258,10 @@ async def _process_batch(file_paths: list[str], scan_id: int) -> tuple[int, int,
     loop = asyncio.get_running_loop()
     executor = get_executor()
 
+    # Update current_file to first file in batch
+    if file_paths:
+        await _update_scan(scan_id, current_file=Path(file_paths[0]).name)
+
     # Submit all files to the process pool concurrently
     futures = [
         loop.run_in_executor(executor, _analyze_if_needed_sync, fp)
@@ -271,6 +275,7 @@ async def _process_batch(file_paths: list[str], scan_id: int) -> tuple[int, int,
             fname = Path(fp).name
             if isinstance(result, Exception):
                 logger.error(f"[Scan {scan_id}] FAIL {fname}: {result}")
+                session.add(ScanLog(scan_id=scan_id, level="fail", filename=fname, message=str(result)))
                 failed += 1
                 continue
             if result is None:
@@ -279,17 +284,36 @@ async def _process_batch(file_paths: list[str], scan_id: int) -> tuple[int, int,
                 continue
             if result.get("analysis_error"):
                 logger.warning(f"[Scan {scan_id}] FAIL {fname}: {result['analysis_error']}")
+                session.add(ScanLog(scan_id=scan_id, level="fail", filename=fname, message=result["analysis_error"]))
                 failed += 1
                 continue
 
             ok += 1
-            logger.debug(
-                f"[Scan {scan_id}] OK   {fname} | "
-                f"{result.get('bpm', '?')} BPM | "
-                f"key={result.get('key', '?')}{result.get('mode', '')} | "
-                f"{result.get('duration', 0):.0f}s"
-            )
+            bpm_str = str(round(result.get("bpm", 0))) if result.get("bpm") else "?"
+            key_str = (result.get("key", "?") or "?") + (result.get("mode", "") or "")
+            dur_str = str(round(result.get("duration", 0))) + "s"
+            energy_str = str(round(result.get("energy", 0), 2)) if result.get("energy") is not None else "?"
+            msg = bpm_str + " BPM | " + key_str + " | " + dur_str + " | energy " + energy_str
+            logger.info(f"[Scan {scan_id}] OK   {fname} | {msg}")
+            session.add(ScanLog(scan_id=scan_id, level="ok", filename=fname, message=msg))
             await _upsert_track_features(session, result)
+
+        # Prune old log entries for this scan (keep latest 200)
+        from sqlalchemy import select as sel, func as fn
+        count = (await session.execute(
+            sel(fn.count(ScanLog.id)).where(ScanLog.scan_id == scan_id)
+        )).scalar() or 0
+        if count > 200:
+            oldest = (await session.execute(
+                sel(ScanLog.id).where(ScanLog.scan_id == scan_id)
+                .order_by(ScanLog.id.asc()).limit(count - 200)
+            )).scalars().all()
+            if oldest:
+                from sqlalchemy import delete
+                await session.execute(
+                    delete(ScanLog).where(ScanLog.id.in_(oldest))
+                )
+
         await session.commit()
 
     return ok, skipped, failed

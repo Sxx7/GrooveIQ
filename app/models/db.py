@@ -244,6 +244,18 @@ class Playlist(Base):
     created_at     = Column(Integer,     nullable=False, default=lambda: int(time.time()))
 
 
+class ScanLog(Base):
+    """Recent per-file log entries for a scan. Kept as a ring buffer (latest N)."""
+    __tablename__ = "scan_logs"
+
+    id       = Column(Integer, primary_key=True, autoincrement=True)
+    scan_id  = Column(Integer, ForeignKey("library_scan_state.id", ondelete="CASCADE"), nullable=False, index=True)
+    timestamp = Column(Integer, nullable=False, default=lambda: int(time.time()))
+    level    = Column(String(8), nullable=False, default="info")   # ok, skip, fail, info
+    filename = Column(String(255), nullable=True)
+    message  = Column(Text, nullable=True)
+
+
 class PlaylistTrack(Base):
     """Ordered track within a playlist."""
     __tablename__ = "playlist_tracks"

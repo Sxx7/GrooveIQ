@@ -67,6 +67,7 @@ async def get_stats(
         eta = None
         if scan_row.status == "running" and percent > 0:
             eta = int(elapsed / percent * (100 - percent))
+        rate = round(processed / elapsed, 1) if elapsed > 0 else 0
         latest_scan = {
             "scan_id": scan_row.id,
             "status": scan_row.status,
@@ -77,6 +78,7 @@ async def get_stats(
             "percent_complete": percent,
             "elapsed_seconds": elapsed,
             "eta_seconds": eta,
+            "rate_per_sec": rate,
             "current_file": scan_row.current_file,
             "started_at": scan_row.scan_started_at,
             "ended_at": scan_row.scan_ended_at,

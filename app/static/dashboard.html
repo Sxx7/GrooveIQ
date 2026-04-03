@@ -129,6 +129,10 @@
   .progress-fill { height: 100%; background: linear-gradient(90deg, var(--accent), var(--green)); border-radius: 6px; transition: width 0.6s ease; }
   .progress-text { position: absolute; top: 0; left: 0; right: 0; height: 100%; display: flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 600; color: var(--text); text-shadow: 0 1px 2px rgba(0,0,0,0.5); }
 
+  /* Scan log */
+  #scan-log div { transition: background 0.3s; }
+  #scan-log div:last-child { background: rgba(124, 92, 252, 0.06); }
+
   /* Filter bar */
   .filter-bar { display: flex; flex-wrap: wrap; gap: 8px; padding: 12px 16px; border-bottom: 1px solid var(--border); align-items: center; }
   .filter-bar label { font-size: 11px; color: var(--text-dim); }
@@ -212,6 +216,8 @@ var $ = function(s) { return document.querySelector(s); };
 var BASE = window.location.origin;
 var KEY = '';
 var refreshTimer = null;
+var scanPollTimer = null;
+var scanLogLastId = 0;
 var currentView = 'dashboard';
 var trackState = { offset: 0, limit: 50, sort: 'bpm', dir: 'asc', total: 0 };
 
@@ -317,11 +323,57 @@ function connect() {
   loadDashboard().then(function() {
     $('#refresh-info').style.display = 'flex';
     $('#tab-bar').style.display = 'flex';
-    if (refreshTimer) clearInterval(refreshTimer);
-    refreshTimer = setInterval(function() { if (currentView === 'dashboard') loadDashboard(); }, 10000);
+    startAutoRefresh();
   }).catch(function(e) {
     $('#app').innerHTML = '<div class="empty">Connection failed: ' + e.message + '</div>';
   });
+}
+
+function startAutoRefresh() {
+  if (refreshTimer) clearInterval(refreshTimer);
+  refreshTimer = setInterval(function() { if (currentView === 'dashboard') loadDashboard(); }, 10000);
+}
+
+function startScanPolling(scanId) {
+  if (scanPollTimer) clearInterval(scanPollTimer);
+  scanLogLastId = 0;
+  scanPollTimer = setInterval(function() {
+    if (currentView !== 'dashboard') return;
+    // Poll stats for progress bar update
+    api('/v1/stats').then(function(stats) {
+      var panel = document.getElementById('scan-panel');
+      if (panel) panel.innerHTML = renderScanPanel(stats.latest_scan);
+      // Also update the tracks count stat card
+      var tc = document.getElementById('stat-tracks');
+      if (tc) tc.textContent = stats.total_tracks_analyzed;
+      // Stop polling if scan finished
+      if (!stats.latest_scan || stats.latest_scan.status !== 'running') {
+        stopScanPolling();
+        loadDashboard(); // final full refresh
+      }
+    });
+    // Poll scan logs
+    api('/v1/library/scan/' + scanId + '/logs?limit=50&after_id=' + scanLogLastId).then(function(logs) {
+      if (!logs.length) return;
+      scanLogLastId = logs[logs.length - 1].id;
+      var el = document.getElementById('scan-log');
+      if (!el) return;
+      for (var i = 0; i < logs.length; i++) {
+        var l = logs[i];
+        var cls = l.level === 'ok' ? 'color:var(--green)' : l.level === 'fail' ? 'color:var(--red)' : 'color:var(--text-dim)';
+        var icon = l.level === 'ok' ? '\u2713' : l.level === 'fail' ? '\u2717' : '\u2022';
+        var line = document.createElement('div');
+        line.style.cssText = 'padding:3px 12px;font-size:12px;font-family:monospace;border-bottom:1px solid var(--border);' + cls;
+        line.textContent = icon + ' ' + (l.filename || '') + (l.message ? '  ' + l.message : '');
+        el.appendChild(line);
+      }
+      el.scrollTop = el.scrollHeight;
+    });
+  }, 2000);
+}
+
+function stopScanPolling() {
+  if (scanPollTimer) { clearInterval(scanPollTimer); scanPollTimer = null; }
 }
 
 // ---------------------------------------------------------------------------
@@ -340,22 +392,49 @@ function renderScanPanel(scan) {
   else if (scan.status === 'running') statusColor = 'yellow';
   else if (scan.status === 'interrupted') statusColor = 'blue';
 
-  var h = '<div class="status-line">Status: <span class="badge badge-' + statusColor + '">' + scan.status + '</span>';
-  if (scan.status === 'running' && scan.eta_seconds != null) h += ' <span style="margin-left:8px;color:var(--text-dim);font-size:12px">ETA: ' + fmtDuration(scan.eta_seconds) + '</span>';
-  if (scan.elapsed_seconds) h += ' <span style="margin-left:8px;color:var(--text-dim);font-size:12px">Elapsed: ' + fmtDuration(scan.elapsed_seconds) + '</span>';
+  var h = '';
+
+  // Status line with badge, ETA, elapsed, speed
+  h += '<div class="status-line" style="display:flex;align-items:center;flex-wrap:wrap;gap:12px">';
+  h += '<span>Status: <span class="badge badge-' + statusColor + '">' + scan.status.toUpperCase() + '</span></span>';
+  if (scan.elapsed_seconds) h += '<span style="font-size:12px">Elapsed: <b>' + fmtDuration(scan.elapsed_seconds) + '</b></span>';
+  if (scan.status === 'running' && scan.eta_seconds != null) h += '<span style="font-size:12px">ETA: <b style="color:var(--yellow)">' + fmtDuration(scan.eta_seconds) + '</b></span>';
+  if (scan.rate_per_sec) h += '<span style="font-size:12px">Speed: <b>' + scan.rate_per_sec + '</b> files/s</span>';
   h += '</div>';
 
+  // Progress bar (always show if files_found > 0)
   if (scan.files_found > 0) {
     var pct = scan.percent_complete || 0;
     var proc = scan.files_analyzed + (scan.files_skipped || 0) + scan.files_failed;
-    h += '<div style="padding:4px 20px 8px"><div class="progress-bar">'
-      + '<div class="progress-fill" style="width:' + pct + '%"></div>'
-      + '<div class="progress-text">' + pct + '% (' + proc + ' / ' + scan.files_found + ')</div>'
-      + '</div></div>';
+    h += '<div style="padding:4px 20px 12px">';
+    h += '<div class="progress-bar" style="height:28px">';
+    h += '<div class="progress-fill" style="width:' + pct + '%"></div>';
+    h += '<div class="progress-text" style="font-size:12px">' + pct + '%  \u2014  ' + proc + ' / ' + scan.files_found + ' files</div>';
+    h += '</div>';
+    h += '</div>';
   }
-  h += '<div class="status-line">Analyzed: <b>' + scan.files_analyzed + '</b> &nbsp; Skipped: <b>' + (scan.files_skipped||0) + '</b> &nbsp; Failed: <b>' + scan.files_failed + '</b> &nbsp; Found: <b>' + scan.files_found + '</b></div>';
-  h += '<div class="status-line">Started: <b>' + fmtTime(scan.started_at) + '</b></div>';
-  if (scan.ended_at) h += '<div class="status-line">Ended: <b>' + fmtTime(scan.ended_at) + '</b></div>';
+
+  // Breakdown counters
+  h += '<div style="display:flex;gap:24px;padding:4px 20px 8px;font-size:13px">';
+  h += '<span style="color:var(--green)">\u2713 Analyzed: <b>' + scan.files_analyzed + '</b></span>';
+  h += '<span style="color:var(--blue)">\u21bb Skipped: <b>' + (scan.files_skipped || 0) + '</b></span>';
+  h += '<span style="color:var(--red)">\u2717 Failed: <b>' + scan.files_failed + '</b></span>';
+  h += '<span style="color:var(--text-dim)">Found: <b>' + scan.files_found + '</b></span>';
+  h += '</div>';
+
+  // Current file being processed
+  if (scan.status === 'running' && scan.current_file) {
+    h += '<div style="padding:4px 20px 8px;font-size:12px;color:var(--text-dim)">';
+    h += '\u25b6 Processing: <span style="color:var(--text);font-family:monospace">' + scan.current_file + '</span>';
+    h += '</div>';
+  }
+
+  // Timestamps
+  h += '<div style="padding:4px 20px 8px;font-size:12px;color:var(--text-dim)">';
+  h += 'Started: ' + fmtTime(scan.started_at);
+  if (scan.ended_at) h += ' &nbsp;\u2022&nbsp; Ended: ' + fmtTime(scan.ended_at);
+  h += '</div>';
+
   return h;
 }
 
@@ -367,7 +446,7 @@ function renderDashboard(stats, users, events) {
   var h = '<div class="stats-grid">'
     + '<div class="stat-card"><div class="label">Total Events</div><div class="value">' + (stats.total_events||0).toLocaleString() + '</div><div class="sub">' + stats.events_last_24h + ' in last 24h</div></div>'
     + '<div class="stat-card"><div class="label">Active Users</div><div class="value">' + stats.total_users + '</div></div>'
-    + '<div class="stat-card"><div class="label">Tracks Analyzed</div><div class="value">' + stats.total_tracks_analyzed + '</div></div>'
+    + '<div class="stat-card"><div class="label">Tracks Analyzed</div><div class="value" id="stat-tracks">' + stats.total_tracks_analyzed + '</div></div>'
     + '<div class="stat-card"><div class="label">Playlists</div><div class="value">' + (stats.total_playlists||0) + '</div></div>'
     + '<div class="stat-card"><div class="label">Events / Hour</div><div class="value">' + stats.events_last_1h + '</div><div class="sub">last 60 minutes</div></div>'
     + '</div><div class="panels">';
@@ -392,7 +471,19 @@ function renderDashboard(stats, users, events) {
   h += '</div></div>';
 
   // Library scan
-  h += '<div class="panel"><div class="panel-header">Library Scan <button class="secondary" onclick="triggerScan()">Scan Now</button></div><div class="panel-body">' + renderScanPanel(stats.latest_scan) + '</div></div>';
+  h += '<div class="panel full-width"><div class="panel-header">Library Scan <button class="secondary" onclick="triggerScan()">Scan Now</button></div>';
+  h += '<div class="panel-body" id="scan-panel">' + renderScanPanel(stats.latest_scan) + '</div>';
+  // Scan activity log
+  h += '<div style="border-top:1px solid var(--border)">';
+  h += '<div style="padding:10px 20px;font-size:12px;font-weight:600;color:var(--text-dim);display:flex;justify-content:space-between;align-items:center">';
+  h += '<span>Activity Log</span>';
+  if (stats.latest_scan && stats.latest_scan.status === 'running') {
+    h += '<span class="badge badge-yellow" style="animation:pulse 1.5s infinite">LIVE</span>';
+  }
+  h += '</div>';
+  h += '<div id="scan-log" style="max-height:250px;overflow-y:auto;background:var(--bg);border-top:1px solid var(--border)">';
+  h += '<div style="padding:8px 12px;font-size:11px;color:var(--text-dim);font-style:italic">Waiting for scan activity...</div>';
+  h += '</div></div></div>';
 
   // Recent events
   h += '<div class="panel full-width"><div class="panel-header">Recent Events</div><div class="panel-body" style="overflow-x:auto">';
@@ -411,6 +502,47 @@ function renderDashboard(stats, users, events) {
   }
   h += '</div></div></div>';
   $('#app').innerHTML = h;
+
+  // If a scan is running, start fast polling + load existing logs
+  if (stats.latest_scan && stats.latest_scan.status === 'running') {
+    startScanPolling(stats.latest_scan.scan_id);
+    // Load existing logs
+    api('/v1/library/scan/' + stats.latest_scan.scan_id + '/logs?limit=100').then(function(logs) {
+      var el = document.getElementById('scan-log');
+      if (!el || !logs.length) return;
+      el.innerHTML = '';
+      for (var i = 0; i < logs.length; i++) {
+        var l = logs[i];
+        var cls = l.level === 'ok' ? 'color:var(--green)' : l.level === 'fail' ? 'color:var(--red)' : 'color:var(--text-dim)';
+        var icon = l.level === 'ok' ? '\u2713' : l.level === 'fail' ? '\u2717' : '\u2022';
+        var line = document.createElement('div');
+        line.style.cssText = 'padding:3px 12px;font-size:12px;font-family:monospace;border-bottom:1px solid var(--border);' + cls;
+        line.textContent = icon + ' ' + (l.filename || '') + (l.message ? '  ' + l.message : '');
+        el.appendChild(line);
+      }
+      if (logs.length) scanLogLastId = logs[logs.length - 1].id;
+      el.scrollTop = el.scrollHeight;
+    });
+  } else {
+    stopScanPolling();
+    // Load logs from completed scan
+    if (stats.latest_scan) {
+      api('/v1/library/scan/' + stats.latest_scan.scan_id + '/logs?limit=50').then(function(logs) {
+        var el = document.getElementById('scan-log');
+        if (!el || !logs.length) return;
+        el.innerHTML = '';
+        for (var i = 0; i < logs.length; i++) {
+          var l = logs[i];
+          var cls = l.level === 'ok' ? 'color:var(--green)' : l.level === 'fail' ? 'color:var(--red)' : 'color:var(--text-dim)';
+          var icon = l.level === 'ok' ? '\u2713' : l.level === 'fail' ? '\u2717' : '\u2022';
+          var line = document.createElement('div');
+          line.style.cssText = 'padding:3px 12px;font-size:12px;font-family:monospace;border-bottom:1px solid var(--border);' + cls;
+          line.textContent = icon + ' ' + (l.filename || '') + (l.message ? '  ' + l.message : '');
+          el.appendChild(line);
+        }
+      });
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -626,9 +758,15 @@ function submitPlaylist() {
 // ---------------------------------------------------------------------------
 
 function triggerScan() {
+  var btn = document.querySelector('.panel-header .secondary');
+  if (btn) { btn.disabled = true; btn.textContent = 'Starting...'; }
   fetch(BASE + '/v1/library/scan', { method: 'POST', headers: headers() })
-    .then(function() { setTimeout(loadDashboard, 1000); })
-    .catch(function(e) { alert('Scan failed: ' + e.message); });
+    .then(function(res) { return res.json(); })
+    .then(function(data) {
+      // Immediately refresh to show the running scan, then start fast polling
+      loadDashboard();
+    })
+    .catch(function(e) { alert('Scan failed: ' + e.message); if (btn) { btn.disabled = false; btn.textContent = 'Scan Now'; } });
 }
 
 // Restore session
