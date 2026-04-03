@@ -68,7 +68,7 @@ class Settings(BaseSettings):
     # ------------------------------------------------------------------
     MUSIC_LIBRARY_PATH: str = "/music"
     ANALYSIS_WORKERS: int = 2          # parallel Essentia workers
-    ANALYSIS_BATCH_SIZE: int = 50      # tracks per job batch
+    ANALYSIS_BATCH_SIZE: int = 10      # tracks per job batch (kept small for responsive progress)
     RESCAN_INTERVAL_HOURS: int = 6     # how often to check for new files
 
     # Supported audio extensions (comma-separated)

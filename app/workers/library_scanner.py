@@ -156,11 +156,7 @@ async def get_scan_status(scan_id: int) -> Optional[dict]:
 
 async def _run_scan(scan_id: int) -> None:
     global _running_scan_id
-    files_found = 0
-    files_analyzed = 0
-    files_skipped = 0
-    files_failed = 0
-    last_error = None
+    counters = {"found": 0, "ok": 0, "skipped": 0, "failed": 0}
     scan_start = time.time()
 
     try:
@@ -170,69 +166,65 @@ async def _run_scan(scan_id: int) -> None:
 
         logger.info(f"[Scan {scan_id}] Scanning library: {library_path}")
 
-        # Stream files to avoid loading entire directory tree into memory
-        audio_files = _iter_audio_files(library_path)
+        # Collect all audio files first so we know total count
+        audio_files = list(_iter_audio_files(library_path))
+        counters["found"] = len(audio_files)
+        logger.info(f"[Scan {scan_id}] Found {counters['found']} audio files")
 
-        batch = []
-        for file_path in audio_files:
-            files_found += 1
-            batch.append(file_path)
+        await _update_scan(scan_id, files_found=counters["found"])
 
-            if len(batch) >= settings.ANALYSIS_BATCH_SIZE:
-                a, s, f = await _process_batch(batch, scan_id)
-                files_analyzed += a
-                files_skipped += s
-                files_failed += f
-                batch = []
+        # Process in batches for memory efficiency, but per-file progress
+        batch_size = settings.ANALYSIS_BATCH_SIZE
+        for i in range(0, len(audio_files), batch_size):
+            batch = audio_files[i:i + batch_size]
+            await _process_batch(batch, scan_id, counters, scan_start)
+            _log_progress(scan_id, counters["found"], counters["ok"], counters["skipped"], counters["failed"], scan_start)
 
-                # Update progress + log
-                await _update_scan(
-                    scan_id,
-                    files_found=files_found,
-                    files_analyzed=files_analyzed,
-                    files_skipped=files_skipped,
-                    files_failed=files_failed,
-                    current_file=None,
-                )
-                _log_progress(scan_id, files_found, files_analyzed, files_skipped, files_failed, scan_start)
-
-        # Final batch
-        if batch:
-            a, s, f = await _process_batch(batch, scan_id)
-            files_analyzed += a
-            files_skipped += s
-            files_failed += f
+        # Prune old log entries (keep latest 500)
+        async with AsyncSessionLocal() as session:
+            from sqlalchemy import func as fn
+            count = (await session.execute(
+                select(fn.count(ScanLog.id)).where(ScanLog.scan_id == scan_id)
+            )).scalar() or 0
+            if count > 500:
+                oldest = (await session.execute(
+                    select(ScanLog.id).where(ScanLog.scan_id == scan_id)
+                    .order_by(ScanLog.id.asc()).limit(count - 500)
+                )).scalars().all()
+                if oldest:
+                    from sqlalchemy import delete as del_stmt
+                    await session.execute(del_stmt(ScanLog).where(ScanLog.id.in_(oldest)))
+                    await session.commit()
 
         elapsed = round(time.time() - scan_start, 1)
         await _update_scan(
             scan_id,
             status="completed",
-            files_found=files_found,
-            files_analyzed=files_analyzed,
-            files_skipped=files_skipped,
-            files_failed=files_failed,
+            files_found=counters["found"],
+            files_analyzed=counters["ok"],
+            files_skipped=counters["skipped"],
+            files_failed=counters["failed"],
             current_file=None,
             scan_ended_at=int(time.time()),
         )
         logger.info(
             f"[Scan {scan_id}] Complete in {elapsed}s: "
-            f"{files_analyzed} analyzed, {files_skipped} skipped (unchanged), "
-            f"{files_failed} failed, {files_found} total files"
+            f"{counters['ok']} analyzed, {counters['skipped']} skipped (unchanged), "
+            f"{counters['failed']} failed, {counters['found']} total files"
         )
 
     except Exception as e:
-        last_error = str(e)
         logger.error(f"[Scan {scan_id}] Fatal error: {e}", exc_info=True)
         await _update_scan(
             scan_id,
             status="failed",
-            files_found=files_found,
-            files_analyzed=files_analyzed,
-            files_skipped=files_skipped,
-            files_failed=files_failed,
+            files_found=counters["found"],
+            files_analyzed=counters["ok"],
+            files_skipped=counters["skipped"],
+            files_failed=counters["failed"],
             current_file=None,
             scan_ended_at=int(time.time()),
-            last_error=last_error,
+            last_error=str(e),
         )
     finally:
         _running_scan_id = None
@@ -253,42 +245,36 @@ def _log_progress(scan_id: int, found: int, analyzed: int, skipped: int, failed:
     )
 
 
-async def _process_batch(file_paths: list[str], scan_id: int) -> tuple[int, int, int]:
-    """Analyze a batch of files, persisting results to DB. Returns (ok, skipped, failed)."""
+async def _process_file(file_path: str, scan_id: int, counters: dict, scan_start: float) -> None:
+    """Analyze a single file: run in executor, persist result, update progress live."""
     loop = asyncio.get_running_loop()
     executor = get_executor()
+    fname = Path(file_path).name
 
-    # Update current_file to first file in batch
-    if file_paths:
-        await _update_scan(scan_id, current_file=Path(file_paths[0]).name)
+    # Show current file in scan status
+    await _update_scan(scan_id, current_file=fname)
 
-    # Submit all files to the process pool concurrently
-    futures = [
-        loop.run_in_executor(executor, _analyze_if_needed_sync, fp)
-        for fp in file_paths
-    ]
-    results = await asyncio.gather(*futures, return_exceptions=True)
+    try:
+        result = await loop.run_in_executor(executor, _analyze_if_needed_sync, file_path)
+    except Exception as exc:
+        result = exc
 
-    ok = skipped = failed = 0
     async with AsyncSessionLocal() as session:
-        for fp, result in zip(file_paths, results):
-            fname = Path(fp).name
-            if isinstance(result, Exception):
-                logger.error(f"[Scan {scan_id}] FAIL {fname}: {result}")
-                session.add(ScanLog(scan_id=scan_id, level="fail", filename=fname, message=str(result)))
-                failed += 1
-                continue
-            if result is None:
-                # File unchanged, skipped
-                skipped += 1
-                continue
-            if result.get("analysis_error"):
-                logger.warning(f"[Scan {scan_id}] FAIL {fname}: {result['analysis_error']}")
-                session.add(ScanLog(scan_id=scan_id, level="fail", filename=fname, message=result["analysis_error"]))
-                failed += 1
-                continue
-
-            ok += 1
+        if isinstance(result, Exception):
+            logger.error(f"[Scan {scan_id}] FAIL {fname}: {result}")
+            session.add(ScanLog(scan_id=scan_id, level="fail", filename=fname, message=str(result)))
+            counters["failed"] += 1
+        elif result is None:
+            # File unchanged, skipped
+            logger.debug(f"[Scan {scan_id}] SKIP {fname}")
+            session.add(ScanLog(scan_id=scan_id, level="skip", filename=fname, message="unchanged"))
+            counters["skipped"] += 1
+        elif result.get("analysis_error"):
+            logger.warning(f"[Scan {scan_id}] FAIL {fname}: {result['analysis_error']}")
+            session.add(ScanLog(scan_id=scan_id, level="fail", filename=fname, message=result["analysis_error"]))
+            counters["failed"] += 1
+        else:
+            counters["ok"] += 1
             bpm_str = str(round(result.get("bpm", 0))) if result.get("bpm") else "?"
             key_str = (result.get("key", "?") or "?") + (result.get("mode", "") or "")
             dur_str = str(round(result.get("duration", 0))) + "s"
@@ -297,26 +283,28 @@ async def _process_batch(file_paths: list[str], scan_id: int) -> tuple[int, int,
             logger.info(f"[Scan {scan_id}] OK   {fname} | {msg}")
             session.add(ScanLog(scan_id=scan_id, level="ok", filename=fname, message=msg))
             await _upsert_track_features(session, result)
-
-        # Prune old log entries for this scan (keep latest 200)
-        from sqlalchemy import select as sel, func as fn
-        count = (await session.execute(
-            sel(fn.count(ScanLog.id)).where(ScanLog.scan_id == scan_id)
-        )).scalar() or 0
-        if count > 200:
-            oldest = (await session.execute(
-                sel(ScanLog.id).where(ScanLog.scan_id == scan_id)
-                .order_by(ScanLog.id.asc()).limit(count - 200)
-            )).scalars().all()
-            if oldest:
-                from sqlalchemy import delete
-                await session.execute(
-                    delete(ScanLog).where(ScanLog.id.in_(oldest))
-                )
-
         await session.commit()
 
-    return ok, skipped, failed
+    # Update scan progress in DB after every file
+    await _update_scan(
+        scan_id,
+        files_found=counters["found"],
+        files_analyzed=counters["ok"],
+        files_skipped=counters["skipped"],
+        files_failed=counters["failed"],
+    )
+
+
+async def _process_batch(file_paths: list[str], scan_id: int, counters: dict, scan_start: float) -> None:
+    """Analyze a batch of files concurrently, with per-file progress updates."""
+    # Run up to ANALYSIS_WORKERS files concurrently using a semaphore
+    sem = asyncio.Semaphore(settings.ANALYSIS_WORKERS)
+
+    async def _guarded(fp):
+        async with sem:
+            await _process_file(fp, scan_id, counters, scan_start)
+
+    await asyncio.gather(*[_guarded(fp) for fp in file_paths])
 
 
 def _analyze_if_needed_sync(file_path: str) -> Optional[dict]:
