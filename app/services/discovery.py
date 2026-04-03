@@ -267,6 +267,7 @@ async def run_discovery_pipeline() -> Dict[str, Any]:
                 .where(DiscoveryRequest.created_at >= today_start)
             )).scalar() or 0
             remaining_budget = settings.DISCOVERY_MAX_REQUESTS_PER_DAY - today_count
+            logger.info("Discovery budget: %d/%d remaining", remaining_budget, settings.DISCOVERY_MAX_REQUESTS_PER_DAY)
 
             if remaining_budget <= 0:
                 logger.info("Discovery daily limit reached (%d/%d)", today_count, settings.DISCOVERY_MAX_REQUESTS_PER_DAY)
@@ -277,11 +278,13 @@ async def run_discovery_pipeline() -> Dict[str, Any]:
                 select(TrackFeatures.artist).where(TrackFeatures.artist.isnot(None)).distinct()
             )).all()
             library_artists_norm = {_normalize_artist(r[0]) for r in library_artists_raw}
+            logger.info("Discovery dedup: %d library artists", len(library_artists_norm))
 
             try:
                 lidarr_mbids = await lidarr.get_existing_artist_mbids()
+                logger.info("Discovery dedup: %d artists already in Lidarr", len(lidarr_mbids))
             except Exception as exc:
-                logger.error("Failed to fetch Lidarr artists: %s", exc)
+                logger.error("Failed to fetch Lidarr artists: %s", exc, exc_info=True)
                 return {"status": "error", "reason": f"lidarr_fetch_failed: {exc}", **summary}
 
             already_requested = set()
@@ -297,6 +300,7 @@ async def run_discovery_pipeline() -> Dict[str, Any]:
 
             # Process each user.
             users = (await session.execute(select(User))).scalars().all()
+            logger.info("Discovery: found %d users to process", len(users))
 
             for user in users:
                 if remaining_budget <= 0:
@@ -468,6 +472,7 @@ async def run_discovery_pipeline() -> Dict[str, Any]:
     except Exception as exc:
         logger.error("Discovery pipeline error: %s", exc, exc_info=True)
         summary["status"] = "error"
+        summary["error"] = str(exc)
     finally:
         await lastfm.close()
         await lidarr.close()
