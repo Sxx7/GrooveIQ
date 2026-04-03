@@ -53,7 +53,7 @@ except ImportError:
 # Feature extraction
 # ---------------------------------------------------------------------------
 
-ANALYSIS_VERSION = "1.2"  # fix TF output nodes (Softmax/Identity), re-analyze all tracks
+ANALYSIS_VERSION = "1.3"  # fix energy calibration (RMS range 0.01–0.30), isolate TF model errors
 
 # 64-dim vector composition (must match FAISS index dimension)
 # [bpm_norm, energy, danceability, valence, acousticness,
@@ -262,7 +262,7 @@ def analyze_track(file_path: str) -> dict:
             logger.warning(f"High-level extraction failed: {e}")
             # Loudness-based energy fallback (no TF needed)
             loudness = result.get("loudness", -23)
-            result["energy"] = float(round(max(0.0, min(1.0, (loudness + 30) / 25)), 3))
+            result["energy"] = float(round(max(0.0, min(1.0, (loudness + 30) / 30)), 3))
 
         # ------------------------------------------------------------------
         # Build embedding vector
@@ -294,13 +294,18 @@ def _extract_highlevel(audio, result: dict) -> None:
     # ------------------------------------------------------------------
     sample = audio[:min(len(audio), 44100 * 60)]
     rms_values = []
+    rms_algo = es.RMS()
     for frame in es.FrameGenerator(sample, frameSize=2048, hopSize=512):
-        rms_values.append(float(es.RMS()(frame)))
+        rms_values.append(float(rms_algo(frame)))
 
     if rms_values:
         rms_p75 = float(np.percentile(rms_values, 75))
-        # Map RMS to 0–1 range: 0.01 → ~0, 0.15 → ~1
-        energy = max(0.0, min(1.0, (rms_p75 - 0.01) / 0.14))
+        # Map RMS to 0–1 range.  Typical music RMS values:
+        #   quiet classical/ambient: 0.01–0.05
+        #   moderate pop/indie:      0.05–0.15
+        #   loud rock/hip-hop:       0.15–0.30
+        #   heavily compressed:      0.30+
+        energy = max(0.0, min(1.0, (rms_p75 - 0.01) / 0.29))
         result["energy"] = float(round(energy, 3))
 
     # ------------------------------------------------------------------
@@ -323,64 +328,67 @@ def _extract_highlevel(audio, result: dict) -> None:
         )
         embeddings = embed_model(audio)
 
-        # Helper: run a classifier head and return mean prediction
-        # Classification heads use Softmax output, regression heads use Identity
-        def _predict(model_file, output="model/Softmax", col=0):
+    except Exception as e:
+        logger.warning(f"EffNet embedding extraction failed: {e}")
+        return
+
+    # Helper: run a classifier head and return mean prediction.
+    # Each call is wrapped in its own try/except so one bad model
+    # doesn't prevent the others from running.
+    def _predict(model_file, output="model/Softmax", col=0):
+        try:
             path = os.path.join(models_dir, model_file)
             if not os.path.exists(path):
                 return None
             model = TensorflowPredict2D(graphFilename=path, output=output)
             preds = model(embeddings)
             return float(round(float(np.mean(preds[:, col])), 3))
+        except Exception as e:
+            logger.debug(f"TF prediction failed for {model_file}: {e}")
+            return None
 
-        # Danceability
-        val = _predict("danceability-discogs-effnet-1.pb")
-        if val is not None:
-            result["danceability"] = val
+    # Danceability
+    val = _predict("danceability-discogs-effnet-1.pb")
+    if val is not None:
+        result["danceability"] = val
 
-        # Voice/instrumental → instrumentalness
-        val = _predict("voice_instrumental-discogs-effnet-1.pb", col=1)  # col 1 = instrumental
-        if val is not None:
-            result["instrumentalness"] = val
+    # Voice/instrumental → instrumentalness
+    val = _predict("voice_instrumental-discogs-effnet-1.pb", col=1)  # col 1 = instrumental
+    if val is not None:
+        result["instrumentalness"] = val
 
-        # Valence proxy: approachability maps well to musical positivity
-        val = _predict("approachability_regression-discogs-effnet-1.pb", output="model/Identity")
-        if val is not None:
-            result["valence"] = val
+    # Valence proxy: approachability maps well to musical positivity
+    val = _predict("approachability_regression-discogs-effnet-1.pb", output="model/Identity")
+    if val is not None:
+        result["valence"] = val
 
-        # Mood tags: run all mood classifiers, collect those above threshold
-        mood_models = {
-            "happy": "mood_happy-discogs-effnet-1.pb",
-            "sad": "mood_sad-discogs-effnet-1.pb",
-            "aggressive": "mood_aggressive-discogs-effnet-1.pb",
-            "relaxed": "mood_relaxed-discogs-effnet-1.pb",
-            "party": "mood_party-discogs-effnet-1.pb",
-        }
-        mood_tags = []
-        for label, model_file in mood_models.items():
-            conf = _predict(model_file)
-            if conf is not None:
-                mood_tags.append({"label": label, "confidence": conf})
-        if mood_tags:
-            # Sort by confidence descending
-            mood_tags.sort(key=lambda m: m["confidence"], reverse=True)
-            result["mood_tags"] = mood_tags
+    # Mood tags: run all mood classifiers, collect those above threshold
+    mood_models = {
+        "happy": "mood_happy-discogs-effnet-1.pb",
+        "sad": "mood_sad-discogs-effnet-1.pb",
+        "aggressive": "mood_aggressive-discogs-effnet-1.pb",
+        "relaxed": "mood_relaxed-discogs-effnet-1.pb",
+        "party": "mood_party-discogs-effnet-1.pb",
+    }
+    mood_tags = []
+    for label, model_file in mood_models.items():
+        conf = _predict(model_file)
+        if conf is not None:
+            mood_tags.append({"label": label, "confidence": conf})
+    if mood_tags:
+        # Sort by confidence descending
+        mood_tags.sort(key=lambda m: m["confidence"], reverse=True)
+        result["mood_tags"] = mood_tags
 
-        # Speechiness proxy: 1 - instrumental confidence
-        if result.get("instrumentalness") is not None:
-            result["speechiness"] = float(round(1.0 - result["instrumentalness"], 3))
+    # Speechiness proxy: 1 - instrumental confidence
+    if result.get("instrumentalness") is not None:
+        result["speechiness"] = float(round(1.0 - result["instrumentalness"], 3))
 
-        # Acousticness: not directly available, leave null for now
-
-        logger.debug(
-            f"TF features: dance={result.get('danceability')} "
-            f"valence={result.get('valence')} "
-            f"moods={[m['label'] for m in (result.get('mood_tags') or []) if m['confidence'] > 0.5]}"
-        )
-
-    except Exception as e:
-        logger.warning(f"TF model extraction failed: {e}")
-        # Energy was already computed above, so analysis is still useful
+    logger.debug(
+        f"TF features: dance={result.get('danceability')} "
+        f"valence={result.get('valence')} "
+        f"moods={[m['label'] for m in (result.get('mood_tags') or []) if m['confidence'] > 0.5]}"
+    )
 
 
 def _build_embedding(result: dict, hpcp_frames: list) -> Optional[str]:
