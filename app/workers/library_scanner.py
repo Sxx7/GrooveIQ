@@ -207,6 +207,19 @@ async def _run_scan(scan_id: int) -> None:
                     await session.execute(del_stmt(ScanLog).where(ScanLog.id.in_(oldest)))
                     await session.commit()
 
+        # Sync track IDs with the media server (if configured).
+        try:
+            from app.services.media_server import is_configured, sync_track_ids
+            if is_configured():
+                async with AsyncSessionLocal() as sync_session:
+                    sync_result = await sync_track_ids(sync_session)
+                logger.info(
+                    f"[Scan {scan_id}] Media server sync: "
+                    f"{sync_result.tracks_matched} matched, {sync_result.tracks_updated} updated"
+                )
+        except Exception as e:
+            logger.error(f"[Scan {scan_id}] Media server sync failed: {e}")
+
         # Rebuild FAISS index with new/updated embeddings.
         try:
             from app.services.faiss_index import rebuild as rebuild_faiss

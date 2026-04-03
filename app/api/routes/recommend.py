@@ -74,6 +74,7 @@ async def get_recommendations(
         user_id=user_id,
         seed_track_id=seed_track_id,
         k=limit * 3,  # over-fetch for re-ranking
+        session=session,
     )
 
     model_version = _get_model_version()
@@ -131,6 +132,9 @@ async def get_recommendations(
         }
         if tf:
             track_data.update({
+                "title": tf.title,
+                "artist": tf.artist,
+                "album": tf.album,
                 "file_path": tf.file_path,
                 "bpm": tf.bpm,
                 "key": tf.key,
@@ -149,6 +153,87 @@ async def get_recommendations(
         "user_id": user_id,
         "seed_track_id": seed_track_id,
         "tracks": tracks,
+    }
+
+
+@router.get(
+    "/recommend/{user_id}/history",
+    summary="Get recommendation history for a user",
+    description="Returns past recommendation impressions with whether the user streamed the recommended track.",
+)
+async def get_recommendation_history(
+    user_id: str,
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+    session: AsyncSession = Depends(get_session),
+    _key: str = Depends(require_api_key),
+):
+    from sqlalchemy import func as sa_func
+
+    # Verify user exists.
+    result = await session.execute(
+        select(User.user_id).where(User.user_id == user_id)
+    )
+    if result.scalar_one_or_none() is None:
+        raise HTTPException(status_code=404, detail=f"User '{user_id}' not found.")
+
+    # Count impressions
+    count_q = select(sa_func.count()).select_from(
+        select(ListenEvent.id)
+        .where(ListenEvent.user_id == user_id, ListenEvent.event_type == "reco_impression")
+        .subquery()
+    )
+    total = (await session.execute(count_q)).scalar() or 0
+
+    # Get impression events, most recent first
+    q = (
+        select(ListenEvent)
+        .where(ListenEvent.user_id == user_id, ListenEvent.event_type == "reco_impression")
+        .order_by(ListenEvent.timestamp.desc())
+        .offset(offset)
+        .limit(limit)
+    )
+    impressions = (await session.execute(q)).scalars().all()
+
+    if not impressions:
+        return {"total": total, "history": []}
+
+    # Check which impressions led to streams (play_start/play_end with same request_id)
+    request_ids = list({i.request_id for i in impressions if i.request_id})
+    streamed_set = set()
+    if request_ids:
+        stream_q = (
+            select(ListenEvent.request_id, ListenEvent.track_id)
+            .where(
+                ListenEvent.user_id == user_id,
+                ListenEvent.request_id.in_(request_ids),
+                ListenEvent.event_type.in_(["play_start", "play_end"]),
+            )
+        )
+        stream_rows = (await session.execute(stream_q)).all()
+        streamed_set = {(r[0], r[1]) for r in stream_rows}
+
+    # Get track metadata for all impression track_ids
+    track_ids = list({i.track_id for i in impressions})
+    feat_q = select(TrackFeatures).where(TrackFeatures.track_id.in_(track_ids))
+    feat_map = {t.track_id: t for t in (await session.execute(feat_q)).scalars().all()}
+
+    return {
+        "total": total,
+        "history": [
+            {
+                "timestamp": imp.timestamp,
+                "track_id": imp.track_id,
+                "position": imp.position,
+                "request_id": imp.request_id,
+                "model_version": imp.model_version,
+                "streamed": (imp.request_id, imp.track_id) in streamed_set if imp.request_id else False,
+                "file_path": feat_map[imp.track_id].file_path if imp.track_id in feat_map else None,
+                "bpm": feat_map[imp.track_id].bpm if imp.track_id in feat_map else None,
+                "energy": feat_map[imp.track_id].energy if imp.track_id in feat_map else None,
+            }
+            for imp in impressions
+        ],
     }
 
 

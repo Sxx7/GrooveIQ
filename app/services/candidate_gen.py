@@ -57,6 +57,8 @@ async def get_content_candidates_for_user(
     user_id: str,
     k: int = 200,
     exclude_ids: Optional[Set[str]] = None,
+    *,
+    session: Optional[AsyncSession] = None,
 ) -> List[Dict[str, Any]]:
     """
     FAISS candidates from the user's taste profile centroid.
@@ -64,11 +66,17 @@ async def get_content_candidates_for_user(
     Computes the mean embedding of the user's top tracks, then
     queries FAISS for the nearest neighbours to that centroid.
     """
-    async with AsyncSessionLocal() as session:
+    if session is not None:
         result = await session.execute(
             select(User.taste_profile).where(User.user_id == user_id)
         )
         row = result.scalar_one_or_none()
+    else:
+        async with AsyncSessionLocal() as session:
+            result = await session.execute(
+                select(User.taste_profile).where(User.user_id == user_id)
+            )
+            row = result.scalar_one_or_none()
 
     if not row:
         return []
@@ -88,54 +96,51 @@ async def get_content_candidates_for_user(
     ]
 
 
-async def _get_disliked_track_ids(user_id: str) -> Set[str]:
+async def _get_disliked_track_ids(user_id: str, session: AsyncSession) -> Set[str]:
     """
     Tracks the user has disliked or early-skipped more than 2 times.
     These are filtered out of all candidate sources.
     """
-    async with AsyncSessionLocal() as session:
-        result = await session.execute(
-            select(TrackInteraction.track_id)
-            .where(
-                TrackInteraction.user_id == user_id,
-                (TrackInteraction.dislike_count > 0) | (TrackInteraction.early_skip_count > 2),
-            )
+    result = await session.execute(
+        select(TrackInteraction.track_id)
+        .where(
+            TrackInteraction.user_id == user_id,
+            (TrackInteraction.dislike_count > 0) | (TrackInteraction.early_skip_count > 2),
         )
-        return {row[0] for row in result.all()}
+    )
+    return {row[0] for row in result.all()}
 
 
-async def _get_recently_skipped_ids(user_id: str) -> Set[str]:
+async def _get_recently_skipped_ids(user_id: str, session: AsyncSession) -> Set[str]:
     """Tracks the user skipped in the last 24h."""
     cutoff = int(time.time()) - 86_400
-    async with AsyncSessionLocal() as session:
-        result = await session.execute(
-            select(TrackInteraction.track_id)
-            .where(
-                TrackInteraction.user_id == user_id,
-                TrackInteraction.last_played_at >= cutoff,
-                TrackInteraction.early_skip_count > 0,
-            )
+    result = await session.execute(
+        select(TrackInteraction.track_id)
+        .where(
+            TrackInteraction.user_id == user_id,
+            TrackInteraction.last_played_at >= cutoff,
+            TrackInteraction.early_skip_count > 0,
         )
-        return {row[0] for row in result.all()}
+    )
+    return {row[0] for row in result.all()}
 
 
-async def _get_popular_tracks(k: int = 50) -> List[Dict[str, Any]]:
+async def _get_popular_tracks(session: AsyncSession, k: int = 50) -> List[Dict[str, Any]]:
     """
     Heuristic recall: tracks with the most interactions in the last 30 days.
     """
     cutoff = int(time.time()) - 30 * 86_400
-    async with AsyncSessionLocal() as session:
-        result = await session.execute(
-            select(
-                TrackInteraction.track_id,
-                func.sum(TrackInteraction.play_count).label("total_plays"),
-            )
-            .where(TrackInteraction.last_played_at >= cutoff)
-            .group_by(TrackInteraction.track_id)
-            .order_by(func.sum(TrackInteraction.play_count).desc())
-            .limit(k)
+    result = await session.execute(
+        select(
+            TrackInteraction.track_id,
+            func.sum(TrackInteraction.play_count).label("total_plays"),
         )
-        rows = result.all()
+        .where(TrackInteraction.last_played_at >= cutoff)
+        .group_by(TrackInteraction.track_id)
+        .order_by(func.sum(TrackInteraction.play_count).desc())
+        .limit(k)
+    )
+    rows = result.all()
 
     return [
         {"track_id": row.track_id, "score": 0.3, "source": "popular"}
@@ -144,7 +149,7 @@ async def _get_popular_tracks(k: int = 50) -> List[Dict[str, Any]]:
 
 
 async def _get_recently_played_artist_tracks(
-    user_id: str, k: int = 50
+    user_id: str, session: AsyncSession, k: int = 50
 ) -> List[Dict[str, Any]]:
     """
     Heuristic recall: tracks from artists the user listened to in the last 7 days.
@@ -152,28 +157,27 @@ async def _get_recently_played_artist_tracks(
     store artist metadata separately.
     """
     cutoff = int(time.time()) - 7 * 86_400
-    async with AsyncSessionLocal() as session:
-        # Get recently interacted track IDs.
-        result = await session.execute(
-            select(TrackInteraction.track_id)
-            .where(
-                TrackInteraction.user_id == user_id,
-                TrackInteraction.last_played_at >= cutoff,
-            )
-            .order_by(TrackInteraction.satisfaction_score.desc())
-            .limit(20)
+    # Get recently interacted track IDs.
+    result = await session.execute(
+        select(TrackInteraction.track_id)
+        .where(
+            TrackInteraction.user_id == user_id,
+            TrackInteraction.last_played_at >= cutoff,
         )
-        recent_track_ids = [row[0] for row in result.all()]
+        .order_by(TrackInteraction.satisfaction_score.desc())
+        .limit(20)
+    )
+    recent_track_ids = [row[0] for row in result.all()]
 
-        if not recent_track_ids:
-            return []
+    if not recent_track_ids:
+        return []
 
-        # Get file paths for these tracks to extract artist dirs.
-        result = await session.execute(
-            select(TrackFeatures.file_path)
-            .where(TrackFeatures.track_id.in_(recent_track_ids))
-        )
-        paths = [row[0] for row in result.all() if row[0]]
+    # Get file paths for these tracks to extract artist dirs.
+    result = await session.execute(
+        select(TrackFeatures.file_path)
+        .where(TrackFeatures.track_id.in_(recent_track_ids))
+    )
+    paths = [row[0] for row in result.all() if row[0]]
 
     if not paths:
         return []
@@ -190,18 +194,17 @@ async def _get_recently_played_artist_tracks(
         return []
 
     # Find other tracks in the same directories.
-    async with AsyncSessionLocal() as session:
-        conditions = [TrackFeatures.file_path.contains(d) for d in list(artist_dirs)[:10]]
-        from sqlalchemy import or_
-        result = await session.execute(
-            select(TrackFeatures.track_id)
-            .where(
-                or_(*conditions),
-                TrackFeatures.track_id.notin_(recent_track_ids),
-            )
-            .limit(k)
+    conditions = [TrackFeatures.file_path.contains(d) for d in list(artist_dirs)[:10]]
+    from sqlalchemy import or_
+    result = await session.execute(
+        select(TrackFeatures.track_id)
+        .where(
+            or_(*conditions),
+            TrackFeatures.track_id.notin_(recent_track_ids),
         )
-        tracks = [row[0] for row in result.all()]
+        .limit(k)
+    )
+    tracks = [row[0] for row in result.all()]
 
     return [
         {"track_id": tid, "score": 0.2, "source": "artist_recall"}
@@ -213,6 +216,8 @@ async def get_candidates(
     user_id: str,
     seed_track_id: Optional[str] = None,
     k: int = 200,
+    *,
+    session: Optional[AsyncSession] = None,
 ) -> List[Dict[str, Any]]:
     """
     Merged candidate retrieval from all sources.
@@ -221,14 +226,27 @@ async def get_candidates(
         user_id: the user to generate candidates for.
         seed_track_id: optional seed track for content-based retrieval.
         k: max number of candidates to return.
+        session: existing DB session (required for SQLite to avoid pool exhaustion).
 
     Returns:
         List of {"track_id", "score", "source"} dicts, deduplicated,
         with disliked/skipped tracks removed.
     """
+    if session is None:
+        async with AsyncSessionLocal() as session:
+            return await _get_candidates_impl(user_id, seed_track_id, k, session)
+    return await _get_candidates_impl(user_id, seed_track_id, k, session)
+
+
+async def _get_candidates_impl(
+    user_id: str,
+    seed_track_id: Optional[str],
+    k: int,
+    session: AsyncSession,
+) -> List[Dict[str, Any]]:
     # Build exclusion set.
-    disliked = await _get_disliked_track_ids(user_id)
-    recently_skipped = await _get_recently_skipped_ids(user_id)
+    disliked = await _get_disliked_track_ids(user_id, session)
+    recently_skipped = await _get_recently_skipped_ids(user_id, session)
     exclude = disliked | recently_skipped
 
     # Source 1: Content-based (FAISS).
@@ -240,7 +258,7 @@ async def get_candidates(
             )
         else:
             content_candidates = await get_content_candidates_for_user(
-                user_id, k=100, exclude_ids=exclude,
+                user_id, k=100, exclude_ids=exclude, session=session,
             )
 
     # Source 2: Collaborative filtering.
@@ -254,8 +272,8 @@ async def get_candidates(
         ]
 
     # Source 3: Heuristic recall.
-    popular = await _get_popular_tracks(k=50)
-    artist_recall = await _get_recently_played_artist_tracks(user_id, k=50)
+    popular = await _get_popular_tracks(session, k=50)
+    artist_recall = await _get_recently_played_artist_tracks(user_id, session, k=50)
 
     # Merge and deduplicate (first occurrence wins — preserves source priority).
     seen: Set[str] = set()

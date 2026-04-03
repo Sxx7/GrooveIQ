@@ -27,6 +27,57 @@ router = APIRouter()
 
 
 # ---------------------------------------------------------------------------
+# Media server sync
+# ---------------------------------------------------------------------------
+
+@router.post(
+    "/library/sync",
+    status_code=200,
+    summary="Sync track IDs with media server (Navidrome / Plex)",
+    description="""
+Maps GrooveIQ's internal track IDs to the configured media server's native IDs.
+
+Matches tracks by file path, then:
+- Updates `track_id` to the Navidrome/Plex ID
+- Populates title, artist, album metadata from the server
+- Cascades track_id changes to all events, sessions, and interactions
+
+Requires `MEDIA_SERVER_TYPE`, `MEDIA_SERVER_URL`, and credentials in config.
+""",
+)
+async def trigger_sync(
+    session: AsyncSession = Depends(get_session),
+    _key: str = Depends(require_api_key),
+):
+    from app.services.media_server import is_configured, sync_track_ids
+
+    if not is_configured():
+        raise HTTPException(
+            status_code=400,
+            detail="No media server configured. Set MEDIA_SERVER_TYPE, MEDIA_SERVER_URL, "
+                   "and credentials in your .env file.",
+        )
+
+    try:
+        result = await sync_track_ids(session)
+    except Exception as e:
+        logger.exception("Media server sync failed")
+        raise HTTPException(status_code=502, detail=f"Sync failed: {e}")
+
+    return {
+        "message": "Sync complete",
+        "server_type": result.server_type,
+        "tracks_fetched": result.tracks_fetched,
+        "tracks_matched": result.tracks_matched,
+        "tracks_updated": result.tracks_updated,
+        "tracks_metadata": result.tracks_metadata,
+        "tracks_unmatched": result.tracks_unmatched,
+        "errors": result.errors,
+        "elapsed_seconds": result.elapsed_s,
+    }
+
+
+# ---------------------------------------------------------------------------
 # Library scan
 # ---------------------------------------------------------------------------
 
@@ -183,6 +234,9 @@ async def list_tracks(
         "tracks": [
             {
                 "track_id": t.track_id,
+                "title": t.title,
+                "artist": t.artist,
+                "album": t.album,
                 "file_path": t.file_path,
                 "duration": t.duration,
                 "bpm": t.bpm,
@@ -280,6 +334,9 @@ async def get_similar_tracks(
             return [
                 {
                     "track_id": c.track_id,
+                    "title": c.title,
+                    "artist": c.artist,
+                    "album": c.album,
                     "file_path": c.file_path,
                     "bpm": c.bpm,
                     "key": c.key,

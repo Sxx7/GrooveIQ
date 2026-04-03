@@ -137,8 +137,13 @@ class TrackFeatures(Base):
     id              = Column(Integer, primary_key=True, autoincrement=True)
     track_id        = Column(String(128), nullable=False, unique=True, index=True)
 
-    # Media server mapping — populated when matching scanner tracks to Navidrome/Jellyfin IDs
+    # Media server mapping — populated when matching scanner tracks to Navidrome/Plex IDs
     external_track_id = Column(String(128), nullable=True, unique=True, index=True)
+
+    # Track metadata (populated from media server sync)
+    title           = Column(String(512), nullable=True)
+    artist          = Column(String(512), nullable=True)
+    album           = Column(String(512), nullable=True)
 
     # File metadata
     file_path       = Column(Text,    nullable=False)
@@ -188,6 +193,9 @@ class User(Base):
     """
     Minimal user record.  GrooveIQ does not store passwords – user_id is
     whatever ID your media server uses (Navidrome username, UUID, etc.).
+
+    ``id`` is the stable numeric UID (never changes).
+    ``user_id`` is the external username/identifier (can be renamed).
     """
     __tablename__ = "users"
 
@@ -201,6 +209,11 @@ class User(Base):
     # Cached taste profile (JSON, updated by the background worker)
     taste_profile = Column(JSON, nullable=True)
     profile_updated_at = Column(Integer, nullable=True)
+
+    @property
+    def uid(self) -> int:
+        """Stable numeric user identifier, exposed as ``uid`` in API responses."""
+        return self.id
 
 
 # ---------------------------------------------------------------------------

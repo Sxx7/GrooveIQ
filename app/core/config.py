@@ -97,6 +97,21 @@ class Settings(BaseSettings):
     MIN_PLAY_PERCENTAGE: float = 0.05
 
     # ------------------------------------------------------------------
+    # Media server integration (Navidrome / Plex)
+    # ------------------------------------------------------------------
+    # Set MEDIA_SERVER_TYPE to "navidrome" or "plex" to enable.
+    # When enabled, the library sync maps track_ids to the media server's
+    # native IDs so events from clients use the same identifiers.
+    MEDIA_SERVER_TYPE: str = ""            # "navidrome" or "plex" (empty = disabled)
+    MEDIA_SERVER_URL: str = ""             # e.g. http://192.168.178.49:4533
+    MEDIA_SERVER_USER: str = ""            # Navidrome username
+    MEDIA_SERVER_PASSWORD: str = ""        # Navidrome password
+    MEDIA_SERVER_TOKEN: str = ""           # Plex X-Plex-Token
+    MEDIA_SERVER_LIBRARY_ID: str = "1"     # Plex library section ID
+    MEDIA_SERVER_MUSIC_PATH: str = ""      # Music root as seen by the media server
+                                           # (for path matching if it differs from MUSIC_LIBRARY_PATH)
+
+    # ------------------------------------------------------------------
     # Logging
     # ------------------------------------------------------------------
     LOG_LEVEL: str = "INFO"

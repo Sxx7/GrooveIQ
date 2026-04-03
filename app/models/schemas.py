@@ -409,6 +409,9 @@ class PlaylistCreate(BaseModel):
 class PlaylistTrackItem(BaseModel):
     position: int
     track_id: str
+    title: Optional[str] = None
+    artist: Optional[str] = None
+    album: Optional[str] = None
     file_path: Optional[str] = None
     bpm: Optional[float] = None
     key: Optional[str] = None
@@ -445,10 +448,25 @@ class UserCreate(BaseModel):
     user_id:      str = Field(..., min_length=1, max_length=128)
     display_name: Optional[str] = Field(None, max_length=255)
 
+
+class UserUpdate(BaseModel):
+    """Update a user's mutable fields. At least one field must be provided."""
+    user_id:      Optional[str] = Field(None, min_length=1, max_length=128,
+                                        description="New username. Must be unique. Cascades to all event/session/interaction tables.")
+    display_name: Optional[str] = Field(None, max_length=255)
+
+    @model_validator(mode="after")
+    def at_least_one_field(self):
+        if self.user_id is None and self.display_name is None:
+            raise ValueError("At least one of user_id or display_name must be provided.")
+        return self
+
+
 class UserResponse(BaseModel):
-    user_id:      str
-    display_name: Optional[str]
+    uid:          int = Field(..., description="Stable numeric user identifier (never changes).")
+    user_id:      str = Field(..., description="Username / media server identifier (can be updated).")
+    display_name: Optional[str] = None
     created_at:   int
-    last_seen:    Optional[int]
+    last_seen:    Optional[int] = None
 
     model_config = {"from_attributes": True}
