@@ -148,11 +148,20 @@ def ensure_models() -> bool:
 # ---------------------------------------------------------------------------
 
 def compute_file_hash(path: str) -> str:
-    """SHA-256 of file content. Used to detect file changes without re-running full analysis."""
+    """
+    Fast file identity hash: SHA-256 of first 64KB + file size + mtime.
+
+    Reading the full file for SHA-256 is I/O-bound and redundant when
+    MonoLoader will read it again for decoding.  Sampling the header
+    plus stat metadata catches virtually all real-world changes
+    (re-encodes, tag edits, replacements) at a fraction of the cost.
+    """
+    stat = os.stat(path)
     h = hashlib.sha256()
+    h.update(str(stat.st_size).encode())
+    h.update(str(int(stat.st_mtime)).encode())
     with open(path, "rb") as f:
-        for chunk in iter(lambda: f.read(65_536), b""):
-            h.update(chunk)
+        h.update(f.read(65_536))  # first 64KB only
     return h.hexdigest()
 
 
@@ -252,16 +261,19 @@ def analyze_track(file_path: str) -> dict:
             result["key_confidence"] = float(round(key_strength, 3))
 
         # ------------------------------------------------------------------
-        # Loudness & dynamics
+        # Loudness & dynamics (60s sample — representative and fast)
         # ------------------------------------------------------------------
         loudness_algo = es.Loudness()
-        integrated_loudness = loudness_algo(audio)
+        loud_dur = min(len(audio), sr * 60)
+        loud_start = max(0, (len(audio) - loud_dur) // 2)
+        loud_sample = audio[loud_start:loud_start + loud_dur]
+
+        integrated_loudness = loudness_algo(loud_sample)
         result["loudness"] = float(round(float(integrated_loudness), 2))
 
         # Approximate loudness range (LRA) from per-frame loudness.
-        # Larger hop = fewer frames = much faster for long tracks.
         frame_loudness = []
-        for frame in es.FrameGenerator(audio, frameSize=4096, hopSize=4096):
+        for frame in es.FrameGenerator(loud_sample, frameSize=4096, hopSize=4096):
             frame_loudness.append(loudness_algo(frame))
         if frame_loudness:
             arr = np.array(frame_loudness)
