@@ -258,6 +258,7 @@
   </div>
 </header>
 
+<div id="js-errors" style="display:none;background:#2d1111;border:1px solid #7f2222;border-radius:8px;margin:12px 24px;color:#f87171;font-family:monospace;font-size:12px;max-height:200px;overflow:auto"></div>
 <div class="container" id="app">
   <div class="empty" id="welcome">
     Enter your API key above to connect.
@@ -265,6 +266,30 @@
 </div>
 
 <script>
+// Global error handler — shows JS errors on the page
+window.onerror = function(msg, src, line, col, err) {
+  var el = document.getElementById('js-errors');
+  if (el) {
+    el.style.display = 'block';
+    el.innerHTML += '<div style="padding:6px 12px;border-bottom:1px solid #4a1c1c">'
+      + '<b>JS Error:</b> ' + msg + '<br>'
+      + '<span style="opacity:0.7">Line ' + line + (col ? ':' + col : '') + '</span>'
+      + (err && err.stack ? '<pre style="margin:4px 0 0;font-size:11px;opacity:0.8;white-space:pre-wrap">' + err.stack + '</pre>' : '')
+      + '</div>';
+  }
+  return false;
+};
+window.addEventListener('unhandledrejection', function(e) {
+  var el = document.getElementById('js-errors');
+  if (el) {
+    el.style.display = 'block';
+    el.innerHTML += '<div style="padding:6px 12px;border-bottom:1px solid #4a1c1c">'
+      + '<b>Unhandled Promise:</b> ' + (e.reason ? (e.reason.message || e.reason) : 'unknown')
+      + (e.reason && e.reason.stack ? '<pre style="margin:4px 0 0;font-size:11px;opacity:0.8;white-space:pre-wrap">' + e.reason.stack + '</pre>' : '')
+      + '</div>';
+  }
+});
+
 const $ = (s) => document.querySelector(s);
 const BASE = window.location.origin;
 let KEY = '';
@@ -321,12 +346,16 @@ async function connect() {
   if (!KEY) return;
   sessionStorage.setItem('grooveiq_key', KEY);
   try {
+    console.log('[GrooveIQ] Connecting with key...');
     await loadDashboard();
+    console.log('[GrooveIQ] Dashboard loaded successfully');
     $('#refresh-info').style.display = 'flex';
     if (refreshTimer) clearInterval(refreshTimer);
     refreshTimer = setInterval(loadDashboard, 10000);
+    currentRefreshInterval = 10000;
   } catch (e) {
-    $('#app').innerHTML = `<div class="empty">Connection failed: ${e.message}</div>`;
+    console.error('[GrooveIQ] Connection failed:', e);
+    $('#app').innerHTML = '<div class="empty">Connection failed: ' + e.message + '</div>';
   }
 }
 
