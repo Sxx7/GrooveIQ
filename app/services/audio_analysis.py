@@ -53,7 +53,7 @@ except ImportError:
 # Feature extraction
 # ---------------------------------------------------------------------------
 
-ANALYSIS_VERSION = "1.3"  # fix energy calibration (RMS range 0.01–0.30), isolate TF model errors
+ANALYSIS_VERSION = "1.4"  # perf: sample audio for HPCP/TF, fix LRA alloc, wider energy range
 
 # 64-dim vector composition (must match FAISS index dimension)
 # [bpm_norm, energy, danceability, valence, acousticness,
@@ -194,33 +194,42 @@ def analyze_track(file_path: str) -> dict:
             return result
 
         # ------------------------------------------------------------------
-        # Rhythm
+        # Rhythm (60s sample — BPM is stable across a track)
         # ------------------------------------------------------------------
+        sr = 44100
+        rhythm_dur = min(len(audio), sr * 60)
+        rhythm_start = max(0, (len(audio) - rhythm_dur) // 2)
+        rhythm_sample = audio[rhythm_start:rhythm_start + rhythm_dur]
+
         rhythm_extractor = es.RhythmExtractor2013(method="multifeature")
-        bpm, beats, bpm_confidence, _, _ = rhythm_extractor(audio)
+        bpm, beats, bpm_confidence, _, _ = rhythm_extractor(rhythm_sample)
         result["bpm"] = float(round(bpm, 2))
         result["bpm_confidence"] = float(round(bpm_confidence, 3))
 
         # ------------------------------------------------------------------
-        # Tonal
+        # Tonal (use middle 60s sample — key is stable across a track)
         # ------------------------------------------------------------------
-        # Compute HPCP (Harmonic Pitch Class Profile)
+        import numpy as np
+
+        tonal_dur = min(len(audio), sr * 60)
+        tonal_start = max(0, (len(audio) - tonal_dur) // 2)
+        tonal_sample = audio[tonal_start:tonal_start + tonal_dur]
+
         windowing      = es.Windowing(type="blackmanharris62")
-        spectrum       = es.Spectrum()
+        spectrum_algo  = es.Spectrum()
         spectral_peaks = es.SpectralPeaks(orderBy="magnitude", magnitudeThreshold=0.00001, minFrequency=20, maxFrequency=3500, maxPeaks=60)
         hpcp_extractor = es.HPCP()
         key_extractor  = es.Key()
 
         hpcp_frames = []
-        for frame in es.FrameGenerator(audio, frameSize=4096, hopSize=2048, startFromZero=True):
+        for frame in es.FrameGenerator(tonal_sample, frameSize=4096, hopSize=4096, startFromZero=True):
             frame_windowed = windowing(frame)
-            frame_spectrum = spectrum(frame_windowed)
+            frame_spectrum = spectrum_algo(frame_windowed)
             freqs, mags    = spectral_peaks(frame_spectrum)
             hpcp           = hpcp_extractor(freqs, mags)
             hpcp_frames.append(hpcp)
 
         if hpcp_frames:
-            import numpy as np
             mean_hpcp = np.mean(hpcp_frames, axis=0)
             key, scale, key_strength, _ = key_extractor(mean_hpcp.astype("float32"))
             result["key"]            = key
@@ -229,21 +238,16 @@ def analyze_track(file_path: str) -> dict:
 
         # ------------------------------------------------------------------
         # Loudness & dynamics
-        # LoudnessEBUR128 requires stereo; we have mono from MonoLoader,
-        # so use Loudness (Vickers) for integrated and per-frame for LRA.
         # ------------------------------------------------------------------
-        import numpy as np
-
-        integrated_loudness = es.Loudness()(audio)
+        loudness_algo = es.Loudness()
+        integrated_loudness = loudness_algo(audio)
         result["loudness"] = float(round(float(integrated_loudness), 2))
 
-        # Approximate loudness range (LRA) from per-frame loudness
-        frame_size = 2048
-        hop_size = 1024
+        # Approximate loudness range (LRA) from per-frame loudness.
+        # Larger hop = fewer frames = much faster for long tracks.
         frame_loudness = []
-        for i in range(0, len(audio) - frame_size, hop_size):
-            frame_l = es.Loudness()(audio[i : i + frame_size])
-            frame_loudness.append(frame_l)
+        for frame in es.FrameGenerator(audio, frameSize=4096, hopSize=4096):
+            frame_loudness.append(loudness_algo(frame))
         if frame_loudness:
             arr = np.array(frame_loudness)
             p95 = float(np.percentile(arr, 95))
@@ -290,12 +294,16 @@ def _extract_highlevel(audio, result: dict) -> None:
 
     # ------------------------------------------------------------------
     # Energy from RMS (spectral, no TF needed)
-    # Normalized against typical music RMS range (0.01–0.15)
+    # Use 30s from the middle — representative and fast.
     # ------------------------------------------------------------------
-    sample = audio[:min(len(audio), 44100 * 60)]
+    sr = 44100
+    sample_dur = min(len(audio), sr * 30)
+    sample_start = max(0, (len(audio) - sample_dur) // 2)
+    sample = audio[sample_start:sample_start + sample_dur]
+
     rms_values = []
     rms_algo = es.RMS()
-    for frame in es.FrameGenerator(sample, frameSize=2048, hopSize=512):
+    for frame in es.FrameGenerator(sample, frameSize=2048, hopSize=2048):
         rms_values.append(float(rms_algo(frame)))
 
     if rms_values:
@@ -321,12 +329,18 @@ def _extract_highlevel(audio, result: dict) -> None:
 
         effnet_path = os.path.join(models_dir, "discogs-effnet-bs64-1.pb")
 
-        # Discogs-EffNet embeddings (shared input for all downstream classifiers)
+        # Discogs-EffNet embeddings (shared input for all downstream classifiers).
+        # Use 30s sample from the middle — EffNet processes in ~3s chunks anyway,
+        # and 30s gives ~10 embedding frames which is plenty for averaging.
+        tf_dur = min(len(audio), sr * 30)
+        tf_start = max(0, (len(audio) - tf_dur) // 2)
+        tf_sample = audio[tf_start:tf_start + tf_dur]
+
         embed_model = TensorflowPredictEffnetDiscogs(
             graphFilename=effnet_path,
             output="PartitionedCall:1",
         )
-        embeddings = embed_model(audio)
+        embeddings = embed_model(tf_sample)
 
     except Exception as e:
         logger.warning(f"EffNet embedding extraction failed: {e}")

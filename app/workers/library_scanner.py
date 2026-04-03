@@ -51,7 +51,7 @@ def get_executor() -> ProcessPoolExecutor:
         if _executor is None:
             _executor = ProcessPoolExecutor(
                 max_workers=settings.ANALYSIS_WORKERS,
-                max_tasks_per_child=1,  # recycle after every track — TF models leak memory
+                max_tasks_per_child=20,  # recycle periodically to contain TF memory leaks
             )
         return _executor
 
