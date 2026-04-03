@@ -330,53 +330,60 @@ async def sync_track_ids(session: AsyncSession) -> SyncResult:
         old_track_id = tf.track_id
         new_track_id = st.server_id
 
-        # Update metadata always (title/artist/album/genre may have changed).
-        metadata_changed = (
-            tf.title != st.title
-            or tf.artist != st.artist
-            or tf.album != st.album
-            or tf.genre != st.genre
-        )
-        if metadata_changed:
-            tf.title = st.title
-            tf.artist = st.artist
-            tf.album = st.album
-            tf.genre = st.genre
-            result.tracks_metadata += 1
-
-        # Update track_id if it differs.
-        if old_track_id != new_track_id:
-            # Check if the new track_id already exists (another row).
-            conflict = await session.execute(
-                select(TrackFeatures.id)
-                .where(TrackFeatures.track_id == new_track_id)
-                .where(TrackFeatures.id != tf.id)
+        try:
+            # Update metadata always (title/artist/album/genre may have changed).
+            metadata_changed = (
+                tf.title != st.title
+                or tf.artist != st.artist
+                or tf.album != st.album
+                or tf.genre != st.genre
             )
-            if conflict.scalar_one_or_none() is not None:
-                result.errors.append(
-                    f"Skipped {norm}: server ID '{new_track_id}' conflicts with existing track."
+            if metadata_changed:
+                tf.title = st.title
+                tf.artist = st.artist
+                tf.album = st.album
+                tf.genre = st.genre
+                result.tracks_metadata += 1
+
+            # Update track_id if it differs.
+            if old_track_id != new_track_id:
+                # Check if the new track_id already exists (another row).
+                conflict = await session.execute(
+                    select(TrackFeatures.id)
+                    .where(TrackFeatures.track_id == new_track_id)
+                    .where(TrackFeatures.id != tf.id)
                 )
-                continue
+                if conflict.scalar_one_or_none() is not None:
+                    # Skip the track_id rename but keep the metadata update.
+                    logger.warning("Track ID conflict for %s: server ID '%s' already exists, keeping metadata only", norm, new_track_id)
+                else:
+                    # Preserve the old GrooveIQ hash ID for reference.
+                    if not tf.external_track_id:
+                        tf.external_track_id = old_track_id
 
-            # Preserve the old GrooveIQ hash ID for reference.
-            if not tf.external_track_id:
-                tf.external_track_id = old_track_id
+                    # Cascade to related tables.
+                    await session.execute(
+                        update(ListenEvent)
+                        .where(ListenEvent.track_id == old_track_id)
+                        .values(track_id=new_track_id)
+                    )
+                    await session.execute(
+                        update(TrackInteraction)
+                        .where(TrackInteraction.track_id == old_track_id)
+                        .values(track_id=new_track_id)
+                    )
+                    # Note: ListenSession doesn't store track_id, no cascade needed.
 
-            # Cascade to related tables.
-            await session.execute(
-                update(ListenEvent)
-                .where(ListenEvent.track_id == old_track_id)
-                .values(track_id=new_track_id)
-            )
-            await session.execute(
-                update(TrackInteraction)
-                .where(TrackInteraction.track_id == old_track_id)
-                .values(track_id=new_track_id)
-            )
-            # Note: ListenSession doesn't store track_id, no cascade needed.
+                    tf.track_id = new_track_id
+                    result.tracks_updated += 1
 
-            tf.track_id = new_track_id
-            result.tracks_updated += 1
+            # Flush after each row so conflicts don't poison the whole batch.
+            await session.flush()
+
+        except Exception as exc:
+            await session.rollback()
+            result.errors.append(f"{norm}: {str(exc)[:120]}")
+            logger.warning("Sync error for %s: %s", norm, exc)
 
     await session.commit()
     result.elapsed_s = round(time.time() - t0, 2)
