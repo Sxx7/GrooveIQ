@@ -8,7 +8,6 @@ GET  /v1/discovery/stats — summary stats for the dashboard
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import time
 
@@ -88,15 +87,9 @@ async def trigger_discovery(
             "message": "Discovery not configured. Set LASTFM_API_KEY, LIDARR_URL, and LIDARR_API_KEY.",
         }
 
-    async def _run():
-        try:
-            from app.workers.scheduler import run_discovery_now
-            await run_discovery_now()
-        except Exception as exc:
-            logger.error("Manual discovery run failed: %s", exc, exc_info=True)
-
-    asyncio.create_task(_run())
-    return {"status": "running", "message": "Discovery pipeline started."}
+    from app.services.discovery import run_discovery_pipeline
+    result = await run_discovery_pipeline()
+    return {"status": "completed", "result": result}
 
 
 @router.get(
