@@ -339,7 +339,7 @@ function startScanPolling(scanId) {
   scanLogLastId = 0;
   scanPollTimer = setInterval(function() {
     if (currentView !== 'dashboard') return;
-    // Poll stats for progress bar update
+    // Poll stats only for progress bar update (single request)
     api('/v1/stats').then(function(stats) {
       var panel = document.getElementById('scan-panel');
       if (panel) panel.innerHTML = renderScanPanel(stats.latest_scan);
@@ -369,7 +369,7 @@ function startScanPolling(scanId) {
       }
       el.scrollTop = el.scrollHeight;
     });
-  }, 2000);
+  }, 3000);
 }
 
 function stopScanPolling() {

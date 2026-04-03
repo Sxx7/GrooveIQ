@@ -53,8 +53,8 @@ class Settings(BaseSettings):
     API_KEYS: str = ""
 
     # Rate limiting (requests per minute per API key)
-    RATE_LIMIT_EVENTS: int = 120   # event ingestion endpoint
-    RATE_LIMIT_DEFAULT: int = 60   # all other endpoints
+    RATE_LIMIT_EVENTS: int = 300   # event ingestion endpoint (high for batch clients)
+    RATE_LIMIT_DEFAULT: int = 200  # all other endpoints (dashboard polls every 2s during scans)
 
     # Hosts allowed to reach this service (guards against Host header attacks)
     # Example: "grooveiq.yourdomain.com,localhost"
