@@ -22,8 +22,9 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import threading
 import time
-from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures import BrokenProcessPool, ProcessPoolExecutor
 from pathlib import Path
 from typing import Optional
 
@@ -39,25 +40,32 @@ logger = logging.getLogger(__name__)
 
 # Shared executor for CPU-bound Essentia work
 _executor: Optional[ProcessPoolExecutor] = None
+_executor_lock = threading.Lock()
 _running_scan_id: Optional[int] = None
 
 
 def get_executor() -> ProcessPoolExecutor:
     global _executor
-    if _executor is None:
-        _executor = ProcessPoolExecutor(
-            max_workers=settings.ANALYSIS_WORKERS,
-            max_tasks_per_child=4,  # recycle workers to avoid file handle / memory leaks
-        )
-    return _executor
+    with _executor_lock:
+        if _executor is None:
+            _executor = ProcessPoolExecutor(
+                max_workers=settings.ANALYSIS_WORKERS,
+                max_tasks_per_child=4,  # recycle workers to avoid file handle / memory leaks
+            )
+        return _executor
 
 
 def _reset_executor() -> None:
-    """Kill and recreate the process pool after a timeout, so hung workers don't block future files."""
+    """Kill and recreate the process pool so crashed/hung workers don't block future files."""
     global _executor
-    if _executor is not None:
-        _executor.shutdown(wait=False, cancel_futures=True)
-        _executor = None
+    with _executor_lock:
+        if _executor is not None:
+            try:
+                _executor.shutdown(wait=False, cancel_futures=True)
+            except Exception:
+                pass
+            _executor = None
+    logger.warning("Process pool reset — new workers will be created for the next file")
 
 
 # ---------------------------------------------------------------------------
@@ -293,7 +301,9 @@ async def _process_file(file_path: str, scan_id: int, counters: dict, scan_start
         )
     except asyncio.TimeoutError:
         result = Exception(f"Analysis timed out after {settings.ANALYSIS_TIMEOUT}s (file may be corrupted or unsupported)")
-        # Kill the hung worker by recreating the executor
+        _reset_executor()
+    except BrokenProcessPool:
+        result = Exception("Worker process crashed (likely OOM or segfault), recycling pool")
         _reset_executor()
     except Exception as exc:
         result = exc
