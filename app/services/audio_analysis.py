@@ -53,7 +53,8 @@ except ImportError:
 # Feature extraction
 # ---------------------------------------------------------------------------
 
-ANALYSIS_VERSION = "1.5"  # perf: 22kHz load, 15s TF sample, worker thread limits
+ANALYSIS_VERSION = "1.5"      # full analysis (DSP + TF models)
+ANALYSIS_VERSION_DSP = "1.5d"  # DSP-only pass (no TF) — tracks needing TF enrichment have this version
 
 # 64-dim vector composition (must match FAISS index dimension)
 # [bpm_norm, energy, danceability, valence, acousticness,
@@ -182,9 +183,14 @@ def generate_track_id(file_path: str) -> str:
     return hashlib.sha256(rel.encode("utf-8")).hexdigest()[:16]
 
 
-def analyze_track(file_path: str) -> dict:
+def analyze_track(file_path: str, skip_tf: bool = False) -> dict:
     """
-    Run the full Essentia analysis pipeline on a single audio file.
+    Run the Essentia analysis pipeline on a single audio file.
+
+    When *skip_tf* is True, only fast DSP features are extracted (BPM, key,
+    loudness, energy via RMS).  TF-based features (danceability, mood, etc.)
+    are skipped.  This allows a two-pass scan: fast pass first, TF enrichment
+    later.
 
     Returns a dict with keys matching TrackFeatures columns.
     On failure, returns {'analysis_error': str, 'file_path': str}.
@@ -200,8 +206,9 @@ def analyze_track(file_path: str) -> dict:
     result: dict = {
         "file_path": file_path,
         "analyzed_at": int(time.time()),
-        "analysis_version": ANALYSIS_VERSION,
+        "analysis_version": ANALYSIS_VERSION_DSP if skip_tf else ANALYSIS_VERSION,
     }
+    timings: dict[str, float] = {}
 
     try:
         result["file_hash"] = compute_file_hash(file_path)
@@ -212,10 +219,12 @@ def analyze_track(file_path: str) -> dict:
         # decode time and memory vs 44.1 kHz with no quality loss for our
         # feature set.
         # ------------------------------------------------------------------
+        t0 = time.monotonic()
         sr = 22050
         loader = es.MonoLoader(filename=file_path, sampleRate=sr)
         audio = loader()
         result["duration"] = len(audio) / float(sr)
+        timings["load"] = time.monotonic() - t0
 
         if result["duration"] < 10.0:
             result["analysis_error"] = "Track too short (<10 s), skipping"
@@ -224,6 +233,7 @@ def analyze_track(file_path: str) -> dict:
         # ------------------------------------------------------------------
         # Rhythm (60s sample — BPM is stable across a track)
         # ------------------------------------------------------------------
+        t0 = time.monotonic()
         rhythm_dur = min(len(audio), sr * 60)
         rhythm_start = max(0, (len(audio) - rhythm_dur) // 2)
         rhythm_sample = audio[rhythm_start:rhythm_start + rhythm_dur]
@@ -232,12 +242,14 @@ def analyze_track(file_path: str) -> dict:
         bpm, beats, bpm_confidence, _, _ = rhythm_extractor(rhythm_sample)
         result["bpm"] = float(round(bpm, 2))
         result["bpm_confidence"] = float(round(bpm_confidence, 3))
+        timings["rhythm"] = time.monotonic() - t0
 
         # ------------------------------------------------------------------
         # Tonal (use middle 60s sample — key is stable across a track)
         # ------------------------------------------------------------------
         import numpy as np
 
+        t0 = time.monotonic()
         tonal_dur = min(len(audio), sr * 60)
         tonal_start = max(0, (len(audio) - tonal_dur) // 2)
         tonal_sample = audio[tonal_start:tonal_start + tonal_dur]
@@ -262,10 +274,12 @@ def analyze_track(file_path: str) -> dict:
             result["key"]            = key
             result["mode"]           = scale
             result["key_confidence"] = float(round(key_strength, 3))
+        timings["tonal"] = time.monotonic() - t0
 
         # ------------------------------------------------------------------
         # Loudness & dynamics (60s sample — representative and fast)
         # ------------------------------------------------------------------
+        t0 = time.monotonic()
         loudness_algo = es.Loudness()
         loud_dur = min(len(audio), sr * 60)
         loud_start = max(0, (len(audio) - loud_dur) // 2)
@@ -285,25 +299,48 @@ def analyze_track(file_path: str) -> dict:
             result["dynamic_range"] = float(round(p95 - p10, 2))
         else:
             result["dynamic_range"] = 0.0
+        timings["loudness"] = time.monotonic() - t0
 
         # ------------------------------------------------------------------
-        # High-level descriptors via Essentia pre-trained models
-        # (requires essentia-tensorflow; falls back gracefully)
+        # RMS energy (no TF needed, always computed)
         # ------------------------------------------------------------------
-        try:
-            _extract_highlevel(audio, result)
-        except Exception as e:
-            logger.warning(f"High-level extraction failed: {e}")
-            # Loudness-based energy fallback (no TF needed)
-            loudness = result.get("loudness", -23)
-            result["energy"] = float(round(max(0.0, min(1.0, (loudness + 30) / 30)), 3))
+        t0 = time.monotonic()
+        rms_values = []
+        rms_algo = es.RMS()
+        rms_dur = min(len(audio), sr * 15)
+        rms_start = max(0, (len(audio) - rms_dur) // 2)
+        rms_sample = audio[rms_start:rms_start + rms_dur]
+        for frame in es.FrameGenerator(rms_sample, frameSize=2048, hopSize=2048):
+            rms_values.append(float(rms_algo(frame)))
+        if rms_values:
+            rms_p75 = float(np.percentile(rms_values, 75))
+            energy = max(0.0, min(1.0, (rms_p75 - 0.01) / 0.29))
+            result["energy"] = float(round(energy, 3))
+        timings["rms"] = time.monotonic() - t0
+
+        # ------------------------------------------------------------------
+        # High-level descriptors via Essentia pre-trained TF models
+        # ------------------------------------------------------------------
+        if not skip_tf:
+            t0 = time.monotonic()
+            try:
+                _extract_highlevel_tf(audio, sr, result)
+            except Exception as e:
+                logger.warning(f"High-level TF extraction failed: {e}")
+            timings["tf"] = time.monotonic() - t0
 
         # ------------------------------------------------------------------
         # Build embedding vector
         # ------------------------------------------------------------------
         result["embedding"] = _build_embedding(result, hpcp_frames)
 
-        logger.info(f"Analyzed: {Path(file_path).name} | {result.get('bpm')} BPM | key={result.get('key')}{result.get('mode', '')}")
+        total = sum(timings.values())
+        timing_str = " | ".join(f"{k}={v:.1f}s" for k, v in timings.items())
+        logger.info(
+            f"Analyzed: {Path(file_path).name} | {result.get('bpm')} BPM | "
+            f"key={result.get('key')}{result.get('mode', '')} | "
+            f"total={total:.1f}s ({timing_str})"
+        )
 
     except Exception as e:
         result["analysis_error"] = str(e)
@@ -312,43 +349,15 @@ def analyze_track(file_path: str) -> dict:
     return result
 
 
-def _extract_highlevel(audio, result: dict) -> None:
+def _extract_highlevel_tf(audio, sr: int, result: dict) -> None:
     """
-    Extract energy, danceability, valence, mood using Essentia's
-    pre-trained TensorFlow models (MTG-Jamendo, Discogs-EffNet).
+    Extract danceability, valence, mood, instrumentalness using Essentia's
+    pre-trained TensorFlow models (Discogs-EffNet + classification heads).
 
     Models are auto-downloaded on first run to ESSENTIA_MODELS_PATH.
     """
-    import essentia.standard as es
     import numpy as np
 
-    # ------------------------------------------------------------------
-    # Energy from RMS (spectral, no TF needed)
-    # Use 15s from the middle — representative and fast.
-    # ------------------------------------------------------------------
-    sr = 22050
-    sample_dur = min(len(audio), sr * 15)
-    sample_start = max(0, (len(audio) - sample_dur) // 2)
-    sample = audio[sample_start:sample_start + sample_dur]
-
-    rms_values = []
-    rms_algo = es.RMS()
-    for frame in es.FrameGenerator(sample, frameSize=2048, hopSize=2048):
-        rms_values.append(float(rms_algo(frame)))
-
-    if rms_values:
-        rms_p75 = float(np.percentile(rms_values, 75))
-        # Map RMS to 0–1 range.  Typical music RMS values:
-        #   quiet classical/ambient: 0.01–0.05
-        #   moderate pop/indie:      0.05–0.15
-        #   loud rock/hip-hop:       0.15–0.30
-        #   heavily compressed:      0.30+
-        energy = max(0.0, min(1.0, (rms_p75 - 0.01) / 0.29))
-        result["energy"] = float(round(energy, 3))
-
-    # ------------------------------------------------------------------
-    # TF models (danceability, mood, instrumentalness, valence proxy)
-    # ------------------------------------------------------------------
     models_dir = _get_models_dir()
     if not ensure_models():
         logger.warning("Some Essentia TF models unavailable — skipping TF-based features")
@@ -360,9 +369,10 @@ def _extract_highlevel(audio, result: dict) -> None:
         effnet_path = os.path.join(models_dir, "discogs-effnet-bs64-1.pb")
 
         # Discogs-EffNet embeddings (shared input for all downstream classifiers).
-        # 15s sample → ~5 embedding frames, enough for stable averaging.
-        # Shorter sample cuts EffNet CPU inference roughly in half.
-        tf_dur = min(len(audio), sr * 15)
+        # 3s sample → 1 embedding frame.  EffNet processes in ~3s windows so
+        # this is the minimum for a single forward pass — massive speedup vs
+        # the previous 15-30s with negligible quality loss for classification.
+        tf_dur = min(len(audio), sr * 3)
         tf_start = max(0, (len(audio) - tf_dur) // 2)
         tf_sample = audio[tf_start:tf_start + tf_dur]
 
@@ -419,19 +429,12 @@ def _extract_highlevel(audio, result: dict) -> None:
         if conf is not None:
             mood_tags.append({"label": label, "confidence": conf})
     if mood_tags:
-        # Sort by confidence descending
         mood_tags.sort(key=lambda m: m["confidence"], reverse=True)
         result["mood_tags"] = mood_tags
 
     # Speechiness proxy: 1 - instrumental confidence
     if result.get("instrumentalness") is not None:
         result["speechiness"] = float(round(1.0 - result["instrumentalness"], 3))
-
-    logger.debug(
-        f"TF features: dance={result.get('danceability')} "
-        f"valence={result.get('valence')} "
-        f"moods={[m['label'] for m in (result.get('mood_tags') or []) if m['confidence'] > 0.5]}"
-    )
 
 
 def _build_embedding(result: dict, hpcp_frames: list) -> Optional[str]:

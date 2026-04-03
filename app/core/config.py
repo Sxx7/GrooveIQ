@@ -73,6 +73,7 @@ class Settings(BaseSettings):
     ANALYSIS_BATCH_SIZE: int = 50      # tracks per job batch
     ANALYSIS_TIMEOUT: int = 300        # seconds before a single file analysis is killed
     RESCAN_INTERVAL_HOURS: int = 6     # how often to check for new files
+    ANALYSIS_TWO_PASS: bool = True     # fast DSP pass first, then TF enrichment pass
 
     # Supported audio extensions (comma-separated)
     AUDIO_EXTENSIONS: str = ".mp3,.flac,.ogg,.m4a,.wav,.aac,.opus,.wv"

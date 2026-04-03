@@ -36,7 +36,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import settings
 from app.db.session import AsyncSessionLocal
 from app.models.db import LibraryScanState, ScanLog, TrackFeatures
-from app.services.audio_analysis import analyze_track, compute_file_hash, generate_track_id, ANALYSIS_VERSION
+from app.services.audio_analysis import analyze_track, compute_file_hash, generate_track_id, ANALYSIS_VERSION, ANALYSIS_VERSION_DSP
 
 logger = logging.getLogger(__name__)
 
@@ -223,12 +223,46 @@ async def _run_scan(scan_id: int) -> None:
                 hash_cache[row[0]] = (row[1], row[2])
         logger.info(f"[Scan {scan_id}] Pre-loaded {len(hash_cache)} file hashes for skip detection")
 
-        # Process in batches for memory efficiency, but per-file progress
+        two_pass = settings.ANALYSIS_TWO_PASS
+
+        # --- Pass 1: DSP-only (fast) when two-pass is enabled ---
+        if two_pass:
+            logger.info(f"[Scan {scan_id}] Pass 1/2: fast DSP analysis (no TF models)")
+
         batch_size = settings.ANALYSIS_BATCH_SIZE
         for i in range(0, len(audio_files), batch_size):
             batch = audio_files[i:i + batch_size]
-            await _process_batch(batch, scan_id, counters, scan_start, hash_cache)
+            await _process_batch(batch, scan_id, counters, scan_start, hash_cache, skip_tf=two_pass)
             _log_progress(scan_id, counters["found"], counters["ok"], counters["skipped"], counters["failed"], scan_start)
+
+        # --- Pass 2: TF enrichment for tracks that only have DSP features ---
+        if two_pass:
+            dsp_elapsed = round(time.time() - scan_start, 1)
+            logger.info(
+                f"[Scan {scan_id}] Pass 1 done in {dsp_elapsed}s: "
+                f"{counters['ok']} analyzed. Starting TF enrichment pass..."
+            )
+            # Find tracks that have DSP-only version and need TF enrichment
+            tf_files: list[str] = []
+            async with AsyncSessionLocal() as session:
+                rows = (await session.execute(
+                    select(TrackFeatures.file_path)
+                    .where(TrackFeatures.analysis_version == ANALYSIS_VERSION_DSP)
+                )).scalars().all()
+                tf_files = list(rows)
+
+            if tf_files:
+                logger.info(f"[Scan {scan_id}] Pass 2/2: TF enrichment for {len(tf_files)} tracks")
+                tf_counters = {"found": len(tf_files), "ok": 0, "skipped": 0, "failed": 0}
+                tf_start = time.time()
+                # Build hash cache that forces re-analysis (no skipping)
+                tf_hash_cache: dict[str, tuple[str, str]] = {}
+                for i in range(0, len(tf_files), batch_size):
+                    batch = tf_files[i:i + batch_size]
+                    await _process_batch(batch, scan_id, tf_counters, tf_start, tf_hash_cache, skip_tf=False)
+                    _log_progress(scan_id, tf_counters["found"], tf_counters["ok"], tf_counters["skipped"], tf_counters["failed"], tf_start)
+                counters["ok"] += tf_counters["ok"]
+                counters["failed"] += tf_counters["failed"]
 
         # Prune old log entries (keep latest 500)
         async with AsyncSessionLocal() as session:
@@ -316,7 +350,7 @@ def _log_progress(scan_id: int, found: int, analyzed: int, skipped: int, failed:
     )
 
 
-async def _process_file(file_path: str, scan_id: int, counters: dict, scan_start: float, hash_cache: dict) -> None:
+async def _process_file(file_path: str, scan_id: int, counters: dict, scan_start: float, hash_cache: dict, skip_tf: bool = False) -> None:
     """Analyze a single file: run in executor, persist result, update progress."""
     loop = asyncio.get_running_loop()
     executor = get_executor()
@@ -327,7 +361,7 @@ async def _process_file(file_path: str, scan_id: int, counters: dict, scan_start
 
     try:
         result = await asyncio.wait_for(
-            loop.run_in_executor(executor, _analyze_if_needed_sync, file_path, cached),
+            loop.run_in_executor(executor, _analyze_if_needed_sync, file_path, cached, skip_tf),
             timeout=settings.ANALYSIS_TIMEOUT,
         )
     except asyncio.TimeoutError:
@@ -379,19 +413,19 @@ async def _process_file(file_path: str, scan_id: int, counters: dict, scan_start
         )
 
 
-async def _process_batch(file_paths: list[str], scan_id: int, counters: dict, scan_start: float, hash_cache: dict) -> None:
+async def _process_batch(file_paths: list[str], scan_id: int, counters: dict, scan_start: float, hash_cache: dict, skip_tf: bool = False) -> None:
     """Analyze a batch of files concurrently, with per-file progress updates."""
     # Run up to ANALYSIS_WORKERS files concurrently using a semaphore
     sem = asyncio.Semaphore(settings.ANALYSIS_WORKERS)
 
     async def _guarded(fp):
         async with sem:
-            await _process_file(fp, scan_id, counters, scan_start, hash_cache)
+            await _process_file(fp, scan_id, counters, scan_start, hash_cache, skip_tf=skip_tf)
 
     await asyncio.gather(*[_guarded(fp) for fp in file_paths])
 
 
-def _analyze_if_needed_sync(file_path: str, cached: Optional[tuple] = None) -> Optional[dict]:
+def _analyze_if_needed_sync(file_path: str, cached: Optional[tuple] = None, skip_tf: bool = False) -> Optional[dict]:
     """
     Sync function run in process pool.
     Returns None if the file is unchanged and already analyzed.
@@ -400,12 +434,14 @@ def _analyze_if_needed_sync(file_path: str, cached: Optional[tuple] = None) -> O
     ``cached`` is a (file_hash, analysis_version) tuple from the pre-loaded
     hash cache, or None if this file hasn't been analyzed before.
     """
-    from app.services.audio_analysis import analyze_track, compute_file_hash, ANALYSIS_VERSION
+    from app.services.audio_analysis import analyze_track, compute_file_hash, ANALYSIS_VERSION, ANALYSIS_VERSION_DSP
 
     # Quick skip: compare file hash from cache (no DB connection needed)
     if cached is not None:
         stored_hash, stored_version = cached
-        if stored_version == ANALYSIS_VERSION:
+        # Skip if already at target version (full or DSP-only depending on mode)
+        target_version = ANALYSIS_VERSION_DSP if skip_tf else ANALYSIS_VERSION
+        if stored_version == target_version or stored_version == ANALYSIS_VERSION:
             try:
                 current_hash = compute_file_hash(file_path)
                 if stored_hash == current_hash:
@@ -413,7 +449,7 @@ def _analyze_if_needed_sync(file_path: str, cached: Optional[tuple] = None) -> O
             except Exception:
                 pass  # file may have been deleted, proceed with analysis
 
-    return analyze_track(file_path)
+    return analyze_track(file_path, skip_tf=skip_tf)
 
 
 async def _upsert_track_features(session: AsyncSession, data: dict) -> None:
