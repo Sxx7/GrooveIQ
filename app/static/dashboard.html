@@ -957,7 +957,7 @@ function renderTracks(data) {
     var energyBar = t.energy != null ? '<div style="display:inline-block;width:50px;height:8px;background:var(--bg);border-radius:4px;vertical-align:middle;margin-left:4px"><div style="width:' + (t.energy*100) + '%;height:100%;background:var(--green);border-radius:4px"></div></div>' : '';
     h += '<tr>'
       + '<td>' + (t.bpm ? t.bpm.toFixed(1) : '\u2014') + '</td>'
-      + '<td style="max-width:250px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + trackTooltip(t) + '">' + esc(t.title || '') || basename(t.file_path) + '</td>'
+      + '<td style="max-width:250px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + trackTooltip(t) + '">' + (esc(t.title || '') || basename(t.file_path)) + '</td>'
       + '<td style="max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(t.artist || '\u2014') + '</td>'
       + '<td>' + esc(t.key || '\u2014') + ' ' + (t.mode ? t.mode.charAt(0) : '') + '</td>'
       + '<td>' + (t.energy != null ? t.energy.toFixed(2) : '\u2014') + energyBar + '</td>'
