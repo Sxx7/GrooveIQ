@@ -295,10 +295,8 @@ async def run_discovery_pipeline() -> Dict[str, Any]:
                     already_requested.add(mbid)
                 already_requested_names.add(_normalize_artist(name))
 
-            # Process each user with a taste profile.
-            users = (await session.execute(
-                select(User).where(User.taste_profile.isnot(None))
-            )).scalars().all()
+            # Process each user.
+            users = (await session.execute(select(User))).scalars().all()
 
             for user in users:
                 if remaining_budget <= 0:
@@ -306,16 +304,49 @@ async def run_discovery_pipeline() -> Dict[str, Any]:
 
                 try:
                     profile = user.taste_profile
-                    if not profile:
+                    seed_artists: List[str] = []
+                    seed_genres: List[str] = []
+
+                    if profile and profile.get("top_tracks"):
+                        # User has a taste profile — extract seeds from it.
+                        seed_artists = _extract_seed_artists(profile)
+                        track_genres = await _get_user_track_genres(user.user_id, session)
+                        seed_genres = _extract_seed_genres(profile, track_genres)
+
+                    if not seed_artists and not seed_genres:
+                        # Fallback: seed from the library's existing artists + genres.
+                        lib_artists = (await session.execute(
+                            select(TrackFeatures.artist)
+                            .where(TrackFeatures.artist.isnot(None))
+                            .group_by(TrackFeatures.artist)
+                            .order_by(func.count().desc())
+                            .limit(10)
+                        )).all()
+                        seed_artists = [r[0] for r in lib_artists]
+
+                        lib_genres = (await session.execute(
+                            select(TrackFeatures.genre)
+                            .where(TrackFeatures.genre.isnot(None))
+                            .group_by(TrackFeatures.genre)
+                            .order_by(func.count().desc())
+                            .limit(20)
+                        )).all()
+                        all_genres: List[str] = []
+                        for r in lib_genres:
+                            for g in r[0].split(","):
+                                g = g.strip().lower()
+                                if g and g not in all_genres:
+                                    all_genres.append(g)
+                        seed_genres = all_genres[:5]
+
+                    if not seed_artists and not seed_genres:
+                        logger.info("Discovery for user %s: no seeds found (empty library?), skipping", user.user_id)
                         continue
 
-                    seed_artists = _extract_seed_artists(profile)
-                    track_genres = await _get_user_track_genres(user.user_id, session)
-                    seed_genres = _extract_seed_genres(profile, track_genres)
-
                     logger.info(
-                        "Discovery for user %s: %d seed artists, %d seed genres",
-                        user.user_id, len(seed_artists), len(seed_genres),
+                        "Discovery for user %s: %d seed artists %r, %d seed genres %r",
+                        user.user_id, len(seed_artists), seed_artists[:3],
+                        len(seed_genres), seed_genres[:3],
                     )
 
                     # Collect candidates from Last.fm.
