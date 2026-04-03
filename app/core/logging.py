@@ -12,8 +12,11 @@ def setup_logging():
                 logger_factory=structlog.PrintLoggerFactory(sys.stdout),
             )
         except ImportError:
-            logging.basicConfig(level=level, stream=sys.stdout,
-                format='{"time":"%(asctime)s","level":"%(levelname)s","msg":"%(message)s"}')
+            pass
+        # Always configure the stdlib root logger so that modules using
+        # logging.getLogger(__name__) actually produce output.
+        logging.basicConfig(level=level, stream=sys.stdout,
+            format='{"time":"%(asctime)s","level":"%(levelname)s","logger":"%(name)s","msg":"%(message)s"}')
     else:
         logging.basicConfig(level=level, stream=sys.stdout,
             format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
