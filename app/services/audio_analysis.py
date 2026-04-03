@@ -53,7 +53,7 @@ except ImportError:
 # Feature extraction
 # ---------------------------------------------------------------------------
 
-ANALYSIS_VERSION = "1.4"  # perf: sample audio for HPCP/TF, fix LRA alloc, wider energy range
+ANALYSIS_VERSION = "1.5"  # perf: 22kHz load, 15s TF sample, worker thread limits
 
 # 64-dim vector composition (must match FAISS index dimension)
 # [bpm_norm, energy, danceability, valence, acousticness,
@@ -207,11 +207,15 @@ def analyze_track(file_path: str) -> dict:
         result["file_hash"] = compute_file_hash(file_path)
 
         # ------------------------------------------------------------------
-        # Load audio
+        # Load audio at 22050 Hz — sufficient for rhythm, key, loudness,
+        # and TF models (EffNet resamples to 16 kHz internally).  Halves
+        # decode time and memory vs 44.1 kHz with no quality loss for our
+        # feature set.
         # ------------------------------------------------------------------
-        loader = es.MonoLoader(filename=file_path, sampleRate=44100)
+        sr = 22050
+        loader = es.MonoLoader(filename=file_path, sampleRate=sr)
         audio = loader()
-        result["duration"] = len(audio) / 44100.0
+        result["duration"] = len(audio) / float(sr)
 
         if result["duration"] < 10.0:
             result["analysis_error"] = "Track too short (<10 s), skipping"
@@ -220,7 +224,6 @@ def analyze_track(file_path: str) -> dict:
         # ------------------------------------------------------------------
         # Rhythm (60s sample — BPM is stable across a track)
         # ------------------------------------------------------------------
-        sr = 44100
         rhythm_dur = min(len(audio), sr * 60)
         rhythm_start = max(0, (len(audio) - rhythm_dur) // 2)
         rhythm_sample = audio[rhythm_start:rhythm_start + rhythm_dur]
@@ -321,10 +324,10 @@ def _extract_highlevel(audio, result: dict) -> None:
 
     # ------------------------------------------------------------------
     # Energy from RMS (spectral, no TF needed)
-    # Use 30s from the middle — representative and fast.
+    # Use 15s from the middle — representative and fast.
     # ------------------------------------------------------------------
-    sr = 44100
-    sample_dur = min(len(audio), sr * 30)
+    sr = 22050
+    sample_dur = min(len(audio), sr * 15)
     sample_start = max(0, (len(audio) - sample_dur) // 2)
     sample = audio[sample_start:sample_start + sample_dur]
 
@@ -357,9 +360,9 @@ def _extract_highlevel(audio, result: dict) -> None:
         effnet_path = os.path.join(models_dir, "discogs-effnet-bs64-1.pb")
 
         # Discogs-EffNet embeddings (shared input for all downstream classifiers).
-        # Use 30s sample from the middle — EffNet processes in ~3s chunks anyway,
-        # and 30s gives ~10 embedding frames which is plenty for averaging.
-        tf_dur = min(len(audio), sr * 30)
+        # 15s sample → ~5 embedding frames, enough for stable averaging.
+        # Shorter sample cuts EffNet CPU inference roughly in half.
+        tf_dur = min(len(audio), sr * 15)
         tf_start = max(0, (len(audio) - tf_dur) // 2)
         tf_sample = audio[tf_start:tf_start + tf_dur]
 

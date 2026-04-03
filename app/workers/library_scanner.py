@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import multiprocessing as mp
 import os
 import threading
 import time
@@ -45,6 +46,22 @@ _executor_lock = threading.Lock()
 _running_scan_id: Optional[int] = None
 
 
+def _worker_init():
+    """Configure worker process for optimal TF/BLAS parallelism.
+
+    Each worker gets a single compute thread so that N workers map 1:1 to
+    N CPU cores instead of N×cores threads fighting for the same resources.
+    Must run before TensorFlow is imported (spawn context guarantees this).
+    """
+    os.environ["OMP_NUM_THREADS"] = "1"
+    os.environ["OPENBLAS_NUM_THREADS"] = "1"
+    os.environ["MKL_NUM_THREADS"] = "1"
+    os.environ["TF_NUM_INTRAOP_PARALLELISM_THREADS"] = "2"
+    os.environ["TF_NUM_INTEROP_PARALLELISM_THREADS"] = "1"
+    # Suppress TF warnings/logs in workers
+    os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
+
+
 def get_executor() -> ProcessPoolExecutor:
     global _executor
     with _executor_lock:
@@ -52,6 +69,8 @@ def get_executor() -> ProcessPoolExecutor:
             _executor = ProcessPoolExecutor(
                 max_workers=settings.ANALYSIS_WORKERS,
                 max_tasks_per_child=500,  # recycle less often to avoid expensive TF model reloads
+                initializer=_worker_init,
+                mp_context=mp.get_context("spawn"),
             )
         return _executor
 
@@ -298,13 +317,10 @@ def _log_progress(scan_id: int, found: int, analyzed: int, skipped: int, failed:
 
 
 async def _process_file(file_path: str, scan_id: int, counters: dict, scan_start: float, hash_cache: dict) -> None:
-    """Analyze a single file: run in executor, persist result, update progress live."""
+    """Analyze a single file: run in executor, persist result, update progress."""
     loop = asyncio.get_running_loop()
     executor = get_executor()
     fname = Path(file_path).name
-
-    # Show current file in scan status
-    await _update_scan(scan_id, current_file=fname)
 
     # Check hash from pre-loaded cache (no DB call needed in subprocess)
     cached = hash_cache.get(file_path)
@@ -350,14 +366,17 @@ async def _process_file(file_path: str, scan_id: int, counters: dict, scan_start
             await _upsert_track_features(session, result)
         await session.commit()
 
-    # Update scan progress in DB after every file
-    await _update_scan(
-        scan_id,
-        files_found=counters["found"],
-        files_analyzed=counters["ok"],
-        files_skipped=counters["skipped"],
-        files_failed=counters["failed"],
-    )
+    # Update scan progress in DB every 10 files (reduces SQLite write contention)
+    processed = counters["ok"] + counters["skipped"] + counters["failed"]
+    if processed % 10 == 0 or processed == counters["found"]:
+        await _update_scan(
+            scan_id,
+            current_file=fname,
+            files_found=counters["found"],
+            files_analyzed=counters["ok"],
+            files_skipped=counters["skipped"],
+            files_failed=counters["failed"],
+        )
 
 
 async def _process_batch(file_paths: list[str], scan_id: int, counters: dict, scan_start: float, hash_cache: dict) -> None:
