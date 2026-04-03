@@ -24,7 +24,8 @@ import logging
 import os
 import threading
 import time
-from concurrent.futures import BrokenProcessPool, ProcessPoolExecutor
+from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures.process import BrokenProcessPool
 from pathlib import Path
 from typing import Optional
 
