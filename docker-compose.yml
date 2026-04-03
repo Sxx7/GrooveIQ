@@ -42,7 +42,7 @@ services:
 
       # Audio analysis
       MUSIC_LIBRARY_PATH:   /music
-      ANALYSIS_WORKERS:     ${ANALYSIS_WORKERS:-2}
+      ANALYSIS_WORKERS:     ${ANALYSIS_WORKERS:-}
       RESCAN_INTERVAL_HOURS: ${RESCAN_INTERVAL_HOURS:-6}
 
       # Events
