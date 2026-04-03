@@ -64,6 +64,21 @@ EMBEDDING_DIM = 64
 
 
 # ---------------------------------------------------------------------------
+# TF model cache (persists across files within the same worker process)
+# ---------------------------------------------------------------------------
+
+_tf_model_cache: dict = {}  # model_file → loaded model instance
+
+
+def _get_cached_model(model_class, model_path: str, **kwargs):
+    """Load a TF model once, reuse across files in the same worker."""
+    key = (model_path, model_class.__name__, tuple(sorted(kwargs.items())))
+    if key not in _tf_model_cache:
+        _tf_model_cache[key] = model_class(graphFilename=model_path, **kwargs)
+    return _tf_model_cache[key]
+
+
+# ---------------------------------------------------------------------------
 # Model management
 # ---------------------------------------------------------------------------
 
@@ -336,8 +351,8 @@ def _extract_highlevel(audio, result: dict) -> None:
         tf_start = max(0, (len(audio) - tf_dur) // 2)
         tf_sample = audio[tf_start:tf_start + tf_dur]
 
-        embed_model = TensorflowPredictEffnetDiscogs(
-            graphFilename=effnet_path,
+        embed_model = _get_cached_model(
+            TensorflowPredictEffnetDiscogs, effnet_path,
             output="PartitionedCall:1",
         )
         embeddings = embed_model(tf_sample)
@@ -347,14 +362,13 @@ def _extract_highlevel(audio, result: dict) -> None:
         return
 
     # Helper: run a classifier head and return mean prediction.
-    # Each call is wrapped in its own try/except so one bad model
-    # doesn't prevent the others from running.
+    # Models are cached across files within the same worker process.
     def _predict(model_file, output="model/Softmax", col=0):
         try:
             path = os.path.join(models_dir, model_file)
             if not os.path.exists(path):
                 return None
-            model = TensorflowPredict2D(graphFilename=path, output=output)
+            model = _get_cached_model(TensorflowPredict2D, path, output=output)
             preds = model(embeddings)
             return float(round(float(np.mean(preds[:, col])), 3))
         except Exception as e:
