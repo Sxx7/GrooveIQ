@@ -95,3 +95,17 @@ async def get_stats(
         "top_tracks_24h": top_tracks,
         "latest_scan": latest_scan,
     }
+
+
+@router.post(
+    "/pipeline/run",
+    summary="Trigger the recommendation pipeline manually",
+    description="Runs sessionizer → track scoring → taste profiles → CF rebuild immediately.",
+)
+async def trigger_pipeline(
+    _key: str = Depends(require_api_key),
+):
+    import asyncio
+    from app.workers.scheduler import run_recommendation_pipeline_now
+    asyncio.create_task(run_recommendation_pipeline_now())
+    return {"message": "Pipeline started", "status": "running"}

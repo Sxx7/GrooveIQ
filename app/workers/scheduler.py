@@ -57,9 +57,21 @@ async def start_scheduler() -> None:
     import asyncio
     asyncio.create_task(_startup_scan())
 
+    # Run recommendation pipeline once on startup so recommendations
+    # are available immediately (don't wait for the first scheduled run).
+    asyncio.create_task(_delayed_startup_pipeline())
+
 
 async def stop_scheduler() -> None:
     _scheduler.shutdown(wait=False)
+
+
+async def _delayed_startup_pipeline() -> None:
+    """Run the recommendation pipeline shortly after startup."""
+    import asyncio
+    await asyncio.sleep(10)  # let DB and scan init settle
+    logger.info("Running recommendation pipeline on startup.")
+    await _periodic_recommendation_pipeline()
 
 
 async def _startup_scan() -> None:
@@ -67,6 +79,12 @@ async def _startup_scan() -> None:
     resumed = await resume_interrupted_scans()
     if resumed is None:
         await _periodic_library_scan()
+
+
+async def run_recommendation_pipeline_now() -> dict:
+    """Run the recommendation pipeline on demand. Returns summary."""
+    await _periodic_recommendation_pipeline()
+    return {"status": "completed"}
 
 
 async def _periodic_library_scan() -> None:
