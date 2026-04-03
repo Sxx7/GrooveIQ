@@ -7,6 +7,7 @@ See docs/configuration.md for full reference.
 
 from __future__ import annotations
 
+import os
 import secrets
 from typing import List, Optional
 
@@ -68,7 +69,7 @@ class Settings(BaseSettings):
     # Audio analysis (Phase 3)
     # ------------------------------------------------------------------
     MUSIC_LIBRARY_PATH: str = "/music"
-    ANALYSIS_WORKERS: int = 2          # parallel Essentia workers
+    ANALYSIS_WORKERS: int = max(1, (os.cpu_count() or 2) - 1)  # default: CPU cores - 1
     ANALYSIS_BATCH_SIZE: int = 50      # tracks per job batch
     ANALYSIS_TIMEOUT: int = 120        # seconds before a single file analysis is killed
     RESCAN_INTERVAL_HOURS: int = 6     # how often to check for new files
