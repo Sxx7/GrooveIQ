@@ -246,7 +246,7 @@ var refreshTimer = null;
 var scanPollTimer = null;
 var scanLogLastId = 0;
 var currentView = 'dashboard';
-var trackState = { offset: 0, limit: 50, sort: 'bpm', dir: 'asc', total: 0 };
+var trackState = { offset: 0, limit: 50, sort: 'bpm', dir: 'asc', total: 0, search: '' };
 var cachedUsers = [];
 
 function esc(s) {
@@ -916,7 +916,23 @@ function renderUserDetail(profile, interactions, sessions) {
 function loadTracks() {
   var s = trackState;
   var url = '/v1/tracks?limit=' + s.limit + '&offset=' + s.offset + '&sort_by=' + s.sort + '&sort_dir=' + s.dir;
+  if (s.search) url += '&search=' + encodeURIComponent(s.search);
   return api(url).then(function(data) { trackState.total = data.total; renderTracks(data); });
+}
+
+function searchTracks() {
+  var input = document.getElementById('track-search');
+  trackState.search = input ? input.value.trim() : '';
+  trackState.offset = 0;
+  loadTracks();
+}
+
+function clearTrackSearch() {
+  trackState.search = '';
+  var input = document.getElementById('track-search');
+  if (input) input.value = '';
+  trackState.offset = 0;
+  loadTracks();
 }
 
 function sortTracks(field) {
@@ -936,7 +952,17 @@ function renderTracks(data) {
   var s = trackState;
   var arrow = function(f) { return s.sort === f ? (s.dir === 'asc' ? ' \u25B2' : ' \u25BC') : ''; };
 
-  var h = '<div class="panel full-width"><div class="panel-header">Analyzed Tracks (' + s.total + ') <button onclick="showGenerateModal()">Generate Playlist</button></div>';
+  var h = '<div class="panel full-width"><div class="panel-header">'
+    + '<span>Tracks (' + s.total + ')</span>'
+    + '<div style="display:flex;gap:8px;align-items:center">'
+    + '<div style="position:relative"><input id="track-search" type="text" placeholder="Search title, artist, ID\u2026" value="' + esc(s.search) + '" '
+    + 'onkeydown="if(event.key===\'Enter\')searchTracks()" '
+    + 'style="padding:6px 10px;border-radius:6px;border:1px solid var(--border);background:var(--bg);color:var(--text);font-size:13px;width:220px">'
+    + (s.search ? '<span onclick="clearTrackSearch()" style="position:absolute;right:8px;top:50%;transform:translateY(-50%);cursor:pointer;color:var(--text-dim);font-size:16px">\u00D7</span>' : '')
+    + '</div>'
+    + '<button class="secondary" onclick="searchTracks()">Search</button>'
+    + '<button onclick="showGenerateModal()">Generate Playlist</button>'
+    + '</div></div>';
 
   h += '<div class="panel-body" style="overflow-x:auto"><table>'
     + '<tr>'

@@ -178,6 +178,7 @@ async def list_tracks(
     offset: int = Query(0, ge=0),
     sort_by: str = Query("bpm"),
     sort_dir: str = Query("asc"),
+    search: Optional[str] = Query(None, description="Search by title, artist, or track ID"),
     min_bpm: Optional[float] = Query(None),
     max_bpm: Optional[float] = Query(None),
     min_energy: Optional[float] = Query(None),
@@ -188,7 +189,20 @@ async def list_tracks(
     session: AsyncSession = Depends(get_session),
     _key: str = Depends(require_api_key),
 ):
+    from sqlalchemy import or_
+
     q = select(TrackFeatures).where(TrackFeatures.analysis_error.is_(None))
+
+    # Search
+    if search and search.strip():
+        term = f"%{search.strip()}%"
+        q = q.where(or_(
+            TrackFeatures.title.ilike(term),
+            TrackFeatures.artist.ilike(term),
+            TrackFeatures.album.ilike(term),
+            TrackFeatures.track_id.ilike(term),
+            TrackFeatures.file_path.ilike(term),
+        ))
 
     # Filters
     if min_bpm is not None:
