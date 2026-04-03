@@ -61,6 +61,17 @@ services:
       MEDIA_SERVER_LIBRARY_ID: ${MEDIA_SERVER_LIBRARY_ID:-1}
       MEDIA_SERVER_MUSIC_PATH: ${MEDIA_SERVER_MUSIC_PATH:-}
 
+      # Music discovery (Last.fm + Lidarr)
+      LASTFM_API_KEY:              ${LASTFM_API_KEY:-}
+      LIDARR_URL:                  ${LIDARR_URL:-}
+      LIDARR_API_KEY:              ${LIDARR_API_KEY:-}
+      LIDARR_QUALITY_PROFILE_ID:   ${LIDARR_QUALITY_PROFILE_ID:-1}
+      LIDARR_METADATA_PROFILE_ID:  ${LIDARR_METADATA_PROFILE_ID:-1}
+      LIDARR_ROOT_FOLDER:          ${LIDARR_ROOT_FOLDER:-/music}
+      DISCOVERY_CRON:              ${DISCOVERY_CRON:-0 3 * * *}
+      DISCOVERY_MAX_REQUESTS_PER_DAY: ${DISCOVERY_MAX_REQUESTS_PER_DAY:-500}
+      DISCOVERY_SIMILAR_LIMIT:     ${DISCOVERY_SIMILAR_LIMIT:-20}
+
     volumes:
       # Persistent database & state
       - grooveiq_data:/data
