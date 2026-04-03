@@ -53,7 +53,7 @@ except ImportError:
 # Feature extraction
 # ---------------------------------------------------------------------------
 
-ANALYSIS_VERSION = "1.1"  # bumped: energy fix + TF model download + mood classifiers
+ANALYSIS_VERSION = "1.2"  # fix TF output nodes (Softmax/Identity), re-analyze all tracks
 
 # 64-dim vector composition (must match FAISS index dimension)
 # [bpm_norm, energy, danceability, valence, acousticness,
@@ -324,11 +324,12 @@ def _extract_highlevel(audio, result: dict) -> None:
         embeddings = embed_model(audio)
 
         # Helper: run a classifier head and return mean prediction
-        def _predict(model_file, col=0):
+        # Classification heads use Softmax output, regression heads use Identity
+        def _predict(model_file, output="model/Softmax", col=0):
             path = os.path.join(models_dir, model_file)
             if not os.path.exists(path):
                 return None
-            model = TensorflowPredict2D(graphFilename=path)
+            model = TensorflowPredict2D(graphFilename=path, output=output)
             preds = model(embeddings)
             return float(round(float(np.mean(preds[:, col])), 3))
 
@@ -343,7 +344,7 @@ def _extract_highlevel(audio, result: dict) -> None:
             result["instrumentalness"] = val
 
         # Valence proxy: approachability maps well to musical positivity
-        val = _predict("approachability_regression-discogs-effnet-1.pb")
+        val = _predict("approachability_regression-discogs-effnet-1.pb", output="model/Identity")
         if val is not None:
             result["valence"] = val
 

@@ -13,7 +13,7 @@ from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import FileResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 
-from app.api.routes import events, health, playlists, stats, tracks, users
+from app.api.routes import events, health, playlists, recommend, stats, tracks, users
 from app.core.config import settings
 from app.core.logging import setup_logging
 from app.db.session import init_db
@@ -28,6 +28,15 @@ async def lifespan(app: FastAPI):
     """Startup and shutdown lifecycle."""
     logger.info("GrooveIQ starting up...")
     await init_db()
+
+    # Build FAISS index from existing embeddings (non-blocking if empty).
+    try:
+        from app.services.faiss_index import build_index
+        indexed = await build_index()
+        logger.info(f"FAISS index ready: {indexed} tracks.")
+    except Exception as e:
+        logger.warning(f"FAISS index build failed on startup: {e}")
+
     await start_scheduler()
     yield
     logger.info("GrooveIQ shutting down...")
@@ -71,6 +80,7 @@ app.include_router(tracks.router, prefix="/v1", tags=["tracks"])
 app.include_router(users.router, prefix="/v1", tags=["users"])
 app.include_router(playlists.router, prefix="/v1", tags=["playlists"])
 app.include_router(stats.router, prefix="/v1", tags=["stats"])
+app.include_router(recommend.router, prefix="/v1", tags=["recommendations"])
 
 # ---------------------------------------------------------------------------
 # Dashboard (static)

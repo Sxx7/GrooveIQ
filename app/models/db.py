@@ -244,6 +244,120 @@ class Playlist(Base):
     created_at     = Column(Integer,     nullable=False, default=lambda: int(time.time()))
 
 
+# ---------------------------------------------------------------------------
+# Sessions  (Phase 2 – materialised from listen_events)
+# ---------------------------------------------------------------------------
+
+class ListenSession(Base):
+    """
+    A materialised listening session, derived from ListenEvent rows.
+
+    Sessions are built by the sessionizer worker using an inactivity-gap
+    heuristic (default 30 min).  If the client already supplies session_id
+    on events, that is used instead of the gap heuristic.
+
+    One row = one contiguous listening session for one user.
+    """
+    __tablename__ = "listen_sessions"
+
+    id                    = Column(Integer, primary_key=True, autoincrement=True)
+    session_key           = Column(String(192), nullable=False, unique=True, index=True)  # user_id:seq or client session_id
+    user_id               = Column(String(128), nullable=False, index=True)
+    started_at            = Column(Integer, nullable=False)          # Unix epoch of first event
+    ended_at              = Column(Integer, nullable=False)          # Unix epoch of last event
+    duration_s            = Column(Integer, nullable=False)          # ended_at - started_at
+
+    # Counts
+    track_count           = Column(Integer, nullable=False, default=0)
+    play_count            = Column(Integer, nullable=False, default=0)
+    skip_count            = Column(Integer, nullable=False, default=0)
+    like_count            = Column(Integer, nullable=False, default=0)
+    dislike_count         = Column(Integer, nullable=False, default=0)
+    seek_count            = Column(Integer, nullable=False, default=0)
+
+    # Rates (pre-computed for fast feature lookups)
+    skip_rate             = Column(Float,   nullable=True)           # skip_count / max(play_count, 1)
+    avg_completion        = Column(Float,   nullable=True)           # mean play_end value
+
+    # Total listening time (sum of dwell_ms across events, when available)
+    total_dwell_ms        = Column(Integer, nullable=True)
+
+    # Dominant context (most frequent non-null value)
+    dominant_context_type = Column(String(32),  nullable=True)
+    dominant_device_type  = Column(String(32),  nullable=True)
+
+    # Time context (from first event in session)
+    hour_of_day           = Column(Integer, nullable=True)           # 0–23
+    day_of_week           = Column(Integer, nullable=True)           # 1–7
+
+    # Bookkeeping
+    event_id_min          = Column(Integer, nullable=False)          # earliest event.id in session
+    event_id_max          = Column(Integer, nullable=False)          # latest event.id in session
+    built_at              = Column(Integer, nullable=False)          # when this row was materialised
+
+    __table_args__ = (
+        Index("ix_sessions_user_ts", "user_id", "started_at"),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Track interactions  (Phase 2 – materialised per user×track)
+# ---------------------------------------------------------------------------
+
+class TrackInteraction(Base):
+    """
+    Aggregated interaction scores per (user, track).
+
+    Updated incrementally by the scoring worker.  The satisfaction_score
+    is a weighted combination of engagement signals used as the training
+    label for the ranking model.
+    """
+    __tablename__ = "track_interactions"
+
+    id                = Column(Integer, primary_key=True, autoincrement=True)
+    user_id           = Column(String(128), nullable=False, index=True)
+    track_id          = Column(String(128), nullable=False, index=True)
+
+    # Raw counts
+    play_count        = Column(Integer, nullable=False, default=0)
+    skip_count        = Column(Integer, nullable=False, default=0)
+    like_count        = Column(Integer, nullable=False, default=0)
+    dislike_count     = Column(Integer, nullable=False, default=0)
+    repeat_count      = Column(Integer, nullable=False, default=0)
+    playlist_add_count = Column(Integer, nullable=False, default=0)
+    queue_add_count   = Column(Integer, nullable=False, default=0)
+
+    # Dwell / completion
+    total_dwell_ms    = Column(Integer, nullable=True)
+    avg_completion    = Column(Float,   nullable=True)               # mean play_end value (0–1)
+
+    # Skip granularity (derived from dwell_ms)
+    early_skip_count  = Column(Integer, nullable=False, default=0)   # dwell < 2s
+    mid_skip_count    = Column(Integer, nullable=False, default=0)   # 2s ≤ dwell < 30s
+    full_listen_count = Column(Integer, nullable=False, default=0)   # dwell ≥ 30s or completion ≥ 0.8
+
+    # Seek intensity
+    total_seekfwd     = Column(Integer, nullable=False, default=0)
+    total_seekbk      = Column(Integer, nullable=False, default=0)
+
+    # Temporal
+    first_played_at   = Column(Integer, nullable=True)
+    last_played_at    = Column(Integer, nullable=True)
+
+    # The computed satisfaction score (main training label)
+    satisfaction_score = Column(Float, nullable=True)
+
+    # Bookkeeping: highest event.id already folded in, for incremental updates
+    last_event_id     = Column(Integer, nullable=False, default=0)
+    updated_at        = Column(Integer, nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("user_id", "track_id", name="uq_user_track"),
+        Index("ix_interactions_user_track", "user_id", "track_id"),
+        Index("ix_interactions_satisfaction", "user_id", "satisfaction_score"),
+    )
+
+
 class ScanLog(Base):
     """Recent per-file log entries for a scan. Kept as a ring buffer (latest N)."""
     __tablename__ = "scan_logs"

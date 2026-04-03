@@ -1,0 +1,274 @@
+"""
+GrooveIQ – Candidate generation service (Phase 4).
+
+Merges multiple retrieval sources into a single candidate set for ranking:
+
+  1. Content-based (FAISS) — acoustically similar tracks
+  2. Collaborative filtering — "users who liked X also liked Y"
+  3. Heuristic recall — recently played artists, popular tracks
+
+Each candidate is tagged with its source for debugging and future
+model training (learning which sources contribute most).
+"""
+
+from __future__ import annotations
+
+import logging
+import time
+from typing import Any, Dict, List, Optional, Set
+
+from sqlalchemy import func, select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.db.session import AsyncSessionLocal
+from app.models.db import TrackFeatures, TrackInteraction, User
+from app.services import faiss_index
+from app.services import collab_filter
+
+logger = logging.getLogger(__name__)
+
+
+def _get_user_top_track_ids(taste_profile: dict, limit: int = 20) -> List[str]:
+    """Extract top track IDs from a user's taste profile."""
+    top_tracks = taste_profile.get("top_tracks", [])
+    return [t["track_id"] for t in top_tracks[:limit] if "track_id" in t]
+
+
+async def get_content_candidates(
+    seed_track_id: str,
+    k: int = 200,
+    exclude_ids: Optional[Set[str]] = None,
+) -> List[Dict[str, Any]]:
+    """
+    FAISS-based content candidates from a single seed track.
+
+    Returns list of {"track_id": str, "score": float, "source": "content"}.
+    """
+    results = faiss_index.search_by_track_id(
+        seed_track_id, k=k, exclude_ids=exclude_ids,
+    )
+    return [
+        {"track_id": tid, "score": score, "source": "content"}
+        for tid, score in results
+    ]
+
+
+async def get_content_candidates_for_user(
+    user_id: str,
+    k: int = 200,
+    exclude_ids: Optional[Set[str]] = None,
+) -> List[Dict[str, Any]]:
+    """
+    FAISS candidates from the user's taste profile centroid.
+
+    Computes the mean embedding of the user's top tracks, then
+    queries FAISS for the nearest neighbours to that centroid.
+    """
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(
+            select(User.taste_profile).where(User.user_id == user_id)
+        )
+        row = result.scalar_one_or_none()
+
+    if not row:
+        return []
+
+    top_ids = _get_user_top_track_ids(row)
+    if not top_ids:
+        return []
+
+    centroid = faiss_index.get_centroid(top_ids)
+    if centroid is None:
+        return []
+
+    results = faiss_index.search(centroid, k=k, exclude_ids=exclude_ids)
+    return [
+        {"track_id": tid, "score": score, "source": "content_profile"}
+        for tid, score in results
+    ]
+
+
+async def _get_disliked_track_ids(user_id: str) -> Set[str]:
+    """
+    Tracks the user has disliked or early-skipped more than 2 times.
+    These are filtered out of all candidate sources.
+    """
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(
+            select(TrackInteraction.track_id)
+            .where(
+                TrackInteraction.user_id == user_id,
+                (TrackInteraction.dislike_count > 0) | (TrackInteraction.early_skip_count > 2),
+            )
+        )
+        return {row[0] for row in result.all()}
+
+
+async def _get_recently_skipped_ids(user_id: str) -> Set[str]:
+    """Tracks the user skipped in the last 24h."""
+    cutoff = int(time.time()) - 86_400
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(
+            select(TrackInteraction.track_id)
+            .where(
+                TrackInteraction.user_id == user_id,
+                TrackInteraction.last_played_at >= cutoff,
+                TrackInteraction.early_skip_count > 0,
+            )
+        )
+        return {row[0] for row in result.all()}
+
+
+async def _get_popular_tracks(k: int = 50) -> List[Dict[str, Any]]:
+    """
+    Heuristic recall: tracks with the most interactions in the last 30 days.
+    """
+    cutoff = int(time.time()) - 30 * 86_400
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(
+            select(
+                TrackInteraction.track_id,
+                func.sum(TrackInteraction.play_count).label("total_plays"),
+            )
+            .where(TrackInteraction.last_played_at >= cutoff)
+            .group_by(TrackInteraction.track_id)
+            .order_by(func.sum(TrackInteraction.play_count).desc())
+            .limit(k)
+        )
+        rows = result.all()
+
+    return [
+        {"track_id": row.track_id, "score": 0.3, "source": "popular"}
+        for row in rows
+    ]
+
+
+async def _get_recently_played_artist_tracks(
+    user_id: str, k: int = 50
+) -> List[Dict[str, Any]]:
+    """
+    Heuristic recall: tracks from artists the user listened to in the last 7 days.
+    Uses file_path heuristic (parent directory = artist/album) since we don't
+    store artist metadata separately.
+    """
+    cutoff = int(time.time()) - 7 * 86_400
+    async with AsyncSessionLocal() as session:
+        # Get recently interacted track IDs.
+        result = await session.execute(
+            select(TrackInteraction.track_id)
+            .where(
+                TrackInteraction.user_id == user_id,
+                TrackInteraction.last_played_at >= cutoff,
+            )
+            .order_by(TrackInteraction.satisfaction_score.desc())
+            .limit(20)
+        )
+        recent_track_ids = [row[0] for row in result.all()]
+
+        if not recent_track_ids:
+            return []
+
+        # Get file paths for these tracks to extract artist dirs.
+        result = await session.execute(
+            select(TrackFeatures.file_path)
+            .where(TrackFeatures.track_id.in_(recent_track_ids))
+        )
+        paths = [row[0] for row in result.all() if row[0]]
+
+    if not paths:
+        return []
+
+    # Extract parent directories (assumed to be artist or artist/album).
+    import os
+    artist_dirs = set()
+    for p in paths:
+        parts = p.split(os.sep)
+        if len(parts) >= 2:
+            artist_dirs.add(parts[-2])  # album or artist directory
+
+    if not artist_dirs:
+        return []
+
+    # Find other tracks in the same directories.
+    async with AsyncSessionLocal() as session:
+        conditions = [TrackFeatures.file_path.contains(d) for d in list(artist_dirs)[:10]]
+        from sqlalchemy import or_
+        result = await session.execute(
+            select(TrackFeatures.track_id)
+            .where(
+                or_(*conditions),
+                TrackFeatures.track_id.notin_(recent_track_ids),
+            )
+            .limit(k)
+        )
+        tracks = [row[0] for row in result.all()]
+
+    return [
+        {"track_id": tid, "score": 0.2, "source": "artist_recall"}
+        for tid in tracks
+    ]
+
+
+async def get_candidates(
+    user_id: str,
+    seed_track_id: Optional[str] = None,
+    k: int = 200,
+) -> List[Dict[str, Any]]:
+    """
+    Merged candidate retrieval from all sources.
+
+    Args:
+        user_id: the user to generate candidates for.
+        seed_track_id: optional seed track for content-based retrieval.
+        k: max number of candidates to return.
+
+    Returns:
+        List of {"track_id", "score", "source"} dicts, deduplicated,
+        with disliked/skipped tracks removed.
+    """
+    # Build exclusion set.
+    disliked = await _get_disliked_track_ids(user_id)
+    recently_skipped = await _get_recently_skipped_ids(user_id)
+    exclude = disliked | recently_skipped
+
+    # Source 1: Content-based (FAISS).
+    content_candidates: List[Dict[str, Any]] = []
+    if faiss_index.is_ready():
+        if seed_track_id:
+            content_candidates = await get_content_candidates(
+                seed_track_id, k=100, exclude_ids=exclude,
+            )
+        else:
+            content_candidates = await get_content_candidates_for_user(
+                user_id, k=100, exclude_ids=exclude,
+            )
+
+    # Source 2: Collaborative filtering.
+    cf_candidates: List[Dict[str, Any]] = []
+    if collab_filter.is_ready():
+        raw = collab_filter.get_cf_candidates(user_id, k=100)
+        cf_candidates = [
+            {"track_id": tid, "score": score, "source": "cf"}
+            for tid, score in raw
+            if tid not in exclude
+        ]
+
+    # Source 3: Heuristic recall.
+    popular = await _get_popular_tracks(k=50)
+    artist_recall = await _get_recently_played_artist_tracks(user_id, k=50)
+
+    # Merge and deduplicate (first occurrence wins — preserves source priority).
+    seen: Set[str] = set()
+    merged: List[Dict[str, Any]] = []
+
+    for candidate_list in [content_candidates, cf_candidates, artist_recall, popular]:
+        for c in candidate_list:
+            tid = c["track_id"]
+            if tid in seen or tid in exclude:
+                continue
+            seen.add(tid)
+            merged.append(c)
+
+    # Sort by score descending, return up to k.
+    merged.sort(key=lambda c: c["score"], reverse=True)
+    return merged[:k]

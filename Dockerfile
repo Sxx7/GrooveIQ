@@ -12,6 +12,12 @@ FROM python:3.12-slim AS builder
 
 WORKDIR /build
 
+# Build tools needed to compile implicit (C/C++ via scikit-build/cmake)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        build-essential \
+        cmake \
+    && rm -rf /var/lib/apt/lists/*
+
 # Copy and build/download wheels
 COPY requirements.txt .
 RUN pip install --upgrade pip wheel && \
@@ -37,6 +43,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         libsamplerate0 \
         libtag2 \
         libchromaprint1 \
+        libgomp1 \
         tini \
     && rm -rf /var/lib/apt/lists/*
 
@@ -55,7 +62,7 @@ RUN pip install --no-cache-dir --no-index --find-links=/wheels /wheels/* && \
 COPY --chown=grooveiq:grooveiq app/ ./app/
 
 # Data directories (override with volume mounts)
-RUN mkdir -p /data /music /cache/essentia && \
+RUN mkdir -p /data /data/models /music /cache/essentia && \
     chown -R grooveiq:grooveiq /data /music /cache
 
 # Essentia model cache (pre-trained mood/danceability models)

@@ -45,8 +45,19 @@ _running_scan_id: Optional[int] = None
 def get_executor() -> ProcessPoolExecutor:
     global _executor
     if _executor is None:
-        _executor = ProcessPoolExecutor(max_workers=settings.ANALYSIS_WORKERS)
+        _executor = ProcessPoolExecutor(
+            max_workers=settings.ANALYSIS_WORKERS,
+            max_tasks_per_child=4,  # recycle workers to avoid file handle / memory leaks
+        )
     return _executor
+
+
+def _reset_executor() -> None:
+    """Kill and recreate the process pool after a timeout, so hung workers don't block future files."""
+    global _executor
+    if _executor is not None:
+        _executor.shutdown(wait=False, cancel_futures=True)
+        _executor = None
 
 
 # ---------------------------------------------------------------------------
@@ -196,6 +207,14 @@ async def _run_scan(scan_id: int) -> None:
                     await session.execute(del_stmt(ScanLog).where(ScanLog.id.in_(oldest)))
                     await session.commit()
 
+        # Rebuild FAISS index with new/updated embeddings.
+        try:
+            from app.services.faiss_index import rebuild as rebuild_faiss
+            indexed = await rebuild_faiss()
+            logger.info(f"[Scan {scan_id}] FAISS index rebuilt: {indexed} tracks.")
+        except Exception as e:
+            logger.error(f"[Scan {scan_id}] FAISS rebuild failed: {e}")
+
         elapsed = round(time.time() - scan_start, 1)
         await _update_scan(
             scan_id,
@@ -255,7 +274,14 @@ async def _process_file(file_path: str, scan_id: int, counters: dict, scan_start
     await _update_scan(scan_id, current_file=fname)
 
     try:
-        result = await loop.run_in_executor(executor, _analyze_if_needed_sync, file_path)
+        result = await asyncio.wait_for(
+            loop.run_in_executor(executor, _analyze_if_needed_sync, file_path),
+            timeout=settings.ANALYSIS_TIMEOUT,
+        )
+    except asyncio.TimeoutError:
+        result = Exception(f"Analysis timed out after {settings.ANALYSIS_TIMEOUT}s (file may be corrupted or unsupported)")
+        # Kill the hung worker by recreating the executor
+        _reset_executor()
     except Exception as exc:
         result = exc
 

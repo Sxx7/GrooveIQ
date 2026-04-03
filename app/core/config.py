@@ -24,6 +24,7 @@ class Settings(BaseSettings):
         env_file=".env",
         env_file_encoding="utf-8",
         case_sensitive=False,
+        extra="ignore",
     )
 
     # ------------------------------------------------------------------
@@ -69,10 +70,19 @@ class Settings(BaseSettings):
     MUSIC_LIBRARY_PATH: str = "/music"
     ANALYSIS_WORKERS: int = 2          # parallel Essentia workers
     ANALYSIS_BATCH_SIZE: int = 10      # tracks per job batch (kept small for responsive progress)
+    ANALYSIS_TIMEOUT: int = 120        # seconds before a single file analysis is killed
     RESCAN_INTERVAL_HOURS: int = 6     # how often to check for new files
 
     # Supported audio extensions (comma-separated)
     AUDIO_EXTENSIONS: str = ".mp3,.flac,.ogg,.m4a,.wav,.aac,.opus,.wv"
+
+    # ------------------------------------------------------------------
+    # Recommendation engine (Phase 2)
+    # ------------------------------------------------------------------
+    SESSION_GAP_MINUTES: int = 30          # inactivity gap that splits sessions
+    SESSION_MIN_EVENTS: int = 2            # ignore sessions with fewer events
+    TASTE_PROFILE_DECAY_DAYS: float = 30.0 # half-life for exponential recency weighting
+    SCORING_INTERVAL_HOURS: int = 1        # how often to run the scoring/sessionizer worker
 
     # ------------------------------------------------------------------
     # Event ingestion

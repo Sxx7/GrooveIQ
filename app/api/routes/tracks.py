@@ -256,7 +256,7 @@ async def get_similar_tracks(
     session: AsyncSession = Depends(get_session),
     _key: str = Depends(require_api_key),
 ):
-    # Get the seed track
+    # Verify seed track exists.
     result = await session.execute(
         select(TrackFeatures).where(TrackFeatures.track_id == track_id)
     )
@@ -264,7 +264,36 @@ async def get_similar_tracks(
     if seed is None:
         raise HTTPException(status_code=404, detail=f"Track '{track_id}' not found.")
 
-    # SQL-level pre-filter (fast, approximate)
+    # Try FAISS first (Phase 4).
+    from app.services.faiss_index import is_ready, search_by_track_id
+    if is_ready():
+        faiss_results = search_by_track_id(track_id, k=limit)
+        if faiss_results:
+            similar_ids = [tid for tid, _ in faiss_results]
+            scores_map = {tid: score for tid, score in faiss_results}
+            feat_result = await session.execute(
+                select(TrackFeatures).where(TrackFeatures.track_id.in_(similar_ids))
+            )
+            feat_map = {t.track_id: t for t in feat_result.scalars().all()}
+            # Preserve FAISS ranking order.
+            candidates = [feat_map[tid] for tid in similar_ids if tid in feat_map]
+            return [
+                {
+                    "track_id": c.track_id,
+                    "file_path": c.file_path,
+                    "bpm": c.bpm,
+                    "key": c.key,
+                    "mode": c.mode,
+                    "energy": c.energy,
+                    "danceability": c.danceability,
+                    "mood_tags": c.mood_tags,
+                    "similarity": round(scores_map.get(c.track_id, 0), 4),
+                    **({"features": TrackFeaturesResponse.model_validate(c).model_dump()} if include_features else {}),
+                }
+                for c in candidates
+            ]
+
+    # SQL fallback (pre-FAISS path, kept for when index isn't built yet).
     q = select(TrackFeatures).where(TrackFeatures.track_id != track_id)
 
     if seed.bpm:
@@ -277,12 +306,10 @@ async def get_similar_tracks(
     if seed.mode:
         q = q.where(TrackFeatures.mode == seed.mode)
 
-    q = q.limit(limit * 3)   # over-fetch, then re-rank by embedding similarity
-
+    q = q.limit(limit * 3)
     candidates_result = await session.execute(q)
     candidates = candidates_result.scalars().all()
 
-    # Re-rank by embedding cosine similarity if available
     if seed.embedding and candidates:
         import base64
         import numpy as np
