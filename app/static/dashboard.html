@@ -192,6 +192,38 @@
     font-size: 13px;
   }
 
+  /* Progress bar */
+  .progress-bar {
+    width: 100%;
+    height: 24px;
+    background: var(--bg);
+    border-radius: 6px;
+    overflow: hidden;
+    margin: 8px 0;
+    position: relative;
+  }
+  .progress-fill {
+    height: 100%;
+    background: linear-gradient(90deg, var(--accent), var(--green));
+    border-radius: 6px;
+    transition: width 0.6s ease;
+    min-width: 0;
+  }
+  .progress-text {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--text);
+    text-shadow: 0 1px 2px rgba(0,0,0,0.5);
+  }
+
   /* Auto-refresh indicator */
   .refresh-dot {
     width: 8px;
@@ -262,6 +294,15 @@ function fmtTime(ts) {
   return new Date(ts * 1000).toLocaleString();
 }
 
+function fmtDuration(secs) {
+  if (secs == null) return '—';
+  if (secs < 60) return secs + 's';
+  if (secs < 3600) return Math.floor(secs / 60) + 'm ' + (secs % 60) + 's';
+  const h = Math.floor(secs / 3600);
+  const m = Math.floor((secs % 3600) / 60);
+  return h + 'h ' + m + 'm';
+}
+
 function eventBadge(type) {
   const colors = {
     play_end: 'green', like: 'green', playlist_add: 'green', repeat: 'green',
@@ -296,6 +337,15 @@ async function loadDashboard() {
     api('/v1/events?limit=30'),
   ]);
   render(stats, users, events);
+
+  // Refresh faster while a scan is running (3s vs 10s)
+  const scanActive = stats.latest_scan && stats.latest_scan.status === 'running';
+  const interval = scanActive ? 3000 : 10000;
+  if (refreshTimer && refreshTimer._interval !== interval) {
+    clearInterval(refreshTimer);
+    refreshTimer = setInterval(loadDashboard, interval);
+    refreshTimer._interval = interval;
+  }
 }
 
 function renderEventRow(e) {
@@ -423,9 +473,24 @@ function render(stats, users, events) {
             ? '<div class="empty">No scans yet. Click "Scan Now" to analyze your library.</div>'
             : `
             <div class="status-line">
-              Status: <span class="badge badge-${stats.latest_scan.status === 'completed' ? 'green' : stats.latest_scan.status === 'running' ? 'yellow' : 'red'}">${stats.latest_scan.status}</span>
+              Status: <span class="badge badge-${stats.latest_scan.status === 'completed' ? 'green' : stats.latest_scan.status === 'running' ? 'yellow' : stats.latest_scan.status === 'interrupted' ? 'blue' : 'red'}">${stats.latest_scan.status}</span>
+              ${stats.latest_scan.status === 'running' && stats.latest_scan.eta_seconds != null ? `<span style="margin-left:8px;color:var(--text-dim);font-size:12px">ETA: ${fmtDuration(stats.latest_scan.eta_seconds)}</span>` : ''}
+              ${stats.latest_scan.elapsed_seconds ? `<span style="margin-left:8px;color:var(--text-dim);font-size:12px">Elapsed: ${fmtDuration(stats.latest_scan.elapsed_seconds)}</span>` : ''}
             </div>
-            <div class="status-line">Found: <b>${stats.latest_scan.files_found}</b> &nbsp; Analyzed: <b>${stats.latest_scan.files_analyzed}</b> &nbsp; Failed: <b>${stats.latest_scan.files_failed}</b></div>
+            ${stats.latest_scan.files_found > 0 ? `
+            <div style="padding:4px 20px 8px">
+              <div class="progress-bar">
+                <div class="progress-fill" style="width:${stats.latest_scan.percent_complete}%"></div>
+                <div class="progress-text">${stats.latest_scan.percent_complete}% (${stats.latest_scan.files_analyzed + stats.latest_scan.files_skipped + stats.latest_scan.files_failed} / ${stats.latest_scan.files_found})</div>
+              </div>
+            </div>` : ''}
+            <div class="status-line">
+              Analyzed: <b>${stats.latest_scan.files_analyzed}</b> &nbsp;
+              Skipped: <b>${stats.latest_scan.files_skipped}</b> &nbsp;
+              Failed: <b>${stats.latest_scan.files_failed}</b> &nbsp;
+              Found: <b>${stats.latest_scan.files_found}</b>
+            </div>
+            ${stats.latest_scan.current_file && stats.latest_scan.status === 'running' ? `<div class="status-line" style="font-size:11px;font-family:monospace;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">Analyzing: ${stats.latest_scan.current_file.split('/').pop()}</div>` : ''}
             <div class="status-line">Started: <b>${fmtTime(stats.latest_scan.started_at)}</b></div>
             ${stats.latest_scan.ended_at ? `<div class="status-line">Ended: <b>${fmtTime(stats.latest_scan.ended_at)}</b></div>` : ''}
             `}

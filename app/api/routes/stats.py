@@ -59,12 +59,24 @@ async def get_stats(
     )).scalar_one_or_none()
     latest_scan = None
     if scan_row:
+        now_ts = int(time.time())
+        processed = scan_row.files_analyzed + scan_row.files_failed + (scan_row.files_skipped or 0)
+        percent = round(processed / scan_row.files_found * 100, 1) if scan_row.files_found > 0 else 0.0
+        elapsed = (scan_row.scan_ended_at or now_ts) - scan_row.scan_started_at
+        eta = None
+        if scan_row.status == "running" and percent > 0:
+            eta = int(elapsed / percent * (100 - percent))
         latest_scan = {
             "scan_id": scan_row.id,
             "status": scan_row.status,
             "files_found": scan_row.files_found,
             "files_analyzed": scan_row.files_analyzed,
+            "files_skipped": scan_row.files_skipped or 0,
             "files_failed": scan_row.files_failed,
+            "percent_complete": percent,
+            "elapsed_seconds": elapsed,
+            "eta_seconds": eta,
+            "current_file": scan_row.current_file,
             "started_at": scan_row.scan_started_at,
             "ended_at": scan_row.scan_ended_at,
         }

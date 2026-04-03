@@ -18,7 +18,7 @@ from sqlalchemy import delete
 from app.core.config import settings
 from app.db.session import AsyncSessionLocal
 from app.models.db import ListenEvent
-from app.workers.library_scanner import trigger_scan
+from app.workers.library_scanner import trigger_scan, resume_interrupted_scans
 
 logger = logging.getLogger(__name__)
 
@@ -43,13 +43,21 @@ async def start_scheduler() -> None:
         f"Scheduler started. Library scan every {settings.RESCAN_INTERVAL_HOURS}h."
     )
 
-    # Trigger an initial scan on startup (non-blocking)
+    # Resume any scan interrupted by a previous container restart,
+    # or trigger a fresh initial scan if none are pending.
     import asyncio
-    asyncio.create_task(_periodic_library_scan())
+    asyncio.create_task(_startup_scan())
 
 
 async def stop_scheduler() -> None:
     _scheduler.shutdown(wait=False)
+
+
+async def _startup_scan() -> None:
+    """On startup, resume interrupted scans or trigger a fresh one."""
+    resumed = await resume_interrupted_scans()
+    if resumed is None:
+        await _periodic_library_scan()
 
 
 async def _periodic_library_scan() -> None:

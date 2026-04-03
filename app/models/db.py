@@ -216,5 +216,7 @@ class LibraryScanState(Base):
     status          = Column(String(16), nullable=False, default="running")
     files_found     = Column(Integer, nullable=False, default=0)
     files_analyzed  = Column(Integer, nullable=False, default=0)
+    files_skipped   = Column(Integer, nullable=False, default=0)
     files_failed    = Column(Integer, nullable=False, default=0)
+    current_file    = Column(Text,    nullable=True)      # path being analyzed right now
     last_error      = Column(Text, nullable=True)

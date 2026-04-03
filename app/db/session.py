@@ -62,6 +62,8 @@ async def _apply_column_migrations(conn) -> None:
     """Add missing columns to existing tables. Safe to run repeatedly."""
     migrations = [
         ("track_features", "external_track_id", "VARCHAR(128)"),
+        ("library_scan_state", "files_skipped", "INTEGER DEFAULT 0"),
+        ("library_scan_state", "current_file", "TEXT"),
     ]
     for table, column, col_type in migrations:
         try:
