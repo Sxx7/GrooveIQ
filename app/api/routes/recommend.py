@@ -80,7 +80,37 @@ async def get_recommendations(
     model_version = _get_model_version()
 
     if not candidates:
-        return {"request_id": str(uuid.uuid4()), "tracks": [], "model_version": model_version, "user_id": user_id, "seed_track_id": seed_track_id}
+        # Diagnose why there are no candidates so the client can show a useful message.
+        from sqlalchemy import func as sa_func
+
+        track_count = (await session.execute(
+            select(sa_func.count()).select_from(TrackFeatures)
+        )).scalar() or 0
+
+        if track_count == 0:
+            reason = "no_library"
+        else:
+            interaction_count = (await session.execute(
+                select(sa_func.count()).select_from(TrackInteraction)
+                .where(TrackInteraction.user_id == user_id)
+            )).scalar() or 0
+
+            if interaction_count == 0:
+                reason = "no_history"
+            else:
+                user_row = (await session.execute(
+                    select(User.taste_profile).where(User.user_id == user_id)
+                )).scalar_one_or_none()
+                reason = "no_taste_profile" if not user_row else "no_candidates"
+
+        return {
+            "request_id": str(uuid.uuid4()),
+            "tracks": [],
+            "model_version": model_version,
+            "user_id": user_id,
+            "seed_track_id": seed_track_id,
+            "reason": reason,
+        }
 
     candidate_ids = [c["track_id"] for c in candidates]
 
