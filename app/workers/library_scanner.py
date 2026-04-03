@@ -316,7 +316,8 @@ async def _process_file(file_path: str, scan_id: int, counters: dict, scan_start
         )
     except asyncio.TimeoutError:
         result = Exception(f"Analysis timed out after {settings.ANALYSIS_TIMEOUT}s (file may be corrupted or unsupported)")
-        _reset_executor()
+        # Don't reset the pool — the timed-out task is cancelled but other
+        # workers keep running with their cached TF models intact.
     except BrokenProcessPool:
         result = Exception("Worker process crashed (likely OOM or segfault), recycling pool")
         _reset_executor()

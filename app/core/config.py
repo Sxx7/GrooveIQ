@@ -71,7 +71,7 @@ class Settings(BaseSettings):
     MUSIC_LIBRARY_PATH: str = "/music"
     ANALYSIS_WORKERS: int = max(1, (os.cpu_count() or 2) - 1)  # default: CPU cores - 1
     ANALYSIS_BATCH_SIZE: int = 50      # tracks per job batch
-    ANALYSIS_TIMEOUT: int = 120        # seconds before a single file analysis is killed
+    ANALYSIS_TIMEOUT: int = 300        # seconds before a single file analysis is killed
     RESCAN_INTERVAL_HOURS: int = 6     # how often to check for new files
 
     # Supported audio extensions (comma-separated)
