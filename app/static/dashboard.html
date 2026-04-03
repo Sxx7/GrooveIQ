@@ -220,6 +220,7 @@
   <button data-tab="users" onclick="switchTab('users')">Users</button>
   <button data-tab="tracks" onclick="switchTab('tracks')">Tracks</button>
   <button data-tab="playlists" onclick="switchTab('playlists')">Playlists</button>
+  <button data-tab="discovery" onclick="switchTab('discovery')">Discovery</button>
 </div>
 
 <div id="js-errors" style="display:none;background:#2d1111;border:1px solid #7f2222;border-radius:8px;margin:12px 24px;color:#f87171;font-family:monospace;font-size:12px;max-height:200px;overflow:auto"></div>
@@ -385,6 +386,7 @@ function switchTab(view) {
   else if (view === 'users') loadUsers();
   else if (view === 'tracks') loadTracks();
   else if (view === 'playlists') loadPlaylists();
+  else if (view === 'discovery') loadDiscovery();
 }
 
 // ---------------------------------------------------------------------------
@@ -1204,6 +1206,106 @@ function triggerScan() {
       loadDashboard();
     })
     .catch(function(e) { alert('Scan failed: ' + e.message); if (btn) { btn.disabled = false; btn.textContent = 'Scan Now'; } });
+}
+
+// ---------------------------------------------------------------------------
+// Discovery tab
+// ---------------------------------------------------------------------------
+
+function loadDiscovery() {
+  return Promise.all([
+    api('/v1/discovery/stats'),
+    api('/v1/discovery?limit=50')
+  ]).then(function(results) {
+    renderDiscovery(results[0], results[1]);
+  });
+}
+
+function discoveryStatusBadge(status) {
+  var cls = 'badge-yellow';
+  if (status === 'sent') cls = 'badge-blue';
+  else if (status === 'in_lidarr') cls = 'badge-green';
+  else if (status === 'failed') cls = 'badge-red';
+  return '<span class="badge ' + cls + '">' + esc(status) + '</span>';
+}
+
+function discoverySourceBadge(source) {
+  if (source === 'lastfm_similar') return '<span class="badge badge-purple">similar</span>';
+  if (source === 'lastfm_genre') return '<span class="badge badge-blue">genre</span>';
+  return '<span class="badge">' + esc(source) + '</span>';
+}
+
+function renderDiscovery(stats, data) {
+  var h = '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">'
+    + '<h2 style="font-size:18px">Music Discovery</h2>';
+
+  if (stats.enabled) {
+    h += '<button onclick="runDiscovery(this)">Run Discovery</button>';
+  }
+  h += '</div>';
+
+  if (!stats.enabled) {
+    h += '<div class="empty">Music Discovery is not configured.<br>Set <code>LASTFM_API_KEY</code>, <code>LIDARR_URL</code>, and <code>LIDARR_API_KEY</code> in your .env file.</div>';
+    $('#app').innerHTML = h;
+    return;
+  }
+
+  // Stats cards
+  var sent = (stats.by_status.sent || 0) + (stats.by_status.in_lidarr || 0);
+  h += '<div class="stats-grid">'
+    + '<div class="stat-card"><div class="stat-value">' + stats.total + '</div><div class="stat-label">Total Discovered</div></div>'
+    + '<div class="stat-card"><div class="stat-value" style="color:var(--green)">' + sent + '</div><div class="stat-label">Sent to Lidarr</div></div>'
+    + '<div class="stat-card"><div class="stat-value" style="color:var(--yellow)">' + (stats.by_status.pending || 0) + '</div><div class="stat-label">Pending</div></div>'
+    + '<div class="stat-card"><div class="stat-value">' + stats.today_count + ' <span style="font-size:14px;color:var(--text-dim)">/ ' + stats.daily_limit + '</span></div><div class="stat-label">Today</div></div>'
+    + '</div>';
+
+  // Requests table
+  var requests = data.requests || [];
+  if (!requests.length) {
+    h += '<div class="empty">No discovery requests yet. Click "Run Discovery" to start finding new music.</div>';
+    $('#app').innerHTML = h;
+    return;
+  }
+
+  h += '<div class="panel full-width"><div class="panel-header">Recent Discoveries <span style="font-weight:400;color:var(--text-dim);font-size:12px">' + data.total + ' total</span></div>';
+  h += '<div class="panel-body" style="overflow-x:auto"><table>'
+    + '<tr><th>Artist</th><th>Source</th><th>Seed</th><th>Similarity</th><th>Status</th><th>When</th></tr>';
+
+  for (var i = 0; i < requests.length; i++) {
+    var r = requests[i];
+    var seed = r.seed_artist ? esc(r.seed_artist) : (r.seed_genre ? '<span style="color:var(--text-dim)">' + esc(r.seed_genre) + '</span>' : '\u2014');
+    var sim = r.similarity_score != null ? '<div class="bar-row"><div class="bar-fill" style="width:' + (r.similarity_score * 100).toFixed(0) + '%;background:var(--accent)"></div></div>' : '\u2014';
+    var err = r.error_message ? ' title="' + esc(r.error_message) + '"' : '';
+
+    h += '<tr' + err + '>'
+      + '<td><b>' + esc(r.artist_name) + '</b>'
+      + (r.artist_mbid ? '<br><span style="font-size:11px;color:var(--text-dim);font-family:monospace">' + esc(r.artist_mbid).substring(0, 16) + '...</span>' : '')
+      + '</td>'
+      + '<td>' + discoverySourceBadge(r.source) + '</td>'
+      + '<td>' + seed + '</td>'
+      + '<td style="min-width:80px">' + sim + '</td>'
+      + '<td>' + discoveryStatusBadge(r.status) + '</td>'
+      + '<td>' + timeAgo(r.created_at) + '</td>'
+      + '</tr>';
+  }
+  h += '</table></div></div>';
+  $('#app').innerHTML = h;
+}
+
+function runDiscovery(btn) {
+  btn.disabled = true;
+  btn.textContent = 'Running...';
+  apiPost('/v1/discovery/run', {}).then(function(data) {
+    btn.textContent = 'Started';
+    // Poll for updates after a short delay
+    setTimeout(function() { loadDiscovery(); }, 3000);
+    setTimeout(function() { loadDiscovery(); }, 10000);
+    setTimeout(function() { loadDiscovery(); }, 30000);
+  }).catch(function(e) {
+    alert('Discovery failed: ' + e.message);
+    btn.disabled = false;
+    btn.textContent = 'Run Discovery';
+  });
 }
 
 // Restore session

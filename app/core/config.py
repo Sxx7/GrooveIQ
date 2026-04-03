@@ -112,6 +112,19 @@ class Settings(BaseSettings):
                                            # (for path matching if it differs from MUSIC_LIBRARY_PATH)
 
     # ------------------------------------------------------------------
+    # Music discovery (Last.fm + Lidarr)
+    # ------------------------------------------------------------------
+    LASTFM_API_KEY: str = ""
+    LIDARR_URL: str = ""               # e.g. http://lidarr:8686
+    LIDARR_API_KEY: str = ""
+    LIDARR_QUALITY_PROFILE_ID: int = 1
+    LIDARR_METADATA_PROFILE_ID: int = 1
+    LIDARR_ROOT_FOLDER: str = "/music"
+    DISCOVERY_CRON: str = "0 3 * * *"  # cron schedule (default: 3 AM daily)
+    DISCOVERY_MAX_REQUESTS_PER_DAY: int = 500
+    DISCOVERY_SIMILAR_LIMIT: int = 20  # similar artists per seed from Last.fm
+
+    # ------------------------------------------------------------------
     # Logging
     # ------------------------------------------------------------------
     LOG_LEVEL: str = "INFO"
@@ -135,6 +148,10 @@ class Settings(BaseSettings):
     @property
     def audio_extensions_list(self) -> List[str]:
         return _split_csv(self.AUDIO_EXTENSIONS)
+
+    @property
+    def discovery_enabled(self) -> bool:
+        return bool(self.LASTFM_API_KEY and self.LIDARR_URL and self.LIDARR_API_KEY)
 
     @model_validator(mode="after")
     def warn_insecure_defaults(self) -> "Settings":

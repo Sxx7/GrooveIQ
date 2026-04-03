@@ -384,6 +384,40 @@ class ScanLog(Base):
     message  = Column(Text, nullable=True)
 
 
+# ---------------------------------------------------------------------------
+# Music discovery  (Last.fm + Lidarr)
+# ---------------------------------------------------------------------------
+
+class DiscoveryRequest(Base):
+    """
+    A discovered artist from Last.fm that was (or will be) sent to Lidarr.
+
+    One row per unique artist globally — Lidarr's library is shared across
+    all users, so the same artist should not be requested twice.
+    """
+    __tablename__ = "discovery_requests"
+
+    id               = Column(Integer, primary_key=True, autoincrement=True)
+    user_id          = Column(String(128), nullable=False)        # who triggered discovery
+    artist_name      = Column(String(512), nullable=False)
+    artist_mbid      = Column(String(64),  nullable=True)         # MusicBrainz ID from Last.fm
+    source           = Column(String(32),  nullable=False)        # lastfm_similar | lastfm_genre
+    seed_artist      = Column(String(512), nullable=True)         # library artist that triggered lookup
+    seed_genre       = Column(String(256), nullable=True)         # genre tag that triggered lookup
+    similarity_score = Column(Float,       nullable=True)         # 0-1 from Last.fm match field
+    status           = Column(String(16),  nullable=False, default="pending")  # pending|sent|in_lidarr|failed
+    lidarr_artist_id = Column(Integer,     nullable=True)         # Lidarr's internal ID after add
+    error_message    = Column(Text,        nullable=True)
+    created_at       = Column(Integer,     nullable=False, default=lambda: int(time.time()))
+    updated_at       = Column(Integer,     nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint("artist_mbid", name="uq_discovery_mbid"),
+        Index("ix_discovery_user_status", "user_id", "status"),
+        Index("ix_discovery_created", "created_at"),
+    )
+
+
 class PlaylistTrack(Base):
     """Ordered track within a playlist."""
     __tablename__ = "playlist_tracks"

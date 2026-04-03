@@ -14,6 +14,7 @@ import time
 import traceback
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
 from sqlalchemy import delete
 
@@ -46,10 +47,23 @@ async def start_scheduler() -> None:
         id="recommendation_pipeline",
         replace_existing=True,
     )
+    if settings.discovery_enabled:
+        cron = settings.DISCOVERY_CRON.split()
+        _scheduler.add_job(
+            _periodic_discovery,
+            trigger=CronTrigger(
+                minute=cron[0], hour=cron[1], day=cron[2],
+                month=cron[3], day_of_week=cron[4], timezone="UTC",
+            ),
+            id="music_discovery",
+            replace_existing=True,
+        )
+
     _scheduler.start()
     logger.info(
         f"Scheduler started. Library scan every {settings.RESCAN_INTERVAL_HOURS}h, "
         f"recommendation pipeline every {settings.SCORING_INTERVAL_HOURS}h."
+        + (f", discovery cron '{settings.DISCOVERY_CRON}'" if settings.discovery_enabled else "")
     )
 
     # Resume any scan interrupted by a previous container restart,
@@ -158,3 +172,19 @@ async def _periodic_recommendation_pipeline() -> None:
         logger.error(f"Ranker training failed: {traceback.format_exc()}")
 
     logger.info("Recommendation pipeline complete.")
+
+
+async def _periodic_discovery() -> None:
+    """Run the music discovery pipeline (Last.fm → Lidarr)."""
+    try:
+        from app.services.discovery import run_discovery_pipeline
+        result = await run_discovery_pipeline()
+        logger.info("Discovery pipeline done: %s", result)
+    except Exception:
+        logger.error(f"Discovery pipeline failed: {traceback.format_exc()}")
+
+
+async def run_discovery_now() -> dict:
+    """Run the discovery pipeline on demand. Returns summary."""
+    from app.services.discovery import run_discovery_pipeline
+    return await run_discovery_pipeline()
