@@ -200,6 +200,7 @@ async def list_tracks(
             TrackFeatures.title.ilike(term),
             TrackFeatures.artist.ilike(term),
             TrackFeatures.album.ilike(term),
+            TrackFeatures.genre.ilike(term),
             TrackFeatures.track_id.ilike(term),
             TrackFeatures.file_path.ilike(term),
         ))
@@ -251,6 +252,7 @@ async def list_tracks(
                 "title": t.title,
                 "artist": t.artist,
                 "album": t.album,
+                "genre": t.genre,
                 "file_path": t.file_path,
                 "duration": t.duration,
                 "bpm": t.bpm,

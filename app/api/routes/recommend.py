@@ -135,6 +135,7 @@ async def get_recommendations(
                 "title": tf.title,
                 "artist": tf.artist,
                 "album": tf.album,
+                "genre": tf.genre,
                 "file_path": tf.file_path,
                 "bpm": tf.bpm,
                 "key": tf.key,

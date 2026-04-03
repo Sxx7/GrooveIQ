@@ -144,6 +144,7 @@ class TrackFeatures(Base):
     title           = Column(String(512), nullable=True)
     artist          = Column(String(512), nullable=True)
     album           = Column(String(512), nullable=True)
+    genre           = Column(String(512), nullable=True)  # comma-separated, e.g. "Hip-Hop, Rap"
 
     # File metadata
     file_path       = Column(Text,    nullable=False)

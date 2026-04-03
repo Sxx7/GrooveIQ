@@ -65,6 +65,7 @@ async def _apply_column_migrations(conn) -> None:
         ("track_features", "title", "VARCHAR(512)"),
         ("track_features", "artist", "VARCHAR(512)"),
         ("track_features", "album", "VARCHAR(512)"),
+        ("track_features", "genre", "VARCHAR(512)"),
         ("library_scan_state", "files_skipped", "INTEGER DEFAULT 0"),
         ("library_scan_state", "current_file", "TEXT"),
     ]

@@ -48,6 +48,7 @@ class MediaServerTrack:
     title: str = ""
     artist: str = ""
     album: str = ""
+    genre: str = ""           # comma-separated genre tags
     file_path: str = ""       # absolute or relative path as reported by the server
     duration: Optional[float] = None
 
@@ -151,6 +152,7 @@ async def _fetch_navidrome_tracks(
                     title=s.get("title", ""),
                     artist=s.get("artist", ""),
                     album=s.get("album", ""),
+                    genre=s.get("genre", ""),
                     file_path=s.get("path", ""),
                     duration=float(s["duration"]) if s.get("duration") else None,
                 ))
@@ -212,11 +214,16 @@ async def _fetch_plex_tracks(
                 if m.get("duration"):
                     duration = float(m["duration"]) / 1000.0  # Plex returns ms
 
+                # Genre tags: Plex returns [{"tag": "Hip-Hop"}, {"tag": "Rap"}]
+                genre_tags = m.get("Genre", [])
+                genre = ", ".join(g["tag"] for g in genre_tags if isinstance(g, dict) and "tag" in g)
+
                 tracks.append(MediaServerTrack(
                     server_id=str(m["ratingKey"]),
                     title=m.get("title", ""),
                     artist=m.get("grandparentTitle", ""),  # artist
                     album=m.get("parentTitle", ""),         # album
+                    genre=genre,
                     file_path=file_path,
                     duration=duration,
                 ))
@@ -323,16 +330,18 @@ async def sync_track_ids(session: AsyncSession) -> SyncResult:
         old_track_id = tf.track_id
         new_track_id = st.server_id
 
-        # Update metadata always (title/artist/album may have changed).
+        # Update metadata always (title/artist/album/genre may have changed).
         metadata_changed = (
             tf.title != st.title
             or tf.artist != st.artist
             or tf.album != st.album
+            or tf.genre != st.genre
         )
         if metadata_changed:
             tf.title = st.title
             tf.artist = st.artist
             tf.album = st.album
+            tf.genre = st.genre
             result.tracks_metadata += 1
 
         # Update track_id if it differs.
