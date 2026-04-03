@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.security import require_api_key
 from app.db.session import get_session
-from app.models.db import ListenEvent, TrackFeatures, User, LibraryScanState
+from app.models.db import ListenEvent, Playlist, TrackFeatures, User, LibraryScanState
 
 router = APIRouter()
 
@@ -27,6 +27,7 @@ async def get_stats(
     total_events = (await session.execute(select(func.count(ListenEvent.id)))).scalar() or 0
     total_users = (await session.execute(select(func.count(User.id)))).scalar() or 0
     total_tracks = (await session.execute(select(func.count(TrackFeatures.id)))).scalar() or 0
+    total_playlists = (await session.execute(select(func.count(Playlist.id)))).scalar() or 0
     events_24h = (await session.execute(
         select(func.count(ListenEvent.id)).where(ListenEvent.timestamp >= day_ago)
     )).scalar() or 0
@@ -85,6 +86,7 @@ async def get_stats(
         "total_events": total_events,
         "total_users": total_users,
         "total_tracks_analyzed": total_tracks,
+        "total_playlists": total_playlists,
         "events_last_24h": events_24h,
         "events_last_1h": events_1h,
         "event_types_24h": event_types,

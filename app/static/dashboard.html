@@ -33,98 +33,58 @@
     align-items: center;
     justify-content: space-between;
   }
-  header h1 {
-    font-size: 20px;
-    font-weight: 600;
-    color: var(--accent);
-  }
+  header h1 { font-size: 20px; font-weight: 600; color: var(--accent); }
   header h1 span { color: var(--text-dim); font-weight: 400; }
-  .auth-bar {
-    display: flex;
-    gap: 8px;
-    align-items: center;
-  }
+  .auth-bar { display: flex; gap: 8px; align-items: center; }
   .auth-bar input {
-    background: var(--bg);
-    border: 1px solid var(--border);
-    color: var(--text);
-    padding: 6px 12px;
-    border-radius: 6px;
-    font-size: 13px;
-    width: 260px;
+    background: var(--bg); border: 1px solid var(--border); color: var(--text);
+    padding: 6px 12px; border-radius: 6px; font-size: 13px; width: 260px;
   }
   .auth-bar input::placeholder { color: var(--text-dim); }
   button {
-    background: var(--accent);
-    color: #fff;
-    border: none;
-    padding: 6px 16px;
-    border-radius: 6px;
-    font-size: 13px;
-    cursor: pointer;
-    font-weight: 500;
+    background: var(--accent); color: #fff; border: none; padding: 6px 16px;
+    border-radius: 6px; font-size: 13px; cursor: pointer; font-weight: 500;
   }
   button:hover { background: var(--accent-dim); }
   button.secondary {
-    background: var(--surface);
-    border: 1px solid var(--border);
-    color: var(--text-dim);
+    background: var(--surface); border: 1px solid var(--border); color: var(--text-dim);
   }
   button.secondary:hover { background: var(--border); color: var(--text); }
+  button.danger { background: var(--red); }
+  button.danger:hover { opacity: 0.8; }
   .container { max-width: 1200px; margin: 0 auto; padding: 24px; }
+
+  /* Tab navigation */
+  .tab-bar {
+    display: flex; gap: 4px; padding: 8px 24px; background: var(--surface);
+    border-bottom: 1px solid var(--border);
+  }
+  .tab-bar button {
+    background: transparent; color: var(--text-dim); border: none; padding: 8px 16px;
+    border-radius: 6px 6px 0 0; font-size: 13px; cursor: pointer; font-weight: 500;
+  }
+  .tab-bar button:hover { color: var(--text); background: var(--bg); }
+  .tab-bar button.active { color: var(--accent); background: var(--bg); border-bottom: 2px solid var(--accent); }
 
   /* Stats cards */
   .stats-grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-    gap: 16px;
-    margin-bottom: 24px;
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    gap: 16px; margin-bottom: 24px;
   }
   .stat-card {
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: 10px;
-    padding: 20px;
+    background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 20px;
   }
-  .stat-card .label {
-    font-size: 12px;
-    color: var(--text-dim);
-    text-transform: uppercase;
-    letter-spacing: 0.5px;
-    margin-bottom: 8px;
-  }
-  .stat-card .value {
-    font-size: 28px;
-    font-weight: 700;
-  }
-  .stat-card .sub {
-    font-size: 12px;
-    color: var(--text-dim);
-    margin-top: 4px;
-  }
+  .stat-card .label { font-size: 12px; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 8px; }
+  .stat-card .value { font-size: 28px; font-weight: 700; }
+  .stat-card .sub { font-size: 12px; color: var(--text-dim); margin-top: 4px; }
 
   /* Panels */
-  .panels {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 16px;
-    margin-bottom: 24px;
-  }
+  .panels { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 24px; }
   @media (max-width: 800px) { .panels { grid-template-columns: 1fr; } }
-  .panel {
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: 10px;
-    overflow: hidden;
-  }
+  .panel { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }
   .panel-header {
-    padding: 14px 20px;
-    border-bottom: 1px solid var(--border);
-    font-size: 14px;
-    font-weight: 600;
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
+    padding: 14px 20px; border-bottom: 1px solid var(--border); font-size: 14px; font-weight: 600;
+    display: flex; justify-content: space-between; align-items: center;
   }
   .panel-body { padding: 0; }
   .full-width { grid-column: 1 / -1; }
@@ -132,118 +92,85 @@
   /* Tables */
   table { width: 100%; border-collapse: collapse; font-size: 13px; }
   th {
-    text-align: left;
-    padding: 10px 16px;
-    color: var(--text-dim);
-    font-weight: 500;
-    font-size: 11px;
-    text-transform: uppercase;
-    letter-spacing: 0.5px;
-    border-bottom: 1px solid var(--border);
+    text-align: left; padding: 10px 16px; color: var(--text-dim); font-weight: 500;
+    font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px;
+    border-bottom: 1px solid var(--border); cursor: pointer; white-space: nowrap;
   }
+  th:hover { color: var(--text); }
   td { padding: 10px 16px; border-bottom: 1px solid var(--border); }
   tr:last-child td { border-bottom: none; }
   tr:hover td { background: rgba(124, 92, 252, 0.04); }
 
-  /* Tags / badges */
-  .badge {
-    display: inline-block;
-    padding: 2px 8px;
-    border-radius: 4px;
-    font-size: 11px;
-    font-weight: 600;
-  }
+  /* Badges */
+  .badge { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 600; }
   .badge-green { background: rgba(52, 211, 153, 0.15); color: var(--green); }
   .badge-red { background: rgba(248, 113, 113, 0.15); color: var(--red); }
   .badge-yellow { background: rgba(251, 191, 36, 0.15); color: var(--yellow); }
   .badge-blue { background: rgba(96, 165, 250, 0.15); color: var(--blue); }
   .badge-purple { background: rgba(124, 92, 252, 0.15); color: var(--accent); }
 
-  /* Bar chart (CSS-only) */
-  .bar-row {
-    display: flex;
-    align-items: center;
-    padding: 8px 16px;
-    gap: 12px;
-  }
+  /* Bar chart */
+  .bar-row { display: flex; align-items: center; padding: 8px 16px; gap: 12px; }
   .bar-row:not(:last-child) { border-bottom: 1px solid var(--border); }
-  .bar-label {
-    font-size: 12px;
-    min-width: 90px;
-    color: var(--text-dim);
-  }
+  .bar-label { font-size: 12px; min-width: 90px; color: var(--text-dim); }
   .bar-track { flex: 1; height: 20px; background: var(--bg); border-radius: 4px; overflow: hidden; }
   .bar-fill { height: 100%; background: var(--accent); border-radius: 4px; transition: width 0.4s ease; }
   .bar-count { font-size: 12px; min-width: 40px; text-align: right; }
 
   /* Status */
-  .status-line {
-    padding: 12px 20px;
-    font-size: 13px;
-    color: var(--text-dim);
-  }
+  .status-line { padding: 12px 20px; font-size: 13px; color: var(--text-dim); }
   .status-line b { color: var(--text); }
 
   /* Empty state */
-  .empty {
-    padding: 40px 20px;
-    text-align: center;
-    color: var(--text-dim);
-    font-size: 13px;
-  }
+  .empty { padding: 40px 20px; text-align: center; color: var(--text-dim); font-size: 13px; }
 
   /* Progress bar */
-  .progress-bar {
-    width: 100%;
-    height: 24px;
-    background: var(--bg);
-    border-radius: 6px;
-    overflow: hidden;
-    margin: 8px 0;
-    position: relative;
-  }
-  .progress-fill {
-    height: 100%;
-    background: linear-gradient(90deg, var(--accent), var(--green));
-    border-radius: 6px;
-    transition: width 0.6s ease;
-    min-width: 0;
-  }
-  .progress-text {
-    position: absolute;
-    top: 0;
-    left: 0;
-    right: 0;
-    height: 100%;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    font-size: 11px;
-    font-weight: 600;
-    color: var(--text);
-    text-shadow: 0 1px 2px rgba(0,0,0,0.5);
-  }
+  .progress-bar { width: 100%; height: 24px; background: var(--bg); border-radius: 6px; overflow: hidden; margin: 8px 0; position: relative; }
+  .progress-fill { height: 100%; background: linear-gradient(90deg, var(--accent), var(--green)); border-radius: 6px; transition: width 0.6s ease; }
+  .progress-text { position: absolute; top: 0; left: 0; right: 0; height: 100%; display: flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 600; color: var(--text); text-shadow: 0 1px 2px rgba(0,0,0,0.5); }
 
-  /* Auto-refresh indicator */
-  .refresh-dot {
-    width: 8px;
-    height: 8px;
-    border-radius: 50%;
-    background: var(--green);
-    display: inline-block;
-    margin-right: 6px;
-    animation: pulse 2s infinite;
+  /* Filter bar */
+  .filter-bar { display: flex; flex-wrap: wrap; gap: 8px; padding: 12px 16px; border-bottom: 1px solid var(--border); align-items: center; }
+  .filter-bar label { font-size: 11px; color: var(--text-dim); }
+  .filter-bar input, .filter-bar select {
+    background: var(--bg); border: 1px solid var(--border); color: var(--text);
+    padding: 4px 8px; border-radius: 4px; font-size: 12px; width: 80px;
   }
-  @keyframes pulse {
-    0%, 100% { opacity: 1; }
-    50% { opacity: 0.3; }
+  .filter-bar select { width: auto; }
+  .pagination { display: flex; justify-content: space-between; align-items: center; padding: 12px 16px; font-size: 12px; color: var(--text-dim); }
+
+  /* Playlist cards */
+  .playlist-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 16px; }
+  .playlist-card {
+    background: var(--surface); border: 1px solid var(--border); border-radius: 10px;
+    padding: 16px; cursor: pointer; transition: border-color 0.2s;
   }
-  .refresh-info {
-    font-size: 12px;
-    color: var(--text-dim);
-    display: flex;
-    align-items: center;
+  .playlist-card:hover { border-color: var(--accent); }
+  .playlist-card h3 { font-size: 15px; margin-bottom: 8px; }
+  .playlist-card .meta { font-size: 12px; color: var(--text-dim); display: flex; gap: 12px; }
+
+  /* Modal */
+  .modal-overlay {
+    position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+    background: rgba(0,0,0,0.6); display: flex; align-items: center; justify-content: center; z-index: 100;
   }
+  .modal {
+    background: var(--surface); border: 1px solid var(--border); border-radius: 12px;
+    padding: 24px; min-width: 400px; max-width: 500px;
+  }
+  .modal h2 { font-size: 18px; margin-bottom: 16px; }
+  .modal .field { margin-bottom: 12px; }
+  .modal .field label { display: block; font-size: 12px; color: var(--text-dim); margin-bottom: 4px; }
+  .modal .field input, .modal .field select {
+    width: 100%; background: var(--bg); border: 1px solid var(--border); color: var(--text);
+    padding: 8px 12px; border-radius: 6px; font-size: 13px;
+  }
+  .modal .actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 16px; }
+
+  /* Refresh indicator */
+  .refresh-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--green); display: inline-block; margin-right: 6px; animation: pulse 2s infinite; }
+  @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
+  .refresh-info { font-size: 12px; color: var(--text-dim); display: flex; align-items: center; }
 </style>
 </head>
 <body>
@@ -251,344 +178,462 @@
   <h1>GrooveIQ <span>Dashboard</span></h1>
   <div class="auth-bar">
     <div class="refresh-info" id="refresh-info" style="display:none">
-      <span class="refresh-dot"></span> Auto-refresh 10s
+      <span class="refresh-dot"></span> Auto-refresh
     </div>
     <input type="password" id="api-key" placeholder="API Key" autocomplete="off">
     <button onclick="connect()">Connect</button>
   </div>
 </header>
 
+<div class="tab-bar" id="tab-bar" style="display:none">
+  <button class="active" onclick="switchTab('dashboard')">Dashboard</button>
+  <button onclick="switchTab('tracks')">Tracks</button>
+  <button onclick="switchTab('playlists')">Playlists</button>
+</div>
+
 <div id="js-errors" style="display:none;background:#2d1111;border:1px solid #7f2222;border-radius:8px;margin:12px 24px;color:#f87171;font-family:monospace;font-size:12px;max-height:200px;overflow:auto"></div>
 <div class="container" id="app">
-  <div class="empty" id="welcome">
-    Enter your API key above to connect.
-  </div>
+  <div class="empty" id="welcome">Enter your API key above to connect.</div>
 </div>
 
 <script>
-// Global error handler — shows JS errors on the page
+// Global error handler
 window.onerror = function(msg, src, line, col, err) {
   var el = document.getElementById('js-errors');
-  if (el) {
-    el.style.display = 'block';
-    el.innerHTML += '<div style="padding:6px 12px;border-bottom:1px solid #4a1c1c">'
-      + '<b>JS Error:</b> ' + msg + '<br>'
-      + '<span style="opacity:0.7">Line ' + line + (col ? ':' + col : '') + '</span>'
-      + (err && err.stack ? '<pre style="margin:4px 0 0;font-size:11px;opacity:0.8;white-space:pre-wrap">' + err.stack + '</pre>' : '')
-      + '</div>';
-  }
+  if (el) { el.style.display = 'block'; el.innerHTML += '<div style="padding:6px 12px"><b>JS Error:</b> ' + msg + ' (line ' + line + ')</div>'; }
   return false;
 };
 window.addEventListener('unhandledrejection', function(e) {
   var el = document.getElementById('js-errors');
-  if (el) {
-    el.style.display = 'block';
-    el.innerHTML += '<div style="padding:6px 12px;border-bottom:1px solid #4a1c1c">'
-      + '<b>Unhandled Promise:</b> ' + (e.reason ? (e.reason.message || e.reason) : 'unknown')
-      + (e.reason && e.reason.stack ? '<pre style="margin:4px 0 0;font-size:11px;opacity:0.8;white-space:pre-wrap">' + e.reason.stack + '</pre>' : '')
-      + '</div>';
-  }
+  if (el) { el.style.display = 'block'; el.innerHTML += '<div style="padding:6px 12px"><b>Promise:</b> ' + (e.reason ? (e.reason.message || e.reason) : 'unknown') + '</div>'; }
 });
 
-const $ = (s) => document.querySelector(s);
-const BASE = window.location.origin;
-let KEY = '';
-let refreshTimer = null;
+var $ = function(s) { return document.querySelector(s); };
+var BASE = window.location.origin;
+var KEY = '';
+var refreshTimer = null;
+var currentView = 'dashboard';
+var trackState = { offset: 0, limit: 50, sort: 'bpm', dir: 'asc', total: 0 };
 
-function headers() {
-  return { 'Authorization': 'Bearer ' + KEY, 'Content-Type': 'application/json' };
+function headers() { return { 'Authorization': 'Bearer ' + KEY, 'Content-Type': 'application/json' }; }
+
+function api(path) {
+  return fetch(BASE + path, { headers: headers() }).then(function(res) {
+    if (!res.ok) throw new Error(res.status + ' ' + res.statusText);
+    return res.json();
+  });
 }
 
-async function api(path) {
-  const res = await fetch(BASE + path, { headers: headers() });
-  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
-  return res.json();
+function apiPost(path, body) {
+  return fetch(BASE + path, { method: 'POST', headers: headers(), body: JSON.stringify(body) }).then(function(res) {
+    if (!res.ok) return res.json().then(function(d) { throw new Error(d.detail || res.statusText); });
+    return res.json();
+  });
+}
+
+function apiDelete(path) {
+  return fetch(BASE + path, { method: 'DELETE', headers: headers() }).then(function(res) {
+    if (!res.ok) throw new Error(res.status);
+  });
 }
 
 function timeAgo(ts) {
-  if (!ts) return '—';
-  const diff = Math.floor(Date.now() / 1000) - ts;
+  if (!ts) return '\u2014';
+  var diff = Math.floor(Date.now() / 1000) - ts;
   if (diff < 60) return diff + 's ago';
   if (diff < 3600) return Math.floor(diff / 60) + 'm ago';
   if (diff < 86400) return Math.floor(diff / 3600) + 'h ago';
   return Math.floor(diff / 86400) + 'd ago';
 }
 
-function fmtTime(ts) {
-  if (!ts) return '—';
-  return new Date(ts * 1000).toLocaleString();
-}
+function fmtTime(ts) { return ts ? new Date(ts * 1000).toLocaleString() : '\u2014'; }
 
 function fmtDuration(secs) {
-  if (secs == null) return '—';
-  if (secs < 60) return secs + 's';
-  if (secs < 3600) return Math.floor(secs / 60) + 'm ' + (secs % 60) + 's';
-  const h = Math.floor(secs / 3600);
-  const m = Math.floor((secs % 3600) / 60);
-  return h + 'h ' + m + 'm';
+  if (secs == null) return '\u2014';
+  if (secs < 60) return Math.round(secs) + 's';
+  if (secs < 3600) return Math.floor(secs / 60) + 'm ' + Math.round(secs % 60) + 's';
+  return Math.floor(secs / 3600) + 'h ' + Math.floor((secs % 3600) / 60) + 'm';
+}
+
+function fmtTrackDur(secs) {
+  if (!secs) return '\u2014';
+  var m = Math.floor(secs / 60);
+  var s = Math.round(secs % 60);
+  return m + ':' + (s < 10 ? '0' : '') + s;
+}
+
+function topMood(tags) {
+  if (!tags || !tags.length) return '\u2014';
+  var best = tags[0];
+  for (var i = 1; i < tags.length; i++) { if (tags[i].confidence > best.confidence) best = tags[i]; }
+  return best.confidence > 0.4 ? best.label : '\u2014';
+}
+
+function basename(path) {
+  if (!path) return '\u2014';
+  var parts = path.split('/');
+  return parts[parts.length - 1];
 }
 
 function eventBadge(type) {
-  const colors = {
-    play_end: 'green', like: 'green', playlist_add: 'green', repeat: 'green',
-    seek_back: 'green', queue_add: 'green', play_start: 'green',
-    skip: 'red', dislike: 'red',
-    volume_up: 'blue', volume_down: 'blue',
-    pause: 'yellow', resume: 'yellow', rating: 'yellow',
-    seek_forward: 'yellow',
-    reco_impression: 'purple',
+  var colors = {
+    play_end:'green',like:'green',playlist_add:'green',repeat:'green',seek_back:'green',queue_add:'green',play_start:'green',
+    skip:'red',dislike:'red',volume_up:'blue',volume_down:'blue',
+    pause:'yellow',resume:'yellow',rating:'yellow',seek_forward:'yellow',reco_impression:'purple'
   };
-  return `<span class="badge badge-${colors[type] || 'purple'}">${type}</span>`;
+  return '<span class="badge badge-' + (colors[type] || 'purple') + '">' + type + '</span>';
 }
 
-async function connect() {
+function strategyBadge(s) {
+  var colors = { flow: 'purple', mood: 'green', energy_curve: 'yellow', key_compatible: 'blue' };
+  return '<span class="badge badge-' + (colors[s] || 'purple') + '">' + s.replace('_', ' ') + '</span>';
+}
+
+// ---------------------------------------------------------------------------
+// Tab navigation
+// ---------------------------------------------------------------------------
+
+function switchTab(view) {
+  currentView = view;
+  var tabs = document.querySelectorAll('.tab-bar button');
+  for (var i = 0; i < tabs.length; i++) {
+    tabs[i].className = (tabs[i].textContent.toLowerCase().replace(' ', '') === view) ? 'active' : '';
+  }
+  // Map tab names to view names
+  var tabMap = { 'dashboard': 'dashboard', 'tracks': 'tracks', 'playlists': 'playlists' };
+  if (view === 'dashboard') loadDashboard();
+  else if (view === 'tracks') loadTracks();
+  else if (view === 'playlists') loadPlaylists();
+}
+
+// ---------------------------------------------------------------------------
+// Connection
+// ---------------------------------------------------------------------------
+
+function connect() {
   KEY = $('#api-key').value.trim();
   if (!KEY) return;
   sessionStorage.setItem('grooveiq_key', KEY);
-  try {
-    console.log('[GrooveIQ] Connecting with key...');
-    await loadDashboard();
-    console.log('[GrooveIQ] Dashboard loaded successfully');
+  loadDashboard().then(function() {
     $('#refresh-info').style.display = 'flex';
+    $('#tab-bar').style.display = 'flex';
     if (refreshTimer) clearInterval(refreshTimer);
-    refreshTimer = setInterval(loadDashboard, 10000);
-    currentRefreshInterval = 10000;
-  } catch (e) {
-    console.error('[GrooveIQ] Connection failed:', e);
+    refreshTimer = setInterval(function() { if (currentView === 'dashboard') loadDashboard(); }, 10000);
+  }).catch(function(e) {
     $('#app').innerHTML = '<div class="empty">Connection failed: ' + e.message + '</div>';
-  }
+  });
 }
 
-let currentRefreshInterval = 10000;
+// ---------------------------------------------------------------------------
+// Dashboard view
+// ---------------------------------------------------------------------------
 
-async function loadDashboard() {
-  const [stats, users, events] = await Promise.all([
-    api('/v1/stats'),
-    api('/v1/users?limit=20'),
-    api('/v1/events?limit=30'),
-  ]);
-  render(stats, users, events);
-
-  // Refresh faster while a scan is running (3s vs 10s)
-  var scanActive = stats.latest_scan && stats.latest_scan.status === 'running';
-  var wanted = scanActive ? 3000 : 10000;
-  if (refreshTimer && wanted !== currentRefreshInterval) {
-    clearInterval(refreshTimer);
-    refreshTimer = setInterval(loadDashboard, wanted);
-    currentRefreshInterval = wanted;
-  }
-}
-
-function renderEventRow(e) {
-  const source = [e.context_type, e.surface].filter(Boolean).join(' / ') || '\u2014';
-  const device = [e.device_type, e.device_id ? e.device_id.slice(0, 12) : null].filter(Boolean).join(' ') || '\u2014';
-  const output = [e.output_type, e.output_device_name].filter(Boolean).join(': ') || '\u2014';
-  const reasons = [e.reason_start ? 'start=' + e.reason_start : null, e.reason_end ? 'end=' + e.reason_end : null].filter(Boolean).join(', ') || '\u2014';
-  const sigs = [];
-  if (e.dwell_ms != null) sigs.push('dwell=' + (e.dwell_ms / 1000).toFixed(1) + 's');
-  if (e.shuffle) sigs.push('shuffle');
-  if (e.bluetooth_connected) sigs.push('BT');
-  if (e.location_label) sigs.push(e.location_label);
-  if (e.hour_of_day != null) sigs.push(e.hour_of_day + ':00');
-  if (e.num_seekfwd) sigs.push('seek\u2192' + e.num_seekfwd);
-  if (e.num_seekbk) sigs.push('seek\u2190' + e.num_seekbk);
-  if (e.context_switch) sigs.push('ctx-switch');
-  if (e.position != null) sigs.push('#' + e.position);
-  const sigHtml = sigs.length
-    ? sigs.map(function(s) { return '<span class="badge badge-blue" style="margin:1px">' + s + '</span>'; }).join(' ')
-    : '\u2014';
-  return '<tr>'
-    + '<td style="white-space:nowrap">' + timeAgo(e.timestamp) + '</td>'
-    + '<td><b>' + e.user_id + '</b></td>'
-    + '<td style="font-family:monospace;font-size:12px">' + e.track_id + '</td>'
-    + '<td>' + eventBadge(e.event_type) + '</td>'
-    + '<td>' + (e.value != null ? e.value : '\u2014') + '</td>'
-    + '<td>' + source + '</td>'
-    + '<td>' + device + '</td>'
-    + '<td>' + output + '</td>'
-    + '<td style="font-size:11px">' + reasons + '</td>'
-    + '<td>' + sigHtml + '</td>'
-    + '</tr>';
+function loadDashboard() {
+  return Promise.all([api('/v1/stats'), api('/v1/users?limit=20'), api('/v1/events?limit=30')])
+    .then(function(results) { renderDashboard(results[0], results[1], results[2]); });
 }
 
 function renderScanPanel(scan) {
-  if (!scan) {
-    return '<div class="empty">No scans yet. Click "Scan Now" to analyze your library.</div>';
-  }
+  if (!scan) return '<div class="empty">No scans yet. Click "Scan Now" to analyze your library.</div>';
   var statusColor = 'red';
   if (scan.status === 'completed') statusColor = 'green';
   else if (scan.status === 'running') statusColor = 'yellow';
   else if (scan.status === 'interrupted') statusColor = 'blue';
 
-  var lines = [];
-  // Status + timing
-  var statusLine = 'Status: <span class="badge badge-' + statusColor + '">' + scan.status + '</span>';
-  if (scan.status === 'running' && scan.eta_seconds != null) {
-    statusLine += ' <span style="margin-left:8px;color:var(--text-dim);font-size:12px">ETA: ' + fmtDuration(scan.eta_seconds) + '</span>';
-  }
-  if (scan.elapsed_seconds) {
-    statusLine += ' <span style="margin-left:8px;color:var(--text-dim);font-size:12px">Elapsed: ' + fmtDuration(scan.elapsed_seconds) + '</span>';
-  }
-  lines.push('<div class="status-line">' + statusLine + '</div>');
+  var h = '<div class="status-line">Status: <span class="badge badge-' + statusColor + '">' + scan.status + '</span>';
+  if (scan.status === 'running' && scan.eta_seconds != null) h += ' <span style="margin-left:8px;color:var(--text-dim);font-size:12px">ETA: ' + fmtDuration(scan.eta_seconds) + '</span>';
+  if (scan.elapsed_seconds) h += ' <span style="margin-left:8px;color:var(--text-dim);font-size:12px">Elapsed: ' + fmtDuration(scan.elapsed_seconds) + '</span>';
+  h += '</div>';
 
-  // Progress bar
   if (scan.files_found > 0) {
-    var processed = scan.files_analyzed + (scan.files_skipped || 0) + scan.files_failed;
     var pct = scan.percent_complete || 0;
-    lines.push('<div style="padding:4px 20px 8px">'
-      + '<div class="progress-bar">'
+    var proc = scan.files_analyzed + (scan.files_skipped || 0) + scan.files_failed;
+    h += '<div style="padding:4px 20px 8px"><div class="progress-bar">'
       + '<div class="progress-fill" style="width:' + pct + '%"></div>'
-      + '<div class="progress-text">' + pct + '% (' + processed + ' / ' + scan.files_found + ')</div>'
-      + '</div></div>');
+      + '<div class="progress-text">' + pct + '% (' + proc + ' / ' + scan.files_found + ')</div>'
+      + '</div></div>';
   }
-
-  // Counters
-  lines.push('<div class="status-line">'
-    + 'Analyzed: <b>' + scan.files_analyzed + '</b> &nbsp; '
-    + 'Skipped: <b>' + (scan.files_skipped || 0) + '</b> &nbsp; '
-    + 'Failed: <b>' + scan.files_failed + '</b> &nbsp; '
-    + 'Found: <b>' + scan.files_found + '</b>'
-    + '</div>');
-
-  // Current file
-  if (scan.current_file && scan.status === 'running') {
-    var fname = scan.current_file.split('/').pop();
-    lines.push('<div class="status-line" style="font-size:11px;font-family:monospace;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">Analyzing: ' + fname + '</div>');
-  }
-
-  // Timestamps
-  lines.push('<div class="status-line">Started: <b>' + fmtTime(scan.started_at) + '</b></div>');
-  if (scan.ended_at) {
-    lines.push('<div class="status-line">Ended: <b>' + fmtTime(scan.ended_at) + '</b></div>');
-  }
-
-  return lines.join('');
+  h += '<div class="status-line">Analyzed: <b>' + scan.files_analyzed + '</b> &nbsp; Skipped: <b>' + (scan.files_skipped||0) + '</b> &nbsp; Failed: <b>' + scan.files_failed + '</b> &nbsp; Found: <b>' + scan.files_found + '</b></div>';
+  h += '<div class="status-line">Started: <b>' + fmtTime(scan.started_at) + '</b></div>';
+  if (scan.ended_at) h += '<div class="status-line">Ended: <b>' + fmtTime(scan.ended_at) + '</b></div>';
+  return h;
 }
 
-function render(stats, users, events) {
-  const maxEvt = Math.max(...Object.values(stats.event_types_24h || {}), 1);
+function renderDashboard(stats, users, events) {
+  var maxEvt = 1;
+  var evtKeys = Object.keys(stats.event_types_24h || {});
+  for (var i = 0; i < evtKeys.length; i++) { if (stats.event_types_24h[evtKeys[i]] > maxEvt) maxEvt = stats.event_types_24h[evtKeys[i]]; }
 
-  let html = `
-    <!-- Stats Cards -->
-    <div class="stats-grid">
-      <div class="stat-card">
-        <div class="label">Total Events</div>
-        <div class="value">${stats.total_events.toLocaleString()}</div>
-        <div class="sub">${stats.events_last_24h} in last 24h</div>
-      </div>
-      <div class="stat-card">
-        <div class="label">Active Users</div>
-        <div class="value">${stats.total_users}</div>
-      </div>
-      <div class="stat-card">
-        <div class="label">Tracks Analyzed</div>
-        <div class="value">${stats.total_tracks_analyzed}</div>
-      </div>
-      <div class="stat-card">
-        <div class="label">Events / Hour</div>
-        <div class="value">${stats.events_last_1h}</div>
-        <div class="sub">last 60 minutes</div>
-      </div>
-    </div>
+  var h = '<div class="stats-grid">'
+    + '<div class="stat-card"><div class="label">Total Events</div><div class="value">' + (stats.total_events||0).toLocaleString() + '</div><div class="sub">' + stats.events_last_24h + ' in last 24h</div></div>'
+    + '<div class="stat-card"><div class="label">Active Users</div><div class="value">' + stats.total_users + '</div></div>'
+    + '<div class="stat-card"><div class="label">Tracks Analyzed</div><div class="value">' + stats.total_tracks_analyzed + '</div></div>'
+    + '<div class="stat-card"><div class="label">Playlists</div><div class="value">' + (stats.total_playlists||0) + '</div></div>'
+    + '<div class="stat-card"><div class="label">Events / Hour</div><div class="value">' + stats.events_last_1h + '</div><div class="sub">last 60 minutes</div></div>'
+    + '</div><div class="panels">';
 
-    <div class="panels">
-      <!-- Event Type Breakdown -->
-      <div class="panel">
-        <div class="panel-header">Event Types (24h)</div>
-        <div class="panel-body">
-          ${Object.keys(stats.event_types_24h || {}).length === 0
-            ? '<div class="empty">No events in the last 24 hours</div>'
-            : Object.entries(stats.event_types_24h).map(([type, count]) => `
-              <div class="bar-row">
-                <div class="bar-label">${eventBadge(type)}</div>
-                <div class="bar-track">
-                  <div class="bar-fill" style="width:${(count / maxEvt * 100).toFixed(1)}%"></div>
-                </div>
-                <div class="bar-count">${count}</div>
-              </div>
-            `).join('')}
-        </div>
-      </div>
+  // Event types
+  h += '<div class="panel"><div class="panel-header">Event Types (24h)</div><div class="panel-body">';
+  if (evtKeys.length === 0) { h += '<div class="empty">No events in the last 24 hours</div>'; }
+  else { for (var i = 0; i < evtKeys.length; i++) { var k=evtKeys[i], c=stats.event_types_24h[k]; h += '<div class="bar-row"><div class="bar-label">' + eventBadge(k) + '</div><div class="bar-track"><div class="bar-fill" style="width:' + (c/maxEvt*100).toFixed(1) + '%"></div></div><div class="bar-count">' + c + '</div></div>'; } }
+  h += '</div></div>';
 
-      <!-- Users -->
-      <div class="panel">
-        <div class="panel-header">Users</div>
-        <div class="panel-body">
-          ${users.length === 0
-            ? '<div class="empty">No users yet</div>'
-            : `<table>
-              <tr><th>User</th><th>Events</th><th>Last Seen</th></tr>
-              ${users.map(u => `
-                <tr>
-                  <td><b>${u.user_id}</b></td>
-                  <td>${u.event_count}</td>
-                  <td>${timeAgo(u.last_seen)}</td>
-                </tr>
-              `).join('')}
-            </table>`}
-        </div>
-      </div>
+  // Users
+  h += '<div class="panel"><div class="panel-header">Users</div><div class="panel-body">';
+  if (!users.length) { h += '<div class="empty">No users yet</div>'; }
+  else { h += '<table><tr><th>User</th><th>Events</th><th>Last Seen</th></tr>'; for (var i = 0; i < users.length; i++) { var u=users[i]; h += '<tr><td><b>' + u.user_id + '</b></td><td>' + u.event_count + '</td><td>' + timeAgo(u.last_seen) + '</td></tr>'; } h += '</table>'; }
+  h += '</div></div>';
 
-      <!-- Top Tracks -->
-      <div class="panel">
-        <div class="panel-header">Top Tracks (24h)</div>
-        <div class="panel-body">
-          ${(stats.top_tracks_24h || []).length === 0
-            ? '<div class="empty">No track activity in the last 24 hours</div>'
-            : `<table>
-              <tr><th>Track ID</th><th>Events</th></tr>
-              ${stats.top_tracks_24h.map(t => `
-                <tr>
-                  <td style="font-family:monospace;font-size:12px">${t.track_id}</td>
-                  <td>${t.events}</td>
-                </tr>
-              `).join('')}
-            </table>`}
-        </div>
-      </div>
+  // Top tracks
+  h += '<div class="panel"><div class="panel-header">Top Tracks (24h)</div><div class="panel-body">';
+  var tt = stats.top_tracks_24h || [];
+  if (!tt.length) { h += '<div class="empty">No track activity in the last 24 hours</div>'; }
+  else { h += '<table><tr><th>Track ID</th><th>Events</th></tr>'; for (var i = 0; i < tt.length; i++) { h += '<tr><td style="font-family:monospace;font-size:12px">' + tt[i].track_id + '</td><td>' + tt[i].events + '</td></tr>'; } h += '</table>'; }
+  h += '</div></div>';
 
-      <!-- Library Scan -->
-      <div class="panel">
-        <div class="panel-header">
-          Library Scan
-          <button class="secondary" onclick="triggerScan()">Scan Now</button>
-        </div>
-        <div class="panel-body">
-          ${renderScanPanel(stats.latest_scan)}
-        </div>
-      </div>
+  // Library scan
+  h += '<div class="panel"><div class="panel-header">Library Scan <button class="secondary" onclick="triggerScan()">Scan Now</button></div><div class="panel-body">' + renderScanPanel(stats.latest_scan) + '</div></div>';
 
-      <!-- Recent Events Feed -->
-      <div class="panel full-width">
-        <div class="panel-header">Recent Events</div>
-        <div class="panel-body" style="overflow-x:auto">
-          ${events.length === 0
-            ? '<div class="empty">No events recorded yet</div>'
-            : '<table><tr><th>Time</th><th>User</th><th>Track</th><th>Event</th><th>Value</th><th>Source</th><th>Device</th><th>Output</th><th>Reason</th><th>Signals</th></tr>'
-              + events.map(renderEventRow).join('')
-              + '</table>'}
-        </div>
-      </div>
-    </div>
-  `;
-  $('#app').innerHTML = html;
-}
-
-async function triggerScan() {
-  try {
-    await fetch(BASE + '/v1/library/scan', { method: 'POST', headers: headers() });
-    setTimeout(loadDashboard, 1000);
-  } catch (e) {
-    alert('Scan failed: ' + e.message);
+  // Recent events
+  h += '<div class="panel full-width"><div class="panel-header">Recent Events</div><div class="panel-body" style="overflow-x:auto">';
+  if (!events.length) { h += '<div class="empty">No events recorded yet</div>'; }
+  else {
+    h += '<table><tr><th>Time</th><th>User</th><th>Track</th><th>Event</th><th>Value</th><th>Source</th><th>Device</th></tr>';
+    for (var i = 0; i < events.length; i++) {
+      var e = events[i];
+      var src = [e.context_type, e.surface].filter(Boolean).join(' / ') || '\u2014';
+      var dev = [e.device_type, e.device_id ? e.device_id.slice(0,12) : null].filter(Boolean).join(' ') || '\u2014';
+      h += '<tr><td style="white-space:nowrap">' + timeAgo(e.timestamp) + '</td><td><b>' + e.user_id + '</b></td>'
+        + '<td style="font-family:monospace;font-size:12px">' + e.track_id + '</td><td>' + eventBadge(e.event_type) + '</td>'
+        + '<td>' + (e.value != null ? e.value : '\u2014') + '</td><td>' + src + '</td><td>' + dev + '</td></tr>';
+    }
+    h += '</table>';
   }
+  h += '</div></div></div>';
+  $('#app').innerHTML = h;
 }
 
-// Restore key from session
-const saved = sessionStorage.getItem('grooveiq_key');
-if (saved) {
-  $('#api-key').value = saved;
-  connect();
+// ---------------------------------------------------------------------------
+// Tracks view
+// ---------------------------------------------------------------------------
+
+function loadTracks() {
+  var s = trackState;
+  var url = '/v1/tracks?limit=' + s.limit + '&offset=' + s.offset + '&sort_by=' + s.sort + '&sort_dir=' + s.dir;
+  return api(url).then(function(data) { trackState.total = data.total; renderTracks(data); });
 }
+
+function sortTracks(field) {
+  if (trackState.sort === field) trackState.dir = trackState.dir === 'asc' ? 'desc' : 'asc';
+  else { trackState.sort = field; trackState.dir = 'asc'; }
+  trackState.offset = 0;
+  loadTracks();
+}
+
+function trackPage(delta) {
+  trackState.offset = Math.max(0, trackState.offset + delta * trackState.limit);
+  loadTracks();
+}
+
+function renderTracks(data) {
+  var tracks = data.tracks;
+  var s = trackState;
+  var arrow = function(f) { return s.sort === f ? (s.dir === 'asc' ? ' \u25B2' : ' \u25BC') : ''; };
+
+  var h = '<div class="panel full-width"><div class="panel-header">Analyzed Tracks (' + s.total + ') <button onclick="showGenerateModal()">Generate Playlist</button></div>';
+
+  h += '<div class="panel-body" style="overflow-x:auto"><table>'
+    + '<tr>'
+    + '<th onclick="sortTracks(\'bpm\')">BPM' + arrow('bpm') + '</th>'
+    + '<th>File</th>'
+    + '<th>Key</th>'
+    + '<th onclick="sortTracks(\'energy\')">Energy' + arrow('energy') + '</th>'
+    + '<th onclick="sortTracks(\'danceability\')">Dance' + arrow('danceability') + '</th>'
+    + '<th onclick="sortTracks(\'valence\')">Valence' + arrow('valence') + '</th>'
+    + '<th>Mood</th>'
+    + '<th onclick="sortTracks(\'duration\')">Duration' + arrow('duration') + '</th>'
+    + '<th>Track ID</th>'
+    + '</tr>';
+
+  for (var i = 0; i < tracks.length; i++) {
+    var t = tracks[i];
+    var energyBar = t.energy != null ? '<div style="display:inline-block;width:50px;height:8px;background:var(--bg);border-radius:4px;vertical-align:middle;margin-left:4px"><div style="width:' + (t.energy*100) + '%;height:100%;background:var(--green);border-radius:4px"></div></div>' : '';
+    h += '<tr>'
+      + '<td>' + (t.bpm ? t.bpm.toFixed(1) : '\u2014') + '</td>'
+      + '<td style="max-width:250px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + (t.file_path||'') + '">' + basename(t.file_path) + '</td>'
+      + '<td>' + (t.key || '\u2014') + ' ' + (t.mode ? t.mode.charAt(0) : '') + '</td>'
+      + '<td>' + (t.energy != null ? t.energy.toFixed(2) : '\u2014') + energyBar + '</td>'
+      + '<td>' + (t.danceability != null ? t.danceability.toFixed(2) : '\u2014') + '</td>'
+      + '<td>' + (t.valence != null ? t.valence.toFixed(2) : '\u2014') + '</td>'
+      + '<td>' + topMood(t.mood_tags) + '</td>'
+      + '<td>' + fmtTrackDur(t.duration) + '</td>'
+      + '<td style="font-family:monospace;font-size:11px">' + t.track_id + '</td>'
+      + '</tr>';
+  }
+  h += '</table></div>';
+
+  // Pagination
+  var from = s.offset + 1;
+  var to = Math.min(s.offset + tracks.length, s.total);
+  h += '<div class="pagination">'
+    + '<span>Showing ' + from + '\u2013' + to + ' of ' + s.total + '</span>'
+    + '<div><button class="secondary" onclick="trackPage(-1)"' + (s.offset === 0 ? ' disabled' : '') + '>\u2190 Prev</button> '
+    + '<button class="secondary" onclick="trackPage(1)"' + (s.offset + s.limit >= s.total ? ' disabled' : '') + '>Next \u2192</button></div>'
+    + '</div></div>';
+
+  $('#app').innerHTML = h;
+}
+
+// ---------------------------------------------------------------------------
+// Playlists view
+// ---------------------------------------------------------------------------
+
+function loadPlaylists() {
+  return api('/v1/playlists?limit=50').then(function(data) { renderPlaylistList(data); });
+}
+
+function renderPlaylistList(playlists) {
+  var h = '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">'
+    + '<h2 style="font-size:18px">Playlists (' + playlists.length + ')</h2>'
+    + '<button onclick="showGenerateModal()">Generate Playlist</button></div>';
+
+  if (!playlists.length) {
+    h += '<div class="empty">No playlists yet. Generate one from the button above or from the Tracks tab.</div>';
+    $('#app').innerHTML = h;
+    return;
+  }
+
+  h += '<div class="playlist-grid">';
+  for (var i = 0; i < playlists.length; i++) {
+    var p = playlists[i];
+    h += '<div class="playlist-card" onclick="viewPlaylist(' + p.id + ')">'
+      + '<h3>' + p.name + '</h3>'
+      + '<div class="meta">' + strategyBadge(p.strategy)
+      + '<span>' + p.track_count + ' tracks</span>'
+      + '<span>' + fmtDuration(p.total_duration) + '</span>'
+      + '<span>' + timeAgo(p.created_at) + '</span></div></div>';
+  }
+  h += '</div>';
+  $('#app').innerHTML = h;
+}
+
+function viewPlaylist(id) {
+  api('/v1/playlists/' + id).then(function(p) { renderPlaylistDetail(p); });
+}
+
+function renderPlaylistDetail(p) {
+  var h = '<div style="margin-bottom:16px">'
+    + '<button class="secondary" onclick="loadPlaylists()" style="margin-right:8px">\u2190 Back</button>'
+    + '<button class="danger" onclick="deletePlaylist(' + p.id + ')">Delete</button></div>';
+
+  h += '<div class="panel full-width"><div class="panel-header">' + p.name + ' &nbsp; ' + strategyBadge(p.strategy)
+    + '<span style="font-weight:400;color:var(--text-dim);font-size:12px">' + p.track_count + ' tracks \u00B7 ' + fmtDuration(p.total_duration) + '</span></div>';
+
+  h += '<div class="panel-body" style="overflow-x:auto"><table>'
+    + '<tr><th>#</th><th>File</th><th>BPM</th><th>Key</th><th>Energy</th><th>Dance</th><th>Valence</th><th>Mood</th><th>Duration</th></tr>';
+
+  for (var i = 0; i < p.tracks.length; i++) {
+    var t = p.tracks[i];
+    h += '<tr><td>' + (t.position + 1) + '</td>'
+      + '<td style="max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + (t.file_path||'') + '">' + basename(t.file_path) + '</td>'
+      + '<td>' + (t.bpm ? t.bpm.toFixed(1) : '\u2014') + '</td>'
+      + '<td>' + (t.key || '\u2014') + ' ' + (t.mode ? t.mode.charAt(0) : '') + '</td>'
+      + '<td>' + (t.energy != null ? t.energy.toFixed(2) : '\u2014') + '</td>'
+      + '<td>' + (t.danceability != null ? t.danceability.toFixed(2) : '\u2014') + '</td>'
+      + '<td>' + (t.valence != null ? t.valence.toFixed(2) : '\u2014') + '</td>'
+      + '<td>' + topMood(t.mood_tags) + '</td>'
+      + '<td>' + fmtTrackDur(t.duration) + '</td></tr>';
+  }
+  h += '</table></div></div>';
+  $('#app').innerHTML = h;
+}
+
+function deletePlaylist(id) {
+  if (!confirm('Delete this playlist?')) return;
+  apiDelete('/v1/playlists/' + id).then(function() { loadPlaylists(); });
+}
+
+// ---------------------------------------------------------------------------
+// Generate playlist modal
+// ---------------------------------------------------------------------------
+
+function showGenerateModal() {
+  var overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.onclick = function(e) { if (e.target === overlay) overlay.remove(); };
+
+  var m = '<div class="modal"><h2>Generate Playlist</h2>'
+    + '<div class="field"><label>Name</label><input id="gen-name" value="My Playlist"></div>'
+    + '<div class="field"><label>Strategy</label><select id="gen-strategy" onchange="onStrategyChange()">'
+    + '<option value="flow">Flow (smooth transitions)</option>'
+    + '<option value="mood">Mood (by feeling)</option>'
+    + '<option value="energy_curve">Energy Curve (shape)</option>'
+    + '<option value="key_compatible">Key Compatible (harmonic)</option>'
+    + '</select></div>'
+    + '<div class="field" id="gen-seed-wrap"><label>Seed Track ID</label><input id="gen-seed" placeholder="paste a track_id"></div>'
+    + '<div class="field" id="gen-mood-wrap" style="display:none"><label>Mood</label><select id="gen-mood">'
+    + '<option value="happy">Happy</option><option value="sad">Sad</option><option value="aggressive">Aggressive</option>'
+    + '<option value="relaxed">Relaxed</option><option value="party">Party</option></select></div>'
+    + '<div class="field" id="gen-curve-wrap" style="display:none"><label>Curve</label><select id="gen-curve">'
+    + '<option value="ramp_up_cool_down">Ramp Up + Cool Down</option><option value="ramp_up">Ramp Up</option>'
+    + '<option value="cool_down">Cool Down</option><option value="steady_high">Steady High</option>'
+    + '<option value="steady_low">Steady Low</option></select></div>'
+    + '<div class="field"><label>Max Tracks</label><input id="gen-max" type="number" value="25" min="5" max="100"></div>'
+    + '<div class="actions"><button class="secondary" onclick="this.closest(\'.modal-overlay\').remove()">Cancel</button>'
+    + '<button onclick="submitPlaylist()">Generate</button></div></div>';
+
+  overlay.innerHTML = m;
+  document.body.appendChild(overlay);
+}
+
+function onStrategyChange() {
+  var s = document.getElementById('gen-strategy').value;
+  document.getElementById('gen-seed-wrap').style.display = (s === 'flow' || s === 'key_compatible') ? '' : 'none';
+  document.getElementById('gen-mood-wrap').style.display = s === 'mood' ? '' : 'none';
+  document.getElementById('gen-curve-wrap').style.display = s === 'energy_curve' ? '' : 'none';
+}
+
+function submitPlaylist() {
+  var strategy = document.getElementById('gen-strategy').value;
+  var body = {
+    name: document.getElementById('gen-name').value || 'Playlist',
+    strategy: strategy,
+    max_tracks: parseInt(document.getElementById('gen-max').value) || 25
+  };
+  if (strategy === 'flow' || strategy === 'key_compatible') {
+    body.seed_track_id = document.getElementById('gen-seed').value.trim();
+  }
+  if (strategy === 'mood') {
+    body.params = { mood: document.getElementById('gen-mood').value };
+  }
+  if (strategy === 'energy_curve') {
+    body.params = { curve: document.getElementById('gen-curve').value };
+  }
+
+  var overlay = document.querySelector('.modal-overlay');
+  apiPost('/v1/playlists', body).then(function(p) {
+    if (overlay) overlay.remove();
+    currentView = 'playlists';
+    switchTab('playlists');
+    setTimeout(function() { viewPlaylist(p.id); }, 300);
+  }).catch(function(e) {
+    alert('Failed: ' + e.message);
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Actions
+// ---------------------------------------------------------------------------
+
+function triggerScan() {
+  fetch(BASE + '/v1/library/scan', { method: 'POST', headers: headers() })
+    .then(function() { setTimeout(loadDashboard, 1000); })
+    .catch(function(e) { alert('Scan failed: ' + e.message); });
+}
+
+// Restore session
+var saved = sessionStorage.getItem('grooveiq_key');
+if (saved) { $('#api-key').value = saved; connect(); }
 </script>
 </body>
 </html>

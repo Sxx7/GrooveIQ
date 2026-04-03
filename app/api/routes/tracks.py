@@ -13,7 +13,7 @@ import logging
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import select
+from sqlalchemy import select, func, asc, desc
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.security import require_api_key
@@ -70,6 +70,103 @@ async def get_library_scan_status(
     if result is None:
         raise HTTPException(status_code=404, detail=f"Scan {scan_id} not found.")
     return result
+
+
+# ---------------------------------------------------------------------------
+# Track listing
+# ---------------------------------------------------------------------------
+
+_SORT_COLUMNS = {
+    "bpm": TrackFeatures.bpm,
+    "energy": TrackFeatures.energy,
+    "danceability": TrackFeatures.danceability,
+    "valence": TrackFeatures.valence,
+    "key": TrackFeatures.key,
+    "duration": TrackFeatures.duration,
+    "analyzed_at": TrackFeatures.analyzed_at,
+}
+
+
+@router.get(
+    "/tracks",
+    summary="List analyzed tracks with filtering and sorting",
+)
+async def list_tracks(
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+    sort_by: str = Query("bpm"),
+    sort_dir: str = Query("asc"),
+    min_bpm: Optional[float] = Query(None),
+    max_bpm: Optional[float] = Query(None),
+    min_energy: Optional[float] = Query(None),
+    max_energy: Optional[float] = Query(None),
+    key: Optional[str] = Query(None),
+    mode: Optional[str] = Query(None),
+    mood: Optional[str] = Query(None),
+    session: AsyncSession = Depends(get_session),
+    _key: str = Depends(require_api_key),
+):
+    q = select(TrackFeatures).where(TrackFeatures.analysis_error.is_(None))
+
+    # Filters
+    if min_bpm is not None:
+        q = q.where(TrackFeatures.bpm >= min_bpm)
+    if max_bpm is not None:
+        q = q.where(TrackFeatures.bpm <= max_bpm)
+    if min_energy is not None:
+        q = q.where(TrackFeatures.energy >= min_energy)
+    if max_energy is not None:
+        q = q.where(TrackFeatures.energy <= max_energy)
+    if key:
+        q = q.where(TrackFeatures.key == key)
+    if mode:
+        q = q.where(TrackFeatures.mode == mode)
+
+    # Count total before pagination
+    count_q = select(func.count()).select_from(q.subquery())
+    total = (await session.execute(count_q)).scalar() or 0
+
+    # Sort
+    sort_col = _SORT_COLUMNS.get(sort_by, TrackFeatures.bpm)
+    order = desc(sort_col) if sort_dir == "desc" else asc(sort_col)
+    q = q.order_by(order).offset(offset).limit(limit)
+
+    result = await session.execute(q)
+    tracks_raw = result.scalars().all()
+
+    # Post-filter by mood tag if requested (JSON column, hard to filter in SQL)
+    tracks = tracks_raw
+    if mood:
+        filtered = []
+        for t in tracks_raw:
+            if t.mood_tags:
+                tags = t.mood_tags if isinstance(t.mood_tags, list) else []
+                for tag in tags:
+                    if isinstance(tag, dict) and tag.get("label") == mood and tag.get("confidence", 0) > 0.3:
+                        filtered.append(t)
+                        break
+        tracks = filtered
+
+    return {
+        "total": total,
+        "tracks": [
+            {
+                "track_id": t.track_id,
+                "file_path": t.file_path,
+                "duration": t.duration,
+                "bpm": t.bpm,
+                "key": t.key,
+                "mode": t.mode,
+                "energy": t.energy,
+                "danceability": t.danceability,
+                "valence": t.valence,
+                "instrumentalness": t.instrumentalness,
+                "mood_tags": t.mood_tags,
+                "analyzed_at": t.analyzed_at,
+            }
+            for t in tracks
+        ],
+    }
 
 
 # ---------------------------------------------------------------------------

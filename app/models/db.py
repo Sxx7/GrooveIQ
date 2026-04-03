@@ -20,6 +20,7 @@ from sqlalchemy import (
     Boolean,
     Column,
     Float,
+    ForeignKey,
     Index,
     Integer,
     String,
@@ -220,3 +221,39 @@ class LibraryScanState(Base):
     files_failed    = Column(Integer, nullable=False, default=0)
     current_file    = Column(Text,    nullable=True)      # path being analyzed right now
     last_error      = Column(Text, nullable=True)
+
+
+# ---------------------------------------------------------------------------
+# Playlists
+# ---------------------------------------------------------------------------
+
+class Playlist(Base):
+    """
+    A generated playlist. Tracks are stored in the PlaylistTrack join table.
+    Strategy records how the playlist was built so it can be regenerated.
+    """
+    __tablename__ = "playlists"
+
+    id             = Column(Integer, primary_key=True, autoincrement=True)
+    name           = Column(String(255), nullable=False)
+    strategy       = Column(String(32),  nullable=False)   # flow, mood, energy_curve, key_compatible
+    seed_track_id  = Column(String(128), nullable=True)
+    params         = Column(JSON,        nullable=True)    # strategy-specific config
+    track_count    = Column(Integer,     nullable=False, default=0)
+    total_duration = Column(Float,       nullable=True)    # seconds
+    created_at     = Column(Integer,     nullable=False, default=lambda: int(time.time()))
+
+
+class PlaylistTrack(Base):
+    """Ordered track within a playlist."""
+    __tablename__ = "playlist_tracks"
+
+    id          = Column(Integer, primary_key=True, autoincrement=True)
+    playlist_id = Column(Integer, ForeignKey("playlists.id", ondelete="CASCADE"), nullable=False, index=True)
+    track_id    = Column(String(128), nullable=False)
+    position    = Column(Integer, nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("playlist_id", "position", name="uq_playlist_position"),
+        Index("ix_playlist_track_pos", "playlist_id", "position"),
+    )

@@ -369,6 +369,78 @@ class ListenEventRead(BaseModel):
 # User
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Playlists
+# ---------------------------------------------------------------------------
+
+class PlaylistStrategy(str, Enum):
+    FLOW = "flow"
+    MOOD = "mood"
+    ENERGY_CURVE = "energy_curve"
+    KEY_COMPATIBLE = "key_compatible"
+
+
+class PlaylistCreate(BaseModel):
+    name: str = Field(..., min_length=1, max_length=255)
+    strategy: PlaylistStrategy
+    seed_track_id: Optional[str] = Field(None, max_length=128)
+    params: Optional[Dict[str, Any]] = None
+    max_tracks: int = Field(25, ge=5, le=100)
+
+    @model_validator(mode="after")
+    def validate_strategy_params(self):
+        if self.strategy in (PlaylistStrategy.FLOW, PlaylistStrategy.KEY_COMPATIBLE):
+            if not self.seed_track_id:
+                raise ValueError(f"seed_track_id is required for '{self.strategy}' strategy")
+        if self.strategy == PlaylistStrategy.MOOD:
+            mood = (self.params or {}).get("mood")
+            if not mood:
+                raise ValueError("params.mood is required for 'mood' strategy")
+        if self.strategy == PlaylistStrategy.ENERGY_CURVE:
+            curve = (self.params or {}).get("curve")
+            valid = ("ramp_up", "cool_down", "ramp_up_cool_down", "steady_high", "steady_low")
+            if curve not in valid:
+                raise ValueError(f"params.curve must be one of {valid}")
+        return self
+
+    model_config = {"use_enum_values": True}
+
+
+class PlaylistTrackItem(BaseModel):
+    position: int
+    track_id: str
+    file_path: Optional[str] = None
+    bpm: Optional[float] = None
+    key: Optional[str] = None
+    mode: Optional[str] = None
+    energy: Optional[float] = None
+    danceability: Optional[float] = None
+    valence: Optional[float] = None
+    mood_tags: Optional[List[MoodTag]] = None
+    duration: Optional[float] = None
+
+
+class PlaylistResponse(BaseModel):
+    id: int
+    name: str
+    strategy: str
+    seed_track_id: Optional[str] = None
+    params: Optional[Dict[str, Any]] = None
+    track_count: int
+    total_duration: Optional[float] = None
+    created_at: int
+
+    model_config = {"from_attributes": True}
+
+
+class PlaylistDetailResponse(PlaylistResponse):
+    tracks: List[PlaylistTrackItem]
+
+
+# ---------------------------------------------------------------------------
+# User
+# ---------------------------------------------------------------------------
+
 class UserCreate(BaseModel):
     user_id:      str = Field(..., min_length=1, max_length=128)
     display_name: Optional[str] = Field(None, max_length=255)

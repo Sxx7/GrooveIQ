@@ -13,7 +13,7 @@ from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import FileResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 
-from app.api.routes import events, health, stats, tracks, users
+from app.api.routes import events, health, playlists, stats, tracks, users
 from app.core.config import settings
 from app.core.logging import setup_logging
 from app.db.session import init_db
@@ -69,6 +69,7 @@ app.include_router(health.router, tags=["health"])
 app.include_router(events.router, prefix="/v1", tags=["events"])
 app.include_router(tracks.router, prefix="/v1", tags=["tracks"])
 app.include_router(users.router, prefix="/v1", tags=["users"])
+app.include_router(playlists.router, prefix="/v1", tags=["playlists"])
 app.include_router(stats.router, prefix="/v1", tags=["stats"])
 
 # ---------------------------------------------------------------------------
