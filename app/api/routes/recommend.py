@@ -80,7 +80,7 @@ async def get_recommendations(
     model_version = _get_model_version()
 
     if not candidates:
-        return {"request_id": str(uuid.uuid4()), "tracks": [], "model_version": model_version}
+        return {"request_id": str(uuid.uuid4()), "tracks": [], "model_version": model_version, "user_id": user_id, "seed_track_id": seed_track_id}
 
     candidate_ids = [c["track_id"] for c in candidates]
 
