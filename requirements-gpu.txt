@@ -1,0 +1,6 @@
+# Additional dependencies for GPU-accelerated analysis.
+# Install alongside requirements.txt:
+#   pip install -r requirements.txt -r requirements-gpu.txt
+
+# ONNX Runtime with CUDA provider for batched EffNet inference
+onnxruntime-gpu>=1.18,<1.20

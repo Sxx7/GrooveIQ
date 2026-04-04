@@ -1,0 +1,37 @@
+# GPU override for GrooveIQ
+#
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d
+#
+# Requires nvidia-container-toolkit on the host.
+
+services:
+  grooveiq:
+    build:
+      dockerfile: Dockerfile.gpu
+    image: grooveiq:gpu
+
+    environment:
+      ANALYSIS_GPU: "true"
+      # Single TF worker for GPU (avoids VRAM contention)
+      # DSP pass still uses ANALYSIS_WORKERS for CPU parallelism
+      ANALYSIS_GPU_WORKERS: "1"
+      # ONNX batch size: how many mel-spec patches per GPU forward pass
+      ANALYSIS_GPU_BATCH_SIZE: "64"
+
+    volumes:
+      - grooveiq_onnx:/cache/onnx
+
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+        limits:
+          cpus: "${CPU_LIMIT:-4.0}"
+          memory: "${MEM_LIMIT:-4G}"
+
+volumes:
+  grooveiq_onnx:

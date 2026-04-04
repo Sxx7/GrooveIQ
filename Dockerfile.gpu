@@ -1,0 +1,110 @@
+# GrooveIQ – GPU-accelerated Dockerfile
+# Uses NVIDIA CUDA base for GPU-accelerated TF model inference (EffNet, mood, etc.)
+#
+# Build:  docker build --platform linux/amd64 -f Dockerfile.gpu -t grooveiq:gpu .
+# Run:    docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d
+#
+# Requires: nvidia-container-toolkit on the host
+#   https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html
+
+# ── Stage 1: builder (same as CPU) ───────────────────────────────────────
+FROM python:3.12-slim AS builder
+
+WORKDIR /build
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        build-essential \
+        cmake \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY requirements.txt requirements-gpu.txt ./
+RUN pip install --upgrade pip wheel && \
+    pip wheel --no-cache-dir --wheel-dir /wheels \
+        -r requirements.txt \
+        -r requirements-gpu.txt
+
+
+# ── Stage 2: runtime with CUDA ───────────────────────────────────────────
+FROM nvidia/cuda:12.2.2-cudnn8-runtime-ubuntu22.04 AS runtime
+
+LABEL org.opencontainers.image.title="GrooveIQ (GPU)"
+LABEL org.opencontainers.image.description="Behavioral music recommendation engine – GPU accelerated"
+LABEL org.opencontainers.image.source="https://gitlab.local.devii.ch/simon/grooveiq"
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Python 3.12 + audio codec libs for Essentia
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        software-properties-common \
+    && add-apt-repository ppa:deadsnakes/ppa \
+    && apt-get update && apt-get install -y --no-install-recommends \
+        python3.12 \
+        python3.12-venv \
+        python3.12-dev \
+        python3-pip \
+        libavcodec-dev \
+        libavformat-dev \
+        libavutil-dev \
+        libswresample-dev \
+        libfftw3-double3 \
+        libyaml-0-2 \
+        libsamplerate0 \
+        libtag1v5 \
+        libchromaprint1 \
+        libgomp1 \
+        tini \
+    && rm -rf /var/lib/apt/lists/*
+
+# Make python3.12 the default
+RUN update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.12 1 && \
+    update-alternatives --install /usr/bin/python python /usr/bin/python3.12 1
+
+# Non-root user
+RUN groupadd --gid 1001 grooveiq && \
+    useradd  --uid 1001 --gid grooveiq --no-create-home --shell /sbin/nologin grooveiq
+
+WORKDIR /app
+
+# Install pre-built wheels
+COPY --from=builder /wheels /wheels
+RUN pip install --no-cache-dir --no-index --find-links=/wheels /wheels/* && \
+    rm -rf /wheels
+
+# Copy application source
+COPY --chown=grooveiq:grooveiq app/ ./app/
+
+# Data directories
+RUN mkdir -p /data /data/models /music /cache/essentia /cache/onnx && \
+    chown -R grooveiq:grooveiq /data /music /cache
+
+# Environment
+ENV ESSENTIA_MODELS_PATH=/cache/essentia \
+    ONNX_MODELS_PATH=/cache/onnx \
+    APP_ENV=production \
+    DATABASE_URL=sqlite+aiosqlite:////data/grooveiq.db \
+    MUSIC_LIBRARY_PATH=/music \
+    LOG_JSON=true \
+    LOG_LEVEL=INFO \
+    PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    # GPU-specific: let TF grab memory as needed, limit ONNX to 512MB
+    TF_FORCE_GPU_ALLOW_GROWTH=true \
+    TF_CPP_MIN_LOG_LEVEL=2 \
+    ANALYSIS_GPU=true \
+    NVIDIA_VISIBLE_DEVICES=all \
+    NVIDIA_DRIVER_CAPABILITIES=compute,utility
+
+USER grooveiq
+
+EXPOSE 8000
+
+ENTRYPOINT ["/usr/bin/tini", "--"]
+
+CMD ["uvicorn", "app.main:app", \
+     "--host", "0.0.0.0", \
+     "--port", "8000", \
+     "--workers", "1", \
+     "--loop", "uvloop", \
+     "--http", "httptools", \
+     "--proxy-headers", \
+     "--forwarded-allow-ips", "*"]

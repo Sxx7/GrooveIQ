@@ -252,15 +252,28 @@ async def _run_scan(scan_id: int) -> None:
                 tf_files = list(rows)
 
             if tf_files:
-                logger.info(f"[Scan {scan_id}] Pass 2/2: TF enrichment for {len(tf_files)} tracks")
                 tf_counters = {"found": len(tf_files), "ok": 0, "skipped": 0, "failed": 0}
                 tf_start = time.time()
-                # Build hash cache that forces re-analysis (no skipping)
-                tf_hash_cache: dict[str, tuple[str, str]] = {}
-                for i in range(0, len(tf_files), batch_size):
-                    batch = tf_files[i:i + batch_size]
-                    await _process_batch(batch, scan_id, tf_counters, tf_start, tf_hash_cache, skip_tf=False)
-                    _log_progress(scan_id, tf_counters["found"], tf_counters["ok"], tf_counters["skipped"], tf_counters["failed"], tf_start)
+
+                # Try ONNX GPU batched path first, fall back to per-file TF
+                use_gpu = settings.ANALYSIS_GPU
+                if use_gpu:
+                    try:
+                        from app.services.gpu_inference import is_available
+                        use_gpu = is_available()
+                    except ImportError:
+                        use_gpu = False
+
+                if use_gpu:
+                    await _run_gpu_enrichment(scan_id, tf_files, tf_counters, tf_start)
+                else:
+                    logger.info(f"[Scan {scan_id}] Pass 2/2: TF enrichment (CPU) for {len(tf_files)} tracks")
+                    tf_hash_cache: dict[str, tuple[str, str]] = {}
+                    for i in range(0, len(tf_files), batch_size):
+                        batch = tf_files[i:i + batch_size]
+                        await _process_batch(batch, scan_id, tf_counters, tf_start, tf_hash_cache, skip_tf=False)
+                        _log_progress(scan_id, tf_counters["found"], tf_counters["ok"], tf_counters["skipped"], tf_counters["failed"], tf_start)
+
                 counters["ok"] += tf_counters["ok"]
                 counters["failed"] += tf_counters["failed"]
 
@@ -348,6 +361,78 @@ def _log_progress(scan_id: int, found: int, analyzed: int, skipped: int, failed:
         f"{analyzed} new, {skipped} skipped, {failed} failed | "
         f"{rate:.1f} files/s | ETA {eta_str}"
     )
+
+
+async def _run_gpu_enrichment(scan_id: int, tf_files: list[str], counters: dict, scan_start: float) -> None:
+    """
+    Run TF enrichment pass using ONNX Runtime GPU batched inference.
+
+    Instead of processing files one-at-a-time through the process pool,
+    this collects mel-spectrograms and runs them through the GPU in large
+    batches — the key to GPU throughput.
+    """
+    from app.services.gpu_inference import gpu_detected, infer_batch
+    from app.services.audio_analysis import ANALYSIS_VERSION, generate_track_id
+
+    provider = "GPU" if gpu_detected() else "CPU/ONNX"
+    logger.info(
+        f"[Scan {scan_id}] Pass 2/2: {provider} batched enrichment for "
+        f"{len(tf_files)} tracks (batch_size={settings.ANALYSIS_GPU_BATCH_SIZE})"
+    )
+
+    gpu_batch = settings.ANALYSIS_GPU_BATCH_SIZE
+
+    for batch_start in range(0, len(tf_files), gpu_batch):
+        batch_paths = tf_files[batch_start:batch_start + gpu_batch]
+
+        # Run batched inference (mel-spec extraction + EffNet + heads)
+        loop = asyncio.get_running_loop()
+        try:
+            results = await asyncio.wait_for(
+                loop.run_in_executor(None, infer_batch, batch_paths),
+                timeout=settings.ANALYSIS_TIMEOUT * len(batch_paths),
+            )
+        except Exception as e:
+            logger.error(f"[Scan {scan_id}] GPU batch inference failed: {e}")
+            counters["failed"] += len(batch_paths)
+            continue
+
+        # Persist results
+        async with AsyncSessionLocal() as session:
+            for fp, result in zip(batch_paths, results):
+                fname = Path(fp).name
+                if result.get("analysis_error"):
+                    logger.warning(f"[Scan {scan_id}] TF FAIL {fname}: {result['analysis_error']}")
+                    session.add(ScanLog(scan_id=scan_id, level="fail", filename=fname, message=result["analysis_error"]))
+                    counters["failed"] += 1
+                else:
+                    track_id = generate_track_id(fp)
+                    # Update existing row with TF features
+                    db_result = await session.execute(
+                        select(TrackFeatures).where(TrackFeatures.track_id == track_id)
+                    )
+                    existing = db_result.scalar_one_or_none()
+                    if existing:
+                        for k, v in result.items():
+                            if hasattr(existing, k) and k not in ("id", "track_id", "file_path"):
+                                setattr(existing, k, v)
+                        existing.analysis_version = ANALYSIS_VERSION
+                        counters["ok"] += 1
+                        logger.debug(f"[Scan {scan_id}] TF OK  {fname}")
+                    else:
+                        counters["failed"] += 1
+                        logger.warning(f"[Scan {scan_id}] TF FAIL {fname}: no DSP row found")
+            await session.commit()
+
+        processed = counters["ok"] + counters["failed"] + counters["skipped"]
+        _log_progress(scan_id, counters["found"], counters["ok"], counters["skipped"], counters["failed"], scan_start)
+        await _update_scan(
+            scan_id,
+            files_found=counters["found"],
+            files_analyzed=counters["ok"],
+            files_skipped=counters["skipped"],
+            files_failed=counters["failed"],
+        )
 
 
 async def _process_file(file_path: str, scan_id: int, counters: dict, scan_start: float, hash_cache: dict, skip_tf: bool = False) -> None:
