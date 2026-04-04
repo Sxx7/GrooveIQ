@@ -277,21 +277,28 @@ async def _run_scan(scan_id: int) -> None:
                 counters["ok"] += tf_counters["ok"]
                 counters["failed"] += tf_counters["failed"]
 
-        # Prune old log entries (keep latest 500)
+        # Prune old log entries (keep latest 500).
+        # Uses a server-side subquery so we don't pull thousands of IDs
+        # into Python and back — the old approach generated a massive
+        # IN(...) clause that blocked the event loop and stalled SQLite.
         async with AsyncSessionLocal() as session:
-            from sqlalchemy import func as fn
-            count = (await session.execute(
-                select(fn.count(ScanLog.id)).where(ScanLog.scan_id == scan_id)
-            )).scalar() or 0
-            if count > 500:
-                oldest = (await session.execute(
-                    select(ScanLog.id).where(ScanLog.scan_id == scan_id)
-                    .order_by(ScanLog.id.asc()).limit(count - 500)
-                )).scalars().all()
-                if oldest:
-                    from sqlalchemy import delete as del_stmt
-                    await session.execute(del_stmt(ScanLog).where(ScanLog.id.in_(oldest)))
-                    await session.commit()
+            keep_subq = (
+                select(ScanLog.id)
+                .where(ScanLog.scan_id == scan_id)
+                .order_by(ScanLog.id.desc())
+                .limit(500)
+                .correlate(None)
+                .scalar_subquery()
+            )
+            from sqlalchemy import delete as del_stmt
+            result = await session.execute(
+                del_stmt(ScanLog)
+                .where(ScanLog.scan_id == scan_id)
+                .where(ScanLog.id.notin_(keep_subq))
+            )
+            if result.rowcount:
+                await session.commit()
+                logger.debug(f"[Scan {scan_id}] Pruned {result.rowcount} old log entries")
 
         # Sync track IDs with the media server (if configured).
         try:
@@ -459,31 +466,36 @@ async def _process_file(file_path: str, scan_id: int, counters: dict, scan_start
     except Exception as exc:
         result = exc
 
-    async with AsyncSessionLocal() as session:
-        if isinstance(result, Exception):
-            logger.error(f"[Scan {scan_id}] FAIL {fname}: {result}")
+    if isinstance(result, Exception):
+        logger.error(f"[Scan {scan_id}] FAIL {fname}: {result}")
+        async with AsyncSessionLocal() as session:
             session.add(ScanLog(scan_id=scan_id, level="fail", filename=fname, message=str(result)))
-            counters["failed"] += 1
-        elif result is None:
-            # File unchanged, skipped
-            logger.debug(f"[Scan {scan_id}] SKIP {fname}")
-            session.add(ScanLog(scan_id=scan_id, level="skip", filename=fname, message="unchanged"))
-            counters["skipped"] += 1
-        elif result.get("analysis_error"):
-            logger.warning(f"[Scan {scan_id}] FAIL {fname}: {result['analysis_error']}")
+            await session.commit()
+        counters["failed"] += 1
+    elif result is None:
+        # File unchanged, skipped — only bump counter, no DB write.
+        # Writing 20k+ skip rows per scan bloats the WAL and triggers
+        # a massive prune DELETE that stalls SQLite.
+        logger.debug(f"[Scan {scan_id}] SKIP {fname}")
+        counters["skipped"] += 1
+    elif result.get("analysis_error"):
+        logger.warning(f"[Scan {scan_id}] FAIL {fname}: {result['analysis_error']}")
+        async with AsyncSessionLocal() as session:
             session.add(ScanLog(scan_id=scan_id, level="fail", filename=fname, message=result["analysis_error"]))
-            counters["failed"] += 1
-        else:
-            counters["ok"] += 1
-            bpm_str = str(round(result.get("bpm", 0))) if result.get("bpm") else "?"
-            key_str = (result.get("key", "?") or "?") + (result.get("mode", "") or "")
-            dur_str = str(round(result.get("duration", 0))) + "s"
-            energy_str = str(round(result.get("energy", 0), 2)) if result.get("energy") is not None else "?"
-            msg = bpm_str + " BPM | " + key_str + " | " + dur_str + " | energy " + energy_str
-            logger.info(f"[Scan {scan_id}] OK   {fname} | {msg}")
+            await session.commit()
+        counters["failed"] += 1
+    else:
+        counters["ok"] += 1
+        bpm_str = str(round(result.get("bpm", 0))) if result.get("bpm") else "?"
+        key_str = (result.get("key", "?") or "?") + (result.get("mode", "") or "")
+        dur_str = str(round(result.get("duration", 0))) + "s"
+        energy_str = str(round(result.get("energy", 0), 2)) if result.get("energy") is not None else "?"
+        msg = bpm_str + " BPM | " + key_str + " | " + dur_str + " | energy " + energy_str
+        logger.info(f"[Scan {scan_id}] OK   {fname} | {msg}")
+        async with AsyncSessionLocal() as session:
             session.add(ScanLog(scan_id=scan_id, level="ok", filename=fname, message=msg))
             await _upsert_track_features(session, result)
-        await session.commit()
+            await session.commit()
 
     # Update scan progress in DB every 10 files (reduces SQLite write contention)
     processed = counters["ok"] + counters["skipped"] + counters["failed"]

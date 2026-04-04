@@ -16,8 +16,11 @@ from app.models.db import Base
 
 logger = logging.getLogger(__name__)
 
-# SQLite-specific pragma: WAL mode for concurrent reads during writes
-_SQLITE_CONNECT_ARGS = {"check_same_thread": False}
+# SQLite-specific pragma: WAL mode for concurrent reads during writes.
+# timeout=30 sets the busy-wait when another connection holds the write
+# lock — without it aiosqlite defaults to 5 s which is too short during
+# heavy scan-completion operations (log prune, media-server sync, FAISS).
+_SQLITE_CONNECT_ARGS = {"check_same_thread": False, "timeout": 30}
 
 _connect_args = (
     _SQLITE_CONNECT_ARGS if "sqlite" in settings.DATABASE_URL else {}
@@ -28,6 +31,7 @@ engine = create_async_engine(
     echo=settings.APP_ENV == "development",
     pool_size=settings.DB_POOL_SIZE if "sqlite" not in settings.DATABASE_URL else 5,
     max_overflow=settings.DB_MAX_OVERFLOW if "sqlite" not in settings.DATABASE_URL else 10,
+    pool_pre_ping=True,
     connect_args=_connect_args,
 )
 
