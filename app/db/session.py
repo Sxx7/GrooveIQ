@@ -26,8 +26,8 @@ _connect_args = (
 engine = create_async_engine(
     settings.DATABASE_URL,
     echo=settings.APP_ENV == "development",
-    pool_size=settings.DB_POOL_SIZE if "sqlite" not in settings.DATABASE_URL else 1,
-    max_overflow=settings.DB_MAX_OVERFLOW if "sqlite" not in settings.DATABASE_URL else 0,
+    pool_size=settings.DB_POOL_SIZE if "sqlite" not in settings.DATABASE_URL else 5,
+    max_overflow=settings.DB_MAX_OVERFLOW if "sqlite" not in settings.DATABASE_URL else 10,
     connect_args=_connect_args,
 )
 
