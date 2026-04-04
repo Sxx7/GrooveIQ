@@ -34,6 +34,8 @@ LABEL org.opencontainers.image.source="https://gitlab.local.devii.ch/simon/groov
 ENV DEBIAN_FRONTEND=noninteractive
 
 # Python 3.12 + audio codec libs for Essentia
+# NOTE: python3-pip is for the system Python 3.10, not 3.12.
+# We use python3.12-venv + ensurepip instead (distutils was removed in 3.12).
 RUN apt-get update && apt-get install -y --no-install-recommends \
         software-properties-common \
     && add-apt-repository ppa:deadsnakes/ppa \
@@ -41,7 +43,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         python3.12 \
         python3.12-venv \
         python3.12-dev \
-        python3-pip \
         libavcodec-dev \
         libavformat-dev \
         libavutil-dev \
@@ -55,9 +56,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         tini \
     && rm -rf /var/lib/apt/lists/*
 
-# Make python3.12 the default
-RUN update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.12 1 && \
-    update-alternatives --install /usr/bin/python python /usr/bin/python3.12 1
+# Create a venv so we get a working pip for Python 3.12
+RUN python3.12 -m venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
 
 # Non-root user
 RUN groupadd --gid 1001 grooveiq && \
