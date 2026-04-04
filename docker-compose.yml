@@ -61,8 +61,15 @@ services:
       MEDIA_SERVER_LIBRARY_ID: ${MEDIA_SERVER_LIBRARY_ID:-1}
       MEDIA_SERVER_MUSIC_PATH: ${MEDIA_SERVER_MUSIC_PATH:-}
 
-      # Music discovery (Last.fm + Lidarr)
+      # Last.fm
       LASTFM_API_KEY:              ${LASTFM_API_KEY:-}
+      LASTFM_API_SECRET:           ${LASTFM_API_SECRET:-}
+      LASTFM_ENABLED:              ${LASTFM_ENABLED:-false}
+      LASTFM_SCROBBLE_ENABLED:     ${LASTFM_SCROBBLE_ENABLED:-false}
+      LASTFM_SESSION_ENCRYPTION_KEY: ${LASTFM_SESSION_ENCRYPTION_KEY:-}
+      LASTFM_REFRESH_HOURS:        ${LASTFM_REFRESH_HOURS:-6}
+
+      # Music discovery (Lidarr)
       LIDARR_URL:                  ${LIDARR_URL:-}
       LIDARR_API_KEY:              ${LIDARR_API_KEY:-}
       LIDARR_QUALITY_PROFILE_ID:   ${LIDARR_QUALITY_PROFILE_ID:-1}
