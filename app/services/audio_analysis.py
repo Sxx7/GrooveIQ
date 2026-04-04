@@ -233,8 +233,20 @@ def analyze_track(file_path: str, skip_tf: bool = False) -> dict:
         # ------------------------------------------------------------------
         t0 = time.monotonic()
         sr = 22050
-        loader = es.MonoLoader(filename=file_path, sampleRate=sr)
-        audio = loader()
+        try:
+            loader = es.MonoLoader(filename=file_path, sampleRate=sr)
+            audio = loader()
+        except RuntimeError as e:
+            if "more than 2 channels" in str(e):
+                # Fallback: AudioLoader handles any channel count, mix to mono
+                audio_loader = es.AudioLoader(filename=file_path)
+                multi, loaded_sr, _, _, _, _ = audio_loader()
+                # multi shape: (samples, channels) — average to mono
+                audio = np.mean(multi, axis=1).astype(np.float32)
+                if int(loaded_sr) != sr:
+                    audio = es.Resample(inputSampleRate=loaded_sr, outputSampleRate=sr)(audio)
+            else:
+                raise
         result["duration"] = len(audio) / float(sr)
         timings["load"] = time.monotonic() - t0
 
