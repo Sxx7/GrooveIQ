@@ -91,6 +91,12 @@ async def connect_lastfm(
             status_code=401,
             detail=f"Last.fm authentication failed: {e.message}",
         )
+    except Exception as e:
+        logger.error("Unexpected error during Last.fm auth: %s", e)
+        raise HTTPException(
+            status_code=502,
+            detail=f"Last.fm API error: {e}",
+        )
 
     # Store encrypted session key; password is already out of scope
     user.lastfm_username = body.lastfm_username

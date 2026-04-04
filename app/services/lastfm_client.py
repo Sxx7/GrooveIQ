@@ -156,10 +156,18 @@ class LastFmClient:
         params["api_sig"] = _generate_api_sig(params)
         params["format"] = "json"
         resp = await self._client.post(_BASE_URL, data=params)
-        resp.raise_for_status()
-        data = resp.json()
+        # Last.fm returns error details in JSON body even on non-200 status codes
+        try:
+            data = resp.json()
+        except Exception:
+            raise LastFmError(
+                resp.status_code,
+                f"Last.fm returned HTTP {resp.status_code} with non-JSON body",
+            )
         if "error" in data:
             raise LastFmError(data.get("error", 0), data.get("message", "Unknown error"))
+        if resp.status_code >= 400:
+            raise LastFmError(resp.status_code, f"HTTP {resp.status_code}: {data}")
         return data
 
     async def get_mobile_session(self, username: str, password: str) -> str:
