@@ -1,0 +1,96 @@
+# GrooveIQ – Intel iGPU Dockerfile (OpenVINO)
+# Uses Intel UHD/Iris iGPU for accelerated TF model inference.
+#
+# Build:  docker build --platform linux/amd64 -f Dockerfile.igpu -t grooveiq:igpu .
+# Run:    docker compose -f docker-compose.yml -f docker-compose.igpu.yml up -d
+#
+# Works with any Intel Gen9+ iGPU (Skylake, Kaby Lake, ... Alder Lake, Raptor Lake).
+# Host must have /dev/dri/renderD128 available.
+
+# ── Stage 1: builder ─────────────────────────────────────────────────────
+FROM python:3.12-slim AS builder
+
+WORKDIR /build
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        build-essential \
+        cmake \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY requirements.txt requirements-igpu.txt ./
+RUN pip install --upgrade pip wheel && \
+    pip wheel --no-cache-dir --wheel-dir /wheels \
+        -r requirements.txt \
+        -r requirements-igpu.txt
+
+
+# ── Stage 2: runtime ─────────────────────────────────────────────────────
+FROM python:3.12-slim AS runtime
+
+LABEL org.opencontainers.image.title="GrooveIQ (Intel iGPU)"
+LABEL org.opencontainers.image.description="Behavioral music recommendation engine – Intel iGPU accelerated"
+LABEL org.opencontainers.image.source="https://gitlab.local.devii.ch/simon/grooveiq"
+
+# Runtime audio codec libs (Essentia) + Intel GPU compute runtime
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        libavcodec61 \
+        libavformat61 \
+        libavutil59 \
+        libswresample5 \
+        libfftw3-double3 \
+        libyaml-0-2 \
+        libsamplerate0 \
+        libtag2 \
+        libchromaprint1 \
+        libgomp1 \
+        # Intel GPU compute runtime (OpenCL + Level Zero)
+        intel-opencl-icd \
+        intel-level-zero-gpu \
+        tini \
+    && rm -rf /var/lib/apt/lists/*
+
+# Non-root user
+RUN groupadd --gid 1001 grooveiq && \
+    useradd  --uid 1001 --gid grooveiq --no-create-home --shell /sbin/nologin grooveiq
+
+WORKDIR /app
+
+# Install pre-built wheels
+COPY --from=builder /wheels /wheels
+RUN pip install --no-cache-dir --no-index --find-links=/wheels /wheels/* && \
+    rm -rf /wheels
+
+# Copy application source
+COPY --chown=grooveiq:grooveiq app/ ./app/
+
+# Data directories
+RUN mkdir -p /data /data/models /music /cache/essentia /cache/onnx && \
+    chown -R grooveiq:grooveiq /data /music /cache
+
+# Environment
+ENV ESSENTIA_MODELS_PATH=/cache/essentia \
+    ONNX_MODELS_PATH=/cache/onnx \
+    APP_ENV=production \
+    DATABASE_URL=sqlite+aiosqlite:////data/grooveiq.db \
+    MUSIC_LIBRARY_PATH=/music \
+    LOG_JSON=true \
+    LOG_LEVEL=INFO \
+    PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    ANALYSIS_GPU=true \
+    ANALYSIS_GPU_BACKEND=openvino
+
+USER grooveiq
+
+EXPOSE 8000
+
+ENTRYPOINT ["/usr/bin/tini", "--"]
+
+CMD ["uvicorn", "app.main:app", \
+     "--host", "0.0.0.0", \
+     "--port", "8000", \
+     "--workers", "1", \
+     "--loop", "uvloop", \
+     "--http", "httptools", \
+     "--proxy-headers", \
+     "--forwarded-allow-ips", "*"]

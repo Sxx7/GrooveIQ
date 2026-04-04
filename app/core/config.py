@@ -75,6 +75,7 @@ class Settings(BaseSettings):
     RESCAN_INTERVAL_HOURS: int = 6     # how often to check for new files
     ANALYSIS_TWO_PASS: bool = True     # fast DSP pass first, then TF enrichment pass
     ANALYSIS_GPU: bool = False         # use ONNX Runtime GPU for TF enrichment pass
+    ANALYSIS_GPU_BACKEND: str = ""     # "cuda", "openvino", or "" (auto-detect)
     ANALYSIS_GPU_BATCH_SIZE: int = 64  # mel-spec patches per GPU forward pass
     ANALYSIS_GPU_WORKERS: int = 1      # workers for GPU inference (usually 1)
 

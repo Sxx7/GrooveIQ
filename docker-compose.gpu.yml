@@ -4,6 +4,7 @@
 #   docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d
 #
 # Requires nvidia-container-toolkit on the host.
+# For Intel iGPU (OpenVINO), use docker-compose.igpu.yml instead.
 
 services:
   grooveiq:
@@ -13,25 +14,23 @@ services:
 
     environment:
       ANALYSIS_GPU: "true"
-      # Single TF worker for GPU (avoids VRAM contention)
-      # DSP pass still uses ANALYSIS_WORKERS for CPU parallelism
       ANALYSIS_GPU_WORKERS: "1"
-      # ONNX batch size: how many mel-spec patches per GPU forward pass
       ANALYSIS_GPU_BATCH_SIZE: "64"
 
     volumes:
       - grooveiq_onnx:/cache/onnx
 
+    # Adds GPU reservation on top of base limits.
+    # CPU/memory limits come from the base docker-compose.yml via
+    # CPU_LIMIT / MEM_LIMIT in .env — do NOT redefine them here.
     deploy:
       resources:
         reservations:
+          memory: 256M
           devices:
             - driver: nvidia
               count: 1
               capabilities: [gpu]
-        limits:
-          cpus: "${CPU_LIMIT:-4.0}"
-          memory: "${MEM_LIMIT:-4G}"
 
 volumes:
   grooveiq_onnx:

@@ -1,0 +1,6 @@
+# Additional dependencies for Intel iGPU-accelerated analysis (OpenVINO).
+# Install alongside requirements.txt:
+#   pip install -r requirements.txt -r requirements-igpu.txt
+
+# ONNX Runtime with OpenVINO provider for Intel GPU inference
+onnxruntime-openvino>=1.18,<1.20

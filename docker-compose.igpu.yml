@@ -1,0 +1,38 @@
+# Intel iGPU override for GrooveIQ (OpenVINO)
+#
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.igpu.yml up -d
+#
+# Uses Intel UHD/Iris iGPU via OpenVINO for TF model inference.
+# No NVIDIA GPU needed — works with any Intel Gen9+ iGPU (Skylake+).
+#
+# Prerequisites:
+#   1. BIOS: iGPU must be force-enabled (not "Auto") for headless servers
+#   2. Host: verify /dev/dri/renderD128 exists
+#   3. Host: note the render group ID:
+#        stat -c "%g" /dev/dri/renderD128
+#      Set RENDER_GID in .env to that value (commonly 989 or 109)
+
+services:
+  grooveiq:
+    build:
+      dockerfile: Dockerfile.igpu
+    image: grooveiq:igpu
+
+    environment:
+      ANALYSIS_GPU: "true"
+      ANALYSIS_GPU_BACKEND: "openvino"
+      ANALYSIS_GPU_WORKERS: "1"
+      ANALYSIS_GPU_BATCH_SIZE: "32"
+
+    devices:
+      - /dev/dri:/dev/dri
+
+    group_add:
+      - "${RENDER_GID:-109}"
+
+    volumes:
+      - grooveiq_onnx:/cache/onnx
+
+volumes:
+  grooveiq_onnx:

@@ -92,11 +92,32 @@ def is_available() -> bool:
 
 
 def gpu_detected() -> bool:
-    """Check if CUDA GPU provider is available in ONNX Runtime."""
+    """Check if any GPU provider (CUDA or OpenVINO) is available."""
     if not is_available():
         return False
     import onnxruntime as ort
-    return "CUDAExecutionProvider" in ort.get_available_providers()
+    providers = ort.get_available_providers()
+    return ("CUDAExecutionProvider" in providers
+            or "OpenVINOExecutionProvider" in providers)
+
+
+def _detect_backend() -> str:
+    """Detect which GPU backend to use: 'cuda', 'openvino', or 'cpu'."""
+    # Explicit override via env var
+    forced = os.environ.get("ANALYSIS_GPU_BACKEND", "").lower()
+    if forced in ("cuda", "openvino"):
+        return forced
+
+    if not is_available():
+        return "cpu"
+
+    import onnxruntime as ort
+    providers = ort.get_available_providers()
+    if "CUDAExecutionProvider" in providers:
+        return "cuda"
+    if "OpenVINOExecutionProvider" in providers:
+        return "openvino"
+    return "cpu"
 
 
 def _get_onnx_dir() -> str:
@@ -149,21 +170,30 @@ def _get_session(model_file: str):
     sess_options.intra_op_num_threads = 2
     sess_options.inter_op_num_threads = 1
 
-    # Prefer GPU, fall back to CPU
+    backend = _detect_backend()
     providers = []
-    if gpu_detected():
+
+    if backend == "cuda":
         providers.append(("CUDAExecutionProvider", {
             "device_id": 0,
             "arena_extend_strategy": "kSameAsRequested",
             "gpu_mem_limit": 512 * 1024 * 1024,  # 512 MB cap
         }))
+    elif backend == "openvino":
+        import json
+        providers.append(("OpenVINOExecutionProvider", {
+            "device_type": "GPU",
+            "precision": "FP16",
+            "cache_dir": os.path.join(models_dir, "_ov_cache"),
+        }))
+
     providers.append("CPUExecutionProvider")
 
     session = ort.InferenceSession(path, sess_options=sess_options, providers=providers)
     _sessions[model_file] = session
 
     actual = session.get_providers()
-    logger.info(f"ONNX session for {model_file}: providers={actual}")
+    logger.info(f"ONNX session for {model_file}: backend={backend}, providers={actual}")
     return session
 
 
@@ -372,7 +402,7 @@ def infer_batch(file_paths: list[str], max_seconds: float = 15.0) -> list[dict]:
         patch_offset += count
 
     t_total_elapsed = time.monotonic() - t_total
-    provider = "GPU" if gpu_detected() else "CPU"
+    provider = _detect_backend().upper()
     logger.info(
         f"ONNX batch inference ({provider}): {len(file_paths)} files, "
         f"{total_patches} patches | "
