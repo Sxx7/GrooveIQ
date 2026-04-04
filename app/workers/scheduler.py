@@ -102,10 +102,25 @@ async def stop_scheduler() -> None:
 
 
 async def _delayed_startup_pipeline() -> None:
-    """Run the recommendation pipeline shortly after startup."""
+    """Run the recommendation pipeline after the initial scan finishes.
+
+    Previously this used a fixed 10-second delay, which meant the pipeline
+    and the library scan competed for SQLite's single write lock — starving
+    HTTP handlers and causing dashboard timeouts on first run.
+    Now we poll until no scan is running before kicking off the pipeline.
+    """
     import asyncio
-    await asyncio.sleep(10)  # let DB and scan init settle
-    logger.info("Running recommendation pipeline on startup.")
+    from app.workers.library_scanner import is_scan_running
+
+    # Short grace period for the scan to start.
+    await asyncio.sleep(5)
+
+    # Wait until the initial scan finishes (check every 10s).
+    while is_scan_running():
+        logger.debug("Startup pipeline waiting for library scan to finish...")
+        await asyncio.sleep(10)
+
+    logger.info("Running recommendation pipeline on startup (scan complete).")
     await _periodic_recommendation_pipeline()
 
 
@@ -168,6 +183,8 @@ async def _periodic_recommendation_pipeline() -> None:
     Each step is independent of failures in the others (best-effort).
     Order matters: sessions feed taste profiles, scoring feeds taste profiles.
     """
+    import asyncio
+
     t_pipeline = time.time()
     logger.info("Recommendation pipeline started.")
 
@@ -179,6 +196,7 @@ async def _periodic_recommendation_pipeline() -> None:
         logger.info(f"Sessionizer done ({time.time() - t0:.1f}s)", extra=sess_result)
     except Exception:
         logger.error(f"Sessionizer failed ({time.time() - t0:.1f}s): {traceback.format_exc()}")
+    await asyncio.sleep(0.1)  # yield to event loop between heavy steps
 
     # Step 2: Track scoring
     t0 = time.time()
@@ -188,6 +206,7 @@ async def _periodic_recommendation_pipeline() -> None:
         logger.info(f"Track scoring done ({time.time() - t0:.1f}s)", extra=score_result)
     except Exception:
         logger.error(f"Track scoring failed ({time.time() - t0:.1f}s): {traceback.format_exc()}")
+    await asyncio.sleep(0.1)
 
     # Step 3: Taste profiles
     t0 = time.time()
@@ -197,6 +216,7 @@ async def _periodic_recommendation_pipeline() -> None:
         logger.info(f"Taste profile builder done ({time.time() - t0:.1f}s)", extra=taste_result)
     except Exception:
         logger.error(f"Taste profile builder failed ({time.time() - t0:.1f}s): {traceback.format_exc()}")
+    await asyncio.sleep(0.1)
 
     # Step 4: Collaborative filtering model rebuild
     t0 = time.time()
@@ -206,6 +226,7 @@ async def _periodic_recommendation_pipeline() -> None:
         logger.info(f"CF model rebuild done ({time.time() - t0:.1f}s)", extra=cf_result)
     except Exception:
         logger.error(f"CF model rebuild failed ({time.time() - t0:.1f}s): {traceback.format_exc()}")
+    await asyncio.sleep(0.1)
 
     # Step 5: LightGBM ranker training
     t0 = time.time()

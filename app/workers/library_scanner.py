@@ -92,6 +92,11 @@ def _reset_executor() -> None:
 # Public interface
 # ---------------------------------------------------------------------------
 
+def is_scan_running() -> bool:
+    """Return True if a library scan is currently in progress."""
+    return _running_scan_id is not None
+
+
 async def trigger_scan() -> int:
     """
     Start a library scan in the background.
