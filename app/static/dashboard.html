@@ -773,18 +773,20 @@ function renderUsersList(users) {
 }
 
 function viewUser(userId) {
+  var enc = encodeURIComponent(userId);
   Promise.all([
-    api('/v1/users/' + encodeURIComponent(userId) + '/profile'),
-    api('/v1/users/' + encodeURIComponent(userId) + '/interactions?limit=20&sort_by=satisfaction_score&sort_dir=desc'),
-    api('/v1/users/' + encodeURIComponent(userId) + '/sessions?limit=10'),
+    api('/v1/users/' + enc + '/profile'),
+    api('/v1/users/' + enc + '/interactions?limit=20&sort_by=satisfaction_score&sort_dir=desc'),
+    api('/v1/users/' + enc + '/sessions?limit=10'),
+    api('/v1/users/' + enc + '/lastfm/profile').catch(function() { return null; }),
   ]).then(function(results) {
-    renderUserDetail(results[0], results[1], results[2]);
+    renderUserDetail(results[0], results[1], results[2], results[3]);
   }).catch(function(e) {
     $('#app').innerHTML = '<div class="empty" style="color:var(--red)">Error loading user: ' + esc(e.message) + '</div>';
   });
 }
 
-function renderUserDetail(profile, interactions, sessions) {
+function renderUserDetail(profile, interactions, sessions, lastfmProfile) {
   var userId = profile.user_id;
   var numericUid = profile.uid;
   var tp = profile.taste_profile;
@@ -864,6 +866,105 @@ function renderUserDetail(profile, interactions, sessions) {
   }
 
   h += '</div>';
+
+  // Last.fm integration
+  var lfm = profile.lastfm || null;
+  var lfp = lastfmProfile;
+  h += '<div class="panel full-width" style="margin-bottom:16px"><div class="panel-header">Last.fm'
+    + (lfm ? ' <span class="badge badge-green" style="margin-left:8px">Connected</span>' : '')
+    + '</div><div class="panel-body">';
+
+  if (!lfm) {
+    // Not connected — show connect form
+    h += '<div style="padding:16px">'
+      + '<p style="color:var(--text-dim);font-size:13px;margin-bottom:12px">Link a Last.fm account to enrich this profile with listening history, top artists, and genres. Optionally enable scrobbling.</p>'
+      + '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:end">'
+      + '<div><label style="font-size:11px;color:var(--text-dim);display:block;margin-bottom:4px">Last.fm Username</label>'
+      + '<input id="lfm-user" style="background:var(--bg);border:1px solid var(--border);color:var(--text);padding:6px 10px;border-radius:6px;font-size:13px;width:180px" placeholder="username"></div>'
+      + '<div><label style="font-size:11px;color:var(--text-dim);display:block;margin-bottom:4px">Password <span style="opacity:0.5">(optional, for scrobbling)</span></label>'
+      + '<input id="lfm-pass" type="password" style="background:var(--bg);border:1px solid var(--border);color:var(--text);padding:6px 10px;border-radius:6px;font-size:13px;width:180px" placeholder="password"></div>'
+      + '<button onclick="connectLastfm(\'' + esc(userId) + '\')">Connect</button>'
+      + '</div>'
+      + '<div id="lfm-status" style="margin-top:8px;font-size:12px"></div>'
+      + '</div>';
+  } else {
+    // Connected — show status + disconnect
+    h += '<div style="padding:16px;display:flex;align-items:center;gap:16px;flex-wrap:wrap">'
+      + '<div><span style="color:var(--text-dim);font-size:12px">Username</span><br><b>' + esc(lfm.username) + '</b></div>'
+      + '<div><span style="color:var(--text-dim);font-size:12px">Scrobbling</span><br>'
+      + (lfm.scrobbling_enabled ? '<span class="badge badge-green">Active</span>' : '<span class="badge badge-yellow">Read-only</span>') + '</div>'
+      + '<div><span style="color:var(--text-dim);font-size:12px">Last Synced</span><br>' + timeAgo(lfm.synced_at) + '</div>'
+      + '<button class="danger" onclick="disconnectLastfm(\'' + esc(userId) + '\')">Disconnect</button>'
+      + '</div>';
+
+    // Last.fm profile data (from cached profile or inline lastfm object)
+    var lfData = (lfp && lfp.profile) || (lfm && lfm.profile) || null;
+    if (lfData) {
+      // Global stats from user_info
+      var ui = lfData.user_info;
+      if (ui) {
+        h += '<div style="border-top:1px solid var(--border);padding:12px 16px;display:flex;gap:24px;flex-wrap:wrap">';
+        if (ui.playcount) h += '<div class="profile-item"><div class="pval">' + Number(ui.playcount).toLocaleString() + '</div><div class="plbl">Total Scrobbles</div></div>';
+        if (ui.country) h += '<div class="profile-item"><div class="pval">' + esc(ui.country) + '</div><div class="plbl">Country</div></div>';
+        if (ui.registered) {
+          var regDate = ui.registered.unixtime ? new Date(ui.registered.unixtime * 1000).getFullYear() : (ui.registered['#text'] || '');
+          h += '<div class="profile-item"><div class="pval">' + esc(regDate) + '</div><div class="plbl">Member Since</div></div>';
+        }
+        h += '</div>';
+      }
+
+      // Top Artists
+      var periods = [['7day', '7 Days'], ['1month', '1 Month'], ['overall', 'All Time']];
+      if (lfData.top_artists) {
+        h += '<div style="border-top:1px solid var(--border)">';
+        h += '<div style="padding:12px 16px;font-size:13px;font-weight:600">Top Artists</div>';
+        h += '<div style="display:flex;gap:0;overflow-x:auto">';
+        for (var pi = 0; pi < periods.length; pi++) {
+          var pk = periods[pi][0], plbl = periods[pi][1];
+          var artists = lfData.top_artists[pk] || [];
+          h += '<div style="flex:1;min-width:200px;border-right:1px solid var(--border)">';
+          h += '<div style="padding:8px 16px;font-size:11px;color:var(--text-dim);text-transform:uppercase;letter-spacing:0.5px;border-bottom:1px solid var(--border)">' + plbl + '</div>';
+          for (var ai = 0; ai < Math.min(artists.length, 8); ai++) {
+            var a = artists[ai];
+            h += '<div style="padding:4px 16px;font-size:12px;display:flex;justify-content:space-between">'
+              + '<span>' + esc(a.name) + '</span>'
+              + '<span style="color:var(--text-dim)">' + (a.playcount || '') + '</span></div>';
+          }
+          if (!artists.length) h += '<div style="padding:8px 16px;font-size:12px;color:var(--text-dim)">No data</div>';
+          h += '</div>';
+        }
+        h += '</div></div>';
+      }
+
+      // Loved Tracks
+      if (lfData.loved_tracks && lfData.loved_tracks.length > 0) {
+        h += '<div style="border-top:1px solid var(--border)">';
+        h += '<div style="padding:12px 16px;font-size:13px;font-weight:600">Loved Tracks</div>';
+        h += '<div style="display:flex;flex-wrap:wrap;gap:0">';
+        for (var li = 0; li < Math.min(lfData.loved_tracks.length, 10); li++) {
+          var lt = lfData.loved_tracks[li];
+          var ltArtist = lt.artist ? (lt.artist.name || lt.artist) : '';
+          h += '<div style="padding:4px 16px;font-size:12px;width:50%">'
+            + '<span style="color:var(--red);margin-right:4px">\u2665</span> '
+            + esc(ltArtist) + ' \u2014 ' + esc(lt.name) + '</div>';
+        }
+        h += '</div></div>';
+      }
+
+      // Genre Tags
+      if (lfData.genres && Object.keys(lfData.genres).length > 0) {
+        var genres = Object.keys(lfData.genres);
+        h += '<div style="border-top:1px solid var(--border);padding:12px 16px">';
+        h += '<div style="font-size:13px;font-weight:600;margin-bottom:8px">Genres</div>';
+        h += '<div style="display:flex;flex-wrap:wrap;gap:6px">';
+        for (var gi = 0; gi < Math.min(genres.length, 20); gi++) {
+          h += '<span class="badge badge-purple">' + esc(genres[gi]) + '</span>';
+        }
+        h += '</div></div>';
+      }
+    }
+  }
+  h += '</div></div>';
 
   // Top interactions
   h += '<div class="panel full-width" style="margin-bottom:16px"><div class="panel-header">Top Tracks (' + interactions.total + ' interactions)</div>';
@@ -1185,6 +1286,28 @@ function submitRename(uid) {
   }).catch(function(e) {
     alert('Failed: ' + e.message);
   });
+}
+
+function connectLastfm(userId) {
+  var username = document.getElementById('lfm-user').value.trim();
+  var password = document.getElementById('lfm-pass').value;
+  var statusEl = document.getElementById('lfm-status');
+  if (!username) { if (statusEl) statusEl.innerHTML = '<span style="color:var(--red)">Username is required.</span>'; return; }
+  if (statusEl) statusEl.innerHTML = '<span style="color:var(--text-dim)">Connecting...</span>';
+  var body = { lastfm_username: username };
+  if (password) body.lastfm_password = password;
+  apiPost('/v1/users/' + encodeURIComponent(userId) + '/lastfm/connect', body).then(function(data) {
+    viewUser(userId);
+  }).catch(function(e) {
+    if (statusEl) statusEl.innerHTML = '<span style="color:var(--red)">Failed: ' + esc(e.message) + '</span>';
+  });
+}
+
+function disconnectLastfm(userId) {
+  if (!confirm('Disconnect Last.fm account? Pending scrobbles will be removed.')) return;
+  apiDelete('/v1/users/' + encodeURIComponent(userId) + '/lastfm').then(function() {
+    viewUser(userId);
+  }).catch(function(e) { alert('Failed: ' + e.message); });
 }
 
 function triggerSync() {
