@@ -388,9 +388,13 @@ async def _run_gpu_enrichment(scan_id: int, tf_files: list[str], counters: dict,
     )
 
     gpu_batch = settings.ANALYSIS_GPU_BATCH_SIZE
+    total_batches = (len(tf_files) + gpu_batch - 1) // gpu_batch
 
-    for batch_start in range(0, len(tf_files), gpu_batch):
+    for batch_num, batch_start in enumerate(range(0, len(tf_files), gpu_batch)):
         batch_paths = tf_files[batch_start:batch_start + gpu_batch]
+
+        # Yield to the event loop so HTTP handlers can run between batches.
+        await asyncio.sleep(0)
 
         # Run batched inference (mel-spec extraction + EffNet + heads)
         loop = asyncio.get_running_loop()
@@ -404,32 +408,38 @@ async def _run_gpu_enrichment(scan_id: int, tf_files: list[str], counters: dict,
             counters["failed"] += len(batch_paths)
             continue
 
-        # Persist results
+        # Persist results — collect updates and do one bulk commit.
+        fail_logs: list[ScanLog] = []
+        update_map: dict[str, dict] = {}  # track_id → {column: value}
+
+        for fp, result in zip(batch_paths, results):
+            fname = Path(fp).name
+            if result.get("analysis_error"):
+                logger.warning(f"[Scan {scan_id}] TF FAIL {fname}: {result['analysis_error']}")
+                fail_logs.append(ScanLog(scan_id=scan_id, level="fail", filename=fname, message=result["analysis_error"]))
+                counters["failed"] += 1
+            else:
+                track_id = generate_track_id(fp)
+                vals = {k: v for k, v in result.items() if k not in ("id", "track_id", "file_path")}
+                vals["analysis_version"] = ANALYSIS_VERSION
+                update_map[track_id] = vals
+                counters["ok"] += 1
+                logger.debug(f"[Scan {scan_id}] TF OK  {fname}")
+
         async with AsyncSessionLocal() as session:
-            for fp, result in zip(batch_paths, results):
-                fname = Path(fp).name
-                if result.get("analysis_error"):
-                    logger.warning(f"[Scan {scan_id}] TF FAIL {fname}: {result['analysis_error']}")
-                    session.add(ScanLog(scan_id=scan_id, level="fail", filename=fname, message=result["analysis_error"]))
-                    counters["failed"] += 1
-                else:
-                    track_id = generate_track_id(fp)
-                    # Update existing row with TF features
-                    db_result = await session.execute(
-                        select(TrackFeatures).where(TrackFeatures.track_id == track_id)
-                    )
-                    existing = db_result.scalar_one_or_none()
-                    if existing:
-                        for k, v in result.items():
-                            if hasattr(existing, k) and k not in ("id", "track_id", "file_path"):
-                                setattr(existing, k, v)
-                        existing.analysis_version = ANALYSIS_VERSION
-                        counters["ok"] += 1
-                        logger.debug(f"[Scan {scan_id}] TF OK  {fname}")
-                    else:
-                        counters["failed"] += 1
-                        logger.warning(f"[Scan {scan_id}] TF FAIL {fname}: no DSP row found")
+            # Bulk-update each track in one round-trip per track (no SELECT needed).
+            for track_id, vals in update_map.items():
+                await session.execute(
+                    update(TrackFeatures)
+                    .where(TrackFeatures.track_id == track_id)
+                    .values(**vals)
+                )
+            if fail_logs:
+                session.add_all(fail_logs)
             await session.commit()
+
+        # Yield again after DB work before logging/progress update.
+        await asyncio.sleep(0)
 
         processed = counters["ok"] + counters["failed"] + counters["skipped"]
         _log_progress(scan_id, counters["found"], counters["ok"], counters["skipped"], counters["failed"], scan_start)
