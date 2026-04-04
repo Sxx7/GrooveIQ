@@ -39,10 +39,12 @@ ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
         software-properties-common \
     && add-apt-repository ppa:deadsnakes/ppa \
+    && add-apt-repository ppa:ubuntu-toolchain-r/test \
     && apt-get update && apt-get install -y --no-install-recommends \
         python3.12 \
         python3.12-venv \
         python3.12-dev \
+        libstdc++6 \
         libavcodec-dev \
         libavformat-dev \
         libavutil-dev \
