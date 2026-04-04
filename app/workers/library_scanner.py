@@ -421,12 +421,16 @@ async def _run_gpu_enrichment(scan_id: int, tf_files: list[str], counters: dict,
                 f"{yield_ms:.0f}ms (event loop is congested)"
             )
 
-        # Run batched inference (mel-spec extraction + EffNet + heads)
+        # Run batched inference (mel-spec extraction + EffNet + heads).
+        # Use the ProcessPoolExecutor instead of the default ThreadPoolExecutor
+        # so that CPU-bound mel-spectrogram extraction (which holds the GIL)
+        # runs in a separate process and doesn't block the async event loop.
         loop = asyncio.get_running_loop()
+        executor = get_executor()
         t_infer = time.monotonic()
         try:
             results = await asyncio.wait_for(
-                loop.run_in_executor(None, infer_batch, batch_paths),
+                loop.run_in_executor(executor, infer_batch, batch_paths),
                 timeout=settings.ANALYSIS_TIMEOUT * len(batch_paths),
             )
         except Exception as e:
