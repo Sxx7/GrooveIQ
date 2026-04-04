@@ -162,24 +162,24 @@ class LastFmClient:
             raise LastFmError(data.get("error", 0), data.get("message", "Unknown error"))
         return data
 
-    async def get_session(self, token: str) -> dict:
+    async def get_mobile_session(self, username: str, password: str) -> str:
         """
-        Exchange a Last.fm auth token for a permanent session key.
+        Authenticate via auth.getMobileSession.
 
-        Uses the redirect-based auth flow (auth.getSession) — the user's
-        password never touches GrooveIQ.
-
-        Returns dict with 'name' (Last.fm username) and 'key' (session key).
+        Called by client apps — GrooveIQ exchanges the credentials for a
+        session key and discards the password immediately.
+        Returns the session key string.
         """
         params = {
-            "method": "auth.getSession",
-            "token": token,
+            "method": "auth.getMobileSession",
+            "username": username,
+            "password": password,
         }
         data = await self._post_signed(params)
-        session = data.get("session", {})
-        if not session.get("key"):
+        session_key = data.get("session", {}).get("key")
+        if not session_key:
             raise LastFmError(0, "No session key in response")
-        return {"name": session["name"], "key": session["key"]}
+        return session_key
 
     async def update_now_playing(
         self,

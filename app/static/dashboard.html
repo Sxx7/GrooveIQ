@@ -875,17 +875,9 @@ function renderUserDetail(profile, interactions, sessions, lastfmProfile) {
     + '</div><div class="panel-body">';
 
   if (!lfm) {
-    // Not connected — show connect form (read-only) + authorize button (scrobbling)
+    // Not connected — users connect via their client app, not the dashboard
     h += '<div style="padding:16px">'
-      + '<p style="color:var(--text-dim);font-size:13px;margin-bottom:12px">Link a Last.fm account to enrich this profile with listening history, top artists, and genres.</p>'
-      + '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:end">'
-      + '<div><label style="font-size:11px;color:var(--text-dim);display:block;margin-bottom:4px">Last.fm Username</label>'
-      + '<input id="lfm-user" style="background:var(--bg);border:1px solid var(--border);color:var(--text);padding:6px 10px;border-radius:6px;font-size:13px;width:180px" placeholder="username"></div>'
-      + '<button onclick="connectLastfmReadOnly(\'' + esc(userId) + '\')">Connect (read-only)</button>'
-      + '<button onclick="connectLastfmScrobble(\'' + esc(userId) + '\')">Authorize on Last.fm</button>'
-      + '</div>'
-      + '<p style="color:var(--text-dim);font-size:11px;margin-top:8px"><b>Read-only</b> pulls profile data only. <b>Authorize</b> opens Last.fm in a new tab to also enable scrobbling \u2014 your password never touches GrooveIQ.</p>'
-      + '<div id="lfm-status" style="margin-top:8px;font-size:12px"></div>'
+      + '<p style="color:var(--text-dim);font-size:13px">No Last.fm account linked. Users connect through their music app \u2014 credentials never pass through this dashboard.</p>'
       + '</div>';
   } else {
     // Connected — show status + disconnect
@@ -1288,30 +1280,6 @@ function submitRename(uid) {
   });
 }
 
-function connectLastfmReadOnly(userId) {
-  var username = document.getElementById('lfm-user').value.trim();
-  var statusEl = document.getElementById('lfm-status');
-  if (!username) { if (statusEl) statusEl.innerHTML = '<span style="color:var(--red)">Username is required.</span>'; return; }
-  if (statusEl) statusEl.innerHTML = '<span style="color:var(--text-dim)">Connecting...</span>';
-  apiPost('/v1/users/' + encodeURIComponent(userId) + '/lastfm/connect', { lastfm_username: username }).then(function() {
-    viewUser(userId);
-  }).catch(function(e) {
-    if (statusEl) statusEl.innerHTML = '<span style="color:var(--red)">Failed: ' + esc(e.message) + '</span>';
-  });
-}
-
-function connectLastfmScrobble(userId) {
-  var statusEl = document.getElementById('lfm-status');
-  if (statusEl) statusEl.innerHTML = '<span style="color:var(--text-dim)">Opening Last.fm...</span>';
-  // Get auth URL from backend (includes callback to /dashboard?lastfm_user=...&token=...)
-  api('/v1/users/' + encodeURIComponent(userId) + '/lastfm/auth').then(function(data) {
-    // Redirect to Last.fm — they'll redirect back to /dashboard with the token
-    window.location.href = data.auth_url;
-  }).catch(function(e) {
-    if (statusEl) statusEl.innerHTML = '<span style="color:var(--red)">Failed: ' + esc(e.message) + '</span>';
-  });
-}
-
 function disconnectLastfm(userId) {
   if (!confirm('Disconnect Last.fm account? Pending scrobbles will be removed.')) return;
   apiDelete('/v1/users/' + encodeURIComponent(userId) + '/lastfm').then(function() {
@@ -1444,29 +1412,6 @@ function runDiscovery(btn) {
 var saved = sessionStorage.getItem('grooveiq_key');
 if (saved) { $('#api-key').value = saved; connect(); }
 
-// Handle Last.fm auth callback: Last.fm redirects to /dashboard?lastfm_user=X&token=Y
-(function() {
-  var params = new URLSearchParams(window.location.search);
-  var lfmUser = params.get('lastfm_user');
-  var lfmToken = params.get('token');
-  if (lfmUser && lfmToken) {
-    // Clean URL so a refresh doesn't re-trigger
-    history.replaceState(null, '', '/dashboard');
-    // Wait for API key to be restored, then exchange token
-    var tryExchange = function() {
-      if (!KEY) { setTimeout(tryExchange, 200); return; }
-      api('/v1/users/' + encodeURIComponent(lfmUser) + '/lastfm/callback?token=' + encodeURIComponent(lfmToken))
-        .then(function() {
-          switchTab('users');
-          setTimeout(function() { viewUser(lfmUser); }, 200);
-        })
-        .catch(function(e) {
-          alert('Last.fm authorization failed: ' + (e.message || e));
-        });
-    };
-    tryExchange();
-  }
-})();
 </script>
 </body>
 </html>
