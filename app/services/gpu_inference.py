@@ -274,31 +274,20 @@ def extract_melspec_for_file(file_path: str, max_seconds: float = 15.0) -> np.nd
 # Batched GPU inference
 # ---------------------------------------------------------------------------
 
-def infer_batch(file_paths: list[str], max_seconds: float = 15.0) -> list[dict]:
+def extract_melspecs_batch(file_paths: list[str], max_seconds: float = 15.0) -> dict:
     """
-    Run EffNet + classifier heads on a batch of files via ONNX Runtime.
+    CPU-bound mel-spectrogram extraction for a batch of files.
 
-    Args:
-        file_paths: list of audio file paths
-        max_seconds: max audio duration per file for mel-spec extraction
+    Designed to run in a ProcessPoolExecutor so the GIL-heavy Essentia
+    frame loop doesn't block the async event loop.
 
-    Returns:
-        list of dicts (one per file) with keys: danceability, instrumentalness,
-        valence, speechiness, mood_tags.  On per-file failure, the dict contains
-        'analysis_error' instead.
+    Returns a dict with keys:
+        all_patches: np.ndarray (total_patches, 1, 96, 187) or None
+        file_patch_counts: list[int]
+        errors: list[Optional[str]]
     """
-    if not is_available():
-        return [{"analysis_error": "onnxruntime not installed"}] * len(file_paths)
-
-    if not ensure_onnx_models():
-        return [{"analysis_error": "ONNX models not available"}] * len(file_paths)
-
-    t_total = time.monotonic()
-
-    # --- Step 1: Extract mel-specs per file (CPU) ---
-    t0 = time.monotonic()
-    per_file_patches: list[np.ndarray] = []       # patches per file
-    file_patch_counts: list[int] = []              # how many patches each file contributed
+    per_file_patches: list[np.ndarray] = []
+    file_patch_counts: list[int] = []
     errors: list[Optional[str]] = [None] * len(file_paths)
 
     for i, fp in enumerate(file_paths):
@@ -311,22 +300,48 @@ def infer_batch(file_paths: list[str], max_seconds: float = 15.0) -> list[dict]:
             file_patch_counts.append(0)
             errors[i] = str(e)
 
-    t_melspec = time.monotonic() - t0
-
-    # Concatenate all patches into one big batch
     valid_patches = [p for p in per_file_patches if len(p) > 0]
     if not valid_patches:
-        return [{"analysis_error": errors[i] or "no valid patches"} for i in range(len(file_paths))]
+        return {
+            "all_patches": None,
+            "file_patch_counts": file_patch_counts,
+            "errors": errors,
+        }
 
-    all_patches = np.concatenate(valid_patches, axis=0)  # (total_patches, 1, 96, 187)
+    return {
+        "all_patches": np.concatenate(valid_patches, axis=0),
+        "file_patch_counts": file_patch_counts,
+        "errors": errors,
+    }
+
+
+def infer_from_patches(
+    all_patches: np.ndarray,
+    file_patch_counts: list[int],
+    errors: list[Optional[str]],
+    file_paths: list[str],
+) -> list[dict]:
+    """
+    GPU-bound ONNX inference on pre-extracted mel-spectrogram patches.
+
+    Designed to run in a ThreadPoolExecutor — ONNX Runtime releases the
+    GIL during inference so the async event loop stays responsive.
+
+    Returns list of result dicts (one per file).
+    """
+    if not is_available():
+        return [{"analysis_error": "onnxruntime not installed"}] * len(file_paths)
+
+    if not ensure_onnx_models():
+        return [{"analysis_error": "ONNX models not available"}] * len(file_paths)
+
     total_patches = all_patches.shape[0]
 
-    # --- Step 2: EffNet forward pass (GPU) ---
+    # --- EffNet forward pass (GPU) ---
     t0 = time.monotonic()
     effnet = _get_session("discogs-effnet-bsdynamic-1.onnx")
     input_name = effnet.get_inputs()[0].name
 
-    # Run in sub-batches if needed (GPU memory limit)
     gpu_batch_size = int(os.environ.get("ANALYSIS_GPU_BATCH_SIZE", "64"))
     all_embeddings = []
     for start in range(0, total_patches, gpu_batch_size):
@@ -334,10 +349,10 @@ def infer_batch(file_paths: list[str], max_seconds: float = 15.0) -> list[dict]:
         emb = effnet.run(None, {input_name: batch})[0]
         all_embeddings.append(emb)
 
-    embeddings = np.concatenate(all_embeddings, axis=0)  # (total_patches, embed_dim)
+    embeddings = np.concatenate(all_embeddings, axis=0)
     t_effnet = time.monotonic() - t0
 
-    # --- Step 3: Classifier heads (GPU, very fast on embeddings) ---
+    # --- Classifier heads (GPU, very fast on embeddings) ---
     t0 = time.monotonic()
     head_results = {}
 
@@ -355,15 +370,15 @@ def infer_batch(file_paths: list[str], max_seconds: float = 15.0) -> list[dict]:
     for key, (model_file, output_type, col) in heads.items():
         try:
             session = _get_session(model_file)
-            input_name = session.get_inputs()[0].name
-            preds = session.run(None, {input_name: embeddings})[0]
-            head_results[key] = preds[:, col]  # (total_patches,)
+            inp = session.get_inputs()[0].name
+            preds = session.run(None, {inp: embeddings})[0]
+            head_results[key] = preds[:, col]
         except Exception as e:
             logger.warning(f"ONNX head {model_file} failed: {e}")
 
     t_heads = time.monotonic() - t0
 
-    # --- Step 4: Aggregate per-file results ---
+    # --- Aggregate per-file results ---
     results: list[dict] = []
     patch_offset = 0
 
@@ -376,18 +391,15 @@ def infer_batch(file_paths: list[str], max_seconds: float = 15.0) -> list[dict]:
         result: dict = {}
         file_slice = slice(patch_offset, patch_offset + count)
 
-        # Average predictions across patches for this file
         for key, preds in head_results.items():
             val = float(np.mean(preds[file_slice]))
             if key.startswith("mood_"):
-                continue  # handled below
+                continue
             result[key] = round(val, 3)
 
-        # Speechiness = 1 - instrumentalness
         if "instrumentalness" in result:
             result["speechiness"] = round(1.0 - result["instrumentalness"], 3)
 
-        # Mood tags
         mood_tags = []
         for label in ["happy", "sad", "aggressive", "relaxed", "party"]:
             key = f"mood_{label}"
@@ -401,12 +413,49 @@ def infer_batch(file_paths: list[str], max_seconds: float = 15.0) -> list[dict]:
         results.append(result)
         patch_offset += count
 
-    t_total_elapsed = time.monotonic() - t_total
     provider = _detect_backend().upper()
     logger.info(
         f"ONNX batch inference ({provider}): {len(file_paths)} files, "
         f"{total_patches} patches | "
-        f"melspec={t_melspec:.1f}s effnet={t_effnet:.1f}s heads={t_heads:.1f}s "
+        f"effnet={t_effnet:.1f}s heads={t_heads:.1f}s"
+    )
+
+    return results
+
+
+def infer_batch(file_paths: list[str], max_seconds: float = 15.0) -> list[dict]:
+    """
+    Run EffNet + classifier heads on a batch of files via ONNX Runtime.
+
+    Combined mel-spec extraction + inference in one call. Used when both
+    steps run in the same executor. For split execution (mel-spec in
+    ProcessPool, inference in ThreadPool), use extract_melspecs_batch()
+    and infer_from_patches() separately.
+    """
+    if not is_available():
+        return [{"analysis_error": "onnxruntime not installed"}] * len(file_paths)
+
+    if not ensure_onnx_models():
+        return [{"analysis_error": "ONNX models not available"}] * len(file_paths)
+
+    t_total = time.monotonic()
+
+    mel_data = extract_melspecs_batch(file_paths, max_seconds=max_seconds)
+    t_melspec = time.monotonic() - t_total
+
+    if mel_data["all_patches"] is None:
+        return [{"analysis_error": mel_data["errors"][i] or "no valid patches"} for i in range(len(file_paths))]
+
+    results = infer_from_patches(
+        mel_data["all_patches"],
+        mel_data["file_patch_counts"],
+        mel_data["errors"],
+        file_paths,
+    )
+
+    t_total_elapsed = time.monotonic() - t_total
+    logger.info(
+        f"ONNX combined: melspec={t_melspec:.1f}s "
         f"total={t_total_elapsed:.1f}s ({t_total_elapsed / max(len(file_paths), 1):.2f}s/file)"
     )
 

@@ -395,7 +395,7 @@ async def _run_gpu_enrichment(scan_id: int, tf_files: list[str], counters: dict,
     this collects mel-spectrograms and runs them through the GPU in large
     batches — the key to GPU throughput.
     """
-    from app.services.gpu_inference import gpu_detected, infer_batch
+    from app.services.gpu_inference import gpu_detected, extract_melspecs_batch, infer_from_patches
     from app.services.audio_analysis import ANALYSIS_VERSION, generate_track_id
 
     provider = "GPU" if gpu_detected() else "CPU/ONNX"
@@ -421,16 +421,37 @@ async def _run_gpu_enrichment(scan_id: int, tf_files: list[str], counters: dict,
                 f"{yield_ms:.0f}ms (event loop is congested)"
             )
 
-        # Run batched inference (mel-spec extraction + EffNet + heads).
-        # Use the ProcessPoolExecutor instead of the default ThreadPoolExecutor
-        # so that CPU-bound mel-spectrogram extraction (which holds the GIL)
-        # runs in a separate process and doesn't block the async event loop.
+        # Split inference into two phases to avoid blocking the event loop:
+        #   1. Mel-spec extraction (CPU-bound, holds GIL) → ProcessPoolExecutor
+        #   2. ONNX inference (GPU-bound, releases GIL) → default ThreadPoolExecutor
         loop = asyncio.get_running_loop()
-        executor = get_executor()
+        proc_executor = get_executor()
         t_infer = time.monotonic()
         try:
+            # Phase 1: mel-spec in process pool (separate GIL)
+            mel_data = await asyncio.wait_for(
+                loop.run_in_executor(proc_executor, extract_melspecs_batch, batch_paths),
+                timeout=settings.ANALYSIS_TIMEOUT * len(batch_paths),
+            )
+
+            if mel_data["all_patches"] is None:
+                # All files in this batch failed mel-spec extraction
+                for i, fp in enumerate(batch_paths):
+                    err = mel_data["errors"][i] or "no valid patches"
+                    fname = Path(fp).name
+                    logger.warning(f"[Scan {scan_id}] TF FAIL {fname}: {err}")
+                counters["failed"] += len(batch_paths)
+                continue
+
+            # Phase 2: ONNX inference in thread pool (GPU, releases GIL)
             results = await asyncio.wait_for(
-                loop.run_in_executor(executor, infer_batch, batch_paths),
+                loop.run_in_executor(
+                    None, infer_from_patches,
+                    mel_data["all_patches"],
+                    mel_data["file_patch_counts"],
+                    mel_data["errors"],
+                    batch_paths,
+                ),
                 timeout=settings.ANALYSIS_TIMEOUT * len(batch_paths),
             )
         except Exception as e:
