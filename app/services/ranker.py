@@ -86,6 +86,16 @@ def _save_model(model, engine: str, version: str) -> Optional[str]:
         return None
 
 
+def _train_ranker_sync(features, labels) -> tuple:
+    """CPU-bound model training.  Runs in a thread executor."""
+    model, engine = _create_model()
+    if engine == "lgbm":
+        model.fit(features, labels, feature_name=FEATURE_COLUMNS)
+    else:
+        model.fit(features, labels)
+    return model, engine
+
+
 async def train_model() -> Dict[str, Any]:
     """
     Train a ranking model on all track_interactions.
@@ -93,6 +103,8 @@ async def train_model() -> Dict[str, Any]:
     Prefers LightGBM; falls back to sklearn GBR if LightGBM is unavailable.
     Returns summary dict with training_samples, model_version, etc.
     """
+    import asyncio
+
     async with AsyncSessionLocal() as session:
         data = await build_training_data(session)
 
@@ -104,12 +116,11 @@ async def train_model() -> Dict[str, Any]:
     features = data["features"]
     labels = data["labels"]
 
-    model, engine = _create_model()
-
-    if engine == "lgbm":
-        model.fit(features, labels, feature_name=FEATURE_COLUMNS)
-    else:
-        model.fit(features, labels)
+    # Run CPU-heavy model training in a thread so the event loop stays responsive.
+    loop = asyncio.get_running_loop()
+    model, engine = await loop.run_in_executor(
+        None, _train_ranker_sync, features, labels,
+    )
 
     version = f"{engine}-{int(time.time())}"
     saved_path = _save_model(model, engine, version)

@@ -45,17 +45,57 @@ _MIN_INTERACTIONS = 10
 _MIN_USERS = 2
 
 
+def _train_als_sync(rows: list) -> Tuple[object, Dict[str, int], List[str], Dict[str, int], List[str], object]:
+    """CPU-bound ALS training.  Runs in a thread executor."""
+    import scipy.sparse as sp
+    from implicit.als import AlternatingLeastSquares
+
+    user_ids: List[str] = []
+    track_ids: List[str] = []
+    user_map: Dict[str, int] = {}
+    track_map: Dict[str, int] = {}
+    user_indices: List[int] = []
+    track_indices: List[int] = []
+    values: List[float] = []
+
+    for user_id, track_id, score in rows:
+        if user_id not in user_map:
+            user_map[user_id] = len(user_ids)
+            user_ids.append(user_id)
+        if track_id not in track_map:
+            track_map[track_id] = len(track_ids)
+            track_ids.append(track_id)
+        val = max(float(score or 0), 0.01)
+        user_indices.append(user_map[user_id])
+        track_indices.append(track_map[track_id])
+        values.append(val)
+
+    n_users = len(user_ids)
+    n_tracks = len(track_ids)
+
+    matrix = sp.csr_matrix(
+        (values, (user_indices, track_indices)),
+        shape=(n_users, n_tracks),
+        dtype=np.float32,
+    )
+
+    model = AlternatingLeastSquares(
+        factors=64, iterations=15, regularization=0.1, random_state=42,
+    )
+    model.fit(matrix)
+
+    return model, user_map, user_ids, track_map, track_ids, matrix
+
+
 async def build_model() -> dict:
     """
     Load interactions from DB, build a sparse matrix, train ALS.
 
     Returns summary: {tracks, users, interactions, trained: bool}.
     """
-    import scipy.sparse as sp
-    from implicit.als import AlternatingLeastSquares
+    import asyncio
 
     async with AsyncSessionLocal() as session:
-        # Check if we have enough data.
         count_result = await session.execute(
             select(func.count(TrackInteraction.id))
         )
@@ -73,7 +113,6 @@ async def build_model() -> dict:
             logger.warning(f"CF build: only {user_count} user(s), CF is meaningless, skipping.")
             return {"tracks": 0, "users": user_count, "interactions": total, "trained": False}
 
-        # Load all interactions.
         result = await session.execute(
             select(
                 TrackInteraction.user_id,
@@ -83,50 +122,15 @@ async def build_model() -> dict:
         )
         rows = result.all()
 
-    # Build ID mappings.
-    user_ids: List[str] = []
-    track_ids: List[str] = []
-    user_map: Dict[str, int] = {}
-    track_map: Dict[str, int] = {}
-
-    user_indices: List[int] = []
-    track_indices: List[int] = []
-    values: List[float] = []
-
-    for user_id, track_id, score in rows:
-        if user_id not in user_map:
-            user_map[user_id] = len(user_ids)
-            user_ids.append(user_id)
-        if track_id not in track_map:
-            track_map[track_id] = len(track_ids)
-            track_ids.append(track_id)
-
-        # Clamp score to positive range for ALS (implicit expects confidence-like values).
-        val = max(float(score or 0), 0.01)
-        user_indices.append(user_map[user_id])
-        track_indices.append(track_map[track_id])
-        values.append(val)
+    # Run CPU-heavy ALS training in a thread so the event loop stays responsive.
+    loop = asyncio.get_running_loop()
+    model, user_map, user_ids, track_map, track_ids, matrix = await loop.run_in_executor(
+        None, _train_als_sync, rows,
+    )
 
     n_users = len(user_ids)
     n_tracks = len(track_ids)
 
-    # Build sparse matrix (user × track).
-    matrix = sp.csr_matrix(
-        (values, (user_indices, track_indices)),
-        shape=(n_users, n_tracks),
-        dtype=np.float32,
-    )
-
-    # Train ALS.
-    model = AlternatingLeastSquares(
-        factors=64,
-        iterations=15,
-        regularization=0.1,
-        random_state=42,
-    )
-    model.fit(matrix)
-
-    # Atomic swap.
     with _lock:
         global _model, _user_to_idx, _idx_to_user, _track_to_idx, _idx_to_track, _interaction_matrix
         _model = model
