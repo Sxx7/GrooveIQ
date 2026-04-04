@@ -288,6 +288,8 @@ async def sync_track_ids(session: AsyncSession) -> SyncResult:
 
     Returns a SyncResult summary.
     """
+    import asyncio
+
     t0 = time.time()
     result = SyncResult(server_type=settings.MEDIA_SERVER_TYPE)
 
@@ -312,12 +314,28 @@ async def sync_track_ids(session: AsyncSession) -> SyncResult:
         if norm:
             server_map[norm] = st
 
-    # 3. Load all TrackFeatures rows.
-    all_tracks = (await session.execute(select(TrackFeatures))).scalars().all()
+    # 3. Load only the columns we need (not full ORM objects — 21k+ rows).
+    rows = (await session.execute(
+        select(
+            TrackFeatures.id,
+            TrackFeatures.track_id,
+            TrackFeatures.file_path,
+            TrackFeatures.title,
+            TrackFeatures.artist,
+            TrackFeatures.album,
+            TrackFeatures.genre,
+            TrackFeatures.external_track_id,
+        )
+    )).all()
     grooveiq_music_root = settings.MUSIC_LIBRARY_PATH
 
-    for tf in all_tracks:
-        norm = _normalise_path(tf.file_path, grooveiq_music_root)
+    # 4. Build batch updates instead of per-row ORM flush.
+    metadata_updates: list[dict] = []       # bulk metadata UPDATE
+    track_id_renames: list[tuple] = []       # (tf_id, old_id, new_id, external_id)
+    existing_track_ids = {r.track_id for r in rows}
+
+    for r in rows:
+        norm = _normalise_path(r.file_path, grooveiq_music_root)
         if not norm:
             continue
 
@@ -327,63 +345,75 @@ async def sync_track_ids(session: AsyncSession) -> SyncResult:
             continue
 
         result.tracks_matched += 1
-        old_track_id = tf.track_id
+        old_track_id = r.track_id
         new_track_id = st.server_id
 
-        try:
-            # Update metadata always (title/artist/album/genre may have changed).
-            metadata_changed = (
-                tf.title != st.title
-                or tf.artist != st.artist
-                or tf.album != st.album
-                or tf.genre != st.genre
+        # Check metadata changes.
+        if r.title != st.title or r.artist != st.artist or r.album != st.album or r.genre != st.genre:
+            metadata_updates.append({
+                "tf_id": r.id,
+                "title": st.title,
+                "artist": st.artist,
+                "album": st.album,
+                "genre": st.genre,
+            })
+            result.tracks_metadata += 1
+
+        # Check track_id rename.
+        if old_track_id != new_track_id:
+            # Skip if new_track_id already exists (conflict).
+            if new_track_id in existing_track_ids:
+                logger.warning("Track ID conflict for %s: server ID '%s' already exists, keeping metadata only", norm, new_track_id)
+            else:
+                ext_id = r.external_track_id or old_track_id
+                track_id_renames.append((r.id, old_track_id, new_track_id, ext_id))
+                # Update the set so subsequent checks see the new ID.
+                existing_track_ids.discard(old_track_id)
+                existing_track_ids.add(new_track_id)
+                result.tracks_updated += 1
+
+    logger.info(
+        f"Media server sync: matched={result.tracks_matched}, "
+        f"metadata_updates={len(metadata_updates)}, id_renames={len(track_id_renames)}, "
+        f"match_phase={time.time() - t0:.1f}s"
+    )
+
+    # 5. Apply metadata updates in batches (yield between batches).
+    batch_size = 200
+    for i in range(0, len(metadata_updates), batch_size):
+        batch = metadata_updates[i:i + batch_size]
+        for upd in batch:
+            await session.execute(
+                update(TrackFeatures)
+                .where(TrackFeatures.id == upd["tf_id"])
+                .values(title=upd["title"], artist=upd["artist"], album=upd["album"], genre=upd["genre"])
             )
-            if metadata_changed:
-                tf.title = st.title
-                tf.artist = st.artist
-                tf.album = st.album
-                tf.genre = st.genre
-                result.tracks_metadata += 1
+        await session.flush()
+        await asyncio.sleep(0)  # yield to event loop
 
-            # Update track_id if it differs.
-            if old_track_id != new_track_id:
-                # Check if the new track_id already exists (another row).
-                conflict = await session.execute(
-                    select(TrackFeatures.id)
-                    .where(TrackFeatures.track_id == new_track_id)
-                    .where(TrackFeatures.id != tf.id)
-                )
-                if conflict.scalar_one_or_none() is not None:
-                    # Skip the track_id rename but keep the metadata update.
-                    logger.warning("Track ID conflict for %s: server ID '%s' already exists, keeping metadata only", norm, new_track_id)
-                else:
-                    # Preserve the old GrooveIQ hash ID for reference.
-                    if not tf.external_track_id:
-                        tf.external_track_id = old_track_id
-
-                    # Cascade to related tables.
-                    await session.execute(
-                        update(ListenEvent)
-                        .where(ListenEvent.track_id == old_track_id)
-                        .values(track_id=new_track_id)
-                    )
-                    await session.execute(
-                        update(TrackInteraction)
-                        .where(TrackInteraction.track_id == old_track_id)
-                        .values(track_id=new_track_id)
-                    )
-                    # Note: ListenSession doesn't store track_id, no cascade needed.
-
-                    tf.track_id = new_track_id
-                    result.tracks_updated += 1
-
-            # Flush after each row so conflicts don't poison the whole batch.
-            await session.flush()
-
+    # 6. Apply track_id renames (with cascading).
+    for tf_id, old_id, new_id, ext_id in track_id_renames:
+        try:
+            await session.execute(
+                update(TrackFeatures)
+                .where(TrackFeatures.id == tf_id)
+                .values(track_id=new_id, external_track_id=ext_id)
+            )
+            await session.execute(
+                update(ListenEvent)
+                .where(ListenEvent.track_id == old_id)
+                .values(track_id=new_id)
+            )
+            await session.execute(
+                update(TrackInteraction)
+                .where(TrackInteraction.track_id == old_id)
+                .values(track_id=new_id)
+            )
         except Exception as exc:
-            await session.rollback()
-            result.errors.append(f"{norm}: {str(exc)[:120]}")
-            logger.warning("Sync error for %s: %s", norm, exc)
+            result.errors.append(f"rename {old_id}→{new_id}: {str(exc)[:120]}")
+            logger.warning("Sync rename error %s→%s: %s", old_id, new_id, exc)
+        # Yield every rename to keep event loop responsive.
+        await asyncio.sleep(0)
 
     await session.commit()
     result.elapsed_s = round(time.time() - t0, 2)

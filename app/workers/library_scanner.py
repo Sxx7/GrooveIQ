@@ -277,10 +277,11 @@ async def _run_scan(scan_id: int) -> None:
                 counters["ok"] += tf_counters["ok"]
                 counters["failed"] += tf_counters["failed"]
 
-        # Prune old log entries (keep latest 500).
-        # Uses a server-side subquery so we don't pull thousands of IDs
-        # into Python and back — the old approach generated a massive
-        # IN(...) clause that blocked the event loop and stalled SQLite.
+        # --- Post-scan phases (each timed for diagnostics) ---
+        logger.info(f"[Scan {scan_id}] Post-scan: starting cleanup and rebuild phases")
+
+        # Phase A: Prune old log entries (keep latest 500).
+        t_phase = time.time()
         async with AsyncSessionLocal() as session:
             keep_subq = (
                 select(ScanLog.id)
@@ -299,27 +300,38 @@ async def _run_scan(scan_id: int) -> None:
             if result.rowcount:
                 await session.commit()
                 logger.debug(f"[Scan {scan_id}] Pruned {result.rowcount} old log entries")
+        logger.info(f"[Scan {scan_id}] Post-scan phase A (log prune): {time.time() - t_phase:.1f}s")
+        await asyncio.sleep(0.05)
 
-        # Sync track IDs with the media server (if configured).
+        # Phase B: Sync track IDs with the media server (if configured).
+        t_phase = time.time()
         try:
             from app.services.media_server import is_configured, sync_track_ids
             if is_configured():
                 async with AsyncSessionLocal() as sync_session:
                     sync_result = await sync_track_ids(sync_session)
                 logger.info(
-                    f"[Scan {scan_id}] Media server sync: "
-                    f"{sync_result.tracks_matched} matched, {sync_result.tracks_updated} updated"
+                    f"[Scan {scan_id}] Post-scan phase B (media sync): "
+                    f"{sync_result.tracks_matched} matched, {sync_result.tracks_updated} updated, "
+                    f"{time.time() - t_phase:.1f}s"
                 )
+            else:
+                logger.info(f"[Scan {scan_id}] Post-scan phase B (media sync): skipped (not configured)")
         except Exception as e:
-            logger.error(f"[Scan {scan_id}] Media server sync failed: {e}")
+            logger.error(f"[Scan {scan_id}] Post-scan phase B (media sync) failed after {time.time() - t_phase:.1f}s: {e}")
+        await asyncio.sleep(0.05)
 
-        # Rebuild FAISS index with new/updated embeddings.
+        # Phase C: Rebuild FAISS index with new/updated embeddings.
+        t_phase = time.time()
         try:
             from app.services.faiss_index import rebuild as rebuild_faiss
             indexed = await rebuild_faiss()
-            logger.info(f"[Scan {scan_id}] FAISS index rebuilt: {indexed} tracks.")
+            logger.info(f"[Scan {scan_id}] Post-scan phase C (FAISS): {indexed} tracks, {time.time() - t_phase:.1f}s")
         except Exception as e:
-            logger.error(f"[Scan {scan_id}] FAISS rebuild failed: {e}")
+            logger.error(f"[Scan {scan_id}] Post-scan phase C (FAISS) failed after {time.time() - t_phase:.1f}s: {e}")
+        await asyncio.sleep(0.05)
+
+        logger.info(f"[Scan {scan_id}] Post-scan: all phases complete")
 
         elapsed = round(time.time() - scan_start, 1)
         await _update_scan(
@@ -394,10 +406,19 @@ async def _run_gpu_enrichment(scan_id: int, tf_files: list[str], counters: dict,
         batch_paths = tf_files[batch_start:batch_start + gpu_batch]
 
         # Yield to the event loop so HTTP handlers can run between batches.
-        await asyncio.sleep(0)
+        # sleep(0.05) gives ~50ms window for pending requests to be served.
+        t_yield = time.monotonic()
+        await asyncio.sleep(0.05)
+        yield_ms = (time.monotonic() - t_yield) * 1000
+        if yield_ms > 500:
+            logger.warning(
+                f"[Scan {scan_id}] Event loop latency: asyncio.sleep(0.05) took "
+                f"{yield_ms:.0f}ms (event loop is congested)"
+            )
 
         # Run batched inference (mel-spec extraction + EffNet + heads)
         loop = asyncio.get_running_loop()
+        t_infer = time.monotonic()
         try:
             results = await asyncio.wait_for(
                 loop.run_in_executor(None, infer_batch, batch_paths),
@@ -407,6 +428,7 @@ async def _run_gpu_enrichment(scan_id: int, tf_files: list[str], counters: dict,
             logger.error(f"[Scan {scan_id}] GPU batch inference failed: {e}")
             counters["failed"] += len(batch_paths)
             continue
+        infer_s = time.monotonic() - t_infer
 
         # Persist results — collect updates and do one bulk commit.
         fail_logs: list[ScanLog] = []
@@ -426,6 +448,7 @@ async def _run_gpu_enrichment(scan_id: int, tf_files: list[str], counters: dict,
                 counters["ok"] += 1
                 logger.debug(f"[Scan {scan_id}] TF OK  {fname}")
 
+        t_db = time.monotonic()
         async with AsyncSessionLocal() as session:
             # Bulk-update each track in one round-trip per track (no SELECT needed).
             for track_id, vals in update_map.items():
@@ -437,9 +460,16 @@ async def _run_gpu_enrichment(scan_id: int, tf_files: list[str], counters: dict,
             if fail_logs:
                 session.add_all(fail_logs)
             await session.commit()
+        db_s = time.monotonic() - t_db
+
+        if batch_num % 10 == 0 or infer_s > 30 or db_s > 5:
+            logger.info(
+                f"[Scan {scan_id}] GPU batch {batch_num+1}/{total_batches}: "
+                f"infer={infer_s:.1f}s db={db_s:.1f}s yield_latency={yield_ms:.0f}ms"
+            )
 
         # Yield again after DB work before logging/progress update.
-        await asyncio.sleep(0)
+        await asyncio.sleep(0.05)
 
         processed = counters["ok"] + counters["failed"] + counters["skipped"]
         _log_progress(scan_id, counters["found"], counters["ok"], counters["skipped"], counters["failed"], scan_start)

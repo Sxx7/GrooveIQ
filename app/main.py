@@ -4,10 +4,11 @@ Entry point for FastAPI application.
 """
 
 import logging
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import FileResponse, RedirectResponse, Response
@@ -69,6 +70,21 @@ app.add_middleware(
     allow_methods=["GET", "POST", "PATCH", "DELETE"],
     allow_headers=["Authorization", "Content-Type"],
 )
+
+
+@app.middleware("http")
+async def log_slow_requests(request: Request, call_next):
+    """Log requests that take longer than 2s — helps diagnose event loop stalls."""
+    t0 = time.monotonic()
+    response = await call_next(request)
+    elapsed = time.monotonic() - t0
+    if elapsed > 2.0:
+        logger.warning(
+            f"Slow request: {request.method} {request.url.path} "
+            f"took {elapsed:.1f}s (status={response.status_code})"
+        )
+    return response
+
 
 # ---------------------------------------------------------------------------
 # Routers

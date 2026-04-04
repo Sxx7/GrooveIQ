@@ -93,6 +93,9 @@ async def start_scheduler() -> None:
     # are available immediately (don't wait for the first scheduled run).
     asyncio.create_task(_delayed_startup_pipeline())
 
+    # Start event loop health watchdog.
+    asyncio.create_task(_event_loop_watchdog())
+
 
 async def stop_scheduler() -> None:
     _scheduler.shutdown(wait=False)
@@ -104,6 +107,24 @@ async def _delayed_startup_pipeline() -> None:
     await asyncio.sleep(10)  # let DB and scan init settle
     logger.info("Running recommendation pipeline on startup.")
     await _periodic_recommendation_pipeline()
+
+
+async def _event_loop_watchdog() -> None:
+    """
+    Periodically measure event loop responsiveness.
+    If sleep(0.1) takes >1s, the loop is severely congested.
+    Runs every 5s as a background task.
+    """
+    import asyncio
+    while True:
+        t0 = time.monotonic()
+        await asyncio.sleep(0.1)
+        latency_ms = (time.monotonic() - t0 - 0.1) * 1000
+        if latency_ms > 1000:
+            logger.error(f"Event loop BLOCKED: measured latency {latency_ms:.0f}ms (expected ~0ms)")
+        elif latency_ms > 200:
+            logger.warning(f"Event loop congested: latency {latency_ms:.0f}ms")
+        await asyncio.sleep(5)
 
 
 async def _startup_scan() -> None:
@@ -147,49 +168,55 @@ async def _periodic_recommendation_pipeline() -> None:
     Each step is independent of failures in the others (best-effort).
     Order matters: sessions feed taste profiles, scoring feeds taste profiles.
     """
+    t_pipeline = time.time()
     logger.info("Recommendation pipeline started.")
 
     # Step 1: Sessionization
+    t0 = time.time()
     try:
         from app.services.sessionizer import run_sessionizer
         sess_result = await run_sessionizer()
-        logger.info("Sessionizer done", extra=sess_result)
+        logger.info(f"Sessionizer done ({time.time() - t0:.1f}s)", extra=sess_result)
     except Exception:
-        logger.error(f"Sessionizer failed: {traceback.format_exc()}")
+        logger.error(f"Sessionizer failed ({time.time() - t0:.1f}s): {traceback.format_exc()}")
 
     # Step 2: Track scoring
+    t0 = time.time()
     try:
         from app.services.track_scoring import run_track_scoring
         score_result = await run_track_scoring()
-        logger.info("Track scoring done", extra=score_result)
+        logger.info(f"Track scoring done ({time.time() - t0:.1f}s)", extra=score_result)
     except Exception:
-        logger.error(f"Track scoring failed: {traceback.format_exc()}")
+        logger.error(f"Track scoring failed ({time.time() - t0:.1f}s): {traceback.format_exc()}")
 
     # Step 3: Taste profiles
+    t0 = time.time()
     try:
         from app.services.taste_profile import run_taste_profile_builder
         taste_result = await run_taste_profile_builder()
-        logger.info("Taste profile builder done", extra=taste_result)
+        logger.info(f"Taste profile builder done ({time.time() - t0:.1f}s)", extra=taste_result)
     except Exception:
-        logger.error(f"Taste profile builder failed: {traceback.format_exc()}")
+        logger.error(f"Taste profile builder failed ({time.time() - t0:.1f}s): {traceback.format_exc()}")
 
     # Step 4: Collaborative filtering model rebuild
+    t0 = time.time()
     try:
         from app.services.collab_filter import build_model
         cf_result = await build_model()
-        logger.info("CF model rebuild done", extra=cf_result)
+        logger.info(f"CF model rebuild done ({time.time() - t0:.1f}s)", extra=cf_result)
     except Exception:
-        logger.error(f"CF model rebuild failed: {traceback.format_exc()}")
+        logger.error(f"CF model rebuild failed ({time.time() - t0:.1f}s): {traceback.format_exc()}")
 
     # Step 5: LightGBM ranker training
+    t0 = time.time()
     try:
         from app.services.ranker import train_model
         ranker_result = await train_model()
-        logger.info("Ranker training done", extra=ranker_result)
+        logger.info(f"Ranker training done ({time.time() - t0:.1f}s)", extra=ranker_result)
     except Exception:
-        logger.error(f"Ranker training failed: {traceback.format_exc()}")
+        logger.error(f"Ranker training failed ({time.time() - t0:.1f}s): {traceback.format_exc()}")
 
-    logger.info("Recommendation pipeline complete.")
+    logger.info(f"Recommendation pipeline complete ({time.time() - t_pipeline:.1f}s total)")
 
 
 async def _periodic_discovery() -> None:
