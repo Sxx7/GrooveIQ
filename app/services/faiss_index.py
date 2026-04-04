@@ -56,21 +56,13 @@ def _decode_embedding(b64: str) -> Optional[np.ndarray]:
         return None
 
 
-async def build_index() -> int:
+def _build_index_sync(rows: List[Tuple[str, str]]) -> Tuple[Optional[object], List[str], Dict[str, int], Optional[np.ndarray], int]:
     """
-    Load all embeddings from DB and build a FAISS index.
-    Returns the number of tracks indexed.
+    CPU-bound FAISS index construction.  Runs in a thread executor so it
+    doesn't block the async event loop.
     """
     import faiss
 
-    async with AsyncSessionLocal() as session:
-        result = await session.execute(
-            select(TrackFeatures.track_id, TrackFeatures.embedding)
-            .where(TrackFeatures.embedding.isnot(None))
-        )
-        rows = result.all()
-
-    # Decode embeddings.
     track_ids: List[str] = []
     vectors: List[np.ndarray] = []
     for track_id, emb_b64 in rows:
@@ -80,14 +72,7 @@ async def build_index() -> int:
             vectors.append(vec)
 
     if not vectors:
-        logger.warning("FAISS build: no valid embeddings found, index empty.")
-        with _lock:
-            global _index, _id_to_track, _track_to_id, _embeddings
-            _index = None
-            _id_to_track = []
-            _track_to_id = {}
-            _embeddings = None
-        return 0
+        return None, [], {}, None, 0
 
     matrix = np.stack(vectors).astype(np.float32)
     n = matrix.shape[0]
@@ -102,16 +87,43 @@ async def build_index() -> int:
         index.nprobe = min(nlist // 4, 16)
 
     index.add(matrix)
+    id_map = {tid: i for i, tid in enumerate(track_ids)}
+    return index, track_ids, id_map, matrix, n
+
+
+async def build_index() -> int:
+    """
+    Load all embeddings from DB and build a FAISS index.
+    Returns the number of tracks indexed.
+    """
+    import asyncio
+
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(
+            select(TrackFeatures.track_id, TrackFeatures.embedding)
+            .where(TrackFeatures.embedding.isnot(None))
+        )
+        rows = result.all()
+
+    # Run CPU-heavy numpy/FAISS work in a thread so the event loop stays responsive.
+    loop = asyncio.get_running_loop()
+    index, track_ids, id_map, matrix, n = await loop.run_in_executor(
+        None, _build_index_sync, rows,
+    )
+
+    if n == 0:
+        logger.warning("FAISS build: no valid embeddings found, index empty.")
 
     # Atomic swap.
-    id_map = {tid: i for i, tid in enumerate(track_ids)}
     with _lock:
+        global _index, _id_to_track, _track_to_id, _embeddings
         _index = index
         _id_to_track = track_ids
         _track_to_id = id_map
         _embeddings = matrix
 
-    logger.info(f"FAISS index built: {n} tracks indexed ({'IVF' if n >= _IVF_THRESHOLD else 'Flat'}).")
+    if n > 0:
+        logger.info(f"FAISS index built: {n} tracks indexed ({'IVF' if n >= _IVF_THRESHOLD else 'Flat'}).")
     return n
 
 
