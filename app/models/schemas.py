@@ -449,12 +449,8 @@ class PlaylistDetailResponse(PlaylistResponse):
 # ---------------------------------------------------------------------------
 
 class LastfmConnectRequest(BaseModel):
-    """Connect a user's Last.fm account.  Password is optional (for read-only mode)."""
+    """Connect a user's Last.fm account (read-only profile enrichment)."""
     lastfm_username: str = Field(..., min_length=1, max_length=128)
-    lastfm_password: Optional[str] = Field(
-        None, min_length=1,
-        description="Used once to obtain a session key for scrobbling. Never stored.",
-    )
 
 
 class LastfmConnectResponse(BaseModel):

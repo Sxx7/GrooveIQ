@@ -1,15 +1,20 @@
 """
 GrooveIQ – Last.fm integration routes.
 
-Endpoints for connecting/disconnecting Last.fm accounts and
-viewing cached Last.fm profile data.
+Auth flow (redirect-based, no passwords touch GrooveIQ):
+1. GET  /v1/users/{id}/lastfm/auth    → returns Last.fm authorization URL
+2. User authorizes on Last.fm, gets redirected back with ?token=...
+3. GET  /v1/users/{id}/lastfm/callback?token=...  → exchanges token for session key
+
+Read-only mode (no scrobbling, just profile enrichment):
+  POST /v1/users/{id}/lastfm/connect  → only needs lastfm_username
 """
 
 from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy import select, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -44,13 +49,16 @@ async def _resolve_user(session: AsyncSession, user_id: str) -> User:
     return user
 
 
+# ---------------------------------------------------------------------------
+# Read-only connect (username only, no auth needed)
+# ---------------------------------------------------------------------------
+
 @router.post(
     "/users/{user_id}/lastfm/connect",
     response_model=LastfmConnectResponse,
-    summary="Connect Last.fm account",
-    description="Link a Last.fm account to this user.  Provide only `lastfm_username` "
-                "for read-only profile data, or also `lastfm_password` to enable scrobbling.  "
-                "The password is used once to obtain a session key and is never stored.",
+    summary="Connect Last.fm (read-only)",
+    description="Link a Last.fm username for profile enrichment only. "
+                "For scrobbling, use the /lastfm/auth redirect flow instead.",
 )
 async def connect_lastfm(
     user_id: str,
@@ -62,35 +70,6 @@ async def connect_lastfm(
     user = await _resolve_user(session, user_id)
 
     user.lastfm_username = body.lastfm_username
-    scrobbling = False
-
-    # If password provided, exchange for session key
-    if body.lastfm_password:
-        if not settings.LASTFM_SESSION_ENCRYPTION_KEY:
-            raise HTTPException(
-                status_code=503,
-                detail="Scrobbling requires LASTFM_SESSION_ENCRYPTION_KEY to be configured.",
-            )
-
-        from app.services.lastfm_client import (
-            LastFmError,
-            encrypt_session_key,
-            get_lastfm_client,
-        )
-
-        client = get_lastfm_client()
-        try:
-            session_key = await client.get_mobile_session(
-                body.lastfm_username, body.lastfm_password,
-            )
-        except LastFmError as e:
-            raise HTTPException(
-                status_code=401,
-                detail=f"Last.fm authentication failed: {e.message}",
-            )
-
-        user.lastfm_session_key = encrypt_session_key(session_key)
-        scrobbling = True
 
     # Trigger immediate profile pull
     try:
@@ -102,9 +81,109 @@ async def connect_lastfm(
     return LastfmConnectResponse(
         status="connected",
         username=body.lastfm_username,
-        scrobbling_enabled=scrobbling,
+        scrobbling_enabled=False,
     )
 
+
+# ---------------------------------------------------------------------------
+# Scrobble auth via Last.fm redirect flow (password never touches GrooveIQ)
+# ---------------------------------------------------------------------------
+
+@router.get(
+    "/users/{user_id}/lastfm/auth",
+    summary="Get Last.fm authorization URL",
+    description="Returns a URL to redirect the user to Last.fm for authorization. "
+                "After authorizing, Last.fm redirects back to the callback URL with a token.",
+)
+async def get_lastfm_auth_url(
+    user_id: str,
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+    _key: str = Depends(require_api_key),
+):
+    _require_lastfm_enabled()
+    await _resolve_user(session, user_id)
+
+    if not settings.LASTFM_SESSION_ENCRYPTION_KEY:
+        raise HTTPException(
+            status_code=503,
+            detail="Scrobbling requires LASTFM_SESSION_ENCRYPTION_KEY to be configured.",
+        )
+
+    # Build callback URL pointing back to the dashboard.
+    # The dashboard JS detects ?lastfm_token=&lastfm_user= on load
+    # and automatically completes the token exchange.
+    cb = str(request.base_url).rstrip("/") + f"/dashboard?lastfm_user={user_id}"
+
+    auth_url = (
+        f"https://www.last.fm/api/auth/"
+        f"?api_key={settings.LASTFM_API_KEY}"
+        f"&cb={cb}"
+    )
+
+    return {"auth_url": auth_url, "user_id": user_id}
+
+
+@router.get(
+    "/users/{user_id}/lastfm/callback",
+    response_model=LastfmConnectResponse,
+    summary="Exchange Last.fm auth token for session key",
+    description="Called after the user authorizes on Last.fm. Exchanges the token "
+                "for a permanent session key (encrypted at rest). The user's Last.fm "
+                "password never touches GrooveIQ.",
+)
+async def lastfm_callback(
+    user_id: str,
+    token: str = Query(..., min_length=1, description="Token from Last.fm redirect"),
+    session: AsyncSession = Depends(get_session),
+    _key: str = Depends(require_api_key),
+):
+    _require_lastfm_enabled()
+    user = await _resolve_user(session, user_id)
+
+    if not settings.LASTFM_SESSION_ENCRYPTION_KEY:
+        raise HTTPException(
+            status_code=503,
+            detail="Scrobbling requires LASTFM_SESSION_ENCRYPTION_KEY to be configured.",
+        )
+
+    from app.services.lastfm_client import (
+        LastFmError,
+        encrypt_session_key,
+        get_lastfm_client,
+    )
+
+    client = get_lastfm_client()
+    try:
+        result = await client.get_session(token)
+        session_key = result["key"]
+        lastfm_username = result["name"]
+    except LastFmError as e:
+        raise HTTPException(
+            status_code=401,
+            detail=f"Last.fm token exchange failed: {e.message}",
+        )
+
+    user.lastfm_username = lastfm_username
+    user.lastfm_session_key = encrypt_session_key(session_key)
+
+    # Trigger immediate profile pull
+    try:
+        from app.services.lastfm_profile import refresh_single_user
+        await refresh_single_user(session, user)
+    except Exception as e:
+        logger.warning("Initial Last.fm profile pull failed: %s", e)
+
+    return LastfmConnectResponse(
+        status="connected",
+        username=lastfm_username,
+        scrobbling_enabled=True,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Disconnect + Profile
+# ---------------------------------------------------------------------------
 
 @router.delete(
     "/users/{user_id}/lastfm",
