@@ -60,6 +60,12 @@ def _worker_init():
     os.environ["TF_NUM_INTEROP_PARALLELISM_THREADS"] = "1"
     # Suppress TF warnings/logs in workers
     os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
+    # Hide GPUs from worker subprocesses.  Workers only do CPU work
+    # (DSP analysis, mel-spec extraction).  GPU inference runs in the
+    # main process via ONNX Runtime.  Without this, TF in the subprocess
+    # tries to initialise CUDA and deadlocks with ONNX Runtime's CUDA
+    # context in the main process.
+    os.environ["CUDA_VISIBLE_DEVICES"] = ""
 
 
 def get_executor() -> ProcessPoolExecutor:
@@ -391,18 +397,20 @@ async def _run_gpu_enrichment(scan_id: int, tf_files: list[str], counters: dict,
     """
     Run TF enrichment pass using ONNX Runtime GPU batched inference.
 
-    Mel-spec extraction is CPU-bound and holds the GIL.  To keep the
-    event loop responsive we extract mel-specs in small sub-batches
-    (MEL_CHUNK files), yielding between each chunk.  Once a full GPU
-    batch of patches is ready we send it to ONNX in the default
-    ThreadPoolExecutor (ONNX Runtime releases the GIL during .run()).
+    Split into two executor phases per batch to keep the event loop alive:
+      1. Mel-spec extraction → ProcessPoolExecutor  (CPU-bound; Essentia's
+         SWIG bindings hold the GIL, so threads can't help)
+      2. ONNX inference → default ThreadPoolExecutor (GPU-bound; ONNX
+         Runtime releases the GIL during .run())
+
+    Worker subprocesses have CUDA_VISIBLE_DEVICES="" so TF doesn't try
+    to grab the GPU and deadlock with ONNX Runtime in the main process.
     """
     from app.services.gpu_inference import (
-        gpu_detected, extract_melspec_for_file, infer_from_patches,
+        gpu_detected, extract_melspecs_batch, infer_from_patches,
         ensure_onnx_models, is_available,
     )
     from app.services.audio_analysis import ANALYSIS_VERSION, generate_track_id
-    import numpy as np
 
     if not is_available():
         logger.error(f"[Scan {scan_id}] ONNX Runtime not available, skipping GPU enrichment")
@@ -417,14 +425,8 @@ async def _run_gpu_enrichment(scan_id: int, tf_files: list[str], counters: dict,
 
     gpu_batch = settings.ANALYSIS_GPU_BATCH_SIZE
     total_batches = (len(tf_files) + gpu_batch - 1) // gpu_batch
-
-    # How many files to extract mel-specs for before yielding to the
-    # event loop.  Essentia's C++ code releases the GIL during heavy
-    # DSP work, but the Python loop + numpy concatenation holds it.
-    # 8 files ≈ 0.5-1s of GIL time — short enough to keep HTTP alive.
-    MEL_CHUNK = 8
-
     loop = asyncio.get_running_loop()
+    proc_executor = get_executor()
 
     for batch_num, batch_start in enumerate(range(0, len(tf_files), gpu_batch)):
         batch_paths = tf_files[batch_start:batch_start + gpu_batch]
@@ -433,60 +435,29 @@ async def _run_gpu_enrichment(scan_id: int, tf_files: list[str], counters: dict,
 
         t_infer = time.monotonic()
         try:
-            # --- Phase 1: mel-spec extraction in small chunks with yields ---
-            per_file_patches: list = []
-            file_patch_counts: list[int] = []
-            errors: list = [None] * len(batch_paths)
+            # Phase 1: mel-spec in ProcessPoolExecutor (separate GIL)
+            mel_data = await asyncio.wait_for(
+                loop.run_in_executor(proc_executor, extract_melspecs_batch, batch_paths),
+                timeout=settings.ANALYSIS_TIMEOUT * len(batch_paths),
+            )
 
-            for chunk_start in range(0, len(batch_paths), MEL_CHUNK):
-                chunk = batch_paths[chunk_start:chunk_start + MEL_CHUNK]
-
-                def _extract_chunk(paths=chunk, offset=chunk_start):
-                    """Extract mel-specs for a small chunk of files."""
-                    _patches = []
-                    _counts = []
-                    _errs = [None] * len(paths)
-                    for j, fp in enumerate(paths):
-                        try:
-                            p = extract_melspec_for_file(fp, max_seconds=15.0)
-                            _patches.append(p)
-                            _counts.append(len(p))
-                        except Exception as e:
-                            from app.services.gpu_inference import _N_MELS, _PATCH_FRAMES
-                            _patches.append(np.zeros((0, 1, _N_MELS, _PATCH_FRAMES), dtype=np.float32))
-                            _counts.append(0)
-                            _errs[j] = str(e)
-                    return _patches, _counts, _errs
-
-                chunk_patches, chunk_counts, chunk_errs = await loop.run_in_executor(
-                    None, _extract_chunk,
-                )
-
-                per_file_patches.extend(chunk_patches)
-                file_patch_counts.extend(chunk_counts)
-                for j, err in enumerate(chunk_errs):
-                    if err is not None:
-                        errors[chunk_start + j] = err
-
-                # Yield between chunks so the event loop can serve requests
-                await asyncio.sleep(0)
-
-            # Concatenate valid patches
-            valid = [p for p in per_file_patches if len(p) > 0]
-            if not valid:
+            if mel_data["all_patches"] is None:
                 for i, fp in enumerate(batch_paths):
-                    err = errors[i] or "no valid patches"
+                    err = mel_data["errors"][i] or "no valid patches"
                     logger.warning(f"[Scan {scan_id}] TF FAIL {Path(fp).name}: {err}")
                 counters["failed"] += len(batch_paths)
                 continue
 
-            all_patches = np.concatenate(valid, axis=0)
+            await asyncio.sleep(0)  # yield between phases
 
-            # --- Phase 2: ONNX inference (GPU, releases GIL) ---
+            # Phase 2: ONNX inference in ThreadPoolExecutor (GPU, releases GIL)
             results = await asyncio.wait_for(
                 loop.run_in_executor(
                     None, infer_from_patches,
-                    all_patches, file_patch_counts, errors, batch_paths,
+                    mel_data["all_patches"],
+                    mel_data["file_patch_counts"],
+                    mel_data["errors"],
+                    batch_paths,
                 ),
                 timeout=settings.ANALYSIS_TIMEOUT * len(batch_paths),
             )
