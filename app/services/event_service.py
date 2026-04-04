@@ -117,6 +117,15 @@ async def process_event(
     session.add(row)
     # Commit is handled by the get_session dependency on request close.
 
+    # Fire Last.fm scrobble/now-playing hook (best-effort, non-blocking).
+    # Enqueue is a DB insert — the actual HTTP call happens in the background worker.
+    if settings.lastfm_user_enabled and settings.LASTFM_SCROBBLE_ENABLED:
+        try:
+            from app.services.lastfm_scrobbler import on_event
+            await on_event(session, event, row)
+        except Exception:
+            logger.debug("Last.fm scrobble hook error", exc_info=True)
+
     logger.debug(
         "Event accepted",
         extra={

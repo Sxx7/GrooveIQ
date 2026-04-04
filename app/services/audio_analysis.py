@@ -210,6 +210,18 @@ def analyze_track(file_path: str, skip_tf: bool = False) -> dict:
     }
     timings: dict[str, float] = {}
 
+    # Read ID3/Vorbis metadata first (fast, no Essentia needed).
+    # Even if Essentia fails, we still get artist/title for scrobbling.
+    try:
+        from app.services.metadata_reader import read_metadata
+        meta = read_metadata(file_path)
+        for key in ("title", "artist", "album", "album_artist",
+                     "track_number", "duration_ms", "genre", "musicbrainz_track_id"):
+            if meta.get(key) is not None:
+                result[key] = meta[key]
+    except Exception as e:
+        logger.debug("Metadata read failed for %s: %s", file_path, e)
+
     try:
         result["file_hash"] = compute_file_hash(file_path)
 

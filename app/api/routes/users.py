@@ -42,13 +42,22 @@ async def get_user_profile(
 ):
     """Returns the computed taste profile for a user (audio prefs, mood, behaviour stats)."""
     user = await _resolve_user(session, user_id)
-    return {
+    response = {
         "uid": user.uid,
         "user_id": user.user_id,
         "display_name": user.display_name,
         "profile_updated_at": user.profile_updated_at,
         "taste_profile": user.taste_profile,
     }
+    # Include Last.fm data if the user has a linked account
+    if user.lastfm_username:
+        response["lastfm"] = {
+            "username": user.lastfm_username,
+            "scrobbling_enabled": user.lastfm_session_key is not None,
+            "synced_at": user.lastfm_synced_at,
+            "profile": user.lastfm_cache,
+        }
+    return response
 
 
 # ---------------------------------------------------------------------------

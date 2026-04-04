@@ -68,6 +68,16 @@ async def _apply_column_migrations(conn) -> None:
         ("track_features", "genre", "VARCHAR(512)"),
         ("library_scan_state", "files_skipped", "INTEGER DEFAULT 0"),
         ("library_scan_state", "current_file", "TEXT"),
+        # Track metadata from ID3 tags
+        ("track_features", "album_artist", "VARCHAR(512)"),
+        ("track_features", "track_number", "INTEGER"),
+        ("track_features", "duration_ms", "INTEGER"),
+        ("track_features", "musicbrainz_track_id", "VARCHAR(64)"),
+        # Last.fm per-user integration
+        ("users", "lastfm_username", "VARCHAR(128)"),
+        ("users", "lastfm_session_key", "VARCHAR(512)"),
+        ("users", "lastfm_cache", "TEXT"),
+        ("users", "lastfm_synced_at", "INTEGER"),
     ]
     for table, column, col_type in migrations:
         try:

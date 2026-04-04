@@ -140,11 +140,15 @@ class TrackFeatures(Base):
     # Media server mapping — populated when matching scanner tracks to Navidrome/Plex IDs
     external_track_id = Column(String(128), nullable=True, unique=True, index=True)
 
-    # Track metadata (populated from media server sync)
+    # Track metadata (populated from media server sync + ID3 tags)
     title           = Column(String(512), nullable=True)
     artist          = Column(String(512), nullable=True)
     album           = Column(String(512), nullable=True)
+    album_artist    = Column(String(512), nullable=True)
     genre           = Column(String(512), nullable=True)  # comma-separated, e.g. "Hip-Hop, Rap"
+    track_number    = Column(Integer,     nullable=True)
+    duration_ms     = Column(Integer,     nullable=True)   # from ID3 tags (integer ms)
+    musicbrainz_track_id = Column(String(64), nullable=True)
 
     # File metadata
     file_path       = Column(Text,    nullable=False)
@@ -210,6 +214,12 @@ class User(Base):
     # Cached taste profile (JSON, updated by the background worker)
     taste_profile = Column(JSON, nullable=True)
     profile_updated_at = Column(Integer, nullable=True)
+
+    # Last.fm integration (per-user, opt-in)
+    lastfm_username    = Column(String(128), nullable=True)
+    lastfm_session_key = Column(String(512), nullable=True)   # Fernet-encrypted
+    lastfm_cache       = Column(JSON,        nullable=True)   # cached Last.fm profile data
+    lastfm_synced_at   = Column(Integer,     nullable=True)   # Unix timestamp of last sync
 
     @property
     def uid(self) -> int:
@@ -415,6 +425,31 @@ class DiscoveryRequest(Base):
         UniqueConstraint("artist_mbid", name="uq_discovery_mbid"),
         Index("ix_discovery_user_status", "user_id", "status"),
         Index("ix_discovery_created", "created_at"),
+    )
+
+
+class ScrobbleQueue(Base):
+    """
+    Pending Last.fm scrobbles.  Written on qualifying play_end events,
+    processed in batches by the background worker.  Survives restarts.
+    """
+    __tablename__ = "scrobble_queue"
+
+    id          = Column(Integer, primary_key=True, autoincrement=True)
+    user_id     = Column(String(128), nullable=False, index=True)
+    track_id    = Column(String(128), nullable=False)
+    artist      = Column(String(512), nullable=False)
+    track_title = Column(String(512), nullable=False)
+    album       = Column(String(512), nullable=True)
+    duration_s  = Column(Integer,     nullable=True)
+    timestamp   = Column(Integer,     nullable=False)    # when the track was played
+    status      = Column(String(16),  nullable=False, default="pending")  # pending|sent|failed
+    attempts    = Column(Integer,     nullable=False, default=0)
+    last_error  = Column(Text,        nullable=True)
+    created_at  = Column(Integer,     nullable=False, default=lambda: int(time.time()))
+
+    __table_args__ = (
+        Index("ix_scrobble_status", "status"),
     )
 
 

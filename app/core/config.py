@@ -121,6 +121,7 @@ class Settings(BaseSettings):
     # Music discovery (Last.fm + Lidarr)
     # ------------------------------------------------------------------
     LASTFM_API_KEY: str = ""
+    LASTFM_API_SECRET: str = ""        # shared secret for authenticated calls (scrobbling)
     LIDARR_URL: str = ""               # e.g. http://lidarr:8686
     LIDARR_API_KEY: str = ""
     LIDARR_QUALITY_PROFILE_ID: int = 1
@@ -129,6 +130,14 @@ class Settings(BaseSettings):
     DISCOVERY_CRON: str = "0 3 * * *"  # cron schedule (default: 3 AM daily)
     DISCOVERY_MAX_REQUESTS_PER_DAY: int = 500
     DISCOVERY_SIMILAR_LIMIT: int = 20  # similar artists per seed from Last.fm
+
+    # ------------------------------------------------------------------
+    # Last.fm per-user integration (profile + scrobbling)
+    # ------------------------------------------------------------------
+    LASTFM_ENABLED: bool = False                # master toggle
+    LASTFM_SCROBBLE_ENABLED: bool = False       # scrobbling (requires session key)
+    LASTFM_SESSION_ENCRYPTION_KEY: str = ""     # Fernet key for encrypting session keys at rest
+    LASTFM_REFRESH_HOURS: int = 6               # how often to pull Last.fm profiles
 
     # ------------------------------------------------------------------
     # Logging
@@ -158,6 +167,11 @@ class Settings(BaseSettings):
     @property
     def discovery_enabled(self) -> bool:
         return bool(self.LASTFM_API_KEY and self.LIDARR_URL and self.LIDARR_API_KEY)
+
+    @property
+    def lastfm_user_enabled(self) -> bool:
+        """True when per-user Last.fm features (profile pull, scrobbling) are configured."""
+        return bool(self.LASTFM_ENABLED and self.LASTFM_API_KEY and self.LASTFM_API_SECRET)
 
     @model_validator(mode="after")
     def warn_insecure_defaults(self) -> "Settings":

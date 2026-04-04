@@ -25,6 +25,9 @@ python-jose[cryptography]==3.3.*  # JWT (future auth expansion)
 # Logging
 structlog==24.*
 
+# Audio metadata (ID3/Vorbis/FLAC tag reading)
+mutagen>=1.47
+
 # Audio analysis (Phase 3)
 # essentia-tensorflow includes pre-built wheels and TF model support
 essentia-tensorflow>=2.1b6.dev0,<2.1b7

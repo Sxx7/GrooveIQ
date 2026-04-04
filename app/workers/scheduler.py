@@ -59,11 +59,29 @@ async def start_scheduler() -> None:
             replace_existing=True,
         )
 
+    # Last.fm scrobble queue processor (every 60s)
+    if settings.lastfm_user_enabled and settings.LASTFM_SCROBBLE_ENABLED:
+        _scheduler.add_job(
+            _process_scrobble_queue,
+            trigger=IntervalTrigger(seconds=60),
+            id="lastfm_scrobble_queue",
+            replace_existing=True,
+        )
+    # Last.fm profile refresh
+    if settings.lastfm_user_enabled:
+        _scheduler.add_job(
+            _refresh_lastfm_profiles,
+            trigger=IntervalTrigger(hours=settings.LASTFM_REFRESH_HOURS),
+            id="lastfm_profile_refresh",
+            replace_existing=True,
+        )
+
     _scheduler.start()
     logger.info(
         f"Scheduler started. Library scan every {settings.RESCAN_INTERVAL_HOURS}h, "
         f"recommendation pipeline every {settings.SCORING_INTERVAL_HOURS}h."
         + (f", discovery cron '{settings.DISCOVERY_CRON}'" if settings.discovery_enabled else "")
+        + (f", Last.fm profile refresh every {settings.LASTFM_REFRESH_HOURS}h" if settings.lastfm_user_enabled else "")
     )
 
     # Resume any scan interrupted by a previous container restart,
@@ -188,3 +206,25 @@ async def run_discovery_now() -> dict:
     """Run the discovery pipeline on demand. Returns summary."""
     from app.services.discovery import run_discovery_pipeline
     return await run_discovery_pipeline()
+
+
+async def _process_scrobble_queue() -> None:
+    """Process pending Last.fm scrobbles."""
+    try:
+        from app.services.lastfm_scrobbler import process_scrobble_queue
+        result = await process_scrobble_queue()
+        if result.get("processed", 0) > 0 or result.get("failed", 0) > 0:
+            logger.info("Scrobble queue: %s", result)
+    except Exception:
+        logger.error(f"Scrobble queue failed: {traceback.format_exc()}")
+
+
+async def _refresh_lastfm_profiles() -> None:
+    """Refresh cached Last.fm profile data for linked users."""
+    try:
+        from app.services.lastfm_profile import refresh_lastfm_profiles
+        result = await refresh_lastfm_profiles()
+        if result.get("refreshed", 0) > 0:
+            logger.info("Last.fm profiles refreshed: %s", result)
+    except Exception:
+        logger.error(f"Last.fm profile refresh failed: {traceback.format_exc()}")

@@ -444,6 +444,32 @@ class PlaylistDetailResponse(PlaylistResponse):
 # User
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Last.fm integration
+# ---------------------------------------------------------------------------
+
+class LastfmConnectRequest(BaseModel):
+    """Connect a user's Last.fm account.  Password is optional (for read-only mode)."""
+    lastfm_username: str = Field(..., min_length=1, max_length=128)
+    lastfm_password: Optional[str] = Field(
+        None, min_length=1,
+        description="Used once to obtain a session key for scrobbling. Never stored.",
+    )
+
+
+class LastfmConnectResponse(BaseModel):
+    status: str
+    username: str
+    scrobbling_enabled: bool
+
+
+class LastfmProfileResponse(BaseModel):
+    username: Optional[str] = None
+    scrobbling_enabled: bool = False
+    synced_at: Optional[int] = None
+    profile: Optional[Dict[str, Any]] = None
+
+
 class UserCreate(BaseModel):
     user_id:      str = Field(..., min_length=1, max_length=128)
     display_name: Optional[str] = Field(None, max_length=255)
