@@ -391,12 +391,23 @@ async def _run_gpu_enrichment(scan_id: int, tf_files: list[str], counters: dict,
     """
     Run TF enrichment pass using ONNX Runtime GPU batched inference.
 
-    Instead of processing files one-at-a-time through the process pool,
-    this collects mel-spectrograms and runs them through the GPU in large
-    batches — the key to GPU throughput.
+    Mel-spec extraction is CPU-bound and holds the GIL.  To keep the
+    event loop responsive we extract mel-specs in small sub-batches
+    (MEL_CHUNK files), yielding between each chunk.  Once a full GPU
+    batch of patches is ready we send it to ONNX in the default
+    ThreadPoolExecutor (ONNX Runtime releases the GIL during .run()).
     """
-    from app.services.gpu_inference import gpu_detected, extract_melspecs_batch, infer_from_patches
+    from app.services.gpu_inference import (
+        gpu_detected, extract_melspec_for_file, infer_from_patches,
+        ensure_onnx_models, is_available,
+    )
     from app.services.audio_analysis import ANALYSIS_VERSION, generate_track_id
+    import numpy as np
+
+    if not is_available():
+        logger.error(f"[Scan {scan_id}] ONNX Runtime not available, skipping GPU enrichment")
+        return
+    ensure_onnx_models()
 
     provider = "GPU" if gpu_detected() else "CPU/ONNX"
     logger.info(
@@ -407,50 +418,75 @@ async def _run_gpu_enrichment(scan_id: int, tf_files: list[str], counters: dict,
     gpu_batch = settings.ANALYSIS_GPU_BATCH_SIZE
     total_batches = (len(tf_files) + gpu_batch - 1) // gpu_batch
 
+    # How many files to extract mel-specs for before yielding to the
+    # event loop.  Essentia's C++ code releases the GIL during heavy
+    # DSP work, but the Python loop + numpy concatenation holds it.
+    # 8 files ≈ 0.5-1s of GIL time — short enough to keep HTTP alive.
+    MEL_CHUNK = 8
+
+    loop = asyncio.get_running_loop()
+
     for batch_num, batch_start in enumerate(range(0, len(tf_files), gpu_batch)):
         batch_paths = tf_files[batch_start:batch_start + gpu_batch]
 
-        # Yield to the event loop so HTTP handlers can run between batches.
-        # sleep(0.05) gives ~50ms window for pending requests to be served.
-        t_yield = time.monotonic()
-        await asyncio.sleep(0.05)
-        yield_ms = (time.monotonic() - t_yield) * 1000
-        if yield_ms > 500:
-            logger.warning(
-                f"[Scan {scan_id}] Event loop latency: asyncio.sleep(0.05) took "
-                f"{yield_ms:.0f}ms (event loop is congested)"
-            )
+        await asyncio.sleep(0.05)  # yield before starting batch
 
-        # Split inference into two phases to avoid blocking the event loop:
-        #   1. Mel-spec extraction (CPU-bound, holds GIL) → ProcessPoolExecutor
-        #   2. ONNX inference (GPU-bound, releases GIL) → default ThreadPoolExecutor
-        loop = asyncio.get_running_loop()
-        proc_executor = get_executor()
         t_infer = time.monotonic()
         try:
-            # Phase 1: mel-spec in process pool (separate GIL)
-            mel_data = await asyncio.wait_for(
-                loop.run_in_executor(proc_executor, extract_melspecs_batch, batch_paths),
-                timeout=settings.ANALYSIS_TIMEOUT * len(batch_paths),
-            )
+            # --- Phase 1: mel-spec extraction in small chunks with yields ---
+            per_file_patches: list = []
+            file_patch_counts: list[int] = []
+            errors: list = [None] * len(batch_paths)
 
-            if mel_data["all_patches"] is None:
-                # All files in this batch failed mel-spec extraction
+            for chunk_start in range(0, len(batch_paths), MEL_CHUNK):
+                chunk = batch_paths[chunk_start:chunk_start + MEL_CHUNK]
+
+                def _extract_chunk(paths=chunk, offset=chunk_start):
+                    """Extract mel-specs for a small chunk of files."""
+                    _patches = []
+                    _counts = []
+                    _errs = [None] * len(paths)
+                    for j, fp in enumerate(paths):
+                        try:
+                            p = extract_melspec_for_file(fp, max_seconds=15.0)
+                            _patches.append(p)
+                            _counts.append(len(p))
+                        except Exception as e:
+                            from app.services.gpu_inference import _N_MELS, _PATCH_FRAMES
+                            _patches.append(np.zeros((0, 1, _N_MELS, _PATCH_FRAMES), dtype=np.float32))
+                            _counts.append(0)
+                            _errs[j] = str(e)
+                    return _patches, _counts, _errs
+
+                chunk_patches, chunk_counts, chunk_errs = await loop.run_in_executor(
+                    None, _extract_chunk,
+                )
+
+                per_file_patches.extend(chunk_patches)
+                file_patch_counts.extend(chunk_counts)
+                for j, err in enumerate(chunk_errs):
+                    if err is not None:
+                        errors[chunk_start + j] = err
+
+                # Yield between chunks so the event loop can serve requests
+                await asyncio.sleep(0)
+
+            # Concatenate valid patches
+            valid = [p for p in per_file_patches if len(p) > 0]
+            if not valid:
                 for i, fp in enumerate(batch_paths):
-                    err = mel_data["errors"][i] or "no valid patches"
-                    fname = Path(fp).name
-                    logger.warning(f"[Scan {scan_id}] TF FAIL {fname}: {err}")
+                    err = errors[i] or "no valid patches"
+                    logger.warning(f"[Scan {scan_id}] TF FAIL {Path(fp).name}: {err}")
                 counters["failed"] += len(batch_paths)
                 continue
 
-            # Phase 2: ONNX inference in thread pool (GPU, releases GIL)
+            all_patches = np.concatenate(valid, axis=0)
+
+            # --- Phase 2: ONNX inference (GPU, releases GIL) ---
             results = await asyncio.wait_for(
                 loop.run_in_executor(
                     None, infer_from_patches,
-                    mel_data["all_patches"],
-                    mel_data["file_patch_counts"],
-                    mel_data["errors"],
-                    batch_paths,
+                    all_patches, file_patch_counts, errors, batch_paths,
                 ),
                 timeout=settings.ANALYSIS_TIMEOUT * len(batch_paths),
             )
@@ -462,7 +498,7 @@ async def _run_gpu_enrichment(scan_id: int, tf_files: list[str], counters: dict,
 
         # Persist results — collect updates and do one bulk commit.
         fail_logs: list[ScanLog] = []
-        update_map: dict[str, dict] = {}  # track_id → {column: value}
+        update_map: dict[str, dict] = {}
 
         for fp, result in zip(batch_paths, results):
             fname = Path(fp).name
@@ -480,7 +516,6 @@ async def _run_gpu_enrichment(scan_id: int, tf_files: list[str], counters: dict,
 
         t_db = time.monotonic()
         async with AsyncSessionLocal() as session:
-            # Bulk-update each track in one round-trip per track (no SELECT needed).
             for track_id, vals in update_map.items():
                 await session.execute(
                     update(TrackFeatures)
@@ -495,13 +530,11 @@ async def _run_gpu_enrichment(scan_id: int, tf_files: list[str], counters: dict,
         if batch_num % 10 == 0 or infer_s > 30 or db_s > 5:
             logger.info(
                 f"[Scan {scan_id}] GPU batch {batch_num+1}/{total_batches}: "
-                f"infer={infer_s:.1f}s db={db_s:.1f}s yield_latency={yield_ms:.0f}ms"
+                f"infer={infer_s:.1f}s db={db_s:.1f}s"
             )
 
-        # Yield again after DB work before logging/progress update.
-        await asyncio.sleep(0.05)
+        await asyncio.sleep(0.05)  # yield after DB work
 
-        processed = counters["ok"] + counters["failed"] + counters["skipped"]
         _log_progress(scan_id, counters["found"], counters["ok"], counters["skipped"], counters["failed"], scan_start)
         await _update_scan(
             scan_id,
