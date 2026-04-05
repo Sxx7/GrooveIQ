@@ -904,6 +904,7 @@ function renderUserDetail(profile, interactions, sessions, lastfmProfile, histor
       + '<div><span style="color:var(--text-dim);font-size:12px">Scrobbling</span><br>'
       + (lfm.scrobbling_enabled ? '<span class="badge badge-green">Active</span>' : '<span class="badge badge-yellow">Read-only</span>') + '</div>'
       + '<div><span style="color:var(--text-dim);font-size:12px">Last Synced</span><br>' + timeAgo(lfm.synced_at) + '</div>'
+      + '<button onclick="syncLastfm(\'' + esc(userId) + '\')">Sync Now</button>'
       + '<button class="danger" onclick="disconnectLastfm(\'' + esc(userId) + '\')">Disconnect</button>'
       + '</div>';
 
@@ -1337,6 +1338,12 @@ function submitRename(uid) {
   }).catch(function(e) {
     alert('Failed: ' + e.message);
   });
+}
+
+function syncLastfm(userId) {
+  apiPost('/v1/users/' + encodeURIComponent(userId) + '/lastfm/sync', {}).then(function() {
+    viewUser(userId);
+  }).catch(function(e) { alert('Last.fm sync failed: ' + e.message); });
 }
 
 function disconnectLastfm(userId) {

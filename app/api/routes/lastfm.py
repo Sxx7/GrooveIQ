@@ -143,6 +143,47 @@ async def disconnect_lastfm(
     return {"status": "disconnected"}
 
 
+@router.post(
+    "/users/{user_id}/lastfm/sync",
+    response_model=LastfmProfileResponse,
+    summary="Force-refresh Last.fm profile data",
+    description="Re-fetches the user's Last.fm profile from the API "
+                "regardless of the normal refresh interval.",
+)
+async def sync_lastfm_profile(
+    user_id: str,
+    session: AsyncSession = Depends(get_session),
+    _key: str = Depends(require_api_key),
+):
+    _require_lastfm_enabled()
+    user = await _resolve_user(session, user_id)
+
+    if not user.lastfm_username:
+        raise HTTPException(
+            status_code=404,
+            detail="No Last.fm account linked for this user.",
+        )
+
+    from app.services.lastfm_profile import refresh_single_user
+
+    try:
+        await refresh_single_user(session, user)
+        await session.commit()
+    except Exception as e:
+        logger.error("Last.fm profile sync failed for %s: %s", user_id, e)
+        raise HTTPException(
+            status_code=502,
+            detail=f"Failed to fetch Last.fm profile: {e}",
+        )
+
+    return LastfmProfileResponse(
+        username=user.lastfm_username,
+        scrobbling_enabled=user.lastfm_session_key is not None,
+        synced_at=user.lastfm_synced_at,
+        profile=user.lastfm_cache,
+    )
+
+
 @router.get(
     "/users/{user_id}/lastfm/profile",
     response_model=LastfmProfileResponse,
