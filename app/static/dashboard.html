@@ -571,7 +571,7 @@ function renderDashboard(stats, users, events, model) {
   h += '</div></div>';
 
   // Library scan
-  h += '<div class="panel full-width"><div class="panel-header">Library Scan <span style="display:flex;gap:6px"><button class="secondary" onclick="runPipeline()">Run Pipeline</button><button class="secondary" style="color:var(--red)" onclick="resetPipeline()">Reset Pipeline</button><button class="secondary" onclick="triggerSync()">Sync IDs</button><button class="secondary" onclick="triggerScan()">Scan Now</button></span></div>';
+  h += '<div class="panel full-width"><div class="panel-header">Library Scan <span style="display:flex;gap:6px"><button class="secondary" onclick="triggerSync()">Sync IDs</button><button class="secondary" onclick="triggerScan()">Scan Now</button></span></div>';
   h += '<div class="panel-body" id="scan-panel">' + renderScanPanel(stats.latest_scan) + '</div>';
   h += '<div style="border-top:1px solid var(--border)">';
   h += '<div style="padding:10px 20px;font-size:12px;font-weight:600;color:var(--text-dim);display:flex;justify-content:space-between;align-items:center">';
@@ -650,6 +650,9 @@ function loadRecommendations() {
   var h = '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;flex-wrap:wrap;gap:12px">'
     + '<h2 style="font-size:18px">Recommendations</h2>'
     + '<div style="display:flex;gap:8px;align-items:center">'
+    + '<button class="secondary" onclick="runPipeline()">Run Pipeline</button>'
+    + '<button class="secondary" style="color:var(--red)" onclick="resetPipeline()">Reset Pipeline</button>'
+    + '<span style="width:1px;height:20px;background:var(--border)"></span>'
     + '<select id="reco-user" class="inline-select"><option value="">Select user...</option>';
   for (var i = 0; i < cachedUsers.length; i++) {
     h += '<option value="' + esc(cachedUsers[i].user_id) + '">' + esc(cachedUsers[i].user_id) + '</option>';
