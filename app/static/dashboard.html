@@ -782,14 +782,15 @@ function viewUser(userId) {
     api('/v1/users/' + enc + '/interactions?limit=20&sort_by=satisfaction_score&sort_dir=desc'),
     api('/v1/users/' + enc + '/sessions?limit=10'),
     api('/v1/users/' + enc + '/lastfm/profile').catch(function() { return null; }),
+    api('/v1/users/' + enc + '/history?limit=25'),
   ]).then(function(results) {
-    renderUserDetail(results[0], results[1], results[2], results[3]);
+    renderUserDetail(results[0], results[1], results[2], results[3], results[4]);
   }).catch(function(e) {
     $('#app').innerHTML = '<div class="empty" style="color:var(--red)">Error loading user: ' + esc(e.message) + '</div>';
   });
 }
 
-function renderUserDetail(profile, interactions, sessions, lastfmProfile) {
+function renderUserDetail(profile, interactions, sessions, lastfmProfile, history) {
   var userId = profile.user_id;
   var numericUid = profile.uid;
   var tp = profile.taste_profile;
@@ -981,6 +982,35 @@ function renderUserDetail(profile, interactions, sessions, lastfmProfile) {
       + '</tr>';
   }
   h += '</table></div></div>';
+
+  // Listening History
+  if (history && history.history) {
+    var hist = history.history;
+    h += '<div class="panel full-width"><div class="panel-header">Listening History (' + history.total + ' total)</div>';
+    h += '<div class="panel-body" style="overflow-x:auto"><table>'
+      + '<tr><th>Time</th><th>Artist</th><th>Title</th><th>Album</th><th>Duration</th><th>Listened</th><th>Completion</th><th>Result</th><th>Device</th></tr>';
+    for (var i = 0; i < hist.length; i++) {
+      var entry = hist[i];
+      var comp = entry.completion != null ? (entry.completion * 100).toFixed(0) + '%' : '\u2014';
+      var compColor = entry.completion != null && entry.completion < 0.5 ? 'color:var(--red)' : '';
+      var listened = entry.dwell_ms != null ? fmtDuration(Math.round(entry.dwell_ms / 1000)) : '\u2014';
+      var dur = entry.duration != null ? fmtDuration(Math.round(entry.duration)) : '\u2014';
+      var result = entry.reason_end || '\u2014';
+      var resultColor = result === 'user_skip' ? 'color:var(--red)' : '';
+      h += '<tr>'
+        + '<td style="white-space:nowrap">' + fmtTime(entry.timestamp) + '</td>'
+        + '<td>' + esc(entry.artist || '\u2014') + '</td>'
+        + '<td>' + esc(entry.title || '\u2014') + '</td>'
+        + '<td>' + esc(entry.album || '\u2014') + '</td>'
+        + '<td>' + dur + '</td>'
+        + '<td>' + listened + '</td>'
+        + '<td style="' + compColor + '">' + comp + '</td>'
+        + '<td style="' + resultColor + '">' + esc(result) + '</td>'
+        + '<td>' + esc(entry.device_type || '\u2014') + '</td>'
+        + '</tr>';
+    }
+    h += '</table></div></div>';
+  }
 
   // Sessions
   h += '<div class="panel full-width"><div class="panel-header">Recent Sessions (' + sessions.total + ' total)</div>';

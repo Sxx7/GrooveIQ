@@ -137,6 +137,110 @@ async def get_user_interactions(
 
 
 # ---------------------------------------------------------------------------
+# Listening history
+# ---------------------------------------------------------------------------
+
+@router.get("/users/{user_id}/history", summary="Get user listening history")
+async def get_user_history(
+    user_id: str,
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+    session: AsyncSession = Depends(get_session),
+    _key: str = Depends(require_api_key),
+):
+    """Returns a chronological list of every track the user started playing,
+    enriched with track metadata and completion info from matching play_end events."""
+    await _resolve_user(session, user_id)
+
+    from sqlalchemy import or_
+
+    # Count total play_start events for this user
+    count_q = select(func.count()).select_from(
+        select(ListenEvent.id).where(
+            ListenEvent.user_id == user_id,
+            ListenEvent.event_type == "play_start",
+        ).subquery()
+    )
+    total = (await session.execute(count_q)).scalar() or 0
+
+    # Fetch play_start events, most recent first
+    q = (
+        select(ListenEvent)
+        .where(
+            ListenEvent.user_id == user_id,
+            ListenEvent.event_type == "play_start",
+        )
+        .order_by(ListenEvent.timestamp.desc())
+        .offset(offset)
+        .limit(limit)
+    )
+    starts = (await session.execute(q)).scalars().all()
+
+    if not starts:
+        return {"total": total, "history": []}
+
+    # Collect track IDs and find matching play_end events
+    track_ids = list({s.track_id for s in starts})
+
+    # Fetch track metadata
+    tf_q = select(TrackFeatures).where(or_(
+        TrackFeatures.track_id.in_(track_ids),
+        TrackFeatures.external_track_id.in_(track_ids),
+    ))
+    tf_rows = (await session.execute(tf_q)).scalars().all()
+    tf_map = {}
+    for tf in tf_rows:
+        tf_map[tf.track_id] = tf
+        if tf.external_track_id:
+            tf_map[tf.external_track_id] = tf
+
+    # For each play_start, find the closest subsequent play_end for the same
+    # (user, track, session_id) to get completion/dwell info.
+    # Build a map of session_id+track_id → play_end events
+    session_ids = list({s.session_id for s in starts if s.session_id})
+    end_map = {}
+    if session_ids:
+        end_q = (
+            select(ListenEvent)
+            .where(
+                ListenEvent.user_id == user_id,
+                ListenEvent.event_type == "play_end",
+                ListenEvent.session_id.in_(session_ids),
+            )
+        )
+        ends = (await session.execute(end_q)).scalars().all()
+        for e in ends:
+            key = (e.session_id, e.track_id)
+            # Keep the one closest in time (latest) per key
+            if key not in end_map or e.timestamp > end_map[key].timestamp:
+                end_map[key] = e
+
+    history = []
+    for s in starts:
+        tf = tf_map.get(s.track_id)
+        end = end_map.get((s.session_id, s.track_id)) if s.session_id else None
+
+        entry = {
+            "track_id": s.track_id,
+            "timestamp": s.timestamp,
+            "artist": tf.artist if tf else None,
+            "title": tf.title if tf else None,
+            "album": tf.album if tf else None,
+            "duration": tf.duration if tf else None,
+            "device_type": s.device_type,
+            "output_type": s.output_type,
+            "shuffle": s.shuffle,
+            # Completion info from matching play_end
+            "completion": round(end.value, 4) if end and end.value is not None else None,
+            "dwell_ms": end.dwell_ms if end else None,
+            "reason_end": end.reason_end if end else None,
+        }
+        history.append(entry)
+
+    return {"total": total, "history": history}
+
+
+# ---------------------------------------------------------------------------
 # Listening sessions
 # ---------------------------------------------------------------------------
 
