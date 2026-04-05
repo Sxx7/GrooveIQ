@@ -186,6 +186,7 @@ async def list_tracks(
     key: Optional[str] = Query(None),
     mode: Optional[str] = Query(None),
     mood: Optional[str] = Query(None),
+    analysis_version: Optional[str] = Query(None, description="Filter by analysis version"),
     session: AsyncSession = Depends(get_session),
     _key: str = Depends(require_api_key),
 ):
@@ -218,6 +219,8 @@ async def list_tracks(
         q = q.where(TrackFeatures.key == key)
     if mode:
         q = q.where(TrackFeatures.mode == mode)
+    if analysis_version:
+        q = q.where(TrackFeatures.analysis_version == analysis_version)
 
     # Count total before pagination
     count_q = select(func.count()).select_from(q.subquery())
@@ -244,8 +247,17 @@ async def list_tracks(
                         break
         tracks = filtered
 
+    # Distinct analysis versions for filter dropdown
+    version_rows = (await session.execute(
+        select(TrackFeatures.analysis_version)
+        .where(TrackFeatures.analysis_version.isnot(None))
+        .distinct()
+        .order_by(TrackFeatures.analysis_version)
+    )).scalars().all()
+
     return {
         "total": total,
+        "versions": version_rows,
         "tracks": [
             {
                 "track_id": t.track_id,
