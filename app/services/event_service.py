@@ -50,14 +50,19 @@ async def process_event(
     # ------------------------------------------------------------------
     # 2. Duplicate detection
     # ------------------------------------------------------------------
-    cutoff = int(time.time()) - _DEDUP_WINDOW_SECONDS
+    # Compare against the *event's* timestamp, not the server clock.
+    # This catches retries where the client re-sends the same event.
+    event_ts = event.timestamp if event.timestamp else int(time.time())
+    ts_lo = event_ts - _DEDUP_WINDOW_SECONDS
+    ts_hi = event_ts + _DEDUP_WINDOW_SECONDS
     dup_q = (
         select(ListenEvent.id)
         .where(
             ListenEvent.user_id    == event.user_id,
             ListenEvent.track_id   == event.track_id,
             ListenEvent.event_type == event.event_type,
-            ListenEvent.timestamp  >= cutoff,
+            ListenEvent.timestamp  >= ts_lo,
+            ListenEvent.timestamp  <= ts_hi,
         )
         .limit(1)
     )
