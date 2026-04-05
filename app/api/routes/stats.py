@@ -62,24 +62,30 @@ async def get_stats(
     latest_scan = None
     if scan_row:
         now_ts = int(time.time())
-        processed = scan_row.files_analyzed + scan_row.files_failed + (scan_row.files_skipped or 0)
+        skipped = scan_row.files_skipped or 0
+        processed = scan_row.files_analyzed + scan_row.files_failed + skipped
         percent = round(processed / scan_row.files_found * 100, 1) if scan_row.files_found > 0 else 0.0
         elapsed = (scan_row.scan_ended_at or now_ts) - scan_row.scan_started_at
+
+        # Rate and ETA based on analyzed+failed only (actual work, not skips)
+        work_done = scan_row.files_analyzed + scan_row.files_failed
+        work_remaining = scan_row.files_found - skipped - work_done
+        analysis_rate = round(work_done / elapsed, 2) if elapsed > 0 and work_done > 0 else None
         eta = None
-        if scan_row.status == "running" and percent > 0:
-            eta = int(elapsed / percent * (100 - percent))
-        rate = round(processed / elapsed, 1) if elapsed > 0 else 0
+        if scan_row.status == "running" and analysis_rate and analysis_rate > 0:
+            eta = int(work_remaining / analysis_rate)
+
         latest_scan = {
             "scan_id": scan_row.id,
             "status": scan_row.status,
             "files_found": scan_row.files_found,
             "files_analyzed": scan_row.files_analyzed,
-            "files_skipped": scan_row.files_skipped or 0,
+            "files_skipped": skipped,
             "files_failed": scan_row.files_failed,
             "percent_complete": percent,
             "elapsed_seconds": elapsed,
             "eta_seconds": eta,
-            "rate_per_sec": rate,
+            "rate_per_sec": analysis_rate,
             "current_file": scan_row.current_file,
             "started_at": scan_row.scan_started_at,
             "ended_at": scan_row.scan_ended_at,

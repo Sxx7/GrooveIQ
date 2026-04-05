@@ -120,23 +120,30 @@ async def get_scan_status(scan_id: int) -> Optional[dict]:
         if not scan:
             return None
 
-        processed = scan.files_analyzed + scan.files_failed + scan.files_skipped
+        skipped = scan.files_skipped or 0
+        processed = scan.files_analyzed + scan.files_failed + skipped
         percent = round(processed / scan.files_found * 100, 1) if scan.files_found > 0 else 0.0
         elapsed = (scan.scan_ended_at or int(time.time())) - scan.scan_started_at
+
+        # Rate and ETA based on analyzed+failed only (actual work, not skips)
+        work_done = scan.files_analyzed + scan.files_failed
+        work_remaining = scan.files_found - skipped - work_done
+        analysis_rate = round(work_done / elapsed, 2) if elapsed > 0 and work_done > 0 else None
         eta = None
-        if scan.status == "running" and percent > 0:
-            eta = int(elapsed / percent * (100 - percent))
+        if scan.status == "running" and analysis_rate and analysis_rate > 0:
+            eta = int(work_remaining / analysis_rate)
 
         return {
             "scan_id": scan.id,
             "status": scan.status,
             "files_found": scan.files_found,
             "files_analyzed": scan.files_analyzed,
-            "files_skipped": scan.files_skipped,
+            "files_skipped": skipped,
             "files_failed": scan.files_failed,
             "percent_complete": percent,
             "elapsed_seconds": elapsed,
             "eta_seconds": eta,
+            "rate_per_sec": analysis_rate,
             "current_file": scan.current_file,
             "started_at": scan.scan_started_at,
             "ended_at": scan.scan_ended_at,
@@ -285,12 +292,14 @@ def _log_progress(scan_id: int, found: int, analyzed: int, skipped: int, failed:
     processed = analyzed + skipped + failed
     pct = round(processed / found * 100, 1) if found > 0 else 0
     elapsed = time.time() - start
-    rate = processed / elapsed if elapsed > 0 else 0
-    eta = round((found - processed) / rate) if rate > 0 else 0
+    work_done = analyzed + failed
+    rate = work_done / elapsed if elapsed > 0 and work_done > 0 else 0
+    remaining = found - skipped - work_done
+    eta = round(remaining / rate) if rate > 0 else 0
     eta_str = f"{eta // 60}m{eta % 60:02d}s" if eta >= 60 else f"{eta}s"
     logger.info(
         f"[Scan {scan_id}] Progress: {processed}/{found} ({pct}%) | "
-        f"{analyzed} new, {skipped} skipped, {failed} failed | "
+        f"{analyzed} analyzed, {skipped} skipped, {failed} failed | "
         f"{rate:.1f} files/s | ETA {eta_str}"
     )
 

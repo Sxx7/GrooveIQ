@@ -472,7 +472,7 @@ function renderScanPanel(scan) {
   h += '<span>Status: <span class="badge badge-' + statusColor + '">' + esc(scan.status).toUpperCase() + '</span></span>';
   if (scan.elapsed_seconds) h += '<span style="font-size:12px">Elapsed: <b>' + fmtDuration(scan.elapsed_seconds) + '</b></span>';
   if (scan.status === 'running' && scan.eta_seconds != null) h += '<span style="font-size:12px">ETA: <b style="color:var(--yellow)">' + fmtDuration(scan.eta_seconds) + '</b></span>';
-  if (scan.rate_per_sec) h += '<span style="font-size:12px">Speed: <b>' + scan.rate_per_sec + '</b> files/s</span>';
+  if (scan.rate_per_sec) h += '<span style="font-size:12px">Analysis speed: <b>' + scan.rate_per_sec + '</b> files/s</span>';
   h += '</div>';
 
   if (scan.files_found > 0) {
