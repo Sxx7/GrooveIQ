@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.security import require_api_key
 from app.db.session import get_session
-from app.models.db import ListenEvent, Playlist, TrackFeatures, User, LibraryScanState
+from app.models.db import ListenEvent, ListenSession, Playlist, TrackFeatures, TrackInteraction, User, LibraryScanState
 from app.services.audio_analysis import ANALYSIS_VERSION
 
 router = APIRouter()
@@ -130,3 +130,29 @@ async def trigger_pipeline(
     from app.workers.scheduler import run_recommendation_pipeline_now
     asyncio.create_task(run_recommendation_pipeline_now())
     return {"message": "Pipeline started", "status": "running"}
+
+
+@router.post(
+    "/pipeline/reset",
+    summary="Reset and rebuild the recommendation pipeline",
+    description="Truncates sessions, interactions, and taste profiles, then reruns the full pipeline from raw events.",
+)
+async def reset_pipeline(
+    session: AsyncSession = Depends(get_session),
+    _key: str = Depends(require_api_key),
+):
+    from sqlalchemy import delete, update
+    import asyncio
+    from app.workers.scheduler import run_recommendation_pipeline_now
+
+    # Clear derived data
+    await session.execute(delete(TrackInteraction))
+    await session.execute(delete(ListenSession))
+    await session.execute(
+        update(User).values(taste_profile=None, profile_updated_at=None)
+    )
+    await session.commit()
+
+    # Rebuild from scratch
+    asyncio.create_task(run_recommendation_pipeline_now())
+    return {"message": "Pipeline reset and rebuild started", "status": "running"}
