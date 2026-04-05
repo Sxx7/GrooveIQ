@@ -12,6 +12,7 @@ import time
 import numpy as np
 import pytest
 import pytest_asyncio
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.models.db import Base, TrackFeatures, TrackInteraction, User
@@ -267,3 +268,104 @@ class TestRanker:
         assert stats["trained"] is True
         assert "model_version" in stats
         assert "training_samples" in stats
+
+    async def test_score_with_context(self):
+        """Scoring works when context params are provided."""
+        from app.services.ranker import train_model, score_candidates
+
+        await _seed_data(n_users=4, n_tracks=20, interactions_per_user=20)
+        await train_model()
+
+        async with _TestSession() as session:
+            scored = await score_candidates(
+                "user0", ["t0", "t1", "t2", "t3", "t4"], session,
+                hour_of_day=14, day_of_week=3,
+                device_type="mobile", output_type="headphones",
+                context_type="playlist", location_label="commute",
+            )
+
+        assert len(scored) == 5
+        for tid, score in scored:
+            assert isinstance(score, float)
+        scores = [s for _, s in scored]
+        assert scores == sorted(scores, reverse=True)
+
+    async def test_fallback_with_context(self):
+        """Fallback ranking works with context params (no trained model)."""
+        from app.services.ranker import score_candidates, is_ready
+
+        await _seed_data()
+        assert not is_ready()
+
+        async with _TestSession() as session:
+            scored = await score_candidates(
+                "user0", ["t0", "t1", "t2"], session,
+                device_type="speaker", output_type="bluetooth_speaker",
+            )
+
+        assert len(scored) == 3
+
+
+class TestFeatureEngineeringContext:
+
+    async def test_context_features_in_output(self):
+        """Context features appear in the feature vector at the correct positions."""
+        from app.services.feature_eng import build_features, FEATURE_COLUMNS, NUM_FEATURES
+
+        await _seed_data()
+        async with _TestSession() as session:
+            result = await build_features(
+                "user0", ["t0", "t1"], session,
+                hour_of_day=10, day_of_week=2,
+                device_type="mobile", output_type="headphones",
+                context_type="playlist", location_label="gym",
+            )
+
+        assert result["features"].shape == (2, NUM_FEATURES)
+
+        # is_mobile should be 1.0 and is_headphones should be 1.0
+        is_mobile_idx = FEATURE_COLUMNS.index("is_mobile")
+        is_headphones_idx = FEATURE_COLUMNS.index("is_headphones")
+        assert result["features"][0, is_mobile_idx] == 1.0
+        assert result["features"][0, is_headphones_idx] == 1.0
+
+    async def test_context_features_default_zero(self):
+        """Context features default to 0.0 when not provided."""
+        from app.services.feature_eng import build_features, FEATURE_COLUMNS
+
+        await _seed_data()
+        async with _TestSession() as session:
+            result = await build_features("user0", ["t0"], session)
+
+        device_idx = FEATURE_COLUMNS.index("device_affinity")
+        is_mobile_idx = FEATURE_COLUMNS.index("is_mobile")
+        assert result["features"][0, device_idx] == 0.0
+        assert result["features"][0, is_mobile_idx] == 0.0
+
+    async def test_device_affinity_from_profile(self):
+        """device_affinity pulls from taste_profile.device_patterns."""
+        from app.services.feature_eng import build_features, FEATURE_COLUMNS
+
+        await _seed_data()
+
+        # Add device_patterns to user's taste profile.
+        async with _TestSession() as session:
+            from sqlalchemy import update
+            from app.models.db import User
+            user_result = await session.execute(
+                select(User.taste_profile).where(User.user_id == "user0")
+            )
+            profile = user_result.scalar_one()
+            profile["device_patterns"] = {"mobile": 0.75, "desktop": 0.25}
+            await session.execute(
+                update(User).where(User.user_id == "user0").values(taste_profile=profile)
+            )
+            await session.commit()
+
+        async with _TestSession() as session:
+            result = await build_features(
+                "user0", ["t0"], session, device_type="mobile",
+            )
+
+        dev_idx = FEATURE_COLUMNS.index("device_affinity")
+        assert abs(result["features"][0, dev_idx] - 0.75) < 0.01

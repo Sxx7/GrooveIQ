@@ -50,6 +50,13 @@ async def get_recommendations(
     user_id: str,
     seed_track_id: str = Query(None, description="Optional seed track to bias content candidates"),
     limit: int = Query(25, ge=1, le=100),
+    # Context params (all optional — client sends what it knows).
+    device_type: str = Query(None, description="Device class: mobile, desktop, speaker, car, web"),
+    output_type: str = Query(None, description="Audio output: headphones, speaker, bluetooth_speaker, car_audio, built_in, airplay"),
+    context_type: str = Query(None, description="Listening context: playlist, album, radio, search, home_shelf"),
+    location_label: str = Query(None, description="Semantic location: home, work, gym, commute"),
+    hour_of_day: int = Query(None, ge=0, le=23, description="Client's local hour (0-23)"),
+    day_of_week: int = Query(None, ge=1, le=7, description="Client's local day of week (1=Mon, 7=Sun)"),
     session: AsyncSession = Depends(get_session),
     _key: str = Depends(require_api_key),
 ):
@@ -116,13 +123,21 @@ async def get_recommendations(
 
     # --- Step 1: Score candidates with LightGBM ranker (or fallback) ---
     from app.services.ranker import score_candidates
-    scored = await score_candidates(user_id, candidate_ids, session)
+    scored = await score_candidates(
+        user_id, candidate_ids, session,
+        hour_of_day=hour_of_day, day_of_week=day_of_week,
+        device_type=device_type, output_type=output_type,
+        context_type=context_type, location_label=location_label,
+    )
     score_map = {tid: score for tid, score in scored}
     source_map = {c["track_id"]: c["source"] for c in candidates}
 
     # --- Step 2: Rerank for diversity / business rules ---
     from app.services.reranker import rerank
-    reranked = await rerank(scored, user_id, session)
+    reranked = await rerank(
+        scored, user_id, session,
+        device_type=device_type, output_type=output_type,
+    )
     reranked = reranked[:limit]
 
     # Fetch track metadata for response.
@@ -135,7 +150,7 @@ async def get_recommendations(
     # Generate a request_id for impression tracking.
     request_id = str(uuid.uuid4())
 
-    # Log reco_impression events for feedback loop.
+    # Log reco_impression events for feedback loop (include context for future training).
     now = int(time.time())
     for i, (tid, score) in enumerate(reranked):
         session.add(ListenEvent(
@@ -146,6 +161,12 @@ async def get_recommendations(
             position=i,
             request_id=request_id,
             model_version=model_version,
+            device_type=device_type,
+            output_type=output_type,
+            context_type=context_type,
+            location_label=location_label,
+            hour_of_day=hour_of_day,
+            day_of_week=day_of_week,
             timestamp=now,
         ))
     await session.commit()
@@ -183,6 +204,14 @@ async def get_recommendations(
         "model_version": model_version,
         "user_id": user_id,
         "seed_track_id": seed_track_id,
+        "context": {
+            "hour_of_day": hour_of_day,
+            "day_of_week": day_of_week,
+            "device_type": device_type,
+            "output_type": output_type,
+            "context_type": context_type,
+            "location_label": location_label,
+        },
         "tracks": tracks,
     }
 

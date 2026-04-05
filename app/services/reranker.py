@@ -23,6 +23,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.db import TrackFeatures, TrackInteraction
 
+# Context-aware: suppress short tracks in car/speaker mode.
+_MIN_DURATION_CAR = 90.0  # seconds
+
 logger = logging.getLogger(__name__)
 
 # Max tracks from the same artist in the top N positions.
@@ -61,6 +64,8 @@ async def rerank(
     ranked: List[Tuple[str, float]],
     user_id: str,
     session: AsyncSession,
+    device_type: Optional[str] = None,
+    output_type: Optional[str] = None,
 ) -> List[Tuple[str, float]]:
     """
     Apply diversity and business-rule filters to ranked candidates.
@@ -69,6 +74,8 @@ async def rerank(
         ranked: list of (track_id, score) sorted descending.
         user_id: user for interaction lookups.
         session: DB session.
+        device_type: current device class (mobile, desktop, speaker, car, web).
+        output_type: current audio output (headphones, speaker, car_audio, etc.).
 
     Returns:
         Reranked list of (track_id, score).
@@ -82,12 +89,14 @@ async def rerank(
     # --- Load data needed for all rules ---
     now = int(time.time())
 
-    # Track features (for artist extraction).
+    # Track features (for artist extraction and context-aware rules).
     feat_result = await session.execute(
-        select(TrackFeatures.track_id, TrackFeatures.file_path)
+        select(TrackFeatures.track_id, TrackFeatures.file_path, TrackFeatures.duration)
         .where(TrackFeatures.track_id.in_(track_ids))
     )
-    path_map = {row.track_id: row.file_path for row in feat_result.all()}
+    feat_rows = feat_result.all()
+    path_map = {row.track_id: row.file_path for row in feat_rows}
+    duration_map = {row.track_id: row.duration for row in feat_rows}
 
     # Interactions for this user.
     inter_result = await session.execute(
@@ -122,11 +131,24 @@ async def rerank(
         if inter and inter.last_played_at and inter.last_played_at >= cutoff_repeat:
             recently_played.add(tid)
 
-    # --- Rebuild sorted list with updated scores, excluding recently played ---
+    # --- Rule 5: Context-aware — suppress short tracks in car/speaker mode ---
+    short_tracks: Set[str] = set()
+    is_car_or_speaker = (
+        device_type in ("car", "speaker")
+        or output_type in ("car_audio", "bluetooth_speaker", "speaker")
+    )
+    if is_car_or_speaker:
+        for tid in track_ids:
+            dur = duration_map.get(tid)
+            if dur is not None and dur < _MIN_DURATION_CAR:
+                short_tracks.add(tid)
+
+    # --- Rebuild sorted list with updated scores, excluding filtered tracks ---
+    excluded = recently_played | short_tracks
     adjusted = [
         (tid, score_map[tid])
         for tid in track_ids
-        if tid not in recently_played
+        if tid not in excluded
     ]
     adjusted.sort(key=lambda x: x[1], reverse=True)
 

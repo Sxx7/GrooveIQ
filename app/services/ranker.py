@@ -151,6 +151,10 @@ async def score_candidates(
     session,
     hour_of_day: Optional[int] = None,
     day_of_week: Optional[int] = None,
+    device_type: Optional[str] = None,
+    output_type: Optional[str] = None,
+    context_type: Optional[str] = None,
+    location_label: Optional[str] = None,
 ) -> List[Tuple[str, float]]:
     """
     Score candidate tracks using the trained model.
@@ -165,6 +169,8 @@ async def score_candidates(
     result = await build_features(
         user_id, candidate_track_ids, session,
         hour_of_day=hour_of_day, day_of_week=day_of_week,
+        device_type=device_type, output_type=output_type,
+        context_type=context_type, location_label=location_label,
     )
 
     track_ids = result["track_ids"]

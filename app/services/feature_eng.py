@@ -42,6 +42,9 @@ FEATURE_COLUMNS = [
     "time_affinity",
     # Context (cyclic encoding)
     "hour_sin", "hour_cos", "dow_sin", "dow_cos",
+    # Context affinity (from taste profile + real-time context)
+    "device_affinity", "output_affinity", "context_type_affinity",
+    "location_affinity", "is_mobile", "is_headphones",
 ]
 
 NUM_FEATURES = len(FEATURE_COLUMNS)
@@ -53,6 +56,10 @@ async def build_features(
     session: AsyncSession,
     hour_of_day: Optional[int] = None,
     day_of_week: Optional[int] = None,
+    device_type: Optional[str] = None,
+    output_type: Optional[str] = None,
+    context_type: Optional[str] = None,
+    location_label: Optional[str] = None,
 ) -> Dict[str, np.ndarray]:
     """
     Build feature vectors for a list of candidate tracks.
@@ -74,6 +81,10 @@ async def build_features(
     audio_prefs = taste_profile.get("audio_preferences", {})
     mood_prefs = taste_profile.get("mood_preferences", {})
     time_patterns = taste_profile.get("time_patterns", {})
+    device_patterns = taste_profile.get("device_patterns", {})
+    output_patterns = taste_profile.get("output_patterns", {})
+    context_type_patterns = taste_profile.get("context_type_patterns", {})
+    location_patterns = taste_profile.get("location_patterns", {})
 
     # --- Load track features in bulk ---
     feat_result = await session.execute(
@@ -119,6 +130,14 @@ async def build_features(
     dow_cos = math.cos(2 * math.pi * day_of_week / 7)
 
     time_affinity_val = float(time_patterns.get(str(hour_of_day), 0.0))
+
+    # Context affinity features (scalar, same for all candidates in batch).
+    device_affinity = float(device_patterns.get(device_type, 0.0)) if device_type else 0.0
+    output_affinity = float(output_patterns.get(output_type, 0.0)) if output_type else 0.0
+    context_type_affinity = float(context_type_patterns.get(context_type, 0.0)) if context_type else 0.0
+    location_affinity = float(location_patterns.get(location_label, 0.0)) if location_label else 0.0
+    is_mobile = 1.0 if device_type == "mobile" else 0.0
+    is_headphones = 1.0 if output_type == "headphones" else 0.0
 
     # --- Build feature rows ---
     rows: List[np.ndarray] = []
@@ -180,6 +199,8 @@ async def build_features(
             mood_score,
             time_affinity_val,
             hour_sin, hour_cos, dow_sin, dow_cos,
+            device_affinity, output_affinity, context_type_affinity,
+            location_affinity, is_mobile, is_headphones,
         ], dtype=np.float32)
 
         rows.append(row)

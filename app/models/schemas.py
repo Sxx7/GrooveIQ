@@ -470,6 +470,16 @@ class LastfmProfileResponse(BaseModel):
     profile: Optional[Dict[str, Any]] = None
 
 
+class RecommendationContext(BaseModel):
+    """Real-time context sent by the client app with recommendation requests."""
+    hour_of_day:    Optional[int] = Field(None, ge=0, le=23)
+    day_of_week:    Optional[int] = Field(None, ge=1, le=7)
+    device_type:    Optional[str] = Field(None, max_length=32)
+    output_type:    Optional[str] = Field(None, max_length=32)
+    context_type:   Optional[str] = Field(None, max_length=32)
+    location_label: Optional[str] = Field(None, max_length=32)
+
+
 class UserCreate(BaseModel):
     user_id:      str = Field(..., min_length=1, max_length=128)
     display_name: Optional[str] = Field(None, max_length=255)

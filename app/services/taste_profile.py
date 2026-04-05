@@ -73,6 +73,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import settings
 from app.db.session import AsyncSessionLocal
 from app.models.db import (
+    ListenEvent,
     ListenSession,
     TrackFeatures,
     TrackInteraction,
@@ -195,6 +196,11 @@ async def _build_profile(
     time_patterns = await _compute_time_patterns(session, user_id)
     device_patterns = await _compute_device_patterns(session, user_id)
 
+    # --- Output, context-type, and location patterns (from events) ---
+    output_patterns = await _compute_output_patterns(session, user_id)
+    context_type_patterns = await _compute_context_type_patterns(session, user_id)
+    location_patterns = await _compute_location_patterns(session, user_id)
+
     # --- Behaviour summary ---
     total_plays = sum(i.play_count for i in interactions)
     total_skips = sum(i.skip_count for i in interactions)
@@ -240,6 +246,12 @@ async def _build_profile(
         profile["time_patterns"] = time_patterns
     if device_patterns:
         profile["device_patterns"] = device_patterns
+    if output_patterns:
+        profile["output_patterns"] = output_patterns
+    if context_type_patterns:
+        profile["context_type_patterns"] = context_type_patterns
+    if location_patterns:
+        profile["location_patterns"] = location_patterns
 
     return profile
 
@@ -467,5 +479,92 @@ async def _compute_device_patterns(
 
     return {
         r.dominant_device_type: round(r.cnt / total, 4)
+        for r in rows
+    }
+
+
+async def _compute_output_patterns(
+    session: AsyncSession, user_id: str
+) -> Optional[Dict[str, float]]:
+    """Fraction of events per audio output type (headphones, speaker, etc.)."""
+    result = await session.execute(
+        select(
+            ListenEvent.output_type,
+            func.count(ListenEvent.id).label("cnt"),
+        )
+        .where(
+            ListenEvent.user_id == user_id,
+            ListenEvent.output_type.isnot(None),
+        )
+        .group_by(ListenEvent.output_type)
+    )
+    rows = result.all()
+    if not rows:
+        return None
+
+    total = sum(r.cnt for r in rows)
+    if total == 0:
+        return None
+
+    return {
+        r.output_type: round(r.cnt / total, 4)
+        for r in rows
+    }
+
+
+async def _compute_context_type_patterns(
+    session: AsyncSession, user_id: str
+) -> Optional[Dict[str, float]]:
+    """Fraction of sessions per listening context type (playlist, album, radio, etc.)."""
+    result = await session.execute(
+        select(
+            ListenSession.dominant_context_type,
+            func.count(ListenSession.id).label("cnt"),
+        )
+        .where(
+            ListenSession.user_id == user_id,
+            ListenSession.dominant_context_type.isnot(None),
+        )
+        .group_by(ListenSession.dominant_context_type)
+    )
+    rows = result.all()
+    if not rows:
+        return None
+
+    total = sum(r.cnt for r in rows)
+    if total == 0:
+        return None
+
+    return {
+        r.dominant_context_type: round(r.cnt / total, 4)
+        for r in rows
+    }
+
+
+async def _compute_location_patterns(
+    session: AsyncSession, user_id: str
+) -> Optional[Dict[str, float]]:
+    """Fraction of events per location label (home, work, gym, commute, etc.)."""
+    result = await session.execute(
+        select(
+            ListenEvent.location_label,
+            func.count(ListenEvent.id).label("cnt"),
+        )
+        .where(
+            ListenEvent.user_id == user_id,
+            ListenEvent.location_label.isnot(None),
+        )
+        .group_by(ListenEvent.location_label)
+    )
+    rows = result.all()
+    if not rows:
+        return None
+
+    total = sum(r.cnt for r in rows)
+    if total == 0:
+        return None
+
+    return {
+        r.location_label: round(r.cnt / total, 4)
         for r in rows
     }

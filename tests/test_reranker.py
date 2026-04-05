@@ -169,3 +169,85 @@ class TestReranker:
         async with _TestSession() as session:
             result = await rerank([], "user0", session)
         assert result == []
+
+    async def test_car_mode_suppresses_short_tracks(self):
+        """In car mode, tracks shorter than 90s are removed."""
+        from app.services.reranker import rerank
+
+        now = _now()
+        async with _TestSession() as session:
+            # One short track (60s) and two normal tracks (200s, 180s).
+            session.add(TrackFeatures(
+                track_id="short", file_path="/music/a/b/short.mp3",
+                bpm=120.0, energy=0.5, duration=60.0,
+                analyzed_at=now, analysis_version="1",
+            ))
+            session.add(TrackFeatures(
+                track_id="normal1", file_path="/music/a/b/normal1.mp3",
+                bpm=120.0, energy=0.5, duration=200.0,
+                analyzed_at=now, analysis_version="1",
+            ))
+            session.add(TrackFeatures(
+                track_id="normal2", file_path="/music/c/d/normal2.mp3",
+                bpm=120.0, energy=0.5, duration=180.0,
+                analyzed_at=now, analysis_version="1",
+            ))
+            await session.commit()
+
+        ranked = [("short", 0.95), ("normal1", 0.90), ("normal2", 0.85)]
+
+        async with _TestSession() as session:
+            result = await rerank(ranked, "user0", session, device_type="car")
+
+        result_ids = [tid for tid, _ in result]
+        assert "short" not in result_ids
+        assert "normal1" in result_ids
+        assert "normal2" in result_ids
+
+    async def test_speaker_mode_suppresses_short_tracks(self):
+        """Speaker output type also suppresses short tracks."""
+        from app.services.reranker import rerank
+
+        now = _now()
+        async with _TestSession() as session:
+            session.add(TrackFeatures(
+                track_id="short2", file_path="/music/a/b/short2.mp3",
+                bpm=120.0, energy=0.5, duration=45.0,
+                analyzed_at=now, analysis_version="1",
+            ))
+            session.add(TrackFeatures(
+                track_id="ok", file_path="/music/a/b/ok.mp3",
+                bpm=120.0, energy=0.5, duration=240.0,
+                analyzed_at=now, analysis_version="1",
+            ))
+            await session.commit()
+
+        ranked = [("short2", 0.90), ("ok", 0.80)]
+
+        async with _TestSession() as session:
+            result = await rerank(ranked, "user0", session, output_type="bluetooth_speaker")
+
+        result_ids = [tid for tid, _ in result]
+        assert "short2" not in result_ids
+        assert "ok" in result_ids
+
+    async def test_no_context_no_filtering(self):
+        """Without device/output context, short tracks are not filtered."""
+        from app.services.reranker import rerank
+
+        now = _now()
+        async with _TestSession() as session:
+            session.add(TrackFeatures(
+                track_id="tiny", file_path="/music/a/b/tiny.mp3",
+                bpm=120.0, energy=0.5, duration=30.0,
+                analyzed_at=now, analysis_version="1",
+            ))
+            await session.commit()
+
+        ranked = [("tiny", 0.90)]
+
+        async with _TestSession() as session:
+            result = await rerank(ranked, "user0", session)
+
+        assert len(result) == 1
+        assert result[0][0] == "tiny"

@@ -14,8 +14,10 @@
 4. [Tracks & Library](#tracks--library)
 5. [Recommendations](#recommendations)
 6. [Playlists](#playlists)
-7. [Stats](#stats)
-8. [Configuration Reference](#configuration-reference)
+7. [Discovery](#discovery)
+8. [Last.fm](#lastfm)
+9. [Stats & Pipeline Control](#stats--pipeline-control)
+10. [Configuration Reference](#configuration-reference)
 
 ---
 
@@ -514,6 +516,21 @@ curl http://localhost:8000/v1/users/simon/profile \
     "device_patterns": {
       "mobile": 0.65,
       "desktop": 0.35
+    },
+    "output_patterns": {
+      "headphones": 0.55,
+      "speaker": 0.30,
+      "bluetooth_speaker": 0.15
+    },
+    "context_type_patterns": {
+      "playlist": 0.45,
+      "album": 0.30,
+      "radio": 0.25
+    },
+    "location_patterns": {
+      "home": 0.60,
+      "commute": 0.25,
+      "gym": 0.15
     }
   }
 }
@@ -890,12 +907,16 @@ Returns ranked track recommendations for a user. Candidates come from multiple s
 Each call logs `reco_impression` events for feedback loop training.
 
 ```bash
-# Get recommendations for a user
+# Basic recommendations
 curl "http://localhost:8000/v1/recommend/simon?limit=10" \
   -H "Authorization: Bearer YOUR_API_KEY"
 
-# Seed recommendations from a specific track
+# Seed from a specific track
 curl "http://localhost:8000/v1/recommend/simon?seed_track_id=nav-uuid-001&limit=15" \
+  -H "Authorization: Bearer YOUR_API_KEY"
+
+# With full context (Phase 5) — all context params are optional
+curl "http://localhost:8000/v1/recommend/simon?limit=10&device_type=mobile&output_type=headphones&context_type=playlist&location_label=commute&hour_of_day=8&day_of_week=1" \
   -H "Authorization: Bearer YOUR_API_KEY"
 ```
 
@@ -905,15 +926,31 @@ curl "http://localhost:8000/v1/recommend/simon?seed_track_id=nav-uuid-001&limit=
 |-----------|------|---------|-------------|
 | `seed_track_id` | string | — | Bias results toward this track |
 | `limit` | int | 25 | 1–100 |
+| `device_type` | string | — | `mobile`, `desktop`, `speaker`, `car`, `web` |
+| `output_type` | string | — | `headphones`, `speaker`, `bluetooth_speaker`, `car_audio`, `built_in`, `airplay` |
+| `context_type` | string | — | `playlist`, `album`, `radio`, `search`, `home_shelf` |
+| `location_label` | string | — | `home`, `work`, `gym`, `commute` |
+| `hour_of_day` | int | server time | Client's local hour (0-23) |
+| `day_of_week` | int | server time | Client's local day (1=Mon, 7=Sun) |
+
+All context parameters are optional. The more context the client sends, the better the personalisation. When omitted, the system uses server local time for hour/day and ignores device/output/location context.
 
 **Response** `200 OK`
 
 ```json
 {
   "request_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
-  "model_version": "phase4-candidate-gen-v1",
+  "model_version": "lgbm-1712000000",
   "user_id": "simon",
   "seed_track_id": null,
+  "context": {
+    "hour_of_day": 8,
+    "day_of_week": 1,
+    "device_type": "mobile",
+    "output_type": "headphones",
+    "context_type": "playlist",
+    "location_label": "commute"
+  },
   "tracks": [
     {
       "position": 0,
@@ -950,6 +987,32 @@ curl "http://localhost:8000/v1/recommend/simon?seed_track_id=nav-uuid-001&limit=
 | `cf` | Collaborative filtering ("users who liked X also liked Y") |
 | `artist_recall` | Tracks from recently listened artists |
 | `popular` | Globally popular tracks (fallback) |
+
+**Context-aware behaviour (Phase 5):**
+
+- Context params feed 6 features into the ranking model: `device_affinity`, `output_affinity`, `context_type_affinity`, `location_affinity`, `is_mobile`, `is_headphones`
+- Affinity features are computed from the user's historical patterns (e.g., if the user listens 60% on mobile, `device_affinity` = 0.6 when `device_type=mobile`)
+- When `device_type` is `car`/`speaker` or `output_type` is `car_audio`/`bluetooth_speaker`/`speaker`, tracks shorter than 90 seconds are suppressed
+- Context is logged on `reco_impression` events, so the ranking model learns from context over time
+- The `context` object is echoed in the response so the client can confirm what context was applied
+
+**Closing the feedback loop:**
+
+When the user plays a recommended track, include the `request_id` from the recommendation response in the `play_start` event. This links impressions to streams and improves the ranking model:
+
+```bash
+curl -X POST http://localhost:8000/v1/events \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "user_id": "simon",
+    "track_id": "nav-uuid-042",
+    "event_type": "play_start",
+    "request_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+    "device_type": "mobile",
+    "output_type": "headphones"
+  }'
+```
 
 ---
 
@@ -1181,7 +1244,116 @@ curl -X DELETE http://localhost:8000/v1/playlists/5 \
 
 ---
 
-## Stats
+## Discovery
+
+### `GET /v1/discovery` — List discovery requests
+
+List music discovery requests with optional filters.
+
+```bash
+curl "http://localhost:8000/v1/discovery?limit=20" \
+  -H "Authorization: Bearer YOUR_API_KEY"
+```
+
+#### Query parameters
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `user_id` | string | — | Filter by user |
+| `status` | string | — | Filter by status |
+| `limit` | int | 50 | 1-200 |
+| `offset` | int | 0 | — |
+
+---
+
+### `POST /v1/discovery/run` — Trigger discovery pipeline
+
+Manually trigger the music discovery pipeline. Finds similar artists via Last.fm API and auto-adds them to Lidarr.
+
+Requires `LASTFM_API_KEY`, `LIDARR_URL`, and `LIDARR_API_KEY` to be configured.
+
+```bash
+curl -X POST http://localhost:8000/v1/discovery/run \
+  -H "Authorization: Bearer YOUR_API_KEY"
+```
+
+---
+
+### `GET /v1/discovery/stats` — Discovery statistics
+
+```bash
+curl http://localhost:8000/v1/discovery/stats \
+  -H "Authorization: Bearer YOUR_API_KEY"
+```
+
+---
+
+## Last.fm
+
+### `POST /v1/users/{user_id}/lastfm/connect` — Connect Last.fm
+
+Connect a user's Last.fm account. The password is exchanged for a session key via the Last.fm API and then discarded (never stored).
+
+```bash
+curl -X POST http://localhost:8000/v1/users/simon/lastfm/connect \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"lastfm_username": "my_lastfm", "lastfm_password": "..."}'
+```
+
+**Response** `200 OK`
+
+```json
+{
+  "status": "connected",
+  "username": "my_lastfm",
+  "scrobbling_enabled": true
+}
+```
+
+---
+
+### `DELETE /v1/users/{user_id}/lastfm` — Disconnect Last.fm
+
+```bash
+curl -X DELETE http://localhost:8000/v1/users/simon/lastfm \
+  -H "Authorization: Bearer YOUR_API_KEY"
+```
+
+---
+
+### `POST /v1/users/{user_id}/lastfm/sync` — Force-refresh Last.fm profile
+
+Manually trigger a sync of the user's Last.fm top artists and tracks into their taste profile.
+
+```bash
+curl -X POST http://localhost:8000/v1/users/simon/lastfm/sync \
+  -H "Authorization: Bearer YOUR_API_KEY"
+```
+
+---
+
+### `GET /v1/users/{user_id}/lastfm/profile` — Get Last.fm profile
+
+```bash
+curl http://localhost:8000/v1/users/simon/lastfm/profile \
+  -H "Authorization: Bearer YOUR_API_KEY"
+```
+
+**Response** `200 OK`
+
+```json
+{
+  "username": "my_lastfm",
+  "scrobbling_enabled": true,
+  "synced_at": 1743724800,
+  "profile": { ... }
+}
+```
+
+---
+
+## Stats & Pipeline Control
 
 ### `GET /v1/stats` — Dashboard aggregate stats
 
@@ -1228,6 +1400,28 @@ curl http://localhost:8000/v1/stats \
     "ended_at": 1743555600
   }
 }
+```
+
+---
+
+### `POST /v1/pipeline/run` — Trigger recommendation pipeline
+
+Manually trigger the full recommendation pipeline (sessionizer -> track scoring -> taste profiles -> collaborative filtering -> ranker training).
+
+```bash
+curl -X POST http://localhost:8000/v1/pipeline/run \
+  -H "Authorization: Bearer YOUR_API_KEY"
+```
+
+---
+
+### `POST /v1/pipeline/reset` — Reset and rebuild pipeline
+
+Reset all pipeline state (sessions, interactions, taste profiles) and rebuild from raw events. Use this after major data changes.
+
+```bash
+curl -X POST http://localhost:8000/v1/pipeline/reset \
+  -H "Authorization: Bearer YOUR_API_KEY"
 ```
 
 ---
