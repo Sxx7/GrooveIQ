@@ -791,7 +791,12 @@ def _extract_ml(
         patches.shape, input_meta.shape,
     )
     embeddings = effnet.run(None, {input_name: patches})[0]
-    mean_embedding = np.mean(embeddings, axis=0)  # (200,)
+    mean_embedding = np.mean(embeddings, axis=0)
+
+    logger.info(
+        "EffNet output: shape=%s, dtype=%s",
+        embeddings.shape, embeddings.dtype,
+    )
 
     # --- Classifier heads ---
     heads = {
@@ -804,8 +809,12 @@ def _extract_ml(
         if session is None:
             continue
         try:
-            inp = session.get_inputs()[0].name
-            preds = session.run(None, {inp: embeddings})[0]
+            inp_meta = session.get_inputs()[0]
+            logger.info(
+                "Head %s expects: name=%s, shape=%s — got embeddings %s",
+                model_file, inp_meta.name, inp_meta.shape, embeddings.shape,
+            )
+            preds = session.run(None, {inp_meta.name: embeddings})[0]
             result[feature] = round(float(np.mean(preds[:, col])), 3)
         except Exception as e:
             logger.warning("ONNX head %s failed: %s", model_file, e)
