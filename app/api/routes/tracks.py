@@ -264,6 +264,7 @@ async def list_tracks(
                 "instrumentalness": t.instrumentalness,
                 "mood_tags": t.mood_tags,
                 "analyzed_at": t.analyzed_at,
+                "analysis_version": t.analysis_version,
             }
             for t in tracks
         ],
