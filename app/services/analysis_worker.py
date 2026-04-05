@@ -77,10 +77,10 @@ _ONNX_MODELS = {
 _EFFNET_SR = 16000       # EffNet expects 16 kHz mono
 _FFT_SIZE = 512
 _HOP_SIZE = 256
-_N_MELS = 96
+_N_MELS = 128
 _FREQ_MAX = 8000.0
-_PATCH_FRAMES = 187      # ~3 s per patch at 16 kHz / 256 hop
-_PATCH_HOP = 187         # non-overlapping patches
+_PATCH_FRAMES = 96       # ~1.5 s per patch at 16 kHz / 256 hop
+_PATCH_HOP = 96          # non-overlapping patches
 
 # ---------------------------------------------------------------------------
 # Embedding projection: EffNet 200-dim → 64-dim (Johnson-Lindenstrauss)
@@ -711,7 +711,7 @@ def _compute_melspec_patches(
     Compute mel-spectrogram patches matching EffNet-Discogs input format.
 
     Uses the centre *max_seconds* of audio.
-    Returns shape ``(num_patches, 96, 187)`` float32.
+    Returns shape ``(num_patches, 128, 96)`` float32.
     """
     max_samples = int(max_seconds * sr)
     if len(audio) > max_samples:
@@ -741,14 +741,14 @@ def _compute_melspec_patches(
         padded = np.zeros((_PATCH_FRAMES, _N_MELS), dtype=np.float32)
         arr = np.array(frames, dtype=np.float32)
         padded[: len(arr)] = arr
-        return padded.T[np.newaxis, :, :]  # (1, 96, 187)
+        return padded.T[np.newaxis, :, :]  # (1, 128, 96)
 
-    frames_arr = np.array(frames, dtype=np.float32)  # (num_frames, 96)
+    frames_arr = np.array(frames, dtype=np.float32)  # (num_frames, 128)
     patches = []
     for i in range(0, len(frames_arr) - _PATCH_FRAMES + 1, _PATCH_HOP):
-        patches.append(frames_arr[i : i + _PATCH_FRAMES].T)  # (96, 187)
+        patches.append(frames_arr[i : i + _PATCH_FRAMES].T)  # (128, 96)
 
-    return np.array(patches, dtype=np.float32)  # (N, 96, 187)
+    return np.array(patches, dtype=np.float32)  # (N, 128, 96)
 
 
 # ---------------------------------------------------------------------------
@@ -781,7 +781,7 @@ def _extract_ml(
     input_name = input_meta.name
 
     # Ensure patches match model's expected rank.
-    # discogs-effnet-bsdynamic-1.onnx expects (batch, 96, 187) — rank 3.
+    # discogs-effnet-bsdynamic-1.onnx expects (batch, 128, 96) — rank 3.
     # Squeeze any leftover channel dim from rank-4 patches.
     if patches.ndim == 4:
         patches = patches.squeeze(1)  # (N,1,96,187) → (N,96,187)
