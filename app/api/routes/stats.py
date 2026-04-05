@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.security import require_api_key
 from app.db.session import get_session
 from app.models.db import ListenEvent, Playlist, TrackFeatures, User, LibraryScanState
+from app.services.audio_analysis import ANALYSIS_VERSION
 
 router = APIRouter()
 
@@ -94,6 +95,7 @@ async def get_stats(
         "event_types_24h": event_types,
         "top_tracks_24h": top_tracks,
         "latest_scan": latest_scan,
+        "analysis_version": ANALYSIS_VERSION,
     }
 
 
