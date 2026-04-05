@@ -343,10 +343,12 @@ def _worker_main(
 
 def _worker_init_env() -> None:
     """Configure worker process environment for optimal parallelism."""
+    from app.core.config import settings
+    omp = str(settings.ANALYSIS_OMP_THREADS)
     os.environ.update({
-        "OMP_NUM_THREADS": "2",
-        "OPENBLAS_NUM_THREADS": "2",
-        "MKL_NUM_THREADS": "2",
+        "OMP_NUM_THREADS": omp,
+        "OPENBLAS_NUM_THREADS": omp,
+        "MKL_NUM_THREADS": omp,
         "TF_CPP_MIN_LOG_LEVEL": "3",
         # Hide GPU from TF (if it somehow gets imported via essentia-tensorflow).
         # ONNX Runtime in this worker uses its own provider selection.
@@ -435,8 +437,9 @@ def _init_onnx_sessions() -> dict:
 
     sess_opts = ort.SessionOptions()
     sess_opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
-    sess_opts.intra_op_num_threads = 2
-    sess_opts.inter_op_num_threads = 1
+    from app.core.config import settings
+    sess_opts.intra_op_num_threads = settings.ANALYSIS_ONNX_INTRA_THREADS
+    sess_opts.inter_op_num_threads = settings.ANALYSIS_ONNX_INTER_THREADS
 
     providers: list = []
     if backend == "openvino":

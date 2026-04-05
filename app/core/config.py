@@ -78,6 +78,9 @@ class Settings(BaseSettings):
     ANALYSIS_GPU_BACKEND: str = ""     # "cuda", "openvino", or "" (auto-detect)
     ANALYSIS_GPU_BATCH_SIZE: int = 64  # mel-spec patches per GPU forward pass
     ANALYSIS_GPU_WORKERS: int = 1      # workers for GPU inference (usually 1)
+    ANALYSIS_ONNX_INTRA_THREADS: int = 1  # ONNX intra_op_num_threads per worker
+    ANALYSIS_ONNX_INTER_THREADS: int = 1  # ONNX inter_op_num_threads per worker
+    ANALYSIS_OMP_THREADS: int = 1         # OMP/BLAS thread count per worker subprocess
 
     # Supported audio extensions (comma-separated)
     AUDIO_EXTENSIONS: str = ".mp3,.flac,.ogg,.m4a,.wav,.aac,.opus,.wv"
