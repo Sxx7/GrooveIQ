@@ -584,6 +584,10 @@ function renderDashboard(stats, users, events, model) {
   h += '<div style="padding:8px 12px;font-size:11px;color:var(--text-dim);font-style:italic">Waiting for scan activity...</div>';
   h += '</div></div></div>';
 
+  // Recommendation pipeline
+  h += '<div class="panel"><div class="panel-header">Recommendation Pipeline <span style="display:flex;gap:6px"><button class="secondary" onclick="runPipeline()">Run</button><button class="secondary" style="color:var(--red)" onclick="resetPipeline()">Reset &amp; Rebuild</button></span></div>';
+  h += '<div class="panel-body"><div style="font-size:12px;color:var(--text-dim)">Runs sessionizer, track scoring, taste profiles, and CF rebuild.<br><b>Reset</b> clears all derived data and recomputes from raw events.</div></div></div>';
+
   // Recent events
   h += '<div class="panel full-width"><div class="panel-header">Recent Events</div><div class="panel-body" style="overflow-x:auto">';
   if (!events.length) { h += '<div class="empty">No events recorded yet</div>'; }
@@ -1308,6 +1312,20 @@ function triggerScan() {
       loadDashboard();
     })
     .catch(function(e) { alert('Scan failed: ' + e.message); if (btn) { btn.disabled = false; btn.textContent = 'Scan Now'; } });
+}
+
+function runPipeline() {
+  apiPost('/v1/pipeline/run', {}).then(function() {
+    alert('Pipeline started. Scores will update shortly.');
+  }).catch(function(e) { alert('Pipeline failed: ' + e.message); });
+}
+
+function resetPipeline() {
+  if (!confirm('This will delete all sessions, interactions, and taste profiles, then rebuild from raw events. Continue?')) return;
+  apiPost('/v1/pipeline/reset', {}).then(function() {
+    alert('Pipeline reset and rebuild started. This may take a moment.');
+    loadDashboard();
+  }).catch(function(e) { alert('Reset failed: ' + e.message); });
 }
 
 // ---------------------------------------------------------------------------
