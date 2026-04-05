@@ -811,9 +811,9 @@ function renderUserDetail(profile, interactions, sessions, lastfmProfile) {
     var ap = tp.audio_preferences;
     h += '<div class="panel"><div class="panel-header">Audio Preferences</div><div class="panel-body"><div class="profile-grid">';
     var prefs = [
-      ['BPM', ap.bpm_mean, 1], ['Energy', ap.energy_mean, 2], ['Danceability', ap.danceability_mean, 2],
-      ['Valence', ap.valence_mean, 2], ['Acousticness', ap.acousticness_mean, 2],
-      ['Instrumentalness', ap.instrumentalness_mean, 2], ['Loudness', ap.loudness_mean, 1]
+      ['BPM', ap.bpm && ap.bpm.mean, 1], ['Energy', ap.energy && ap.energy.mean, 2], ['Danceability', ap.danceability && ap.danceability.mean, 2],
+      ['Valence', ap.valence && ap.valence.mean, 2], ['Acousticness', ap.acousticness && ap.acousticness.mean, 2],
+      ['Instrumentalness', ap.instrumentalness && ap.instrumentalness.mean, 2], ['Loudness', ap.loudness && ap.loudness.mean, 1]
     ];
     for (var i = 0; i < prefs.length; i++) {
       var p = prefs[i];
