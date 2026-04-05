@@ -247,7 +247,7 @@ var refreshTimer = null;
 var scanPollTimer = null;
 var scanLogLastId = 0;
 var currentView = 'dashboard';
-var trackState = { offset: 0, limit: 50, sort: 'bpm', dir: 'asc', total: 0, search: '', version: '' };
+var trackState = { offset: 0, limit: 50, sort: 'bpm', dir: 'asc', total: 0, search: '' };
 var cachedUsers = [];
 
 function esc(s) {
@@ -1012,7 +1012,6 @@ function loadTracks() {
   var s = trackState;
   var url = '/v1/tracks?limit=' + s.limit + '&offset=' + s.offset + '&sort_by=' + s.sort + '&sort_dir=' + s.dir;
   if (s.search) url += '&search=' + encodeURIComponent(s.search);
-  if (s.version) url += '&analysis_version=' + encodeURIComponent(s.version);
   return api(url).then(function(data) { trackState.total = data.total; renderTracks(data); });
 }
 
@@ -1027,13 +1026,6 @@ function clearTrackSearch() {
   trackState.search = '';
   var input = document.getElementById('track-search');
   if (input) input.value = '';
-  trackState.offset = 0;
-  loadTracks();
-}
-
-function filterTrackVersion() {
-  var sel = document.getElementById('track-version-filter');
-  trackState.version = sel ? sel.value : '';
   trackState.offset = 0;
   loadTracks();
 }
@@ -1064,10 +1056,6 @@ function renderTracks(data) {
     + (s.search ? '<span onclick="clearTrackSearch()" style="position:absolute;right:8px;top:50%;transform:translateY(-50%);cursor:pointer;color:var(--text-dim);font-size:16px">\u00D7</span>' : '')
     + '</div>'
     + '<button class="secondary" onclick="searchTracks()">Search</button>'
-    + '<select id="track-version-filter" onchange="filterTrackVersion()" style="padding:6px 10px;border-radius:6px;border:1px solid var(--border);background:var(--bg);color:var(--text);font-size:13px">'
-    + '<option value="">All versions</option>'
-    + (data.versions || []).map(function(v) { return '<option value="' + esc(v) + '"' + (s.version === v ? ' selected' : '') + '>v' + esc(v) + '</option>'; }).join('')
-    + '</select>'
     + '<button onclick="showGenerateModal()">Generate Playlist</button>'
     + '</div></div>';
 
@@ -1083,7 +1071,7 @@ function renderTracks(data) {
     + '<th onclick="sortTracks(\'valence\')">Valence' + arrow('valence') + '</th>'
     + '<th>Mood</th>'
     + '<th onclick="sortTracks(\'duration\')">Duration' + arrow('duration') + '</th>'
-    + '<th>Version</th>'
+    + '<th onclick="sortTracks(\'analysis_version\')">Version' + arrow('analysis_version') + '</th>'
     + '<th>Track ID</th>'
     + '</tr>';
 
