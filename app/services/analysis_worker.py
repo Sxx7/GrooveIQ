@@ -83,12 +83,12 @@ _PATCH_FRAMES = 96       # ~1.5 s per patch at 16 kHz / 256 hop
 _PATCH_HOP = 96          # non-overlapping patches
 
 # ---------------------------------------------------------------------------
-# Embedding projection: EffNet 200-dim → 64-dim (Johnson-Lindenstrauss)
+# Embedding projection: EffNet 400-dim → 64-dim (Johnson-Lindenstrauss)
 # Fixed seed guarantees identical matrix across workers and restarts.
 # ---------------------------------------------------------------------------
 
 _EMBEDDING_DIM = 64
-_EFFNET_DIM = 200
+_EFFNET_DIM = 400
 _RNG = np.random.RandomState(seed=20240101)
 _PROJ_MATRIX = (_RNG.randn(_EFFNET_DIM, _EMBEDDING_DIM) / np.sqrt(_EMBEDDING_DIM)).astype(np.float32)
 
@@ -776,7 +776,7 @@ def _extract_ml(
     if patches.shape[0] == 0:
         return None
 
-    # --- EffNet forward pass → (N_patches, 200) ---
+    # --- EffNet forward pass ---
     input_meta = effnet.get_inputs()[0]
     input_name = input_meta.name
 
@@ -784,46 +784,59 @@ def _extract_ml(
     # discogs-effnet-bsdynamic-1.onnx expects (batch, 128, 96) — rank 3.
     # Squeeze any leftover channel dim from rank-4 patches.
     if patches.ndim == 4:
-        patches = patches.squeeze(1)  # (N,1,96,187) → (N,96,187)
+        patches = patches.squeeze(1)
 
     logger.debug(
         "EffNet input: patches=%s, model expects=%s",
         patches.shape, input_meta.shape,
     )
-    embeddings = effnet.run(None, {input_name: patches})[0]
+
+    # Run all outputs so we can pick the right one for classifier heads.
+    output_names = [o.name for o in effnet.get_outputs()]
+    all_outputs = effnet.run(output_names, {input_name: patches})
+
+    # Log all output shapes once (first track only).
+    if not hasattr(_extract_ml, "_logged_outputs"):
+        _extract_ml._logged_outputs = True
+        for name, arr in zip(output_names, all_outputs):
+            logger.warning("EffNet output '%s': shape=%s", name, arr.shape)
+
+    # Find the 1280-dim embedding that classifier heads expect.
+    # Fall back to the first output for the embedding projection.
+    embeddings = all_outputs[0]
+    head_embeddings = None
+    for name, arr in zip(output_names, all_outputs):
+        if arr.ndim == 2 and arr.shape[1] == 1280:
+            head_embeddings = arr
+            break
+
     mean_embedding = np.mean(embeddings, axis=0)
 
-    logger.warning(
-        "EffNet output: shape=%s, dtype=%s",
-        embeddings.shape, embeddings.dtype,
-    )
+    # --- Classifier heads (need 1280-dim embeddings) ---
+    if head_embeddings is None:
+        logger.warning("No 1280-dim EffNet output found — classifier heads skipped")
+    else:
+        heads = {
+            "danceability": ("danceability-discogs-effnet-1.onnx", 0),
+            "instrumentalness": ("voice_instrumental-discogs-effnet-1.onnx", 1),
+            "valence": ("approachability_regression-discogs-effnet-1.onnx", 0),
+        }
+        for feature, (model_file, col) in heads.items():
+            session = onnx_sessions.get(model_file)
+            if session is None:
+                continue
+            try:
+                inp_name = session.get_inputs()[0].name
+                preds = session.run(None, {inp_name: head_embeddings})[0]
+                result[feature] = round(float(np.mean(preds[:, col])), 3)
+            except Exception as e:
+                logger.warning("ONNX head %s failed: %s", model_file, e)
 
-    # --- Classifier heads ---
-    heads = {
-        "danceability": ("danceability-discogs-effnet-1.onnx", 0),
-        "instrumentalness": ("voice_instrumental-discogs-effnet-1.onnx", 1),
-        "valence": ("approachability_regression-discogs-effnet-1.onnx", 0),
-    }
-    for feature, (model_file, col) in heads.items():
-        session = onnx_sessions.get(model_file)
-        if session is None:
-            continue
-        try:
-            inp_meta = session.get_inputs()[0]
-            logger.warning(
-                "Head %s expects: name=%s, shape=%s — got embeddings %s",
-                model_file, inp_meta.name, inp_meta.shape, embeddings.shape,
-            )
-            preds = session.run(None, {inp_meta.name: embeddings})[0]
-            result[feature] = round(float(np.mean(preds[:, col])), 3)
-        except Exception as e:
-            logger.warning("ONNX head %s failed: %s", model_file, e)
+        # Speechiness proxy: 1 − instrumentalness
+        if result.get("instrumentalness") is not None:
+            result["speechiness"] = round(1.0 - result["instrumentalness"], 3)
 
-    # Speechiness proxy: 1 − instrumentalness
-    if result.get("instrumentalness") is not None:
-        result["speechiness"] = round(1.0 - result["instrumentalness"], 3)
-
-    # --- Mood tags ---
+    # --- Mood tags (also need 1280-dim embeddings) ---
     mood_models = {
         "happy": "mood_happy-discogs-effnet-1.onnx",
         "sad": "mood_sad-discogs-effnet-1.onnx",
@@ -836,9 +849,11 @@ def _extract_ml(
         session = onnx_sessions.get(model_file)
         if session is None:
             continue
+        if head_embeddings is None:
+            continue
         try:
             inp = session.get_inputs()[0].name
-            preds = session.run(None, {inp: embeddings})[0]
+            preds = session.run(None, {inp: head_embeddings})[0]
             conf = round(float(np.mean(preds[:, 0])), 3)
             mood_tags.append({"label": label, "confidence": conf})
         except Exception as e:
