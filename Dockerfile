@@ -1,13 +1,13 @@
 # GrooveIQ – Production Dockerfile
 # Multi-stage build: keeps final image lean.
 #
-# NOTE: essentia-tensorflow only ships amd64 wheels.
+# NOTE: essentia only ships amd64 wheels.
 # Build with: docker build --platform linux/amd64 -t grooveiq .
 #
 # Stage 1 (builder): download and prepare Python wheels
 # Stage 2 (runtime): copy only what's needed to run
 
-# ── Stage 1: builder ──────────────────────────────────────────────────────
+# ── Stage 1: builder ─────��─────────────────────���──────────────────────────
 FROM python:3.12-slim AS builder
 
 WORKDIR /build
@@ -24,7 +24,7 @@ RUN pip install --upgrade pip wheel && \
     pip wheel --no-cache-dir --wheel-dir /wheels -r requirements.txt
 
 
-# ── Stage 2: runtime ──────────────────────────────────────────────────────
+# ── Stage 2: runtime ──────────���───────────────────────────────────────────
 FROM python:3.12-slim AS runtime
 
 LABEL org.opencontainers.image.title="GrooveIQ"
@@ -62,11 +62,12 @@ RUN pip install --no-cache-dir --no-index --find-links=/wheels /wheels/* && \
 COPY --chown=grooveiq:grooveiq app/ ./app/
 
 # Data directories (override with volume mounts)
-RUN mkdir -p /data /data/models /music /cache/essentia && \
+RUN mkdir -p /data /data/models /music /cache/essentia/onnx && \
     chown -R grooveiq:grooveiq /data /music /cache
 
-# Essentia model cache (pre-trained mood/danceability models)
+# Essentia/ONNX model cache (auto-downloaded on first scan)
 ENV ESSENTIA_MODELS_PATH=/cache/essentia
+ENV ONNX_MODELS_PATH=/cache/essentia/onnx
 
 # Runtime environment defaults (all overridable via docker-compose / env)
 ENV APP_ENV=production \

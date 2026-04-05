@@ -43,6 +43,13 @@ async def lifespan(app: FastAPI):
     logger.info("GrooveIQ shutting down...")
     await stop_scheduler()
 
+    # Shut down analysis worker pool (long-lived subprocesses)
+    try:
+        from app.services.analysis_worker import shutdown_worker_pool
+        await shutdown_worker_pool()
+    except Exception as e:
+        logger.warning(f"Worker pool shutdown error: {e}")
+
 
 app = FastAPI(
     title="GrooveIQ",

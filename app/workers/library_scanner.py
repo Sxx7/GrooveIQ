@@ -4,8 +4,8 @@ GrooveIQ – Library scanner worker (Phase 3).
 Responsibilities:
 1. Walk the music library directory recursively.
 2. Detect new files (not yet in track_features) and changed files (hash mismatch).
-3. Run audio analysis in a thread pool (CPU-bound, not async).
-4. Persist results to track_features table.
+3. Submit files to the analysis worker pool (separate long-lived processes).
+4. Persist results to track_features table (batched per chunk).
 5. Update LibraryScanState for progress reporting.
 
 Edge cases handled:
@@ -21,12 +21,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import multiprocessing as mp
 import os
-import threading
 import time
-from concurrent.futures import ProcessPoolExecutor
-from concurrent.futures.process import BrokenProcessPool
 from pathlib import Path
 from typing import Optional
 
@@ -36,62 +32,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import settings
 from app.db.session import AsyncSessionLocal
 from app.models.db import LibraryScanState, ScanLog, TrackFeatures
-from app.services.audio_analysis import analyze_track, compute_file_hash, generate_track_id, ANALYSIS_VERSION, ANALYSIS_VERSION_DSP
+from app.services.audio_analysis import compute_file_hash, generate_track_id, ANALYSIS_VERSION
 
 logger = logging.getLogger(__name__)
 
-# Shared executor for CPU-bound Essentia work
-_executor: Optional[ProcessPoolExecutor] = None
-_executor_lock = threading.Lock()
+# Active scan tracking
 _running_scan_id: Optional[int] = None
-
-
-def _worker_init():
-    """Configure worker process for optimal TF/BLAS parallelism.
-
-    Each worker gets a single compute thread so that N workers map 1:1 to
-    N CPU cores instead of N×cores threads fighting for the same resources.
-    Must run before TensorFlow is imported (spawn context guarantees this).
-    """
-    os.environ["OMP_NUM_THREADS"] = "1"
-    os.environ["OPENBLAS_NUM_THREADS"] = "1"
-    os.environ["MKL_NUM_THREADS"] = "1"
-    os.environ["TF_NUM_INTRAOP_PARALLELISM_THREADS"] = "2"
-    os.environ["TF_NUM_INTEROP_PARALLELISM_THREADS"] = "1"
-    # Suppress TF warnings/logs in workers
-    os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
-    # Hide GPUs from worker subprocesses.  Workers only do CPU work
-    # (DSP analysis, mel-spec extraction).  GPU inference runs in the
-    # main process via ONNX Runtime.  Without this, TF in the subprocess
-    # tries to initialise CUDA and deadlocks with ONNX Runtime's CUDA
-    # context in the main process.
-    os.environ["CUDA_VISIBLE_DEVICES"] = ""
-
-
-def get_executor() -> ProcessPoolExecutor:
-    global _executor
-    with _executor_lock:
-        if _executor is None:
-            _executor = ProcessPoolExecutor(
-                max_workers=settings.ANALYSIS_WORKERS,
-                max_tasks_per_child=500,  # recycle less often to avoid expensive TF model reloads
-                initializer=_worker_init,
-                mp_context=mp.get_context("spawn"),
-            )
-        return _executor
-
-
-def _reset_executor() -> None:
-    """Kill and recreate the process pool so crashed/hung workers don't block future files."""
-    global _executor
-    with _executor_lock:
-        if _executor is not None:
-            try:
-                _executor.shutdown(wait=False, cancel_futures=True)
-            except Exception:
-                pass
-            _executor = None
-    logger.warning("Process pool reset — new workers will be created for the next file")
 
 
 # ---------------------------------------------------------------------------
@@ -106,7 +52,7 @@ def is_scan_running() -> bool:
 async def trigger_scan() -> int:
     """
     Start a library scan in the background.
-    Returns the scan_id. If a scan is already running, returns its id.
+    Returns the scan_id.  If a scan is already running, returns its id.
     """
     global _running_scan_id
     if _running_scan_id is not None:
@@ -130,9 +76,9 @@ async def trigger_scan() -> int:
 
 async def resume_interrupted_scans() -> Optional[int]:
     """
-    Called on startup. If a previous scan was interrupted (status='running'),
+    Called on startup.  If a previous scan was interrupted (status='running'),
     mark it as 'interrupted' and start a fresh scan that skips already-analyzed
-    files automatically (via the hash check in _analyze_if_needed_sync).
+    files automatically (via the hash check in the worker).
     """
     async with AsyncSessionLocal() as session:
         result = await session.execute(
@@ -145,7 +91,6 @@ async def resume_interrupted_scans() -> Optional[int]:
     if not interrupted:
         return None
 
-    # Mark all as interrupted
     async with AsyncSessionLocal() as session:
         for scan in interrupted:
             await session.execute(
@@ -175,7 +120,6 @@ async def get_scan_status(scan_id: int) -> Optional[dict]:
         if not scan:
             return None
 
-        # Compute progress percentage and ETA
         processed = scan.files_analyzed + scan.files_failed + scan.files_skipped
         percent = round(processed / scan.files_found * 100, 1) if scan.files_found > 0 else 0.0
         elapsed = (scan.scan_ended_at or int(time.time())) - scan.scan_started_at
@@ -223,7 +167,7 @@ async def _run_scan(scan_id: int) -> None:
 
         await _update_scan(scan_id, files_found=counters["found"])
 
-        # Pre-load all existing hashes in one query (avoids per-file DB connections in workers)
+        # Pre-load all existing hashes in one query (avoids per-file DB round-trips)
         hash_cache: dict[str, tuple[str, str]] = {}  # file_path → (file_hash, analysis_version)
         async with AsyncSessionLocal() as session:
             rows = (await session.execute(
@@ -234,59 +178,17 @@ async def _run_scan(scan_id: int) -> None:
                 hash_cache[row[0]] = (row[1], row[2])
         logger.info(f"[Scan {scan_id}] Pre-loaded {len(hash_cache)} file hashes for skip detection")
 
-        two_pass = settings.ANALYSIS_TWO_PASS
+        # Ensure the worker pool is running before processing
+        from app.services.analysis_worker import get_worker_pool
+        pool = await get_worker_pool()
 
-        # --- Pass 1: DSP-only (fast) when two-pass is enabled ---
-        if two_pass:
-            logger.info(f"[Scan {scan_id}] Pass 1/2: fast DSP analysis (no TF models)")
-
+        # Process in batches, yielding to the event loop between batches
         batch_size = settings.ANALYSIS_BATCH_SIZE
         for i in range(0, len(audio_files), batch_size):
-            batch = audio_files[i:i + batch_size]
-            await _process_batch(batch, scan_id, counters, scan_start, hash_cache, skip_tf=two_pass)
+            batch = audio_files[i : i + batch_size]
+            await _process_batch(batch, scan_id, counters, scan_start, hash_cache, pool)
             _log_progress(scan_id, counters["found"], counters["ok"], counters["skipped"], counters["failed"], scan_start)
-
-        # --- Pass 2: TF enrichment for tracks that only have DSP features ---
-        if two_pass:
-            dsp_elapsed = round(time.time() - scan_start, 1)
-            logger.info(
-                f"[Scan {scan_id}] Pass 1 done in {dsp_elapsed}s: "
-                f"{counters['ok']} analyzed. Starting TF enrichment pass..."
-            )
-            # Find tracks that have DSP-only version and need TF enrichment
-            tf_files: list[str] = []
-            async with AsyncSessionLocal() as session:
-                rows = (await session.execute(
-                    select(TrackFeatures.file_path)
-                    .where(TrackFeatures.analysis_version == ANALYSIS_VERSION_DSP)
-                )).scalars().all()
-                tf_files = list(rows)
-
-            if tf_files:
-                tf_counters = {"found": len(tf_files), "ok": 0, "skipped": 0, "failed": 0}
-                tf_start = time.time()
-
-                # Try ONNX GPU batched path first, fall back to per-file TF
-                use_gpu = settings.ANALYSIS_GPU
-                if use_gpu:
-                    try:
-                        from app.services.gpu_inference import is_available
-                        use_gpu = is_available()
-                    except ImportError:
-                        use_gpu = False
-
-                if use_gpu:
-                    await _run_gpu_enrichment(scan_id, tf_files, tf_counters, tf_start)
-                else:
-                    logger.info(f"[Scan {scan_id}] Pass 2/2: TF enrichment (CPU) for {len(tf_files)} tracks")
-                    tf_hash_cache: dict[str, tuple[str, str]] = {}
-                    for i in range(0, len(tf_files), batch_size):
-                        batch = tf_files[i:i + batch_size]
-                        await _process_batch(batch, scan_id, tf_counters, tf_start, tf_hash_cache, skip_tf=False)
-                        _log_progress(scan_id, tf_counters["found"], tf_counters["ok"], tf_counters["skipped"], tf_counters["failed"], tf_start)
-
-                counters["ok"] += tf_counters["ok"]
-                counters["failed"] += tf_counters["failed"]
+            await asyncio.sleep(0.05)  # yield between batches
 
         # --- Post-scan phases (each timed for diagnostics) ---
         logger.info(f"[Scan {scan_id}] Post-scan: starting cleanup and rebuild phases")
@@ -393,241 +295,87 @@ def _log_progress(scan_id: int, found: int, analyzed: int, skipped: int, failed:
     )
 
 
-async def _run_gpu_enrichment(scan_id: int, tf_files: list[str], counters: dict, scan_start: float) -> None:
+async def _process_batch(
+    file_paths: list[str],
+    scan_id: int,
+    counters: dict,
+    scan_start: float,
+    hash_cache: dict,
+    pool,
+) -> None:
     """
-    Run TF enrichment pass using ONNX Runtime GPU batched inference.
-
-    Split into two executor phases per batch to keep the event loop alive:
-      1. Mel-spec extraction → ProcessPoolExecutor  (CPU-bound; Essentia's
-         SWIG bindings hold the GIL, so threads can't help)
-      2. ONNX inference → default ThreadPoolExecutor (GPU-bound; ONNX
-         Runtime releases the GIL during .run())
-
-    Worker subprocesses have CUDA_VISIBLE_DEVICES="" so TF doesn't try
-    to grab the GPU and deadlock with ONNX Runtime in the main process.
+    Analyze a batch of files concurrently via the worker pool, then
+    persist all results in a single DB transaction.
     """
-    from app.services.gpu_inference import (
-        gpu_detected, extract_melspecs_batch, infer_from_patches,
-        ensure_onnx_models, is_available,
-    )
-    from app.services.audio_analysis import ANALYSIS_VERSION, generate_track_id
+    sem = asyncio.Semaphore(pool._num_workers * 2)
+    batch_results: list[tuple[str, object]] = []
+    lock = asyncio.Lock()
 
-    if not is_available():
-        logger.error(f"[Scan {scan_id}] ONNX Runtime not available, skipping GPU enrichment")
-        return
-    ensure_onnx_models()
-
-    provider = "GPU" if gpu_detected() else "CPU/ONNX"
-    logger.info(
-        f"[Scan {scan_id}] Pass 2/2: {provider} batched enrichment for "
-        f"{len(tf_files)} tracks (batch_size={settings.ANALYSIS_GPU_BATCH_SIZE})"
-    )
-
-    gpu_batch = settings.ANALYSIS_GPU_BATCH_SIZE
-    total_batches = (len(tf_files) + gpu_batch - 1) // gpu_batch
-    loop = asyncio.get_running_loop()
-    proc_executor = get_executor()
-
-    for batch_num, batch_start in enumerate(range(0, len(tf_files), gpu_batch)):
-        batch_paths = tf_files[batch_start:batch_start + gpu_batch]
-
-        await asyncio.sleep(0.05)  # yield before starting batch
-
-        t_infer = time.monotonic()
-        try:
-            # Phase 1: mel-spec in ProcessPoolExecutor (separate GIL)
-            mel_data = await asyncio.wait_for(
-                loop.run_in_executor(proc_executor, extract_melspecs_batch, batch_paths),
-                timeout=settings.ANALYSIS_TIMEOUT * len(batch_paths),
-            )
-
-            if mel_data["all_patches"] is None:
-                for i, fp in enumerate(batch_paths):
-                    err = mel_data["errors"][i] or "no valid patches"
-                    logger.warning(f"[Scan {scan_id}] TF FAIL {Path(fp).name}: {err}")
-                counters["failed"] += len(batch_paths)
-                continue
-
-            await asyncio.sleep(0)  # yield between phases
-
-            # Phase 2: ONNX inference in ThreadPoolExecutor (GPU, releases GIL)
-            results = await asyncio.wait_for(
-                loop.run_in_executor(
-                    None, infer_from_patches,
-                    mel_data["all_patches"],
-                    mel_data["file_patch_counts"],
-                    mel_data["errors"],
-                    batch_paths,
-                ),
-                timeout=settings.ANALYSIS_TIMEOUT * len(batch_paths),
-            )
-        except Exception as e:
-            logger.error(f"[Scan {scan_id}] GPU batch inference failed: {e}")
-            counters["failed"] += len(batch_paths)
-            continue
-        infer_s = time.monotonic() - t_infer
-
-        # Persist results — collect updates and do one bulk commit.
-        fail_logs: list[ScanLog] = []
-        update_map: dict[str, dict] = {}
-
-        for fp, result in zip(batch_paths, results):
-            fname = Path(fp).name
-            if result.get("analysis_error"):
-                logger.warning(f"[Scan {scan_id}] TF FAIL {fname}: {result['analysis_error']}")
-                fail_logs.append(ScanLog(scan_id=scan_id, level="fail", filename=fname, message=result["analysis_error"]))
-                counters["failed"] += 1
-            else:
-                track_id = generate_track_id(fp)
-                vals = {k: v for k, v in result.items() if k not in ("id", "track_id", "file_path")}
-                vals["analysis_version"] = ANALYSIS_VERSION
-                update_map[track_id] = vals
-                counters["ok"] += 1
-                logger.debug(f"[Scan {scan_id}] TF OK  {fname}")
-
-        t_db = time.monotonic()
-        async with AsyncSessionLocal() as session:
-            for track_id, vals in update_map.items():
-                await session.execute(
-                    update(TrackFeatures)
-                    .where(TrackFeatures.track_id == track_id)
-                    .values(**vals)
-                )
-            if fail_logs:
-                session.add_all(fail_logs)
-            await session.commit()
-        db_s = time.monotonic() - t_db
-
-        if batch_num % 10 == 0 or infer_s > 30 or db_s > 5:
-            logger.info(
-                f"[Scan {scan_id}] GPU batch {batch_num+1}/{total_batches}: "
-                f"infer={infer_s:.1f}s db={db_s:.1f}s"
-            )
-
-        await asyncio.sleep(0.05)  # yield after DB work
-
-        _log_progress(scan_id, counters["found"], counters["ok"], counters["skipped"], counters["failed"], scan_start)
-        await _update_scan(
-            scan_id,
-            files_found=counters["found"],
-            files_analyzed=counters["ok"],
-            files_skipped=counters["skipped"],
-            files_failed=counters["failed"],
-        )
-
-
-async def _process_file(file_path: str, scan_id: int, counters: dict, scan_start: float, hash_cache: dict, skip_tf: bool = False) -> None:
-    """Analyze a single file: run in executor, persist result, update progress."""
-    loop = asyncio.get_running_loop()
-    executor = get_executor()
-    fname = Path(file_path).name
-
-    # Check hash from pre-loaded cache (no DB call needed in subprocess)
-    cached = hash_cache.get(file_path)
-
-    try:
-        result = await asyncio.wait_for(
-            loop.run_in_executor(executor, _analyze_if_needed_sync, file_path, cached, skip_tf),
-            timeout=settings.ANALYSIS_TIMEOUT,
-        )
-    except asyncio.TimeoutError:
-        result = Exception(f"Analysis timed out after {settings.ANALYSIS_TIMEOUT}s (file may be corrupted or unsupported)")
-        # Don't reset the pool — the timed-out task is cancelled but other
-        # workers keep running with their cached TF models intact.
-    except BrokenProcessPool:
-        result = Exception("Worker process crashed (likely OOM or segfault), recycling pool")
-        _reset_executor()
-    except Exception as exc:
-        result = exc
-
-    if isinstance(result, Exception):
-        logger.error(f"[Scan {scan_id}] FAIL {fname}: {result}")
-        async with AsyncSessionLocal() as session:
-            session.add(ScanLog(scan_id=scan_id, level="fail", filename=fname, message=str(result)))
-            await session.commit()
-        counters["failed"] += 1
-    elif result is None:
-        # File unchanged, skipped — only bump counter, no DB write.
-        # Writing 20k+ skip rows per scan bloats the WAL and triggers
-        # a massive prune DELETE that stalls SQLite.
-        logger.debug(f"[Scan {scan_id}] SKIP {fname}")
-        counters["skipped"] += 1
-    elif result.get("analysis_error"):
-        logger.warning(f"[Scan {scan_id}] FAIL {fname}: {result['analysis_error']}")
-        async with AsyncSessionLocal() as session:
-            session.add(ScanLog(scan_id=scan_id, level="fail", filename=fname, message=result["analysis_error"]))
-            await session.commit()
-        counters["failed"] += 1
-    else:
-        counters["ok"] += 1
-        bpm_str = str(round(result.get("bpm", 0))) if result.get("bpm") else "?"
-        key_str = (result.get("key", "?") or "?") + (result.get("mode", "") or "")
-        dur_str = str(round(result.get("duration", 0))) + "s"
-        energy_str = str(round(result.get("energy", 0), 2)) if result.get("energy") is not None else "?"
-        msg = bpm_str + " BPM | " + key_str + " | " + dur_str + " | energy " + energy_str
-        logger.info(f"[Scan {scan_id}] OK   {fname} | {msg}")
-        async with AsyncSessionLocal() as session:
-            session.add(ScanLog(scan_id=scan_id, level="ok", filename=fname, message=msg))
-            await _upsert_track_features(session, result)
-            await session.commit()
-
-    # Update scan progress in DB every 10 files (reduces SQLite write contention)
-    processed = counters["ok"] + counters["skipped"] + counters["failed"]
-    if processed % 10 == 0 or processed == counters["found"]:
-        await _update_scan(
-            scan_id,
-            current_file=fname,
-            files_found=counters["found"],
-            files_analyzed=counters["ok"],
-            files_skipped=counters["skipped"],
-            files_failed=counters["failed"],
-        )
-
-
-async def _process_batch(file_paths: list[str], scan_id: int, counters: dict, scan_start: float, hash_cache: dict, skip_tf: bool = False) -> None:
-    """Analyze a batch of files concurrently, with per-file progress updates."""
-    # Run up to ANALYSIS_WORKERS files concurrently using a semaphore
-    sem = asyncio.Semaphore(settings.ANALYSIS_WORKERS)
-
-    async def _guarded(fp):
+    async def _analyze_one(fp: str):
         async with sem:
-            await _process_file(fp, scan_id, counters, scan_start, hash_cache, skip_tf=skip_tf)
-
-    await asyncio.gather(*[_guarded(fp) for fp in file_paths])
-
-
-def _analyze_if_needed_sync(file_path: str, cached: Optional[tuple] = None, skip_tf: bool = False) -> Optional[dict]:
-    """
-    Sync function run in process pool.
-    Returns None if the file is unchanged and already analyzed.
-    Returns result dict otherwise.
-
-    ``cached`` is a (file_hash, analysis_version) tuple from the pre-loaded
-    hash cache, or None if this file hasn't been analyzed before.
-    """
-    from app.services.audio_analysis import analyze_track, compute_file_hash, ANALYSIS_VERSION, ANALYSIS_VERSION_DSP
-
-    # Quick skip: compare file hash from cache (no DB connection needed)
-    if cached is not None:
-        stored_hash, stored_version = cached
-        # Skip if already at target version (full or DSP-only depending on mode)
-        target_version = ANALYSIS_VERSION_DSP if skip_tf else ANALYSIS_VERSION
-        if stored_version == target_version or stored_version == ANALYSIS_VERSION:
+            cached = hash_cache.get(fp)
             try:
-                current_hash = compute_file_hash(file_path)
-                if stored_hash == current_hash:
-                    return None  # unchanged, skip
-            except Exception:
-                pass  # file may have been deleted, proceed with analysis
+                result = await pool.analyze(fp, cached)
+            except Exception as exc:
+                result = exc
+            async with lock:
+                batch_results.append((fp, result))
 
-    return analyze_track(file_path, skip_tf=skip_tf)
+    await asyncio.gather(*[_analyze_one(fp) for fp in file_paths])
+
+    # --- Classify results and prepare DB writes ---
+    to_upsert: list[dict] = []
+    log_entries: list[ScanLog] = []
+
+    for fp, result in batch_results:
+        fname = Path(fp).name
+
+        if isinstance(result, Exception):
+            logger.error("[Scan %d] FAIL %s: %s", scan_id, fname, result)
+            log_entries.append(ScanLog(scan_id=scan_id, level="fail", filename=fname, message=str(result)))
+            counters["failed"] += 1
+
+        elif result is None:
+            logger.debug("[Scan %d] SKIP %s", scan_id, fname)
+            counters["skipped"] += 1
+
+        elif result.get("analysis_error"):
+            logger.warning("[Scan %d] FAIL %s: %s", scan_id, fname, result["analysis_error"])
+            log_entries.append(ScanLog(scan_id=scan_id, level="fail", filename=fname, message=result["analysis_error"]))
+            counters["failed"] += 1
+
+        else:
+            counters["ok"] += 1
+            to_upsert.append(result)
+            bpm_str = str(round(result.get("bpm", 0))) if result.get("bpm") else "?"
+            key_str = (result.get("key", "?") or "?") + (result.get("mode", "") or "")
+            dur_str = str(round(result.get("duration", 0))) + "s"
+            energy_str = str(round(result.get("energy", 0), 2)) if result.get("energy") is not None else "?"
+            msg = f"{bpm_str} BPM | {key_str} | {dur_str} | energy {energy_str}"
+            logger.info("[Scan %d] OK   %s | %s", scan_id, fname, msg)
+            log_entries.append(ScanLog(scan_id=scan_id, level="ok", filename=fname, message=msg))
+
+    # --- Batch DB write (single transaction per batch) ---
+    if to_upsert or log_entries:
+        async with AsyncSessionLocal() as session:
+            for data in to_upsert:
+                await _upsert_track_features(session, data)
+            if log_entries:
+                session.add_all(log_entries)
+            await session.commit()
+
+    # Update scan progress
+    await _update_scan(
+        scan_id,
+        files_found=counters["found"],
+        files_analyzed=counters["ok"],
+        files_skipped=counters["skipped"],
+        files_failed=counters["failed"],
+    )
 
 
 async def _upsert_track_features(session: AsyncSession, data: dict) -> None:
     """Insert or update track_features row from analysis result dict."""
-    from app.models.db import TrackFeatures
-    from app.services.audio_analysis import generate_track_id
-
     file_path = data.get("file_path", "")
     track_id = data.get("track_id") or generate_track_id(file_path)
 

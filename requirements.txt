@@ -29,10 +29,15 @@ structlog==24.*
 mutagen>=1.47
 
 # Audio analysis (Phase 3)
-# essentia-tensorflow includes pre-built wheels and TF model support
-essentia-tensorflow>=2.1b6.dev0,<2.1b7
+# Base essentia for DSP (BPM, key, loudness); no TensorFlow dependency.
+# ML inference (danceability, mood, embedding) uses ONNX Runtime below.
+essentia>=2.1b6.dev0,<2.1b7
 
-numpy>=1.26,<3              # essentia-tensorflow bundles its own numpy constraints
+numpy>=1.26,<3
+
+# ONNX Runtime for Discogs-EffNet + classifier heads.
+# For Intel iGPU acceleration, install onnxruntime-openvino instead.
+onnxruntime>=1.17.0
 
 # Candidate generation (Phase 4)
 faiss-cpu>=1.7.4
