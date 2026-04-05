@@ -111,7 +111,10 @@ async def _enqueue_scrobble(session: AsyncSession, event, user, track) -> None:
     if (event.dwell_ms is not None and duration_s is not None
             and event.dwell_ms >= duration_s * 500):  # duration_s * 1000 * 0.5
         qualifies = True
-    # Fallback: if no dwell info but completion >= 50%, qualify
+    # Fallback: play_end events that passed the noise filter (MIN_PLAY_PERCENTAGE)
+    # but carry no completion/dwell data — assume the client confirmed a valid listen.
+    if not qualifies and event.value is None and event.dwell_ms is None:
+        qualifies = True
     if not qualifies:
         return
 

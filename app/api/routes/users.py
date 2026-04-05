@@ -91,9 +91,13 @@ async def get_user_interactions(
     )
     total = (await session.execute(count_q)).scalar() or 0
 
+    from sqlalchemy import or_
     q = (
         select(TrackInteraction, TrackFeatures)
-        .outerjoin(TrackFeatures, TrackInteraction.track_id == TrackFeatures.track_id)
+        .outerjoin(TrackFeatures, or_(
+            TrackInteraction.track_id == TrackFeatures.track_id,
+            TrackInteraction.track_id == TrackFeatures.external_track_id,
+        ))
         .where(TrackInteraction.user_id == user_id)
         .order_by(order)
         .offset(offset)
@@ -116,6 +120,9 @@ async def get_user_interactions(
                 "first_played_at": ti.first_played_at,
                 "last_played_at": ti.last_played_at,
                 # Track metadata (if analyzed)
+                "title": tf.title if tf else None,
+                "artist": tf.artist if tf else None,
+                "album": tf.album if tf else None,
                 "file_path": tf.file_path if tf else None,
                 "bpm": tf.bpm if tf else None,
                 "key": tf.key if tf else None,

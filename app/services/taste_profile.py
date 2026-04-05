@@ -252,14 +252,23 @@ async def _fetch_track_features(
         return {}
 
     # Batch in groups of 500 to avoid huge IN clauses.
+    # Match on both track_id and external_track_id so events using
+    # media-server IDs (stored as external_track_id) resolve correctly.
+    from sqlalchemy import or_
+
     features_map: Dict[str, TrackFeatures] = {}
     for i in range(0, len(track_ids), 500):
         batch = track_ids[i : i + 500]
         result = await session.execute(
-            select(TrackFeatures).where(TrackFeatures.track_id.in_(batch))
+            select(TrackFeatures).where(or_(
+                TrackFeatures.track_id.in_(batch),
+                TrackFeatures.external_track_id.in_(batch),
+            ))
         )
         for tf in result.scalars().all():
             features_map[tf.track_id] = tf
+            if tf.external_track_id:
+                features_map[tf.external_track_id] = tf
 
     return features_map
 
