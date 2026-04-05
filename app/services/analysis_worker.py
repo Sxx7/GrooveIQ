@@ -75,7 +75,7 @@ _ONNX_MODELS = {
 # ---------------------------------------------------------------------------
 
 _EFFNET_SR = 16000       # EffNet expects 16 kHz mono
-_FFT_SIZE = 512
+_FFT_SIZE = 1024
 _HOP_SIZE = 256
 _N_MELS = 128
 _FREQ_MAX = 8000.0
