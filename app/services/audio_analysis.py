@@ -25,7 +25,7 @@ import os
 # Bump this whenever the analysis pipeline changes in a way that would
 # produce different feature values.  The scanner compares stored versions
 # against this constant to decide whether a track needs re-analysis.
-ANALYSIS_VERSION = "2.0"
+ANALYSIS_VERSION = "2.1"
 
 # Must match FAISS index dimension (faiss_index._EMBEDDING_DIM).
 EMBEDDING_DIM = 64

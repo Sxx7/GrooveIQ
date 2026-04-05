@@ -808,7 +808,7 @@ def _extract_ml(
             preds = session.run(None, {inp: embeddings})[0]
             result[feature] = round(float(np.mean(preds[:, col])), 3)
         except Exception as e:
-            logger.debug("ONNX head %s failed: %s", model_file, e)
+            logger.warning("ONNX head %s failed: %s", model_file, e)
 
     # Speechiness proxy: 1 − instrumentalness
     if result.get("instrumentalness") is not None:
@@ -832,8 +832,8 @@ def _extract_ml(
             preds = session.run(None, {inp: embeddings})[0]
             conf = round(float(np.mean(preds[:, 0])), 3)
             mood_tags.append({"label": label, "confidence": conf})
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning("ONNX mood head %s failed: %s", model_file, e)
     if mood_tags:
         mood_tags.sort(key=lambda m: m["confidence"], reverse=True)
         result["mood_tags"] = mood_tags
