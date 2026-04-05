@@ -777,7 +777,19 @@ def _extract_ml(
         return None
 
     # --- EffNet forward pass → (N_patches, 200) ---
-    input_name = effnet.get_inputs()[0].name
+    input_meta = effnet.get_inputs()[0]
+    input_name = input_meta.name
+    expected_rank = len(input_meta.shape)
+
+    # The ONNX model's expected rank varies by export:
+    #   bsdynamic expects (batch, 96, 187)  — rank 3
+    #   bs64 TF-exported expects (batch, 1, 96, 187) — rank 4
+    # Reshape patches to match whichever we have.
+    if expected_rank == 4 and patches.ndim == 3:
+        patches = patches[:, np.newaxis, :, :]   # (N,96,187) → (N,1,96,187)
+    elif expected_rank == 3 and patches.ndim == 4:
+        patches = patches[:, 0, :, :]            # (N,1,96,187) → (N,96,187)
+
     embeddings = effnet.run(None, {input_name: patches})[0]
     mean_embedding = np.mean(embeddings, axis=0)  # (200,)
 
