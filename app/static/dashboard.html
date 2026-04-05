@@ -1071,6 +1071,7 @@ function renderTracks(data) {
     + '<th onclick="sortTracks(\'valence\')">Valence' + arrow('valence') + '</th>'
     + '<th>Mood</th>'
     + '<th onclick="sortTracks(\'duration\')">Duration' + arrow('duration') + '</th>'
+    + '<th>Version</th>'
     + '<th>Track ID</th>'
     + '</tr>';
 
@@ -1088,6 +1089,7 @@ function renderTracks(data) {
       + '<td>' + (t.valence != null ? t.valence.toFixed(2) : '\u2014') + '</td>'
       + '<td>' + topMood(t.mood_tags) + '</td>'
       + '<td>' + fmtTrackDur(t.duration) + '</td>'
+      + '<td style="font-family:monospace;font-size:11px;color:var(--text-dim)">' + esc(t.analysis_version || '\u2014') + '</td>'
       + '<td style="font-family:monospace;font-size:11px">' + esc(t.track_id) + '</td>'
       + '</tr>';
   }
