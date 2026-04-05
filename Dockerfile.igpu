@@ -1,5 +1,5 @@
 # GrooveIQ – Intel iGPU Dockerfile (OpenVINO)
-# Uses Intel UHD/Iris iGPU for accelerated TF model inference.
+# Uses Intel UHD/Iris iGPU for accelerated ONNX model inference.
 #
 # Build:  docker build --platform linux/amd64 -f Dockerfile.igpu -t grooveiq:igpu .
 # Run:    docker compose -f docker-compose.yml -f docker-compose.igpu.yml up -d
@@ -31,7 +31,7 @@ LABEL org.opencontainers.image.title="GrooveIQ (Intel iGPU)"
 LABEL org.opencontainers.image.description="Behavioral music recommendation engine – Intel iGPU accelerated"
 LABEL org.opencontainers.image.source="https://gitlab.local.devii.ch/simon/grooveiq"
 
-# Runtime audio codec libs (Essentia) + Intel GPU compute runtime
+# Runtime audio codec libs (Essentia) — from Trixie repos
 RUN apt-get update && apt-get install -y --no-install-recommends \
         libavcodec61 \
         libavformat61 \
@@ -43,11 +43,24 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         libtag2 \
         libchromaprint1 \
         libgomp1 \
-        # Intel GPU compute runtime (OpenCL + Level Zero)
-        intel-opencl-icd \
-        intel-level-zero-gpu \
         tini \
     && rm -rf /var/lib/apt/lists/*
+
+# Intel GPU compute runtime (OpenCL ICD + Level Zero)
+# These packages are in Debian sid/forky but not yet in Trixie.
+# Pull them from sid with low-priority pinning so only the explicitly
+# requested Intel packages come from sid — everything else stays Trixie.
+RUN echo "deb http://deb.debian.org/debian sid main non-free-firmware" \
+        > /etc/apt/sources.list.d/sid.list && \
+    printf 'Package: *\nPin: release a=unstable\nPin-Priority: 100\n' \
+        > /etc/apt/preferences.d/sid-low-priority && \
+    apt-get update && \
+    apt-get install -y --no-install-recommends -t unstable \
+        intel-opencl-icd \
+        libze-intel-gpu1 && \
+    rm /etc/apt/sources.list.d/sid.list \
+       /etc/apt/preferences.d/sid-low-priority && \
+    rm -rf /var/lib/apt/lists/*
 
 # Non-root user
 RUN groupadd --gid 1001 grooveiq && \
@@ -64,12 +77,12 @@ RUN pip install --no-cache-dir --no-index --find-links=/wheels /wheels/* && \
 COPY --chown=grooveiq:grooveiq app/ ./app/
 
 # Data directories
-RUN mkdir -p /data /data/models /music /cache/essentia /cache/onnx && \
+RUN mkdir -p /data /data/models /music /cache/essentia/onnx && \
     chown -R grooveiq:grooveiq /data /music /cache
 
 # Environment
 ENV ESSENTIA_MODELS_PATH=/cache/essentia \
-    ONNX_MODELS_PATH=/cache/onnx \
+    ONNX_MODELS_PATH=/cache/essentia/onnx \
     APP_ENV=production \
     DATABASE_URL=sqlite+aiosqlite:////data/grooveiq.db \
     MUSIC_LIBRARY_PATH=/music \
@@ -77,7 +90,6 @@ ENV ESSENTIA_MODELS_PATH=/cache/essentia \
     LOG_LEVEL=INFO \
     PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
-    ANALYSIS_GPU=true \
     ANALYSIS_GPU_BACKEND=openvino
 
 USER grooveiq
