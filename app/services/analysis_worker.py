@@ -711,7 +711,7 @@ def _compute_melspec_patches(
     Compute mel-spectrogram patches matching EffNet-Discogs input format.
 
     Uses the centre *max_seconds* of audio.
-    Returns shape ``(num_patches, 1, 96, 187)`` float32.
+    Returns shape ``(num_patches, 96, 187)`` float32.
     """
     max_samples = int(max_seconds * sr)
     if len(audio) > max_samples:
@@ -737,18 +737,18 @@ def _compute_melspec_patches(
 
     if len(frames) < _PATCH_FRAMES:
         if not frames:
-            return np.zeros((0, 1, _N_MELS, _PATCH_FRAMES), dtype=np.float32)
+            return np.zeros((0, _N_MELS, _PATCH_FRAMES), dtype=np.float32)
         padded = np.zeros((_PATCH_FRAMES, _N_MELS), dtype=np.float32)
         arr = np.array(frames, dtype=np.float32)
         padded[: len(arr)] = arr
-        return padded.T[np.newaxis, np.newaxis, :, :]  # (1, 1, 96, 187)
+        return padded.T[np.newaxis, :, :]  # (1, 96, 187)
 
     frames_arr = np.array(frames, dtype=np.float32)  # (num_frames, 96)
     patches = []
     for i in range(0, len(frames_arr) - _PATCH_FRAMES + 1, _PATCH_HOP):
         patches.append(frames_arr[i : i + _PATCH_FRAMES].T)  # (96, 187)
 
-    return np.array(patches, dtype=np.float32)[:, np.newaxis, :, :]  # (N, 1, 96, 187)
+    return np.array(patches, dtype=np.float32)  # (N, 96, 187)
 
 
 # ---------------------------------------------------------------------------
