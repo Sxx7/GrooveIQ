@@ -793,7 +793,7 @@ def _extract_ml(
     embeddings = effnet.run(None, {input_name: patches})[0]
     mean_embedding = np.mean(embeddings, axis=0)
 
-    logger.info(
+    logger.warning(
         "EffNet output: shape=%s, dtype=%s",
         embeddings.shape, embeddings.dtype,
     )
@@ -810,7 +810,7 @@ def _extract_ml(
             continue
         try:
             inp_meta = session.get_inputs()[0]
-            logger.info(
+            logger.warning(
                 "Head %s expects: name=%s, shape=%s — got embeddings %s",
                 model_file, inp_meta.name, inp_meta.shape, embeddings.shape,
             )
