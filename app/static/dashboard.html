@@ -567,7 +567,7 @@ function renderDashboard(stats, users, events, model) {
   h += '<div class="panel"><div class="panel-header">Top Tracks (24h)</div><div class="panel-body">';
   var tt = stats.top_tracks_24h || [];
   if (!tt.length) { h += '<div class="empty">No track activity in the last 24 hours</div>'; }
-  else { h += '<table><tr><th>Track ID</th><th>Events</th></tr>'; for (var i = 0; i < tt.length; i++) { h += '<tr><td style="font-family:monospace;font-size:12px">' + esc(tt[i].track_id) + '</td><td>' + tt[i].events + '</td></tr>'; } h += '</table>'; }
+  else { h += '<table><tr><th>Track</th><th>Events</th></tr>'; for (var i = 0; i < tt.length; i++) { var name = (tt[i].artist && tt[i].title) ? esc(tt[i].artist) + ' \u2014 ' + esc(tt[i].title) : tt[i].title ? esc(tt[i].title) : esc(tt[i].track_id); h += '<tr><td style="max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="ID: ' + esc(tt[i].track_id) + '">' + name + '</td><td>' + tt[i].events + '</td></tr>'; } h += '</table>'; }
   h += '</div></div>';
 
   // Library scan

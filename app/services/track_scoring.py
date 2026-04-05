@@ -302,7 +302,7 @@ def _compute_delta(events: List) -> dict:
 
         et = ev.event_type
 
-        if et in ("play_start", "play_end"):
+        if et == "play_start":
             play_count += 1
 
         if et == "play_end":

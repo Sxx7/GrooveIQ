@@ -226,7 +226,7 @@ def _build_session_row(user_id: str, events: List) -> Optional[dict]:
 
     # Count event types.
     type_counts = Counter(ev.event_type for ev in events)
-    play_count = type_counts.get("play_start", 0) + type_counts.get("play_end", 0)
+    play_count = type_counts.get("play_start", 0)
     skip_count = type_counts.get("skip", 0)
     like_count = type_counts.get("like", 0)
     dislike_count = type_counts.get("dislike", 0)

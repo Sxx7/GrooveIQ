@@ -45,15 +45,28 @@ async def get_stats(
     )).all()
     event_types = {row[0]: row[1] for row in type_rows}
 
-    # Top tracks (last 24h by event count)
+    # Top tracks (last 24h by event count), enriched with metadata
+    from sqlalchemy import or_
     track_rows = (await session.execute(
-        select(ListenEvent.track_id, func.count(ListenEvent.id).label("c"))
+        select(
+            ListenEvent.track_id,
+            func.count(ListenEvent.id).label("c"),
+            TrackFeatures.title,
+            TrackFeatures.artist,
+        )
+        .outerjoin(TrackFeatures, or_(
+            ListenEvent.track_id == TrackFeatures.track_id,
+            ListenEvent.track_id == TrackFeatures.external_track_id,
+        ))
         .where(ListenEvent.timestamp >= day_ago)
-        .group_by(ListenEvent.track_id)
+        .group_by(ListenEvent.track_id, TrackFeatures.title, TrackFeatures.artist)
         .order_by(func.count(ListenEvent.id).desc())
         .limit(10)
     )).all()
-    top_tracks = [{"track_id": r[0], "events": r[1]} for r in track_rows]
+    top_tracks = [
+        {"track_id": r[0], "events": r[1], "title": r[2], "artist": r[3]}
+        for r in track_rows
+    ]
 
     # Latest scan
     scan_row = (await session.execute(

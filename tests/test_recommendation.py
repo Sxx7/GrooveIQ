@@ -113,7 +113,7 @@ class TestSessionizer:
             s = sessions[0]
             assert s.user_id == "u1"
             assert s.track_count == 2
-            assert s.play_count == 4  # play_start + play_end count
+            assert s.play_count == 2  # one play_start per track
             assert s.skip_count == 0
 
     async def test_gap_splits_sessions(self):
