@@ -3,4 +3,5 @@
 #   pip install -r requirements.txt -r requirements-igpu.txt
 
 # ONNX Runtime with OpenVINO provider for Intel GPU inference
-onnxruntime-openvino>=1.18,<1.20
+# Replaces the base onnxruntime from requirements.txt
+onnxruntime-openvino>=1.20
