@@ -248,6 +248,7 @@ var scanPollTimer = null;
 var scanLogLastId = 0;
 var currentView = 'dashboard';
 var trackState = { offset: 0, limit: 50, sort: 'bpm', dir: 'asc', total: 0, search: '' };
+var userDetailState = { userId: '', historyOffset: 0, historyLimit: 25 };
 var cachedUsers = [];
 
 function esc(s) {
@@ -776,18 +777,31 @@ function renderUsersList(users) {
 }
 
 function viewUser(userId) {
-  var enc = encodeURIComponent(userId);
+  userDetailState.userId = userId;
+  userDetailState.historyOffset = 0;
+  _loadUserDetail();
+}
+
+function _loadUserDetail() {
+  var enc = encodeURIComponent(userDetailState.userId);
+  var hs = userDetailState;
   Promise.all([
     api('/v1/users/' + enc + '/profile'),
     api('/v1/users/' + enc + '/interactions?limit=20&sort_by=satisfaction_score&sort_dir=desc'),
     api('/v1/users/' + enc + '/sessions?limit=10'),
     api('/v1/users/' + enc + '/lastfm/profile').catch(function() { return null; }),
-    api('/v1/users/' + enc + '/history?limit=25'),
+    api('/v1/users/' + enc + '/history?limit=' + hs.historyLimit + '&offset=' + hs.historyOffset),
   ]).then(function(results) {
     renderUserDetail(results[0], results[1], results[2], results[3], results[4]);
   }).catch(function(e) {
     $('#app').innerHTML = '<div class="empty" style="color:var(--red)">Error loading user: ' + esc(e.message) + '</div>';
   });
+}
+
+function historyPage(delta) {
+  var hs = userDetailState;
+  hs.historyOffset = Math.max(0, hs.historyOffset + delta * hs.historyLimit);
+  _loadUserDetail();
 }
 
 function renderUserDetail(profile, interactions, sessions, lastfmProfile, history) {
@@ -986,7 +1000,7 @@ function renderUserDetail(profile, interactions, sessions, lastfmProfile, histor
   // Listening History
   if (history && history.history) {
     var hist = history.history;
-    h += '<div class="panel full-width"><div class="panel-header">Listening History (' + history.total + ' total)</div>';
+    h += '<div class="panel full-width" style="margin-bottom:16px"><div class="panel-header">Listening History (' + history.total + ' total)</div>';
     h += '<div class="panel-body" style="overflow-x:auto"><table>'
       + '<tr><th>Time</th><th>Artist</th><th>Title</th><th>Album</th><th>Duration</th><th>Listened</th><th>Completion</th><th>Result</th><th>Device</th></tr>';
     for (var i = 0; i < hist.length; i++) {
@@ -1009,7 +1023,17 @@ function renderUserDetail(profile, interactions, sessions, lastfmProfile, histor
         + '<td>' + esc(entry.device_type || '\u2014') + '</td>'
         + '</tr>';
     }
-    h += '</table></div></div>';
+    h += '</table>';
+    // Pagination
+    var hs = userDetailState;
+    var showing = hs.historyOffset + 1;
+    var showEnd = Math.min(hs.historyOffset + hist.length, history.total);
+    h += '<div class="pagination">'
+      + '<span>Showing ' + showing + '\u2013' + showEnd + ' of ' + history.total + '</span>'
+      + '<div><button class="secondary" onclick="historyPage(-1)"' + (hs.historyOffset === 0 ? ' disabled' : '') + '>\u2190 Prev</button> '
+      + '<button class="secondary" onclick="historyPage(1)"' + (hs.historyOffset + hs.historyLimit >= history.total ? ' disabled' : '') + '>Next \u2192</button></div>'
+      + '</div>';
+    h += '</div></div>';
   }
 
   // Sessions
