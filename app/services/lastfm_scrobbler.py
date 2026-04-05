@@ -163,6 +163,8 @@ async def process_scrobble_queue() -> dict:
 
         client = get_lastfm_client()
 
+        users_to_refresh: list[User] = []
+
         for user_id, items in by_user.items():
             # Get session key for this user
             user = (await session.execute(
@@ -185,6 +187,7 @@ async def process_scrobble_queue() -> dict:
                 failed += len(items)
                 continue
 
+            user_sent = False
             # Process in batches of 50
             for batch_start in range(0, len(items), 50):
                 batch = items[batch_start:batch_start + 50]
@@ -204,6 +207,7 @@ async def process_scrobble_queue() -> dict:
                     for item in batch:
                         item.status = "sent"
                     processed += len(batch)
+                    user_sent = True
                 except LastFmError as e:
                     for item in batch:
                         item.attempts += 1
@@ -220,7 +224,14 @@ async def process_scrobble_queue() -> dict:
                             failed += 1
                     logger.warning("Scrobble batch failed for user=%s: %s", user_id, e)
 
+            if user_sent:
+                users_to_refresh.append(user)
+
         await session.commit()
+
+    # After committing scrobbles, refresh recent tracks for affected users
+    if users_to_refresh:
+        await _refresh_recent_tracks(users_to_refresh)
 
     # Clean up sent items older than 7 days
     cutoff = int(time.time()) - 7 * 86_400
@@ -234,3 +245,29 @@ async def process_scrobble_queue() -> dict:
         await session.commit()
 
     return {"processed": processed, "failed": failed}
+
+
+async def _refresh_recent_tracks(users: list) -> None:
+    """Fetch recent tracks from Last.fm for users who just had scrobbles sent."""
+    from app.services.lastfm_client import get_lastfm_client
+
+    client = get_lastfm_client()
+
+    async with AsyncSessionLocal() as session:
+        for user in users:
+            if not user.lastfm_username:
+                continue
+            try:
+                recent = await client.get_recent_tracks(user.lastfm_username, limit=50)
+                user_row = (await session.execute(
+                    select(User).where(User.user_id == user.user_id)
+                )).scalar_one_or_none()
+                if user_row:
+                    cache = dict(user_row.lastfm_cache) if user_row.lastfm_cache else {}
+                    cache["recent_tracks"] = recent
+                    cache["recent_tracks_fetched_at"] = int(time.time())
+                    user_row.lastfm_cache = cache
+            except Exception as e:
+                logger.debug("Recent tracks refresh failed for %s: %s", user.user_id, e)
+
+        await session.commit()

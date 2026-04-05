@@ -111,6 +111,9 @@ async def _fetch_user_profile(client, username: str) -> dict:
             username, period=period, limit=50,
         )
 
+    # Recent tracks
+    profile["recent_tracks"] = await client.get_recent_tracks(username, limit=50)
+
     # Loved tracks
     profile["loved_tracks"] = await client.get_loved_tracks(username, limit=50)
 

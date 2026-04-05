@@ -141,6 +141,14 @@ class LastFmClient:
         })
         return data.get("lovedtracks", {}).get("track", [])
 
+    async def get_recent_tracks(
+        self, username: str, limit: int = 50
+    ) -> list[dict]:
+        data = await self._get("user.getRecentTracks", {
+            "user": username, "limit": str(limit), "extended": "1",
+        })
+        return data.get("recenttracks", {}).get("track", [])
+
     async def get_artist_tags(self, artist: str, limit: int = 10) -> list[dict]:
         data = await self._get("artist.getTopTags", {
             "artist": artist, "limit": str(limit),
