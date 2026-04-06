@@ -156,6 +156,38 @@ class LastFmClient:
         })
         return data.get("toptags", {}).get("tag", [])
 
+    async def get_artist_info(
+        self, artist: str, autocorrect: bool = True,
+    ) -> dict:
+        """
+        Get artist metadata from Last.fm (artist.getInfo).
+
+        Returns dict with keys: name, mbid, bio, image, stats, similar, tags, etc.
+        """
+        data = await self._get("artist.getInfo", {
+            "artist": artist,
+            "autocorrect": "1" if autocorrect else "0",
+        })
+        return data.get("artist", {})
+
+    async def get_artist_top_tracks(
+        self, artist: str, limit: int = 10, autocorrect: bool = True,
+    ) -> list[dict]:
+        """
+        Get an artist's top tracks from Last.fm (artist.getTopTracks).
+
+        Returns list of dicts with keys: name, playcount, listeners, mbid, etc.
+        """
+        data = await self._get("artist.getTopTracks", {
+            "artist": artist,
+            "limit": str(limit),
+            "autocorrect": "1" if autocorrect else "0",
+        })
+        tracks = data.get("toptracks", {}).get("track", [])
+        if isinstance(tracks, dict):
+            tracks = [tracks]
+        return tracks
+
     async def get_similar_tracks(
         self, artist: str, track: str, limit: int = 50, autocorrect: bool = True,
     ) -> list[dict]:
