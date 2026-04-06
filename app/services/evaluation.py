@@ -111,6 +111,9 @@ async def evaluate_holdout(train_cutoff_ts: Optional[int] = None) -> Dict[str, A
         model.fit(data["features"], data["labels"])
 
     # Evaluate on test set: for each test user, rank their test tracks.
+    # Compare model against two baselines:
+    #   - random: shuffled order (expected NDCG depends on score distribution)
+    #   - popularity: ranked by global play_count descending
     from collections import defaultdict
     test_by_user: Dict[str, List] = defaultdict(list)
     for inter in test_interactions:
@@ -118,8 +121,22 @@ async def evaluate_holdout(train_cutoff_ts: Optional[int] = None) -> Dict[str, A
 
     ndcg10_scores: List[float] = []
     ndcg50_scores: List[float] = []
+    # Baselines
+    random_ndcg10: List[float] = []
+    popularity_ndcg10: List[float] = []
 
     async with AsyncSessionLocal() as session:
+        # Pre-load global popularity (total play_count across all users).
+        from sqlalchemy import func as sa_func
+        pop_result = await session.execute(
+            select(
+                TrackInteraction.track_id,
+                sa_func.sum(TrackInteraction.play_count).label("total"),
+            )
+            .group_by(TrackInteraction.track_id)
+        )
+        global_popularity = {row.track_id: row.total or 0 for row in pop_result.all()}
+
         for user_id, user_inters in test_by_user.items():
             if len(user_inters) < 2:
                 continue
@@ -139,19 +156,55 @@ async def evaluate_holdout(train_cutoff_ts: Optional[int] = None) -> Dict[str, A
             ndcg10_scores.append(_ndcg_at_k(relevances, 10))
             ndcg50_scores.append(_ndcg_at_k(relevances, 50))
 
+            # Baseline 1: random ordering.
+            random_order = list(feat_result["track_ids"])
+            np.random.shuffle(random_order)
+            random_rels = [true_scores.get(tid, 0.0) for tid in random_order]
+            random_ndcg10.append(_ndcg_at_k(random_rels, 10))
+
+            # Baseline 2: popularity ordering (global play_count desc).
+            pop_order = sorted(
+                feat_result["track_ids"],
+                key=lambda tid: global_popularity.get(tid, 0),
+                reverse=True,
+            )
+            pop_rels = [true_scores.get(tid, 0.0) for tid in pop_order]
+            popularity_ndcg10.append(_ndcg_at_k(pop_rels, 10))
+
+    model_ndcg10 = round(float(np.mean(ndcg10_scores)), 4) if ndcg10_scores else None
+    baseline_random = round(float(np.mean(random_ndcg10)), 4) if random_ndcg10 else None
+    baseline_pop = round(float(np.mean(popularity_ndcg10)), 4) if popularity_ndcg10 else None
+
+    # Compute lift over baselines.
+    lift_over_random = None
+    lift_over_popularity = None
+    if model_ndcg10 is not None and baseline_random and baseline_random > 0:
+        lift_over_random = round((model_ndcg10 - baseline_random) / baseline_random * 100, 1)
+    if model_ndcg10 is not None and baseline_pop and baseline_pop > 0:
+        lift_over_popularity = round((model_ndcg10 - baseline_pop) / baseline_pop * 100, 1)
+
     metrics = {
-        "ndcg_at_10": round(float(np.mean(ndcg10_scores)), 4) if ndcg10_scores else None,
+        "ndcg_at_10": model_ndcg10,
         "ndcg_at_50": round(float(np.mean(ndcg50_scores)), 4) if ndcg50_scores else None,
         "evaluated_users": len(ndcg10_scores),
         "train_size": len(train_interactions),
         "test_size": len(test_interactions),
         "cutoff_ts": train_cutoff_ts,
+        # Baselines for comparison — if model isn't beating these, it's not helping.
+        "baseline_random_ndcg_at_10": baseline_random,
+        "baseline_popularity_ndcg_at_10": baseline_pop,
+        "lift_over_random_pct": lift_over_random,
+        "lift_over_popularity_pct": lift_over_popularity,
     }
 
     global _last_eval
     _last_eval = {**metrics, "evaluated_at": int(time.time())}
 
-    logger.info(f"Holdout evaluation: NDCG@10={metrics['ndcg_at_10']}, users={metrics['evaluated_users']}")
+    logger.info(
+        f"Holdout evaluation: NDCG@10={model_ndcg10} "
+        f"(random={baseline_random}, popularity={baseline_pop}, "
+        f"lift={lift_over_popularity}%), users={metrics['evaluated_users']}"
+    )
     return {"metrics": metrics}
 
 

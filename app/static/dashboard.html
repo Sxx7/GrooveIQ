@@ -531,21 +531,22 @@ function renderDashboard(stats, users, events, model) {
   h += '</div><div class="panels">';
 
   // Model evaluation panel (if available)
-  if (model && (model.evaluation || model.impressions)) {
+  if (model && (model.latest_evaluation || model.impressions)) {
     h += '<div class="panel"><div class="panel-header">Recommendation Model</div><div class="panel-body">';
-    if (model.evaluation) {
-      var ev = model.evaluation;
+    if (model.latest_evaluation) {
+      var ev = model.latest_evaluation;
       h += '<div class="profile-grid">';
-      if (ev.ndcg_10 != null) h += '<div class="profile-item"><div class="pval">' + ev.ndcg_10.toFixed(4) + '</div><div class="plbl">NDCG@10</div></div>';
-      if (ev.ndcg_50 != null) h += '<div class="profile-item"><div class="pval">' + ev.ndcg_50.toFixed(4) + '</div><div class="plbl">NDCG@50</div></div>';
-      if (ev.n_test_users != null) h += '<div class="profile-item"><div class="pval">' + ev.n_test_users + '</div><div class="plbl">Test Users</div></div>';
+      if (ev.ndcg_at_10 != null) h += '<div class="profile-item"><div class="pval">' + ev.ndcg_at_10.toFixed(4) + '</div><div class="plbl">NDCG@10</div></div>';
+      if (ev.ndcg_at_50 != null) h += '<div class="profile-item"><div class="pval">' + ev.ndcg_at_50.toFixed(4) + '</div><div class="plbl">NDCG@50</div></div>';
+      if (ev.evaluated_users != null) h += '<div class="profile-item"><div class="pval">' + ev.evaluated_users + '</div><div class="plbl">Test Users</div></div>';
+      if (ev.baseline_ndcg_at_10 != null) h += '<div class="profile-item"><div class="pval">' + ev.baseline_ndcg_at_10.toFixed(4) + '</div><div class="plbl">Baseline NDCG@10 (popularity)</div></div>';
       h += '</div>';
     }
     if (model.impressions) {
       var imp = model.impressions;
       h += '<div style="padding:8px 16px;font-size:13px;border-top:1px solid var(--border)">';
-      h += 'Impressions: <b>' + (imp.total_impressions || 0) + '</b>';
-      h += ' &nbsp;\u00B7&nbsp; Streams: <b>' + (imp.total_streams || 0) + '</b>';
+      h += 'Impressions: <b>' + (imp.impressions || 0) + '</b>';
+      h += ' &nbsp;\u00B7&nbsp; Streams: <b>' + (imp.streams_from_reco || 0) + '</b>';
       if (imp.i2s_rate != null) h += ' &nbsp;\u00B7&nbsp; I2S Rate: <b style="color:var(--green)">' + (imp.i2s_rate * 100).toFixed(1) + '%</b>';
       h += '</div>';
     }
