@@ -246,6 +246,16 @@ async def _periodic_recommendation_pipeline() -> None:
         logger.info(f"Session embeddings done ({time.time() - t0:.1f}s)", extra=emb_result)
     except Exception:
         logger.error(f"Session embeddings failed ({time.time() - t0:.1f}s): {traceback.format_exc()}")
+    await asyncio.sleep(0.1)
+
+    # Step 7: Last.fm similar-track cache (external CF)
+    t0 = time.time()
+    try:
+        from app.services.lastfm_candidates import build_cache as build_lastfm_cache
+        lastfm_result = await build_lastfm_cache()
+        logger.info(f"Last.fm candidates cache done ({time.time() - t0:.1f}s)", extra=lastfm_result)
+    except Exception:
+        logger.error(f"Last.fm candidates cache failed ({time.time() - t0:.1f}s): {traceback.format_exc()}")
 
     logger.info(f"Recommendation pipeline complete ({time.time() - t_pipeline:.1f}s total)")
 

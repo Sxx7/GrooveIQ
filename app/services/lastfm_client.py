@@ -155,6 +155,26 @@ class LastFmClient:
         })
         return data.get("toptags", {}).get("tag", [])
 
+    async def get_similar_tracks(
+        self, artist: str, track: str, limit: int = 50, autocorrect: bool = True,
+    ) -> list[dict]:
+        """
+        Get tracks similar to a given track from Last.fm.
+
+        Returns list of dicts with keys: name, artist (dict with name),
+        match (float 0-1), mbid.
+        """
+        data = await self._get("track.getSimilar", {
+            "artist": artist,
+            "track": track,
+            "limit": str(limit),
+            "autocorrect": "1" if autocorrect else "0",
+        })
+        tracks = data.get("similartracks", {}).get("track", [])
+        if isinstance(tracks, dict):
+            tracks = [tracks]
+        return tracks
+
     # -- Authenticated API calls (require session key) -----------------------
 
     async def _post_signed(self, params: dict[str, str]) -> dict:

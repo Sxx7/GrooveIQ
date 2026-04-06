@@ -25,6 +25,7 @@ from app.models.db import TrackFeatures, TrackInteraction, User
 from app.services import faiss_index
 from app.services import collab_filter
 from app.services import session_embeddings
+from app.services import lastfm_candidates
 
 logger = logging.getLogger(__name__)
 
@@ -300,7 +301,31 @@ async def _get_candidates_impl(
                         for tid, score in raw
                     ]
 
-    # Source 4: Heuristic recall.
+    # Source 4: Last.fm similar tracks (external CF from millions of users).
+    lastfm_sim_candidates: List[Dict[str, Any]] = []
+    if lastfm_candidates.is_ready():
+        if seed_track_id:
+            raw = lastfm_candidates.get_similar_for_track(
+                seed_track_id, k=100, exclude_ids=exclude,
+            )
+        else:
+            # Use user's top tracks for merged similar-track retrieval.
+            user_result = await session.execute(
+                select(User.taste_profile).where(User.user_id == user_id)
+            )
+            tp = user_result.scalar_one_or_none()
+            top_ids = _get_user_top_track_ids(tp, limit=20) if tp else []
+            raw = lastfm_candidates.get_similar_for_user(
+                top_ids, k=100, exclude_ids=exclude,
+            ) if top_ids else []
+
+        lastfm_sim_candidates = [
+            {"track_id": tid, "score": score * 0.7, "source": "lastfm_similar"}
+            for tid, score in raw
+            if tid not in exclude
+        ]
+
+    # Source 5: Heuristic recall.
     popular = await _get_popular_tracks(session, k=50)
     artist_recall = await _get_recently_played_artist_tracks(user_id, session, k=50)
 
@@ -308,7 +333,7 @@ async def _get_candidates_impl(
     seen: Set[str] = set()
     merged: List[Dict[str, Any]] = []
 
-    for candidate_list in [content_candidates, cf_candidates, session_emb_candidates, artist_recall, popular]:
+    for candidate_list in [content_candidates, cf_candidates, session_emb_candidates, lastfm_sim_candidates, artist_recall, popular]:
         for c in candidate_list:
             tid = c["track_id"]
             if tid in seen or tid in exclude:
