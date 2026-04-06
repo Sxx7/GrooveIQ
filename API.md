@@ -1406,7 +1406,7 @@ curl http://localhost:8000/v1/stats \
 
 ### `POST /v1/pipeline/run` — Trigger recommendation pipeline
 
-Manually trigger the full recommendation pipeline (sessionizer -> track scoring -> taste profiles -> collaborative filtering -> ranker training).
+Manually trigger the full recommendation pipeline (sessionizer -> track scoring -> taste profiles -> collaborative filtering -> ranker training). Returns immediately; pipeline runs in the background. Will not start a second run if one is already in progress.
 
 ```bash
 curl -X POST http://localhost:8000/v1/pipeline/run \
@@ -1422,6 +1422,157 @@ Reset all pipeline state (sessions, interactions, taste profiles) and rebuild fr
 ```bash
 curl -X POST http://localhost:8000/v1/pipeline/reset \
   -H "Authorization: Bearer YOUR_API_KEY"
+```
+
+---
+
+### `GET /v1/pipeline/status` — Pipeline run history and current state
+
+Returns the currently running pipeline (if any) and the last N completed runs, each with per-step timing, status, metrics, and errors.
+
+| Param | Type | Default | Description |
+|-------|------|---------|-------------|
+| `limit` | int | 10 | Number of historical runs to return (1–50) |
+
+```bash
+curl http://localhost:8000/v1/pipeline/status?limit=5 \
+  -H "Authorization: Bearer YOUR_API_KEY"
+```
+
+**Response:**
+
+```json
+{
+  "current": null,
+  "history": [
+    {
+      "run_id": "a1b2c3d4e5f6",
+      "started_at": 1743600000.0,
+      "ended_at": 1743600045.2,
+      "status": "completed",
+      "duration_ms": 45200,
+      "trigger": "scheduled",
+      "steps": [
+        {
+          "name": "sessionizer",
+          "status": "completed",
+          "started_at": 1743600000.1,
+          "ended_at": 1743600002.3,
+          "duration_ms": 2200,
+          "error": null,
+          "metrics": {"events_processed": 150, "sessions_created": 12}
+        },
+        {
+          "name": "track_scoring",
+          "status": "completed",
+          "started_at": 1743600002.4,
+          "ended_at": 1743600005.1,
+          "duration_ms": 2700,
+          "error": null,
+          "metrics": {"interactions_created": 85, "interactions_updated": 23}
+        }
+      ]
+    }
+  ]
+}
+```
+
+Step names (in execution order): `sessionizer`, `track_scoring`, `taste_profiles`, `collab_filter`, `ranker`, `session_embeddings`, `lastfm_cache`, `sasrec`, `session_gru`.
+
+Step status values: `pending`, `running`, `completed`, `failed`, `skipped`.
+
+Run status values: `running`, `completed`, `failed` (failed if any step failed).
+
+---
+
+### `GET /v1/pipeline/stream` — SSE stream of pipeline events
+
+Server-Sent Events stream that emits real-time pipeline step events. Connect before triggering a pipeline run to watch it execute live.
+
+```bash
+curl -N http://localhost:8000/v1/pipeline/stream \
+  -H "Authorization: Bearer YOUR_API_KEY"
+```
+
+**Event types:**
+
+| Event | Data fields | Description |
+|-------|-------------|-------------|
+| `pipeline_start` | `run_id`, `trigger`, `timestamp` | Pipeline run has begun |
+| `step_start` | `run_id`, `step`, `timestamp` | A step is starting |
+| `step_complete` | `run_id`, `step`, `duration_ms`, `metrics`, `timestamp` | A step finished successfully |
+| `step_failed` | `run_id`, `step`, `duration_ms`, `error`, `timestamp` | A step failed with error |
+| `pipeline_end` | `run_id`, `status`, `duration_ms`, `timestamp` | Pipeline run is complete |
+
+**Example event stream:**
+
+```
+: connected
+
+event: pipeline_start
+data: {"run_id": "a1b2c3d4e5f6", "trigger": "manual", "timestamp": 1743600000.0}
+
+event: step_start
+data: {"run_id": "a1b2c3d4e5f6", "step": "sessionizer", "timestamp": 1743600000.1}
+
+event: step_complete
+data: {"run_id": "a1b2c3d4e5f6", "step": "sessionizer", "duration_ms": 2200, "metrics": {"sessions_created": 12}, "timestamp": 1743600002.3}
+
+event: step_failed
+data: {"run_id": "a1b2c3d4e5f6", "step": "lastfm_cache", "duration_ms": 150, "error": "Traceback ...", "timestamp": 1743600030.5}
+
+event: pipeline_end
+data: {"run_id": "a1b2c3d4e5f6", "status": "failed", "duration_ms": 45200, "timestamp": 1743600045.2}
+```
+
+Sends a keepalive comment (`: keepalive`) every 30s to prevent proxy/browser timeouts.
+
+---
+
+### `GET /v1/pipeline/models` — ML model readiness status
+
+Returns the training status and key metrics for every ML model subsystem in the pipeline.
+
+```bash
+curl http://localhost:8000/v1/pipeline/models \
+  -H "Authorization: Bearer YOUR_API_KEY"
+```
+
+**Response:**
+
+```json
+{
+  "ranker": {
+    "trained": true,
+    "training_samples": 1200,
+    "n_features": 41,
+    "model_version": "lgbm-20260406-120000",
+    "engine": "lgbm",
+    "trained_at": 1743600005,
+    "saved_path": "/data/models/ranker_lgbm.pkl"
+  },
+  "collab_filter": {
+    "trained": true,
+    "users": 3,
+    "tracks": 450
+  },
+  "session_embeddings": {
+    "trained": true,
+    "vocab_size": 380
+  },
+  "sasrec": {
+    "trained": true,
+    "vocab_size": 380
+  },
+  "session_gru": {
+    "trained": false
+  },
+  "lastfm_cache": {
+    "built": true,
+    "seeds_cached": 50,
+    "cache_age_seconds": 3600
+  }
+}
 ```
 
 ---

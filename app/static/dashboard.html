@@ -200,6 +200,117 @@
     background: var(--bg); border: 1px solid var(--border); color: var(--text);
     padding: 5px 10px; border-radius: 6px; font-size: 13px;
   }
+
+  /* Pipeline flow --------------------------------------------------------- */
+  .pipeline-flow {
+    display: flex; align-items: flex-start; gap: 0; overflow-x: auto;
+    padding: 24px 16px; position: relative;
+  }
+  .pipe-node {
+    display: flex; flex-direction: column; align-items: center; min-width: 110px;
+    position: relative; cursor: pointer; flex-shrink: 0;
+  }
+  .pipe-node:hover .pipe-box { border-color: var(--accent); }
+  .pipe-box {
+    width: 100px; background: var(--surface); border: 2px solid var(--border);
+    border-radius: 10px; padding: 12px 8px; text-align: center;
+    transition: border-color 0.3s, box-shadow 0.3s;
+  }
+  .pipe-box .pipe-icon { font-size: 20px; margin-bottom: 4px; }
+  .pipe-box .pipe-label { font-size: 11px; font-weight: 600; line-height: 1.3; color: var(--text); }
+  .pipe-box .pipe-metric { font-size: 10px; color: var(--text-dim); margin-top: 4px; }
+  .pipe-box .pipe-time { font-size: 10px; color: var(--text-dim); margin-top: 2px; }
+  .pipe-arrow {
+    display: flex; align-items: center; padding-top: 28px; color: var(--border);
+    font-size: 18px; flex-shrink: 0;
+  }
+  .pipe-arrow.done { color: var(--green); }
+  .pipe-arrow.active { color: var(--accent); }
+
+  /* Node states */
+  .pipe-node.pending .pipe-box { opacity: 0.5; }
+  .pipe-node.running .pipe-box { border-color: var(--accent); box-shadow: 0 0 12px rgba(124, 92, 252, 0.3); }
+  .pipe-node.completed .pipe-box { border-color: var(--green); }
+  .pipe-node.failed .pipe-box { border-color: var(--red); box-shadow: 0 0 8px rgba(248, 113, 113, 0.2); }
+  .pipe-node.skipped .pipe-box { opacity: 0.4; border-style: dashed; }
+
+  /* Pulse animation for running nodes */
+  @keyframes pipe-pulse { 0%, 100% { box-shadow: 0 0 8px rgba(124,92,252,0.3); } 50% { box-shadow: 0 0 20px rgba(124,92,252,0.5); } }
+  .pipe-node.running .pipe-box { animation: pipe-pulse 1.5s ease-in-out infinite; }
+
+  /* Status dot on node */
+  .pipe-dot {
+    width: 10px; height: 10px; border-radius: 50%; margin-top: 6px;
+    border: 2px solid var(--border); background: var(--bg);
+  }
+  .pipe-node.running .pipe-dot { background: var(--accent); border-color: var(--accent); }
+  .pipe-node.completed .pipe-dot { background: var(--green); border-color: var(--green); }
+  .pipe-node.failed .pipe-dot { background: var(--red); border-color: var(--red); }
+
+  /* Pipeline detail panel */
+  .pipe-detail {
+    background: var(--bg); border: 1px solid var(--border); border-radius: 8px;
+    padding: 16px; margin-top: 16px;
+  }
+  .pipe-detail h3 { font-size: 14px; margin-bottom: 8px; }
+  .pipe-detail pre {
+    background: #1a1020; border: 1px solid #3a2040; border-radius: 6px;
+    padding: 12px; font-size: 12px; color: var(--red); overflow-x: auto;
+    max-height: 200px; white-space: pre-wrap; word-break: break-all;
+  }
+  .pipe-detail .metric-grid {
+    display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 8px;
+  }
+  .pipe-detail .metric-item {
+    background: var(--surface); border-radius: 6px; padding: 8px 12px;
+  }
+  .pipe-detail .metric-item .mk { font-size: 10px; color: var(--text-dim); text-transform: uppercase; }
+  .pipe-detail .metric-item .mv { font-size: 16px; font-weight: 600; }
+
+  /* Error log panel */
+  .error-log {
+    max-height: 300px; overflow-y: auto; font-family: monospace; font-size: 12px;
+  }
+  .error-entry { padding: 8px 12px; border-bottom: 1px solid var(--border); }
+  .error-entry .error-step { color: var(--red); font-weight: 600; }
+  .error-entry .error-time { color: var(--text-dim); font-size: 11px; float: right; }
+  .error-entry pre { margin-top: 4px; color: var(--text-dim); white-space: pre-wrap; font-size: 11px; max-height: 80px; overflow: hidden; }
+  .error-entry.expanded pre { max-height: none; }
+  .error-entry:hover { background: rgba(248, 113, 113, 0.04); cursor: pointer; }
+
+  /* Model readiness cards */
+  .model-grid {
+    display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 12px;
+  }
+  .model-card {
+    background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 14px;
+  }
+  .model-card .model-name { font-size: 12px; font-weight: 600; margin-bottom: 6px; }
+  .model-card .model-status { font-size: 11px; }
+  .model-card .model-detail { font-size: 11px; color: var(--text-dim); margin-top: 4px; }
+  .model-card.ready { border-left: 3px solid var(--green); }
+  .model-card.not-ready { border-left: 3px solid var(--text-dim); }
+
+  /* Run history */
+  .run-row { display: flex; align-items: center; gap: 12px; padding: 8px 16px; font-size: 12px; border-bottom: 1px solid var(--border); cursor: pointer; }
+  .run-row:hover { background: rgba(124, 92, 252, 0.04); }
+  .run-row .run-id { font-family: monospace; color: var(--text-dim); min-width: 90px; }
+  .run-row .run-steps { display: flex; gap: 2px; flex: 1; }
+  .run-row .run-step-dot { width: 14px; height: 14px; border-radius: 3px; }
+  .run-step-dot.completed { background: var(--green); }
+  .run-step-dot.failed { background: var(--red); }
+  .run-step-dot.pending { background: var(--border); }
+  .run-step-dot.skipped { background: var(--border); opacity: 0.4; }
+  .run-step-dot.running { background: var(--accent); }
+
+  /* SSE connection indicator */
+  .sse-indicator {
+    display: inline-flex; align-items: center; gap: 4px; font-size: 11px;
+    padding: 2px 8px; border-radius: 4px; background: rgba(52, 211, 153, 0.1);
+    color: var(--green);
+  }
+  .sse-indicator.disconnected { background: rgba(248, 113, 113, 0.1); color: var(--red); }
+  .sse-dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; animation: pulse 2s infinite; }
 </style>
 </head>
 <body>
@@ -216,6 +327,7 @@
 
 <div class="tab-bar" id="tab-bar" style="display:none">
   <button class="active" data-tab="dashboard" onclick="switchTab('dashboard')">Dashboard</button>
+  <button data-tab="pipeline" onclick="switchTab('pipeline')">Pipeline</button>
   <button data-tab="recommendations" onclick="switchTab('recommendations')">Recommendations</button>
   <button data-tab="users" onclick="switchTab('users')">Users</button>
   <button data-tab="tracks" onclick="switchTab('tracks')">Tracks</button>
@@ -383,6 +495,7 @@ function switchTab(view) {
     tabs[i].className = tabs[i].getAttribute('data-tab') === view ? 'active' : '';
   }
   if (view === 'dashboard') loadDashboard();
+  else if (view === 'pipeline') loadPipeline();
   else if (view === 'recommendations') loadRecommendations();
   else if (view === 'users') loadUsers();
   else if (view === 'tracks') loadTracks();
@@ -1376,17 +1489,492 @@ function triggerScan() {
 }
 
 function runPipeline() {
-  apiPost('/v1/pipeline/run', {}).then(function() {
-    alert('Pipeline started. Scores will update shortly.');
-  }).catch(function(e) { alert('Pipeline failed: ' + e.message); });
+  switchTab('pipeline');
+  setTimeout(function() {
+    apiPost('/v1/pipeline/run', {}).then(function() {
+      pipelineConnectSSE();
+      // Poll status after a short delay to pick up the new run
+      setTimeout(function() { pipelineRefreshStatus(); }, 500);
+    }).catch(function(e) { alert('Pipeline failed: ' + e.message); });
+  }, 200);
 }
 
 function resetPipeline() {
   if (!confirm('This will delete all sessions, interactions, and taste profiles, then rebuild from raw events. Continue?')) return;
+  switchTab('pipeline');
+  setTimeout(function() {
+    apiPost('/v1/pipeline/reset', {}).then(function() {
+      pipelineConnectSSE();
+      setTimeout(function() { pipelineRefreshStatus(); }, 500);
+    }).catch(function(e) { alert('Reset failed: ' + e.message); });
+  }, 200);
+}
+
+// ---------------------------------------------------------------------------
+// Pipeline tab
+// ---------------------------------------------------------------------------
+
+var pipelineSSE = null;
+var pipelineData = { current: null, history: [], models: null };
+var pipelineSelectedStep = null;
+var pipelineSelectedRun = null;
+
+var STEP_META = {
+  sessionizer:        { icon: '\u23F1', label: 'Sessionizer',  desc: 'Groups raw events into listening sessions' },
+  track_scoring:      { icon: '\u2B50', label: 'Scoring',      desc: 'Computes per-track satisfaction scores' },
+  taste_profiles:     { icon: '\uD83C\uDFAF', label: 'Taste Profiles', desc: 'Builds user audio preference profiles' },
+  collab_filter:      { icon: '\uD83E\uDD1D', label: 'Collab Filter', desc: 'User-user & item-item similarity' },
+  ranker:             { icon: '\uD83C\uDFC6', label: 'Ranker',        desc: 'Trains LightGBM ranking model' },
+  session_embeddings: { icon: '\uD83E\uDDE0', label: 'Embeddings',    desc: 'Word2Vec skip-gram on sessions' },
+  lastfm_cache:       { icon: '\uD83C\uDF10', label: 'Last.fm',       desc: 'External CF via Last.fm similar tracks' },
+  sasrec:             { icon: '\u26A1',  label: 'SASRec',       desc: 'Transformer sequential model' },
+  session_gru:        { icon: '\uD83D\uDCC8', label: 'Session GRU',   desc: 'Taste drift via GRU over sessions' }
+};
+
+var STEP_ORDER = ['sessionizer','track_scoring','taste_profiles','collab_filter','ranker','session_embeddings','lastfm_cache','sasrec','session_gru'];
+
+function loadPipeline() {
+  $('#app').innerHTML = '<div class="empty">Loading pipeline status...</div>';
+  Promise.all([
+    api('/v1/pipeline/status?limit=10'),
+    api('/v1/pipeline/models').catch(function() { return null; })
+  ]).then(function(results) {
+    pipelineData.current = results[0].current;
+    pipelineData.history = results[0].history || [];
+    pipelineData.models = results[1];
+    pipelineSelectedRun = pipelineData.current || (pipelineData.history.length ? pipelineData.history[0] : null);
+    pipelineSelectedStep = null;
+    renderPipeline();
+    // Auto-connect SSE if a run is active
+    if (pipelineData.current) pipelineConnectSSE();
+  }).catch(function(e) {
+    $('#app').innerHTML = '<div class="empty" style="color:var(--red)">Error: ' + esc(e.message) + '</div>';
+  });
+}
+
+function pipelineRefreshStatus() {
+  api('/v1/pipeline/status?limit=10').then(function(data) {
+    pipelineData.current = data.current;
+    pipelineData.history = data.history || [];
+    if (pipelineData.current) {
+      pipelineSelectedRun = pipelineData.current;
+    } else if (!pipelineSelectedRun && pipelineData.history.length) {
+      pipelineSelectedRun = pipelineData.history[0];
+    }
+    // Update the selected run from history if it was refreshed
+    if (pipelineSelectedRun && pipelineSelectedRun.run_id) {
+      for (var i = 0; i < pipelineData.history.length; i++) {
+        if (pipelineData.history[i].run_id === pipelineSelectedRun.run_id) {
+          pipelineSelectedRun = pipelineData.history[i];
+          break;
+        }
+      }
+    }
+    if (currentView === 'pipeline') renderPipeline();
+  });
+}
+
+function pipelineConnectSSE() {
+  if (pipelineSSE) { pipelineSSE.close(); pipelineSSE = null; }
+  var url = BASE + '/v1/pipeline/stream';
+  // EventSource doesn't support custom headers, so pass key as query param
+  // We'll need to handle this server-side or use fetch-based SSE
+  pipelineSSE = new EventSource(url);
+
+  // Actually, EventSource can't set auth headers. Use fetch-based SSE instead.
+  pipelineSSE.close();
+  pipelineSSE = null;
+  pipelineSSEFetch();
+}
+
+function pipelineSSEFetch() {
+  if (pipelineSSE) return; // Already connected
+  var abortCtrl = new AbortController();
+  pipelineSSE = abortCtrl; // Store so we can abort later
+
+  fetch(BASE + '/v1/pipeline/stream', {
+    headers: { 'Authorization': 'Bearer ' + KEY },
+    signal: abortCtrl.signal
+  }).then(function(response) {
+    var reader = response.body.getReader();
+    var decoder = new TextDecoder();
+    var buffer = '';
+
+    function read() {
+      reader.read().then(function(result) {
+        if (result.done) { pipelineSSE = null; pipelineUpdateIndicator(false); return; }
+        buffer += decoder.decode(result.value, { stream: true });
+        var lines = buffer.split('\n');
+        buffer = lines.pop(); // Keep incomplete line in buffer
+        var eventType = 'message';
+        var dataLines = [];
+        for (var i = 0; i < lines.length; i++) {
+          var line = lines[i];
+          if (line.indexOf('event: ') === 0) {
+            eventType = line.slice(7).trim();
+          } else if (line.indexOf('data: ') === 0) {
+            dataLines.push(line.slice(6));
+          } else if (line === '' && dataLines.length > 0) {
+            // End of event
+            try {
+              var data = JSON.parse(dataLines.join('\n'));
+              pipelineHandleSSE(eventType, data);
+            } catch(e) {}
+            eventType = 'message';
+            dataLines = [];
+          }
+        }
+        pipelineUpdateIndicator(true);
+        read();
+      }).catch(function() { pipelineSSE = null; pipelineUpdateIndicator(false); });
+    }
+    read();
+  }).catch(function() { pipelineSSE = null; pipelineUpdateIndicator(false); });
+}
+
+function pipelineDisconnectSSE() {
+  if (pipelineSSE && pipelineSSE.abort) { pipelineSSE.abort(); }
+  pipelineSSE = null;
+  pipelineUpdateIndicator(false);
+}
+
+function pipelineUpdateIndicator(connected) {
+  var el = document.getElementById('sse-indicator');
+  if (!el) return;
+  if (connected) {
+    el.className = 'sse-indicator';
+    el.innerHTML = '<span class="sse-dot"></span> Live';
+  } else {
+    el.className = 'sse-indicator disconnected';
+    el.innerHTML = '<span class="sse-dot" style="animation:none"></span> Disconnected';
+  }
+}
+
+function pipelineHandleSSE(eventType, data) {
+  if (eventType === 'pipeline_start') {
+    pipelineRefreshStatus();
+  } else if (eventType === 'step_start' || eventType === 'step_complete' || eventType === 'step_failed') {
+    // Update the current run in-place for snappy UI
+    if (pipelineSelectedRun && pipelineSelectedRun.run_id === data.run_id) {
+      var steps = pipelineSelectedRun.steps || [];
+      for (var i = 0; i < steps.length; i++) {
+        if (steps[i].name === data.step) {
+          if (eventType === 'step_start') {
+            steps[i].status = 'running';
+            steps[i].started_at = data.timestamp;
+          } else if (eventType === 'step_complete') {
+            steps[i].status = 'completed';
+            steps[i].duration_ms = data.duration_ms;
+            steps[i].metrics = data.metrics || {};
+            steps[i].ended_at = data.timestamp;
+          } else if (eventType === 'step_failed') {
+            steps[i].status = 'failed';
+            steps[i].duration_ms = data.duration_ms;
+            steps[i].error = data.error;
+            steps[i].ended_at = data.timestamp;
+          }
+          break;
+        }
+      }
+      if (currentView === 'pipeline') renderPipeline();
+    }
+  } else if (eventType === 'pipeline_end') {
+    pipelineRefreshStatus();
+    // Refresh models after pipeline completes
+    api('/v1/pipeline/models').then(function(m) {
+      pipelineData.models = m;
+      if (currentView === 'pipeline') renderPipeline();
+    }).catch(function(){});
+  }
+}
+
+function renderPipeline() {
+  var run = pipelineSelectedRun;
+  var h = '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;flex-wrap:wrap;gap:12px">';
+  h += '<h2 style="font-size:18px">Pipeline</h2>';
+  h += '<div style="display:flex;gap:8px;align-items:center">';
+  h += '<span id="sse-indicator" class="sse-indicator disconnected"><span class="sse-dot" style="animation:none"></span> Disconnected</span>';
+  if (!pipelineSSE) {
+    h += '<button class="secondary" onclick="pipelineConnectSSE()">Connect Live</button>';
+  } else {
+    h += '<button class="secondary" onclick="pipelineDisconnectSSE()">Disconnect</button>';
+  }
+  h += '<button onclick="runPipelineFromTab()">Run Pipeline</button>';
+  h += '<button class="danger" onclick="resetPipelineFromTab()">Reset Pipeline</button>';
+  h += '</div></div>';
+
+  // ── Flow diagram ──────────────────────────────────────────────
+  h += '<div class="panel full-width"><div class="panel-header">';
+  if (run) {
+    var triggerBadge = run.trigger === 'manual' ? 'badge-purple' : run.trigger === 'startup' ? 'badge-blue' : 'badge-yellow';
+    var statusBadge = run.status === 'completed' ? 'badge-green' : run.status === 'failed' ? 'badge-red' : 'badge-yellow';
+    h += 'Pipeline Run <span class="badge ' + triggerBadge + '">' + esc(run.trigger) + '</span> ';
+    h += '<span class="badge ' + statusBadge + '">' + esc(run.status).toUpperCase() + '</span>';
+    h += '<span style="font-weight:400;font-size:12px;color:var(--text-dim);margin-left:12px">';
+    h += esc(run.run_id);
+    if (run.duration_ms != null) h += ' \u00B7 ' + fmtMs(run.duration_ms);
+    if (run.started_at) h += ' \u00B7 ' + fmtTime(run.started_at);
+    h += '</span>';
+  } else {
+    h += 'Pipeline <span style="font-weight:400;font-size:12px;color:var(--text-dim)">No runs yet</span>';
+  }
+  h += '</div><div class="panel-body">';
+
+  // Render flow nodes
+  h += '<div class="pipeline-flow">';
+  for (var i = 0; i < STEP_ORDER.length; i++) {
+    var name = STEP_ORDER[i];
+    var meta = STEP_META[name];
+    var step = null;
+    if (run && run.steps) {
+      for (var j = 0; j < run.steps.length; j++) {
+        if (run.steps[j].name === name) { step = run.steps[j]; break; }
+      }
+    }
+    var status = step ? step.status : 'pending';
+    var selected = pipelineSelectedStep === name ? ' style="border-color:var(--accent);background:rgba(124,92,252,0.08)"' : '';
+
+    if (i > 0) {
+      var arrowCls = 'pipe-arrow';
+      // Arrow reflects status of the step it leads to
+      if (status === 'completed') arrowCls += ' done';
+      else if (status === 'running') arrowCls += ' active';
+      h += '<div class="' + arrowCls + '">\u2192</div>';
+    }
+
+    h += '<div class="pipe-node ' + status + '" onclick="pipelineSelectStep(\'' + name + '\')">';
+    h += '<div class="pipe-box"' + selected + '>';
+    h += '<div class="pipe-icon">' + meta.icon + '</div>';
+    h += '<div class="pipe-label">' + esc(meta.label) + '</div>';
+    if (step && step.duration_ms != null) {
+      h += '<div class="pipe-time">' + fmtMs(step.duration_ms) + '</div>';
+    }
+    // Show one key metric if available
+    if (step && step.metrics) {
+      var mKey = firstMetricKey(step.metrics);
+      if (mKey) {
+        h += '<div class="pipe-metric">' + fmtMetricVal(step.metrics[mKey]) + ' ' + fmtMetricLabel(mKey) + '</div>';
+      }
+    }
+    h += '</div>';
+    h += '<div class="pipe-dot"></div>';
+    h += '</div>';
+  }
+  h += '</div></div></div>';
+
+  // ── Step detail panel ─────────────────────────────────────────
+  if (pipelineSelectedStep && run) {
+    var step = null;
+    if (run.steps) {
+      for (var j = 0; j < run.steps.length; j++) {
+        if (run.steps[j].name === pipelineSelectedStep) { step = run.steps[j]; break; }
+      }
+    }
+    if (step) {
+      var meta = STEP_META[pipelineSelectedStep];
+      h += '<div class="pipe-detail">';
+      h += '<h3>' + meta.icon + ' ' + esc(meta.label) + ' <span style="font-weight:400;color:var(--text-dim);font-size:12px">' + esc(meta.desc) + '</span></h3>';
+      h += '<div style="font-size:12px;color:var(--text-dim);margin-bottom:12px">';
+      h += 'Status: <span class="badge badge-' + stepStatusColor(step.status) + '">' + esc(step.status).toUpperCase() + '</span>';
+      if (step.duration_ms != null) h += ' \u00B7 Duration: <b>' + fmtMs(step.duration_ms) + '</b>';
+      if (step.started_at) h += ' \u00B7 Started: ' + fmtTime(step.started_at);
+      h += '</div>';
+
+      // Metrics
+      if (step.metrics && Object.keys(step.metrics).length > 0) {
+        h += '<div class="metric-grid">';
+        var mkeys = Object.keys(step.metrics);
+        for (var m = 0; m < mkeys.length; m++) {
+          var mk = mkeys[m];
+          h += '<div class="metric-item"><div class="mk">' + fmtMetricLabel(mk) + '</div><div class="mv">' + fmtMetricVal(step.metrics[mk]) + '</div></div>';
+        }
+        h += '</div>';
+      }
+
+      // Error traceback
+      if (step.error) {
+        h += '<div style="margin-top:12px"><div style="font-size:12px;font-weight:600;color:var(--red);margin-bottom:4px">Error</div>';
+        h += '<pre>' + esc(step.error) + '</pre></div>';
+      }
+      h += '</div>';
+    }
+  }
+
+  // ── Model readiness ───────────────────────────────────────────
+  if (pipelineData.models) {
+    h += '<div class="panel full-width" style="margin-top:16px"><div class="panel-header">Model Readiness</div><div class="panel-body" style="padding:16px">';
+    h += '<div class="model-grid">';
+    h += renderModelCard('Ranker (LightGBM)', pipelineData.models.ranker);
+    h += renderModelCard('Collaborative Filter', pipelineData.models.collab_filter);
+    h += renderModelCard('Session Embeddings', pipelineData.models.session_embeddings);
+    h += renderModelCard('SASRec', pipelineData.models.sasrec);
+    h += renderModelCard('Session GRU', pipelineData.models.session_gru);
+    h += renderModelCard('Last.fm Cache', pipelineData.models.lastfm_cache);
+    h += '</div></div></div>';
+  }
+
+  // ── Error log ─────────────────────────────────────────────────
+  var errors = collectErrors();
+  if (errors.length > 0) {
+    h += '<div class="panel full-width" style="margin-top:16px"><div class="panel-header">';
+    h += 'Recent Errors <span class="badge badge-red">' + errors.length + '</span>';
+    h += '</div><div class="panel-body"><div class="error-log">';
+    for (var e = 0; e < errors.length; e++) {
+      var err = errors[e];
+      h += '<div class="error-entry" onclick="this.classList.toggle(\'expanded\')">';
+      h += '<span class="error-step">' + esc(STEP_META[err.step] ? STEP_META[err.step].label : err.step) + '</span>';
+      h += '<span class="error-time">' + fmtTime(err.timestamp) + ' \u00B7 run ' + esc(err.run_id) + '</span>';
+      h += '<pre>' + esc(err.error) + '</pre>';
+      h += '</div>';
+    }
+    h += '</div></div></div>';
+  }
+
+  // ── Run history ───────────────────────────────────────────────
+  if (pipelineData.history.length > 0) {
+    h += '<div class="panel full-width" style="margin-top:16px"><div class="panel-header">Run History</div><div class="panel-body">';
+    for (var r = 0; r < pipelineData.history.length; r++) {
+      var rn = pipelineData.history[r];
+      var isSelected = pipelineSelectedRun && pipelineSelectedRun.run_id === rn.run_id;
+      h += '<div class="run-row' + (isSelected ? '" style="background:rgba(124,92,252,0.06)' : '') + '" onclick="pipelineSelectRun(\'' + esc(rn.run_id) + '\')">';
+      h += '<span class="run-id">' + esc(rn.run_id) + '</span>';
+      h += '<span class="badge badge-' + (rn.status === 'completed' ? 'green' : rn.status === 'failed' ? 'red' : 'yellow') + '">' + esc(rn.status) + '</span>';
+      h += '<span style="font-size:11px;color:var(--text-dim)">' + esc(rn.trigger) + '</span>';
+      h += '<span class="run-steps">';
+      if (rn.steps) {
+        for (var s = 0; s < rn.steps.length; s++) {
+          h += '<span class="run-step-dot ' + esc(rn.steps[s].status) + '" title="' + esc(rn.steps[s].name) + ': ' + esc(rn.steps[s].status) + '"></span>';
+        }
+      }
+      h += '</span>';
+      h += '<span style="font-size:11px;color:var(--text-dim);min-width:70px;text-align:right">' + (rn.duration_ms != null ? fmtMs(rn.duration_ms) : '\u2014') + '</span>';
+      h += '<span style="font-size:11px;color:var(--text-dim);min-width:80px;text-align:right">' + timeAgo(rn.started_at) + '</span>';
+      h += '</div>';
+    }
+    h += '</div></div>';
+  }
+
+  $('#app').innerHTML = h;
+
+  // Update SSE indicator state
+  pipelineUpdateIndicator(!!pipelineSSE);
+}
+
+function pipelineSelectStep(name) {
+  pipelineSelectedStep = pipelineSelectedStep === name ? null : name;
+  renderPipeline();
+}
+
+function pipelineSelectRun(runId) {
+  for (var i = 0; i < pipelineData.history.length; i++) {
+    if (pipelineData.history[i].run_id === runId) {
+      pipelineSelectedRun = pipelineData.history[i];
+      pipelineSelectedStep = null;
+      renderPipeline();
+      return;
+    }
+  }
+}
+
+function runPipelineFromTab() {
+  apiPost('/v1/pipeline/run', {}).then(function() {
+    pipelineConnectSSE();
+    setTimeout(function() { pipelineRefreshStatus(); }, 500);
+  }).catch(function(e) { alert('Pipeline failed: ' + e.message); });
+}
+
+function resetPipelineFromTab() {
+  if (!confirm('This will delete all sessions, interactions, and taste profiles, then rebuild from raw events. Continue?')) return;
   apiPost('/v1/pipeline/reset', {}).then(function() {
-    alert('Pipeline reset and rebuild started. This may take a moment.');
-    loadDashboard();
+    pipelineConnectSSE();
+    setTimeout(function() { pipelineRefreshStatus(); }, 500);
   }).catch(function(e) { alert('Reset failed: ' + e.message); });
+}
+
+function renderModelCard(name, model) {
+  if (!model) return '<div class="model-card not-ready"><div class="model-name">' + esc(name) + '</div><div class="model-status" style="color:var(--text-dim)">No data</div></div>';
+  var ready = model.trained || model.built || false;
+  var h = '<div class="model-card ' + (ready ? 'ready' : 'not-ready') + '">';
+  h += '<div class="model-name">' + esc(name) + '</div>';
+  h += '<div class="model-status" style="color:' + (ready ? 'var(--green)' : 'var(--text-dim)') + '">';
+  h += ready ? '\u2713 Ready' : '\u2717 Not trained';
+  h += '</div>';
+  // Show relevant details
+  var details = [];
+  if (model.training_samples) details.push(model.training_samples + ' samples');
+  if (model.n_features) details.push(model.n_features + ' features');
+  if (model.engine) details.push(model.engine);
+  if (model.vocab_size) details.push(model.vocab_size + ' vocab');
+  if (model.users) details.push(model.users + ' users');
+  if (model.tracks) details.push(model.tracks + ' tracks');
+  if (model.seeds_cached) details.push(model.seeds_cached + ' seeds');
+  if (model.cache_age_seconds != null && model.cache_age_seconds > 0) details.push(fmtDuration(model.cache_age_seconds) + ' ago');
+  if (model.model_version) details.push(model.model_version);
+  if (model.trained_at) details.push(timeAgo(model.trained_at));
+  if (details.length) h += '<div class="model-detail">' + esc(details.join(' \u00B7 ')) + '</div>';
+  h += '</div>';
+  return h;
+}
+
+function collectErrors() {
+  var errors = [];
+  var runs = pipelineData.history || [];
+  for (var r = 0; r < runs.length; r++) {
+    var rn = runs[r];
+    if (!rn.steps) continue;
+    for (var s = 0; s < rn.steps.length; s++) {
+      if (rn.steps[s].error) {
+        errors.push({
+          run_id: rn.run_id,
+          step: rn.steps[s].name,
+          error: rn.steps[s].error,
+          timestamp: rn.steps[s].ended_at,
+          duration_ms: rn.steps[s].duration_ms
+        });
+      }
+    }
+  }
+  // Sort newest first
+  errors.sort(function(a, b) { return (b.timestamp || 0) - (a.timestamp || 0); });
+  return errors.slice(0, 20);
+}
+
+function fmtMs(ms) {
+  if (ms == null) return '\u2014';
+  if (ms < 1000) return ms + 'ms';
+  if (ms < 60000) return (ms / 1000).toFixed(1) + 's';
+  return Math.floor(ms / 60000) + 'm ' + Math.round((ms % 60000) / 1000) + 's';
+}
+
+function firstMetricKey(metrics) {
+  if (!metrics) return null;
+  var keys = Object.keys(metrics);
+  // Prefer interesting keys
+  var preferred = ['sessions_created','interactions_created','users_updated','training_samples','vocab_size','seeds_cached','trained'];
+  for (var i = 0; i < preferred.length; i++) { if (metrics[preferred[i]] != null) return preferred[i]; }
+  return keys.length ? keys[0] : null;
+}
+
+function fmtMetricLabel(key) {
+  return key.replace(/_/g, ' ');
+}
+
+function fmtMetricVal(val) {
+  if (val === true) return '\u2713';
+  if (val === false) return '\u2717';
+  if (typeof val === 'number') {
+    if (Number.isInteger(val)) return val.toLocaleString();
+    return val.toFixed(2);
+  }
+  return esc(String(val));
+}
+
+function stepStatusColor(status) {
+  if (status === 'completed') return 'green';
+  if (status === 'failed') return 'red';
+  if (status === 'running') return 'yellow';
+  if (status === 'skipped') return 'blue';
+  return 'purple';
 }
 
 // ---------------------------------------------------------------------------

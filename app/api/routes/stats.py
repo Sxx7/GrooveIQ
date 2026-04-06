@@ -1,9 +1,12 @@
-"""GrooveIQ – Dashboard statistics routes."""
+"""GrooveIQ – Dashboard statistics & pipeline control routes."""
 from __future__ import annotations
 
+import asyncio
+import json
 import time
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
+from fastapi.responses import StreamingResponse
 from sqlalchemy import select, func, case
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -126,9 +129,12 @@ async def get_stats(
 async def trigger_pipeline(
     _key: str = Depends(require_api_key),
 ):
+    from app.services.pipeline_state import get_current_run
+    if get_current_run():
+        return {"message": "Pipeline already running", "status": "running"}
     import asyncio
     from app.workers.scheduler import run_recommendation_pipeline_now
-    asyncio.create_task(run_recommendation_pipeline_now())
+    asyncio.create_task(run_recommendation_pipeline_now(trigger="manual"))
     return {"message": "Pipeline started", "status": "running"}
 
 
@@ -154,5 +160,110 @@ async def reset_pipeline(
     await session.commit()
 
     # Rebuild from scratch
-    asyncio.create_task(run_recommendation_pipeline_now())
+    asyncio.create_task(run_recommendation_pipeline_now(trigger="manual"))
     return {"message": "Pipeline reset and rebuild started", "status": "running"}
+
+
+@router.get(
+    "/pipeline/status",
+    summary="Pipeline run history and current state",
+    description=(
+        "Returns the current running pipeline (if any) and the last N completed runs "
+        "with per-step timing, status, metrics, and errors."
+    ),
+)
+async def pipeline_status(
+    limit: int = Query(10, ge=1, le=50, description="Number of historical runs to return"),
+    _key: str = Depends(require_api_key),
+):
+    from app.services.pipeline_state import get_current_run, get_run_history
+
+    return {
+        "current": get_current_run(),
+        "history": get_run_history(limit=limit),
+    }
+
+
+@router.get(
+    "/pipeline/stream",
+    summary="SSE stream of pipeline events",
+    description=(
+        "Server-Sent Events stream that emits real-time pipeline step events: "
+        "pipeline_start, step_start, step_complete, step_failed, pipeline_end. "
+        "Connect before triggering a pipeline run to watch it execute live."
+    ),
+)
+async def pipeline_stream(
+    _key: str = Depends(require_api_key),
+):
+    from app.services.pipeline_state import subscribe, unsubscribe
+
+    queue = subscribe()
+
+    async def event_generator():
+        try:
+            # Send a keepalive comment immediately so the client knows we're connected.
+            yield ": connected\n\n"
+            while True:
+                try:
+                    event = await asyncio.wait_for(queue.get(), timeout=30.0)
+                    event_type = event.pop("event", "message")
+                    yield f"event: {event_type}\ndata: {json.dumps(event)}\n\n"
+                except asyncio.TimeoutError:
+                    # Send keepalive comment every 30s to prevent proxy/browser timeouts.
+                    yield ": keepalive\n\n"
+        except asyncio.CancelledError:
+            pass
+        finally:
+            unsubscribe(queue)
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+@router.get(
+    "/pipeline/models",
+    summary="Readiness status of all ML models in the pipeline",
+    description=(
+        "Returns training status for every model subsystem: ranker (LightGBM), "
+        "collaborative filtering, session embeddings (Word2Vec), SASRec (transformer), "
+        "session GRU, and Last.fm candidate cache."
+    ),
+)
+async def pipeline_models(
+    _key: str = Depends(require_api_key),
+):
+    from app.services.ranker import get_model_stats
+    from app.services.collab_filter import model_stats as cf_stats
+    from app.services.session_embeddings import vocab_size as emb_vocab_size
+    from app.services.sasrec import vocab_size as sasrec_vocab_size
+    from app.services.session_gru import is_ready as gru_is_ready
+    from app.services.lastfm_candidates import cache_size as lastfm_cache_size, cache_age as lastfm_cache_age
+
+    return {
+        "ranker": get_model_stats(),
+        "collab_filter": cf_stats(),
+        "session_embeddings": {
+            "trained": emb_vocab_size() > 0,
+            "vocab_size": emb_vocab_size(),
+        },
+        "sasrec": {
+            "trained": sasrec_vocab_size() > 0,
+            "vocab_size": sasrec_vocab_size(),
+        },
+        "session_gru": {
+            "trained": gru_is_ready(),
+        },
+        "lastfm_cache": {
+            "built": lastfm_cache_size() > 0,
+            "seeds_cached": lastfm_cache_size(),
+            "cache_age_seconds": lastfm_cache_age(),
+        },
+    }

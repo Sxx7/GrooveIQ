@@ -121,7 +121,7 @@ async def _delayed_startup_pipeline() -> None:
         await asyncio.sleep(10)
 
     logger.info("Running recommendation pipeline on startup (scan complete).")
-    await _periodic_recommendation_pipeline()
+    await _periodic_recommendation_pipeline(trigger="startup")
 
 
 async def _event_loop_watchdog() -> None:
@@ -149,10 +149,11 @@ async def _startup_scan() -> None:
         await _periodic_library_scan()
 
 
-async def run_recommendation_pipeline_now() -> dict:
+async def run_recommendation_pipeline_now(trigger: str = "manual") -> dict:
     """Run the recommendation pipeline on demand. Returns summary."""
-    await _periodic_recommendation_pipeline()
-    return {"status": "completed"}
+    await _periodic_recommendation_pipeline(trigger=trigger)
+    from app.services.pipeline_state import get_last_run
+    return get_last_run() or {"status": "completed"}
 
 
 async def _periodic_library_scan() -> None:
@@ -173,111 +174,59 @@ async def _cleanup_old_events() -> None:
         logger.info(f"Cleaned up {deleted} events older than {settings.EVENT_RETENTION_DAYS} days.")
 
 
-async def _periodic_recommendation_pipeline() -> None:
+async def _periodic_recommendation_pipeline(trigger: str = "scheduled") -> None:
     """
-    Run the Phase 2 recommendation data pipeline:
-      1. Sessionizer – materialise sessions from raw events
-      2. Track scoring – compute per-(user, track) satisfaction scores
-      3. Taste profiles – rebuild user preference profiles
+    Run the 9-step recommendation data pipeline with full instrumentation.
 
-    Each step is independent of failures in the others (best-effort).
-    Order matters: sessions feed taste profiles, scoring feeds taste profiles.
+    Each step is error-isolated (best-effort).
+    Order matters: sessions → scoring → taste profiles → downstream models.
+
+    The *trigger* parameter tracks who initiated the run:
+    ``"scheduled"`` (APScheduler), ``"manual"`` (API call), ``"startup"``.
     """
     import asyncio
+    from app.services.pipeline_state import (
+        start_run, finish_run, step_start, step_complete, step_failed,
+    )
 
-    t_pipeline = time.time()
-    logger.info("Recommendation pipeline started.")
+    run = start_run(trigger=trigger)
+    logger.info(f"Recommendation pipeline started (run_id={run.run_id}, trigger={trigger}).")
 
-    # Step 1: Sessionization
-    t0 = time.time()
-    try:
-        from app.services.sessionizer import run_sessionizer
-        sess_result = await run_sessionizer()
-        logger.info(f"Sessionizer done ({time.time() - t0:.1f}s)", extra=sess_result)
-    except Exception:
-        logger.error(f"Sessionizer failed ({time.time() - t0:.1f}s): {traceback.format_exc()}")
-    await asyncio.sleep(0.1)  # yield to event loop between heavy steps
+    # ── Step definitions ─────────────────────────────────────────────
+    # (step_name, display, import_path, callable_name)
+    _steps = [
+        ("sessionizer",        "Sessionizer",         "app.services.sessionizer",        "run_sessionizer"),
+        ("track_scoring",      "Track scoring",       "app.services.track_scoring",      "run_track_scoring"),
+        ("taste_profiles",     "Taste profiles",      "app.services.taste_profile",      "run_taste_profile_builder"),
+        ("collab_filter",      "CF model rebuild",    "app.services.collab_filter",      "build_model"),
+        ("ranker",             "Ranker training",     "app.services.ranker",             "train_model"),
+        ("session_embeddings", "Session embeddings",  "app.services.session_embeddings", "train"),
+        ("lastfm_cache",       "Last.fm cache",       "app.services.lastfm_candidates",  "build_cache"),
+        ("sasrec",             "SASRec training",     "app.services.sasrec",             "train"),
+        ("session_gru",        "Session GRU",         "app.services.session_gru",        "train"),
+    ]
 
-    # Step 2: Track scoring
-    t0 = time.time()
-    try:
-        from app.services.track_scoring import run_track_scoring
-        score_result = await run_track_scoring()
-        logger.info(f"Track scoring done ({time.time() - t0:.1f}s)", extra=score_result)
-    except Exception:
-        logger.error(f"Track scoring failed ({time.time() - t0:.1f}s): {traceback.format_exc()}")
-    await asyncio.sleep(0.1)
+    for step_name, display, module_path, func_name in _steps:
+        step_start(run, step_name)
+        try:
+            import importlib
+            mod = importlib.import_module(module_path)
+            func = getattr(mod, func_name)
+            result = await func()
+            metrics = result if isinstance(result, dict) else {}
+            step_complete(run, step_name, metrics=metrics)
+            logger.info(f"{display} done ({run.steps[step_name].duration_ms}ms)", extra=metrics)
+        except Exception:
+            err = traceback.format_exc()
+            step_failed(run, step_name, error=err)
+            logger.error(f"{display} failed: {err}")
+        await asyncio.sleep(0.1)  # yield to event loop between heavy steps
 
-    # Step 3: Taste profiles
-    t0 = time.time()
-    try:
-        from app.services.taste_profile import run_taste_profile_builder
-        taste_result = await run_taste_profile_builder()
-        logger.info(f"Taste profile builder done ({time.time() - t0:.1f}s)", extra=taste_result)
-    except Exception:
-        logger.error(f"Taste profile builder failed ({time.time() - t0:.1f}s): {traceback.format_exc()}")
-    await asyncio.sleep(0.1)
-
-    # Step 4: Collaborative filtering model rebuild
-    t0 = time.time()
-    try:
-        from app.services.collab_filter import build_model
-        cf_result = await build_model()
-        logger.info(f"CF model rebuild done ({time.time() - t0:.1f}s)", extra=cf_result)
-    except Exception:
-        logger.error(f"CF model rebuild failed ({time.time() - t0:.1f}s): {traceback.format_exc()}")
-    await asyncio.sleep(0.1)
-
-    # Step 5: LightGBM ranker training
-    t0 = time.time()
-    try:
-        from app.services.ranker import train_model
-        ranker_result = await train_model()
-        logger.info(f"Ranker training done ({time.time() - t0:.1f}s)", extra=ranker_result)
-    except Exception:
-        logger.error(f"Ranker training failed ({time.time() - t0:.1f}s): {traceback.format_exc()}")
-    await asyncio.sleep(0.1)
-
-    # Step 6: Session skip-gram embeddings
-    t0 = time.time()
-    try:
-        from app.services.session_embeddings import train as train_session_embeddings
-        emb_result = await train_session_embeddings()
-        logger.info(f"Session embeddings done ({time.time() - t0:.1f}s)", extra=emb_result)
-    except Exception:
-        logger.error(f"Session embeddings failed ({time.time() - t0:.1f}s): {traceback.format_exc()}")
-    await asyncio.sleep(0.1)
-
-    # Step 7: Last.fm similar-track cache (external CF)
-    t0 = time.time()
-    try:
-        from app.services.lastfm_candidates import build_cache as build_lastfm_cache
-        lastfm_result = await build_lastfm_cache()
-        logger.info(f"Last.fm candidates cache done ({time.time() - t0:.1f}s)", extra=lastfm_result)
-    except Exception:
-        logger.error(f"Last.fm candidates cache failed ({time.time() - t0:.1f}s): {traceback.format_exc()}")
-    await asyncio.sleep(0.1)
-
-    # Step 8: SASRec sequential model (transformer on listening sessions)
-    t0 = time.time()
-    try:
-        from app.services.sasrec import train as train_sasrec
-        sasrec_result = await train_sasrec()
-        logger.info(f"SASRec training done ({time.time() - t0:.1f}s)", extra=sasrec_result)
-    except Exception:
-        logger.error(f"SASRec training failed ({time.time() - t0:.1f}s): {traceback.format_exc()}")
-    await asyncio.sleep(0.1)
-
-    # Step 9: Session-level GRU for taste drift modeling
-    t0 = time.time()
-    try:
-        from app.services.session_gru import train as train_session_gru
-        gru_result = await train_session_gru()
-        logger.info(f"Session GRU training done ({time.time() - t0:.1f}s)", extra=gru_result)
-    except Exception:
-        logger.error(f"Session GRU training failed ({time.time() - t0:.1f}s): {traceback.format_exc()}")
-
-    logger.info(f"Recommendation pipeline complete ({time.time() - t_pipeline:.1f}s total)")
+    finish_run(run)
+    logger.info(
+        f"Recommendation pipeline complete (run_id={run.run_id}, "
+        f"{run.status.value}, {int((run.ended_at - run.started_at) * 1000)}ms total)"
+    )
 
 
 async def _periodic_discovery() -> None:
