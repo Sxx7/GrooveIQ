@@ -44,11 +44,11 @@ Edit `.env`:
 
 ```bash
 # Generate a secret key
-python3 -c "import secrets; print(secrets.token_urlsafe(32))"
+openssl rand -base64 32
 # → paste as SECRET_KEY
 
 # Generate an API key for your music app
-python3 -c "import secrets; print(secrets.token_urlsafe(32))"
+openssl rand -base64 32
 # → paste as API_KEYS
 
 # Set the path to your music on the host
@@ -360,7 +360,7 @@ If you're exposing GrooveIQ on the internet (e.g. to reach it from your phone aw
 
 4. **Rotate API keys** periodically. Generate new ones with:
    ```bash
-   python3 -c "import secrets; print(secrets.token_urlsafe(32))"
+   openssl rand -base64 32
    ```
    Then update `API_KEYS` in `.env` and `docker compose up -d` to reload.
 

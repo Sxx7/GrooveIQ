@@ -44,7 +44,7 @@ def decrypt_credential(value: str) -> str:
         logger.warning(
             "CREDENTIAL_ENCRYPTION_KEY is set but credential does not look "
             "Fernet-encrypted. Using as plaintext. Encrypt it with: "
-            "python -m app.core.keygen --encrypt"
+            "python -m app.core.keygen --encrypt (inside the container)"
         )
         return value
     try:
@@ -60,7 +60,7 @@ def encrypt_credential(plaintext: str) -> str:
     if f is None:
         raise ValueError(
             "CREDENTIAL_ENCRYPTION_KEY is not configured. "
-            "Generate one: python -c \"from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())\""
+            "Generate one with: openssl rand -base64 32"
         )
     return f.encrypt(plaintext.encode("utf-8")).decode("ascii")
 

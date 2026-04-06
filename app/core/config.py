@@ -35,7 +35,7 @@ class Settings(BaseSettings):
     # Core
     # ------------------------------------------------------------------
     APP_ENV: str = "production"  # development | production
-    SECRET_KEY: str = ""  # REQUIRED in production — generate with: python -c "import secrets; print(secrets.token_urlsafe(32))"
+    SECRET_KEY: str = ""  # REQUIRED in production — generate with: openssl rand -base64 32
     ENABLE_DOCS: bool = False  # set True in development only
 
     # ------------------------------------------------------------------
@@ -52,7 +52,7 @@ class Settings(BaseSettings):
     # Security
     # ------------------------------------------------------------------
     # Comma-separated list of API keys (hash-compared, never stored plain)
-    # Generate with: python -c "import secrets; print(secrets.token_urlsafe(32))"
+    # Generate with: openssl rand -base64 32
     # Stored as a raw string to avoid pydantic-settings JSON parsing;
     # split into a list in the model_validator below.
     API_KEYS: str = ""
@@ -146,10 +146,9 @@ class Settings(BaseSettings):
                                            # (for path matching if it differs from MUSIC_LIBRARY_PATH)
 
     # Fernet key for encrypting media server credentials at rest.
-    # Generate with: python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+    # Generate with: openssl rand -base64 32
     # When set, MEDIA_SERVER_PASSWORD and MEDIA_SERVER_TOKEN are expected
-    # to be Fernet-encrypted.  Use ``python -m app.core.keygen --encrypt``
-    # to encrypt plaintext credentials.
+    # to be Fernet-encrypted.
     CREDENTIAL_ENCRYPTION_KEY: str = ""
 
     # ------------------------------------------------------------------
@@ -213,7 +212,7 @@ class Settings(BaseSettings):
         """Enforce security requirements.
 
         Production: API_KEYS is mandatory and each key must be at least
-        ``_MIN_API_KEY_LENGTH`` characters (use ``python -m app.core.keygen``
+        ``_MIN_API_KEY_LENGTH`` characters (use ``openssl rand -base64 32``
         to generate a strong key).
         Development: empty API_KEYS is allowed (all endpoints unprotected)
         but weak keys are still rejected.
@@ -227,7 +226,7 @@ class Settings(BaseSettings):
         if is_prod and not self.SECRET_KEY:
             print(
                 "\n❌  FATAL: No SECRET_KEY configured and APP_ENV=production.\n"
-                "   Generate one:  python -c \"import secrets; print(secrets.token_urlsafe(32))\"\n"
+                "   Generate one:  openssl rand -base64 32\n"
                 "   Then set SECRET_KEY in your .env file.\n",
                 file=sys.stderr,
             )
@@ -237,7 +236,7 @@ class Settings(BaseSettings):
         if is_prod and not self.api_keys_list:
             print(
                 "\n❌  FATAL: No API_KEYS configured and APP_ENV=production.\n"
-                "   Generate a key:  python -m app.core.keygen\n"
+                "   Generate a key:  openssl rand -base64 32\n"
                 "   Then set API_KEYS in your .env file.\n",
                 file=sys.stderr,
             )
@@ -248,7 +247,7 @@ class Settings(BaseSettings):
                 print(
                     f"\n❌  FATAL: API key is too short ({len(key)} chars, "
                     f"minimum {_MIN_API_KEY_LENGTH}).\n"
-                    "   Generate a strong key:  python -m app.core.keygen\n",
+                    "   Generate a strong key:  openssl rand -base64 32\n",
                     file=sys.stderr,
                 )
                 raise SystemExit(1)
