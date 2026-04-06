@@ -88,6 +88,10 @@ _AUDIO_FEATURES = [
     "acousticness", "instrumentalness", "loudness",
 ]
 
+# Multi-timescale decay periods (days).
+_TIMESCALE_SHORT_DAYS = 7.0     # captures current mood/phase
+_TIMESCALE_LONG_DAYS = 365.0    # captures core identity (effectively all-time)
+
 # Top-N tracks to include in profile.
 _TOP_TRACKS_LIMIT = 50
 
@@ -183,6 +187,11 @@ async def _build_profile(
     features_map = await _fetch_track_features(session, track_ids)
     audio_prefs = _compute_audio_preferences(weighted_interactions, features_map)
 
+    # --- Multi-timescale audio preferences (short=7d, medium=30d, long=all-time) ---
+    timescale_profiles = _compute_timescale_audio_preferences(
+        interactions, features_map, now
+    )
+
     # --- Mood preferences ---
     mood_prefs = _compute_mood_preferences(weighted_interactions, features_map)
 
@@ -238,6 +247,8 @@ async def _build_profile(
 
     if audio_prefs:
         profile["audio_preferences"] = audio_prefs
+    if timescale_profiles:
+        profile["timescale_audio"] = timescale_profiles
     if mood_prefs:
         profile["mood_preferences"] = mood_prefs
     if key_prefs:
@@ -334,6 +345,60 @@ def _compute_audio_preferences(
         }
 
     return prefs if prefs else None
+
+
+def _compute_timescale_audio_preferences(
+    interactions: list,
+    features_map: Dict[str, TrackFeatures],
+    now: int,
+) -> Optional[Dict[str, Any]]:
+    """
+    Compute audio preference means at three timescales:
+      - short (7 days)  — current mood/phase
+      - medium (30 days) — medium-term preferences
+      - long (365 days)  — core musical identity
+
+    Returns {short: {bpm: mean, energy: mean, ...}, medium: {...}, long: {...}}
+    Only includes features with enough weighted data.
+    """
+    timescales = {
+        "short": _TIMESCALE_SHORT_DAYS * 86_400,
+        "medium": settings.TASTE_PROFILE_DECAY_DAYS * 86_400,
+        "long": _TIMESCALE_LONG_DAYS * 86_400,
+    }
+    result: Dict[str, Dict[str, float]] = {}
+
+    for scale_name, decay_seconds in timescales.items():
+        weighted = []
+        for inter in interactions:
+            last_played = inter.last_played_at or inter.updated_at
+            age = max(now - last_played, 0)
+            weight = math.exp(-age / decay_seconds) if decay_seconds > 0 else 1.0
+            weighted.append((inter, weight))
+
+        # Compute weighted means for key audio features.
+        scale_prefs: Dict[str, float] = {}
+        for feat in _AUDIO_FEATURES:
+            total_w = 0.0
+            total_v = 0.0
+            for inter, recency_weight in weighted:
+                tf = features_map.get(inter.track_id)
+                if tf is None:
+                    continue
+                val = getattr(tf, feat, None)
+                if val is None:
+                    continue
+                satisfaction = max(min(inter.satisfaction_score or 0.5, 1.0), 0.0)
+                w = recency_weight * (0.1 + satisfaction)
+                total_w += w
+                total_v += val * w
+            if total_w > 1e-9:
+                scale_prefs[feat] = round(total_v / total_w, 4)
+
+        if scale_prefs:
+            result[scale_name] = scale_prefs
+
+    return result if result else None
 
 
 def _compute_mood_preferences(

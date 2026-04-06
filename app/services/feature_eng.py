@@ -45,6 +45,11 @@ FEATURE_COLUMNS = [
     # Context affinity (from taste profile + real-time context)
     "device_affinity", "output_affinity", "context_type_affinity",
     "location_affinity", "is_mobile", "is_headphones",
+    # Multi-timescale preference deltas (short=7d, long=all-time vs track)
+    "delta_energy_short", "delta_energy_long",
+    "delta_valence_short", "delta_valence_long",
+    # Freshness: days since track was added to the library
+    "days_since_added",
 ]
 
 NUM_FEATURES = len(FEATURE_COLUMNS)
@@ -79,6 +84,9 @@ async def build_features(
     )
     taste_profile = user_result.scalar_one_or_none() or {}
     audio_prefs = taste_profile.get("audio_preferences", {})
+    timescale_audio = taste_profile.get("timescale_audio", {})
+    short_prefs = timescale_audio.get("short", {})
+    long_prefs = timescale_audio.get("long", {})
     mood_prefs = taste_profile.get("mood_preferences", {})
     time_patterns = taste_profile.get("time_patterns", {})
     device_patterns = taste_profile.get("device_patterns", {})
@@ -173,11 +181,21 @@ async def build_features(
         if inter and inter.last_played_at:
             recency = (now - inter.last_played_at) / 86_400  # days
 
-        # Preference deltas
+        # Preference deltas (medium-term = 30d default profile)
         delta_bpm = abs(bpm - audio_prefs.get("bpm", {}).get("mean", bpm))
         delta_energy = abs(energy - audio_prefs.get("energy", {}).get("mean", energy))
         delta_dance = abs(danceability - audio_prefs.get("danceability", {}).get("mean", danceability))
         delta_valence = abs(valence - audio_prefs.get("valence", {}).get("mean", valence))
+
+        # Multi-timescale deltas (short=7d, long=all-time)
+        delta_energy_short = abs(energy - short_prefs.get("energy", energy))
+        delta_energy_long = abs(energy - long_prefs.get("energy", energy))
+        delta_valence_short = abs(valence - short_prefs.get("valence", valence))
+        delta_valence_long = abs(valence - long_prefs.get("valence", valence))
+
+        # Freshness: days since track was added to library (via analyzed_at)
+        analyzed_at = tf.analyzed_at
+        days_since_added = (now - analyzed_at) / 86_400 if analyzed_at else 365.0
 
         # Mood match: dot product of user mood prefs and track mood tags
         mood_score = 0.0
@@ -201,6 +219,9 @@ async def build_features(
             hour_sin, hour_cos, dow_sin, dow_cos,
             device_affinity, output_affinity, context_type_affinity,
             location_affinity, is_mobile, is_headphones,
+            delta_energy_short, delta_energy_long,
+            delta_valence_short, delta_valence_long,
+            days_since_added,
         ], dtype=np.float32)
 
         rows.append(row)
@@ -236,7 +257,7 @@ async def build_training_data(session: AsyncSession) -> Dict[str, Any]:
     interactions = result.scalars().all()
 
     if not interactions:
-        return {"features": np.empty((0, NUM_FEATURES)), "labels": np.array([]), "groups": np.array([]), "n_samples": 0}
+        return {"features": np.empty((0, NUM_FEATURES)), "labels": np.array([]), "groups": np.array([]), "sample_weights": np.array([]), "n_samples": 0}
 
     # Group by user.
     from collections import defaultdict
@@ -246,6 +267,7 @@ async def build_training_data(session: AsyncSession) -> Dict[str, Any]:
 
     all_features: List[np.ndarray] = []
     all_labels: List[float] = []
+    all_weights: List[np.ndarray] = []
     groups: List[int] = []
 
     for user_id, user_inters in by_user.items():
@@ -259,19 +281,40 @@ async def build_training_data(session: AsyncSession) -> Dict[str, Any]:
         label_map = {i.track_id: float(i.satisfaction_score or 0.5) for i in user_inters}
         labels = np.array([label_map.get(tid, 0.5) for tid in result["track_ids"]], dtype=np.float32)
 
+        # Hard negative sample weights: upweight explicitly skipped/disliked
+        # tracks (hard negatives) and strong positives so the model focuses
+        # on informative examples rather than the neutral middle.
+        inter_map = {i.track_id: i for i in user_inters}
+        weights = np.ones(len(result["track_ids"]), dtype=np.float32)
+        for idx, tid in enumerate(result["track_ids"]):
+            inter = inter_map.get(tid)
+            if inter is None:
+                continue
+            # Hard negatives: tracks with explicit dislike or heavy early skips.
+            if inter.dislike_count > 0:
+                weights[idx] = 3.0
+            elif inter.early_skip_count > 2 and inter.full_listen_count == 0:
+                weights[idx] = 2.0
+            # Strong positives: liked or heavily repeated tracks.
+            elif inter.like_count > 0 or inter.repeat_count > 2:
+                weights[idx] = 2.0
+
         all_features.append(result["features"])
         all_labels.append(labels)
+        all_weights.append(weights)
         groups.append(len(result["track_ids"]))
 
     if not all_features:
-        return {"features": np.empty((0, NUM_FEATURES)), "labels": np.array([]), "groups": np.array([]), "n_samples": 0}
+        return {"features": np.empty((0, NUM_FEATURES)), "labels": np.array([]), "groups": np.array([]), "sample_weights": np.array([]), "n_samples": 0}
 
     features = np.vstack(all_features)
     labels = np.concatenate(all_labels)
+    sample_weights = np.concatenate(all_weights)
 
     return {
         "features": features,
         "labels": labels,
+        "sample_weights": sample_weights,
         "groups": np.array(groups, dtype=np.int32),
         "n_samples": features.shape[0],
     }

@@ -48,7 +48,9 @@ logger = logging.getLogger(__name__)
 # --- Satisfaction weight constants -------------------------------------------
 _W_FULL_LISTEN   =  1.0
 _W_MID_LISTEN    =  0.2
-_W_EARLY_SKIP    = -0.5
+_W_EARLY_SKIP    = -0.5   # default; modulated by context_type (see _context_skip_multiplier)
+_W_EARLY_SKIP_PLAYLIST = -0.75  # skip in playlist/album = strong rejection
+_W_EARLY_SKIP_RADIO    = -0.25  # skip in radio/search = expected behaviour
 _W_LIKE          =  2.0
 _W_DISLIKE       = -2.0
 _W_REPEAT        =  1.5
@@ -63,6 +65,15 @@ _MID_SKIP_MS     = 30_000   # < 30s = mild mismatch
 
 # Seek threshold: more than this many seeks in a single play = dissatisfaction.
 _HEAVY_SEEK_THRESHOLD = 2
+
+# Context-modulated skip weights: context_type → early-skip weight override.
+_CONTEXT_SKIP_WEIGHTS: Dict[str, float] = {
+    "playlist": _W_EARLY_SKIP_PLAYLIST,
+    "album": _W_EARLY_SKIP_PLAYLIST,
+    "radio": _W_EARLY_SKIP_RADIO,
+    "search": _W_EARLY_SKIP_RADIO,
+    "home_shelf": _W_EARLY_SKIP,  # default
+}
 
 # Process in chunks.
 _EVENT_CHUNK_SIZE = 5000
@@ -288,6 +299,8 @@ def _compute_delta(events: List) -> dict:
     full_listen_count = 0
     total_seekfwd = 0
     total_seekbk = 0
+    # Context-modulated skip penalty: sum of per-skip weights (replaces flat count * weight).
+    context_skip_penalty = 0.0
     first_ts: Optional[int] = None
     last_ts: Optional[int] = None
     max_event_id = 0
@@ -312,13 +325,18 @@ def _compute_delta(events: List) -> dict:
 
             # Classify listen depth.
             dwell = ev.dwell_ms
+            ctx = getattr(ev, "context_type", None)
+            skip_w = _CONTEXT_SKIP_WEIGHTS.get(ctx, _W_EARLY_SKIP) if ctx else _W_EARLY_SKIP
             if dwell is not None:
                 has_dwell = True
                 total_dwell_ms += dwell
                 if dwell < _EARLY_SKIP_MS:
                     early_skip_count += 1
+                    context_skip_penalty += skip_w
                 elif dwell < _MID_SKIP_MS:
                     mid_skip_count += 1
+                    # Mid-skips get half the context penalty of early skips.
+                    context_skip_penalty += skip_w * 0.4
                 else:
                     full_listen_count += 1
             elif completion is not None:
@@ -327,8 +345,10 @@ def _compute_delta(events: List) -> dict:
                     full_listen_count += 1
                 elif completion >= 0.1:
                     mid_skip_count += 1
+                    context_skip_penalty += skip_w * 0.4
                 else:
                     early_skip_count += 1
+                    context_skip_penalty += skip_w
 
             # Check for heavy seeking on this play.
             seek_total = (ev.num_seekfwd or 0) + (ev.num_seekbk or 0)
@@ -337,13 +357,17 @@ def _compute_delta(events: List) -> dict:
 
         elif et == "skip":
             skip_count += 1
+            ctx = getattr(ev, "context_type", None)
+            skip_w = _CONTEXT_SKIP_WEIGHTS.get(ctx, _W_EARLY_SKIP) if ctx else _W_EARLY_SKIP
             # A skip event without a preceding play_end: classify by value (seconds elapsed).
             if ev.value is not None:
                 elapsed_ms = int(ev.value * 1000)
                 if elapsed_ms < _EARLY_SKIP_MS:
                     early_skip_count += 1
+                    context_skip_penalty += skip_w
                 elif elapsed_ms < _MID_SKIP_MS:
                     mid_skip_count += 1
+                    context_skip_penalty += skip_w * 0.4
 
         elif et == "like":
             like_count += 1
@@ -380,6 +404,7 @@ def _compute_delta(events: List) -> dict:
         "full_listen_count": full_listen_count,
         "total_seekfwd": total_seekfwd,
         "total_seekbk": total_seekbk,
+        "context_skip_penalty": context_skip_penalty,
         "first_ts": first_ts,
         "last_ts": last_ts,
         "max_event_id": max_event_id,
@@ -389,11 +414,24 @@ def _compute_delta(events: List) -> dict:
 def _raw_satisfaction(delta: dict) -> float:
     """
     Compute a raw (un-normalised) satisfaction score from aggregated counts.
+
+    Skip penalty uses context-modulated weights when available (skips in
+    radio/search are weakly negative, skips mid-playlist are strongly negative).
+    Falls back to flat weights when context_skip_penalty is absent.
     """
     score = 0.0
     score += delta["full_listen_count"] * _W_FULL_LISTEN
-    score += delta["mid_skip_count"] * _W_MID_LISTEN
-    score += delta["early_skip_count"] * _W_EARLY_SKIP
+    # Use context-modulated skip penalty when available.  The penalty
+    # already accounts for both early and mid skips weighted by context_type,
+    # so we only add the mid-listen positive signal on top.
+    ctx_penalty = delta.get("context_skip_penalty")
+    if ctx_penalty is not None and ctx_penalty != 0.0:
+        score += ctx_penalty  # negative, context-weighted
+        score += delta["mid_skip_count"] * _W_MID_LISTEN  # partial positive
+    else:
+        # Fallback: flat weights (no context info on events).
+        score += delta["early_skip_count"] * _W_EARLY_SKIP
+        score += delta["mid_skip_count"] * _W_MID_LISTEN
     score += delta["like_count"] * _W_LIKE
     score += delta["dislike_count"] * _W_DISLIKE
     score += delta["repeat_count"] * _W_REPEAT
@@ -462,6 +500,10 @@ def _merge_interaction(existing: TrackInteraction, delta: dict) -> dict:
             last_played = delta["last_ts"]
 
     # Recompute raw satisfaction from merged totals.
+    # Context skip penalty: we can only accumulate the new delta's penalty
+    # (the existing interaction was already computed with its own penalties).
+    # On merge we fall back to flat weights for the full history — context
+    # modulation improves incrementally as new events arrive with context.
     merged_delta = {
         "full_listen_count": new_full_listen_count,
         "mid_skip_count": new_mid_skip_count,
@@ -474,6 +516,7 @@ def _merge_interaction(existing: TrackInteraction, delta: dict) -> dict:
         "total_seekfwd": new_total_seekfwd,
         "total_seekbk": new_total_seekbk,
         "play_count": new_play_count,
+        "context_skip_penalty": delta.get("context_skip_penalty", 0.0),
     }
 
     return {

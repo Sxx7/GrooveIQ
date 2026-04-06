@@ -86,13 +86,13 @@ def _save_model(model, engine: str, version: str) -> Optional[str]:
         return None
 
 
-def _train_ranker_sync(features, labels) -> tuple:
+def _train_ranker_sync(features, labels, sample_weights=None) -> tuple:
     """CPU-bound model training.  Runs in a thread executor."""
     model, engine = _create_model()
     if engine == "lgbm":
-        model.fit(features, labels, feature_name=FEATURE_COLUMNS)
+        model.fit(features, labels, sample_weight=sample_weights, feature_name=FEATURE_COLUMNS)
     else:
-        model.fit(features, labels)
+        model.fit(features, labels, sample_weight=sample_weights)
     return model, engine
 
 
@@ -115,11 +115,12 @@ async def train_model() -> Dict[str, Any]:
 
     features = data["features"]
     labels = data["labels"]
+    sample_weights = data.get("sample_weights")
 
     # Run CPU-heavy model training in a thread so the event loop stays responsive.
     loop = asyncio.get_running_loop()
     model, engine = await loop.run_in_executor(
-        None, _train_ranker_sync, features, labels,
+        None, _train_ranker_sync, features, labels, sample_weights,
     )
 
     version = f"{engine}-{int(time.time())}"
