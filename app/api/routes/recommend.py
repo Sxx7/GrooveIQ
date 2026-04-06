@@ -57,6 +57,8 @@ async def get_recommendations(
     location_label: str = Query(None, description="Semantic location: home, work, gym, commute"),
     hour_of_day: int = Query(None, ge=0, le=23, description="Client's local hour (0-23)"),
     day_of_week: int = Query(None, ge=1, le=7, description="Client's local day of week (1=Mon, 7=Sun)"),
+    genre: str = Query(None, description="Filter candidates by genre (case-insensitive substring match)"),
+    mood: str = Query(None, description="Filter candidates by mood tag label (e.g. happy, sad, aggressive). Requires confidence > 0.3"),
     debug: bool = Query(False, description="Include debug info: candidates by source, feature vectors, reranker actions"),
     session: AsyncSession = Depends(get_session),
     _key: str = Depends(require_api_key),
@@ -89,14 +91,42 @@ async def get_recommendations(
         if result.scalar_one_or_none() is None:
             raise HTTPException(status_code=404, detail="Not found.")
 
-    # Generate candidates.
+    # Generate candidates — over-fetch more when filtering by genre/mood.
     from app.services.candidate_gen import get_candidates
+    overfetch = limit * 6 if (genre or mood) else limit * 3
     candidates = await get_candidates(
         user_id=user_id,
         seed_track_id=seed_track_id,
-        k=limit * 3,  # over-fetch for re-ranking
+        k=overfetch,
         session=session,
     )
+
+    # Filter candidates by genre/mood if requested.
+    if candidates and (genre or mood):
+        cand_ids = [c["track_id"] for c in candidates]
+        feat_q = await session.execute(
+            select(TrackFeatures).where(TrackFeatures.track_id.in_(cand_ids))
+        )
+        feat_lookup = {t.track_id: t for t in feat_q.scalars().all()}
+
+        filtered = []
+        for c in candidates:
+            tf = feat_lookup.get(c["track_id"])
+            if not tf:
+                continue
+            if genre and not (tf.genre and genre.lower() in tf.genre.lower()):
+                continue
+            if mood:
+                tags = tf.mood_tags if isinstance(tf.mood_tags, list) else []
+                if not any(
+                    isinstance(tag, dict)
+                    and tag.get("label") == mood
+                    and tag.get("confidence", 0) > 0.3
+                    for tag in tags
+                ):
+                    continue
+            filtered.append(c)
+        candidates = filtered
 
     model_version = _get_model_version()
 
