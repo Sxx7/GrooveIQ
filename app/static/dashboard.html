@@ -632,7 +632,10 @@ function stopScanPolling() {
 // Dashboard view
 // ---------------------------------------------------------------------------
 
-// loadDashboard is defined later with health panels integration.
+function loadDashboard() {
+  return Promise.all([api('/v1/stats'), api('/v1/users?limit=20'), api('/v1/events?limit=30'), api('/v1/stats/model').catch(function() { return null; })])
+    .then(function(results) { renderDashboardWithHealth(results[0], results[1], results[2], results[3]); });
+}
 
 function renderScanPanel(scan) {
   if (!scan) return '<div class="empty">No scans yet. Click "Scan Now" to analyze your library.</div>';
@@ -2894,12 +2897,7 @@ renderPipeline = function() {
   }
 };
 
-// Override dashboard loading to include health panels
-var _originalLoadDashboard = loadDashboard;
-loadDashboard = function() {
-  return Promise.all([api('/v1/stats'), api('/v1/users?limit=20'), api('/v1/events?limit=30'), api('/v1/stats/model').catch(function() { return null; })])
-    .then(function(results) { renderDashboardWithHealth(results[0], results[1], results[2], results[3]); });
-};
+// loadDashboard is defined above (dashboard view section) with health panels integration.
 
 // Restore session
 var saved = sessionStorage.getItem('grooveiq_key');
