@@ -15,6 +15,9 @@ from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
+_MIN_API_KEY_LENGTH = 32  # 32 chars ≈ 192 bits of entropy (token_urlsafe)
+
+
 def _split_csv(v: str) -> List[str]:
     """Split a comma-separated string into a list, stripping whitespace."""
     return [item.strip() for item in v.split(",") if item.strip()]
@@ -32,7 +35,7 @@ class Settings(BaseSettings):
     # Core
     # ------------------------------------------------------------------
     APP_ENV: str = "production"  # development | production
-    SECRET_KEY: str = secrets.token_urlsafe(32)  # OVERRIDE in production!
+    SECRET_KEY: str = ""  # REQUIRED in production — generate with: python -c "import secrets; print(secrets.token_urlsafe(32))"
     ENABLE_DOCS: bool = False  # set True in development only
 
     # ------------------------------------------------------------------
@@ -58,12 +61,34 @@ class Settings(BaseSettings):
     RATE_LIMIT_EVENTS: int = 300   # event ingestion endpoint (high for batch clients)
     RATE_LIMIT_DEFAULT: int = 200  # all other endpoints (dashboard polls every 2s during scans)
 
-    # Hosts allowed to reach this service (guards against Host header attacks)
-    # Example: "grooveiq.yourdomain.com,localhost"
-    ALLOWED_HOSTS: str = "*"
+    # Optional Redis URL for cross-process rate limiting.
+    # When set, rate limits are shared across all workers/replicas.
+    # When empty, falls back to in-process sliding-window counters.
+    # Example: redis://localhost:6379/0
+    REDIS_URL: str = ""
 
-    # CORS – restrict to your app origins in production
-    CORS_ORIGINS: str = "*"
+    # Per-user API key authorization (optional).
+    # When set, each API key is bound to specific user_id(s).
+    # Format:  "key1:alice,bob;key2:charlie"
+    # Keys not listed here remain unrestricted (can access all users).
+    # When empty, all keys can access all users (default).
+    API_KEY_USERS: str = ""
+
+    # Admin API keys (optional, comma-separated).
+    # Only these keys can trigger pipeline runs, resets, library syncs/scans,
+    # and view aggregate stats that span all users.
+    # When empty, all authenticated keys have admin privileges (backwards-compatible).
+    ADMIN_API_KEYS: str = ""
+
+    # Hosts allowed to reach this service (guards against Host header attacks).
+    # Comma-separated.  Example: "grooveiq.yourdomain.com,localhost"
+    # Defaults to localhost only — set to your actual domain before exposing.
+    ALLOWED_HOSTS: str = "localhost,127.0.0.1"
+
+    # CORS – allowed origins (comma-separated).
+    # Empty string means "same-origin only" (no CORS headers sent).
+    # Set to your frontend origin(s) if the dashboard runs on a different domain.
+    CORS_ORIGINS: str = ""
 
     # ------------------------------------------------------------------
     # Audio analysis (Phase 3)
@@ -114,11 +139,18 @@ class Settings(BaseSettings):
     MEDIA_SERVER_TYPE: str = ""            # "navidrome" or "plex" (empty = disabled)
     MEDIA_SERVER_URL: str = ""             # e.g. http://192.168.178.49:4533
     MEDIA_SERVER_USER: str = ""            # Navidrome username
-    MEDIA_SERVER_PASSWORD: str = ""        # Navidrome password
-    MEDIA_SERVER_TOKEN: str = ""           # Plex X-Plex-Token
+    MEDIA_SERVER_PASSWORD: str = ""        # Navidrome password (plaintext or Fernet-encrypted)
+    MEDIA_SERVER_TOKEN: str = ""           # Plex X-Plex-Token (plaintext or Fernet-encrypted)
     MEDIA_SERVER_LIBRARY_ID: str = "1"     # Plex library section ID
     MEDIA_SERVER_MUSIC_PATH: str = ""      # Music root as seen by the media server
                                            # (for path matching if it differs from MUSIC_LIBRARY_PATH)
+
+    # Fernet key for encrypting media server credentials at rest.
+    # Generate with: python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+    # When set, MEDIA_SERVER_PASSWORD and MEDIA_SERVER_TOKEN are expected
+    # to be Fernet-encrypted.  Use ``python -m app.core.keygen --encrypt``
+    # to encrypt plaintext credentials.
+    CREDENTIAL_ENCRYPTION_KEY: str = ""
 
     # ------------------------------------------------------------------
     # Music discovery (Last.fm + Lidarr)
@@ -177,21 +209,78 @@ class Settings(BaseSettings):
         return bool(self.LASTFM_ENABLED and self.LASTFM_API_KEY and self.LASTFM_API_SECRET)
 
     @model_validator(mode="after")
-    def warn_insecure_defaults(self) -> "Settings":
+    def validate_security_settings(self) -> "Settings":
+        """Enforce security requirements.
+
+        Production: API_KEYS is mandatory and each key must be at least
+        ``_MIN_API_KEY_LENGTH`` characters (use ``python -m app.core.keygen``
+        to generate a strong key).
+        Development: empty API_KEYS is allowed (all endpoints unprotected)
+        but weak keys are still rejected.
+        """
+        import sys
         import warnings
-        if self.APP_ENV == "production":
-            if not self.api_keys_list:
-                warnings.warn(
-                    "⚠️  No API_KEYS configured. All endpoints are unprotected! "
-                    "Set API_KEYS in your .env file.",
-                    stacklevel=2,
+
+        is_prod = self.APP_ENV == "production"
+
+        # --- SECRET_KEY enforcement ---
+        if is_prod and not self.SECRET_KEY:
+            print(
+                "\n❌  FATAL: No SECRET_KEY configured and APP_ENV=production.\n"
+                "   Generate one:  python -c \"import secrets; print(secrets.token_urlsafe(32))\"\n"
+                "   Then set SECRET_KEY in your .env file.\n",
+                file=sys.stderr,
+            )
+            raise SystemExit(1)
+
+        # --- API key enforcement ---
+        if is_prod and not self.api_keys_list:
+            print(
+                "\n❌  FATAL: No API_KEYS configured and APP_ENV=production.\n"
+                "   Generate a key:  python -m app.core.keygen\n"
+                "   Then set API_KEYS in your .env file.\n",
+                file=sys.stderr,
+            )
+            raise SystemExit(1)
+
+        for key in self.api_keys_list:
+            if len(key) < _MIN_API_KEY_LENGTH:
+                print(
+                    f"\n❌  FATAL: API key is too short ({len(key)} chars, "
+                    f"minimum {_MIN_API_KEY_LENGTH}).\n"
+                    "   Generate a strong key:  python -m app.core.keygen\n",
+                    file=sys.stderr,
                 )
+                raise SystemExit(1)
+
+        # --- Host / CORS warnings ---
+        if is_prod:
             if self.allowed_hosts_list == ["*"]:
                 warnings.warn(
                     "⚠️  ALLOWED_HOSTS is set to '*'. "
                     "Set ALLOWED_HOSTS to your actual domain for security.",
                     stacklevel=2,
                 )
+            if self.cors_origins_list == ["*"]:
+                warnings.warn(
+                    "⚠️  CORS_ORIGINS is set to '*'. "
+                    "Set CORS_ORIGINS to your actual frontend origin(s).",
+                    stacklevel=2,
+                )
+
+        # --- Media server HTTPS warning ---
+        if self.MEDIA_SERVER_URL and self.MEDIA_SERVER_URL.startswith("http://"):
+            warnings.warn(
+                "⚠️  MEDIA_SERVER_URL uses plain HTTP. Credentials will be "
+                "transmitted in cleartext. Use HTTPS if possible.",
+                stacklevel=2,
+            )
+        if self.LIDARR_URL and self.LIDARR_URL.startswith("http://"):
+            warnings.warn(
+                "⚠️  LIDARR_URL uses plain HTTP. API key will be "
+                "transmitted in cleartext. Use HTTPS if possible.",
+                stacklevel=2,
+            )
         return self
 
 

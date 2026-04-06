@@ -409,13 +409,28 @@ def _iter_audio_files(root: Path):
     """
     Yield absolute paths to audio files under root.
     Follows symlinks, de-duplicates by resolved path.
+
+    Security: every resolved path is verified to be inside the library
+    root, preventing symlink-based directory traversal.
     """
     seen = set()
     extensions = set(settings.audio_extensions_list)
+    # Resolve the root itself once so symlink comparisons are consistent.
+    resolved_root = root.resolve()
 
     for dirpath, dirnames, filenames in os.walk(root, followlinks=True):
         # Prune hidden directories
         dirnames[:] = [d for d in dirnames if not d.startswith(".")]
+
+        # Check the directory itself is within the library root.
+        try:
+            resolved_dir = Path(dirpath).resolve()
+        except OSError:
+            dirnames.clear()
+            continue
+        if not str(resolved_dir).startswith(str(resolved_root)):
+            dirnames.clear()
+            continue
 
         for fname in filenames:
             if Path(fname).suffix.lower() not in extensions:
@@ -424,6 +439,9 @@ def _iter_audio_files(root: Path):
             try:
                 resolved = full.resolve()
             except OSError:
+                continue
+            # Reject files that resolve outside the library root.
+            if not str(resolved).startswith(str(resolved_root)):
                 continue
             if resolved in seen:
                 continue

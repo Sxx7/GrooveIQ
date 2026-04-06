@@ -70,13 +70,45 @@ if settings.allowed_hosts_list:
         allowed_hosts=settings.allowed_hosts_list,
     )
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=settings.cors_origins_list,
-    allow_credentials=True,
-    allow_methods=["GET", "POST", "PATCH", "DELETE"],
-    allow_headers=["Authorization", "Content-Type"],
-)
+# Only add CORS middleware when explicit origins are configured.
+# Wildcard + credentials is spec-invalid, so credentials are only
+# enabled when using an explicit origin list.
+if settings.cors_origins_list:
+    _cors_is_wildcard = settings.cors_origins_list == ["*"]
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=settings.cors_origins_list,
+        allow_credentials=not _cors_is_wildcard,  # credentials forbidden with "*"
+        allow_methods=["GET", "POST", "PATCH", "DELETE"],
+        allow_headers=["Authorization", "Content-Type"],
+    )
+
+
+@app.middleware("http")
+async def add_security_headers(request: Request, call_next):
+    """Attach security headers to every response."""
+    response = await call_next(request)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
+    response.headers["X-Permitted-Cross-Domain-Policies"] = "none"
+    # HSTS: instruct browsers to only use HTTPS.  The reverse proxy should
+    # handle TLS termination, but this header ensures browsers remember.
+    response.headers["Strict-Transport-Security"] = (
+        "max-age=63072000; includeSubDomains"
+    )
+    # CSP: the dashboard is a single HTML page with inline scripts/styles.
+    # Allow 'self' and 'unsafe-inline' for the dashboard, block everything else.
+    response.headers["Content-Security-Policy"] = (
+        "default-src 'self'; "
+        "script-src 'self' 'unsafe-inline'; "
+        "style-src 'self' 'unsafe-inline'; "
+        "img-src 'self' data:; "
+        "connect-src 'self'; "
+        "frame-ancestors 'none'"
+    )
+    return response
 
 
 @app.middleware("http")

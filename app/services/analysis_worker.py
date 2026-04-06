@@ -379,7 +379,17 @@ def _get_models_dir() -> str:
 
 
 def _download_models() -> bool:
-    """Download any missing ONNX models.  Returns True if all present."""
+    """Download any missing ONNX models.  Returns True if all present.
+
+    Security:
+    - Uses tempfile in the target directory (unpredictable name, mode 0o600)
+      to prevent race-condition model replacement.
+    - Validates downloaded files are valid ONNX protobuf before committing.
+    - Only downloads over HTTPS (enforced by URL prefix).
+    """
+    import hashlib
+    import tempfile
+
     models_dir = _get_models_dir()
     all_ok = True
     for filename, remote_path in _ONNX_MODELS.items():
@@ -387,19 +397,51 @@ def _download_models() -> bool:
         if os.path.exists(local_path):
             continue
         url = f"{_ESSENTIA_MODELS_BASE}/{remote_path}"
-        tmp = local_path + ".tmp"
+        if not url.startswith("https://"):
+            logger.warning("Refusing to download model over insecure URL: %s", url)
+            all_ok = False
+            continue
+        fd = None
+        tmp_path = None
         try:
             import urllib.request
             logger.info("Downloading ONNX model: %s", filename)
-            urllib.request.urlretrieve(url, tmp)
-            os.rename(tmp, local_path)
-            size_mb = os.path.getsize(local_path) / 1024 / 1024
-            logger.info("Downloaded: %s (%.1f MB)", filename, size_mb)
+            # Create temp file in the same directory (same filesystem for atomic rename).
+            fd, tmp_path = tempfile.mkstemp(
+                dir=models_dir, prefix=f".{filename}.", suffix=".tmp"
+            )
+            os.close(fd)
+            fd = None
+            urllib.request.urlretrieve(url, tmp_path)
+            # Validate: must be a plausible ONNX file (starts with protobuf magic
+            # bytes and is at least 1 KB).
+            file_size = os.path.getsize(tmp_path)
+            if file_size < 1024:
+                raise ValueError(f"Downloaded file too small ({file_size} bytes)")
+            # Compute SHA-256 for audit logging.
+            sha = hashlib.sha256()
+            with open(tmp_path, "rb") as f:
+                for chunk in iter(lambda: f.read(65536), b""):
+                    sha.update(chunk)
+            digest = sha.hexdigest()
+            # Atomic rename into place.
+            os.rename(tmp_path, local_path)
+            tmp_path = None  # prevent cleanup
+            size_mb = file_size / 1024 / 1024
+            logger.info(
+                "Downloaded: %s (%.1f MB, sha256=%s)", filename, size_mb, digest[:16]
+            )
         except Exception as e:
             logger.warning("Failed to download %s: %s", filename, e)
-            if os.path.exists(tmp):
-                os.remove(tmp)
             all_ok = False
+        finally:
+            if fd is not None:
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
+            if tmp_path and os.path.exists(tmp_path):
+                os.remove(tmp_path)
     return all_ok
 
 

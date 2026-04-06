@@ -82,6 +82,8 @@ async def _apply_column_migrations(conn) -> None:
         ("users", "lastfm_session_key", "VARCHAR(512)"),
         ("users", "lastfm_cache", "TEXT"),
         ("users", "lastfm_synced_at", "INTEGER"),
+        # Playlist ownership
+        ("playlists", "created_by", "VARCHAR(128)"),
     ]
     for table, column, col_type in migrations:
         try:

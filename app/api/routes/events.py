@@ -17,7 +17,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
-from app.core.security import require_api_key
+from app.core.security import check_user_access, check_user_event_rate, require_admin, require_api_key
 from app.db.session import get_session
 from app.models.db import ListenEvent, User
 from app.models.schemas import EventBatch, EventCreate, EventResponse, ListenEventRead
@@ -71,6 +71,8 @@ async def ingest_event(
     session: AsyncSession = Depends(get_session),
     _key: str = Depends(require_api_key),
 ):
+    check_user_access(_key, event.user_id)
+    check_user_event_rate(event.user_id)
     result = await process_event(session, event)
     return result
 
@@ -99,6 +101,14 @@ async def ingest_event_batch(
     session: AsyncSession = Depends(get_session),
     _key: str = Depends(require_api_key),
 ):
+    # Check authorization and rate limit for all user_ids in the batch.
+    seen_users: set[str] = set()
+    for event in batch.events:
+        if event.user_id not in seen_users:
+            check_user_access(_key, event.user_id)
+            check_user_event_rate(event.user_id)
+            seen_users.add(event.user_id)
+
     accepted = 0
     rejected = 0
     errors: list[str] = []
@@ -109,8 +119,8 @@ async def ingest_event_batch(
             accepted += 1
         except Exception as e:
             rejected += 1
-            errors.append(f"Event[{i}] ({event.track_id}): {e}")
-            logger.warning("Batch event rejected", extra={"error": str(e), "index": i})
+            errors.append(f"Event[{i}]: rejected")
+            logger.warning("Batch event rejected", extra={"error": str(e), "index": i, "track_id": event.track_id})
 
     return EventResponse(accepted=accepted, rejected=rejected, errors=errors)
 
@@ -126,17 +136,25 @@ async def ingest_event_batch(
     description="Returns raw events for a user/track. Useful for debugging.",
 )
 async def query_events(
-    user_id:      Optional[str] = Query(None),
-    track_id:     Optional[str] = Query(None),
-    event_type:   Optional[str] = Query(None),
-    device_id:    Optional[str] = Query(None),
-    context_type: Optional[str] = Query(None),
-    request_id:   Optional[str] = Query(None),
+    user_id:      Optional[str] = Query(None, max_length=128),
+    track_id:     Optional[str] = Query(None, max_length=128),
+    event_type:   Optional[str] = Query(None, max_length=32),
+    device_id:    Optional[str] = Query(None, max_length=128),
+    context_type: Optional[str] = Query(None, max_length=32),
+    request_id:   Optional[str] = Query(None, max_length=128),
     limit:        int = Query(50, ge=1, le=500),
     offset:       int = Query(0, ge=0),
     session:      AsyncSession = Depends(get_session),
     _key:         str = Depends(require_api_key),
 ):
+    # Per-user auth: if a user_id filter is provided, verify the key
+    # has access. If no user_id is provided, require admin privileges
+    # (querying across all users is an admin-only operation).
+    if user_id:
+        check_user_access(_key, user_id)
+    else:
+        require_admin(_key)
+
     q = select(ListenEvent).order_by(ListenEvent.timestamp.desc())
     if user_id:
         q = q.where(ListenEvent.user_id == user_id)

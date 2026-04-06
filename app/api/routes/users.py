@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select, func, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.security import require_api_key
+from app.core.security import check_user_access, require_api_key
 from app.db.session import get_session
 from app.models.db import ListenEvent, ListenSession, TrackFeatures, TrackInteraction, User
 from app.models.schemas import UserCreate, UserResponse, UserUpdate
@@ -21,8 +21,17 @@ router = APIRouter()
 # Helpers
 # ---------------------------------------------------------------------------
 
-async def _resolve_user(session: AsyncSession, user_id: str) -> User:
-    """Look up a user by user_id string.  Raises 404 if not found."""
+async def _resolve_user(
+    session: AsyncSession,
+    user_id: str,
+    api_key: str = "anonymous",
+) -> User:
+    """Look up a user by user_id string.  Raises 404 if not found.
+
+    When ``API_KEY_USERS`` is configured, also verifies that the
+    requesting API key is authorised to access this user (raises 403).
+    """
+    check_user_access(api_key, user_id)
     result = await session.execute(select(User).where(User.user_id == user_id))
     user = result.scalar_one_or_none()
     if not user:
@@ -41,7 +50,7 @@ async def get_user_profile(
     _key: str = Depends(require_api_key),
 ):
     """Returns the computed taste profile for a user (audio prefs, mood, behaviour stats)."""
-    user = await _resolve_user(session, user_id)
+    user = await _resolve_user(session, user_id, _key)
     response = {
         "uid": user.uid,
         "user_id": user.user_id,
@@ -75,7 +84,7 @@ async def get_user_interactions(
     _key: str = Depends(require_api_key),
 ):
     """Returns per-track interaction data for a user (satisfaction scores, play/skip counts, etc.)."""
-    await _resolve_user(session, user_id)
+    await _resolve_user(session, user_id, _key)
 
     sort_col = {
         "satisfaction_score": TrackInteraction.satisfaction_score,
@@ -123,7 +132,6 @@ async def get_user_interactions(
                 "title": tf.title if tf else None,
                 "artist": tf.artist if tf else None,
                 "album": tf.album if tf else None,
-                "file_path": tf.file_path if tf else None,
                 "bpm": tf.bpm if tf else None,
                 "key": tf.key if tf else None,
                 "mode": tf.mode if tf else None,
@@ -150,7 +158,7 @@ async def get_user_history(
 ):
     """Returns a chronological list of every track the user started playing,
     enriched with track metadata and completion info from matching play_end events."""
-    await _resolve_user(session, user_id)
+    await _resolve_user(session, user_id, _key)
 
     from sqlalchemy import or_
 
@@ -253,7 +261,7 @@ async def get_user_sessions(
     _key: str = Depends(require_api_key),
 ):
     """Returns materialised listening sessions for a user, most recent first."""
-    await _resolve_user(session, user_id)
+    await _resolve_user(session, user_id, _key)
 
     count_q = select(func.count()).select_from(
         select(ListenSession.id).where(ListenSession.user_id == user_id).subquery()
@@ -354,7 +362,7 @@ async def get_user(
     session: AsyncSession = Depends(get_session),
     _key: str = Depends(require_api_key),
 ):
-    return await _resolve_user(session, user_id)
+    return await _resolve_user(session, user_id, _key)
 
 
 @router.patch(
@@ -378,7 +386,7 @@ async def update_user(
     result = await session.execute(select(User).where(User.id == uid))
     user = result.scalar_one_or_none()
     if not user:
-        raise HTTPException(status_code=404, detail=f"User with uid={uid} not found.")
+        raise HTTPException(status_code=404, detail="Not found.")
 
     old_user_id = user.user_id
 
@@ -416,9 +424,12 @@ async def update_user(
         )
 
         user.user_id = body.user_id
-        logger.info(
-            "User renamed",
-            extra={"uid": uid, "old_user_id": old_user_id, "new_user_id": body.user_id},
-        )
+
+        from app.core.audit import audit_log
+        audit_log("user_rename", api_key=_key, detail={
+            "uid": uid,
+            "old_user_id": old_user_id,
+            "new_user_id": body.user_id,
+        })
 
     return user

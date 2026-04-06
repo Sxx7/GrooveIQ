@@ -123,7 +123,7 @@ async def _fetch_navidrome_tracks(
     page_size = 500
     offset = 0
 
-    async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT) as client:
+    async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT, verify=True) as client:
         while True:
             params = {
                 **common_params,
@@ -181,7 +181,7 @@ async def _fetch_plex_tracks(
 
     tracks: List[MediaServerTrack] = []
 
-    async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT) as client:
+    async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT, verify=True) as client:
         # Fetch all tracks from the specified library section.
         url = f"{base}/library/sections/{library_id}/all"
         params = {"type": "10"}  # type 10 = tracks
@@ -251,17 +251,19 @@ async def fetch_tracks() -> List[MediaServerTrack]:
     if server_type == "navidrome":
         if not settings.MEDIA_SERVER_URL or not settings.MEDIA_SERVER_USER:
             raise RuntimeError("Navidrome requires MEDIA_SERVER_URL and MEDIA_SERVER_USER.")
+        from app.core.credentials import get_media_server_password
         return await _fetch_navidrome_tracks(
             settings.MEDIA_SERVER_URL,
             settings.MEDIA_SERVER_USER,
-            settings.MEDIA_SERVER_PASSWORD,
+            get_media_server_password(),
         )
     elif server_type == "plex":
         if not settings.MEDIA_SERVER_URL or not settings.MEDIA_SERVER_TOKEN:
             raise RuntimeError("Plex requires MEDIA_SERVER_URL and MEDIA_SERVER_TOKEN.")
+        from app.core.credentials import get_media_server_token
         return await _fetch_plex_tracks(
             settings.MEDIA_SERVER_URL,
-            settings.MEDIA_SERVER_TOKEN,
+            get_media_server_token(),
             settings.MEDIA_SERVER_LIBRARY_ID,
         )
     else:

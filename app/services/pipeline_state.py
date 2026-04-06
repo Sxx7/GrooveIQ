@@ -11,6 +11,7 @@ SSE subscribers receive events as each step starts/completes/fails.
 from __future__ import annotations
 
 import asyncio
+import re
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -102,6 +103,22 @@ _runs: List[PipelineRun] = []
 _current_run: Optional[PipelineRun] = None
 _sse_queues: List[asyncio.Queue] = []
 MAX_HISTORY = 20
+MAX_SSE_SUBSCRIBERS = 20  # prevent connection exhaustion
+
+# Pattern to redact secrets from error messages before SSE broadcast.
+_REDACT_PATTERNS = [
+    re.compile(r"(api[_-]?key|token|password|secret|session[_-]?key|authorization)[=:\s]+\S+", re.IGNORECASE),
+    re.compile(r"(postgresql|redis|sqlite)\+?\w*://\S+", re.IGNORECASE),  # DB connection strings
+    re.compile(r"gAAAAA\S+"),  # Fernet-encrypted tokens
+]
+
+
+def _redact_error(error: str, max_length: int = 500) -> str:
+    """Remove sensitive data from error messages before broadcasting."""
+    msg = error[:max_length]
+    for pattern in _REDACT_PATTERNS:
+        msg = pattern.sub("[REDACTED]", msg)
+    return msg
 
 
 def _broadcast(event: Dict[str, Any]) -> None:
@@ -117,7 +134,15 @@ def _broadcast(event: Dict[str, Any]) -> None:
 
 
 def subscribe() -> asyncio.Queue:
-    """Create a new SSE subscriber queue."""
+    """Create a new SSE subscriber queue.
+
+    Raises ``RuntimeError`` if the maximum number of concurrent SSE
+    subscribers has been reached (prevents resource exhaustion).
+    """
+    if len(_sse_queues) >= MAX_SSE_SUBSCRIBERS:
+        raise RuntimeError(
+            f"Too many SSE subscribers (max {MAX_SSE_SUBSCRIBERS})"
+        )
     q: asyncio.Queue = asyncio.Queue(maxsize=200)
     _sse_queues.append(q)
     return q
@@ -227,14 +252,16 @@ def step_failed(
     step.status = StepStatus.FAILED
     step.ended_at = time.time()
     step.duration_ms = int((step.ended_at - step.started_at) * 1000) if step.started_at else None
-    step.error = error
+    # Redact sensitive data before storing and broadcasting.
+    safe_error = _redact_error(error)
+    step.error = safe_error
 
     _broadcast({
         "event": "step_failed",
         "run_id": run.run_id,
         "step": step_name,
         "duration_ms": step.duration_ms,
-        "error": error,
+        "error": safe_error,
         "timestamp": step.ended_at,
     })
 

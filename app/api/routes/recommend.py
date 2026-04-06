@@ -15,7 +15,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.security import require_api_key
+from app.core.security import check_user_access, require_api_key
 from app.db.session import get_session
 from app.models.db import ListenEvent, TrackFeatures, TrackInteraction, User
 
@@ -61,12 +61,25 @@ async def get_recommendations(
     session: AsyncSession = Depends(get_session),
     _key: str = Depends(require_api_key),
 ):
+    from app.core.config import settings as _settings
+
+    # Debug mode is development-only — it exposes model internals and
+    # feature vectors that could leak user taste profile information.
+    if debug and _settings.APP_ENV != "development":
+        raise HTTPException(
+            status_code=403,
+            detail="Debug mode is only available when APP_ENV=development.",
+        )
+
+    # Per-user authorization check.
+    check_user_access(_key, user_id)
+
     # Verify user exists.
     result = await session.execute(
         select(User.user_id).where(User.user_id == user_id)
     )
     if result.scalar_one_or_none() is None:
-        raise HTTPException(status_code=404, detail=f"User '{user_id}' not found.")
+        raise HTTPException(status_code=404, detail="Not found.")
 
     # Verify seed track if provided.
     if seed_track_id:
@@ -74,7 +87,7 @@ async def get_recommendations(
             select(TrackFeatures.track_id).where(TrackFeatures.track_id == seed_track_id)
         )
         if result.scalar_one_or_none() is None:
-            raise HTTPException(status_code=404, detail=f"Seed track '{seed_track_id}' not found.")
+            raise HTTPException(status_code=404, detail="Not found.")
 
     # Generate candidates.
     from app.services.candidate_gen import get_candidates
@@ -220,7 +233,6 @@ async def get_recommendations(
                 "artist": tf.artist,
                 "album": tf.album,
                 "genre": tf.genre,
-                "file_path": tf.file_path,
                 "bpm": tf.bpm,
                 "key": tf.key,
                 "mode": tf.mode,
@@ -266,12 +278,14 @@ async def get_recommendation_history(
 ):
     from sqlalchemy import func as sa_func
 
+    check_user_access(_key, user_id)
+
     # Verify user exists.
     result = await session.execute(
         select(User.user_id).where(User.user_id == user_id)
     )
     if result.scalar_one_or_none() is None:
-        raise HTTPException(status_code=404, detail=f"User '{user_id}' not found.")
+        raise HTTPException(status_code=404, detail="Not found.")
 
     # Count impressions
     count_q = select(sa_func.count()).select_from(
@@ -324,7 +338,8 @@ async def get_recommendation_history(
                 "request_id": imp.request_id,
                 "model_version": imp.model_version,
                 "streamed": (imp.request_id, imp.track_id) in streamed_set if imp.request_id else False,
-                "file_path": feat_map[imp.track_id].file_path if imp.track_id in feat_map else None,
+                "title": feat_map[imp.track_id].title if imp.track_id in feat_map else None,
+                "artist": feat_map[imp.track_id].artist if imp.track_id in feat_map else None,
                 "bpm": feat_map[imp.track_id].bpm if imp.track_id in feat_map else None,
                 "energy": feat_map[imp.track_id].energy if imp.track_id in feat_map else None,
             }

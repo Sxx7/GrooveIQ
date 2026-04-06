@@ -420,7 +420,6 @@ async def get_playlist_with_tracks(
             "title": tf.title if tf else None,
             "artist": tf.artist if tf else None,
             "album": tf.album if tf else None,
-            "file_path": tf.file_path if tf else None,
             "bpm": tf.bpm if tf else None,
             "key": tf.key if tf else None,
             "mode": tf.mode if tf else None,

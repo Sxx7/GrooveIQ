@@ -181,9 +181,10 @@ async def process_scrobble_queue() -> dict:
             try:
                 sk = decrypt_session_key(user.lastfm_session_key)
             except Exception as e:
+                logger.error("Session key decryption failed for user=%s: %s", user_id, e)
                 for item in items:
                     item.status = "failed"
-                    item.last_error = f"Decryption error: {e}"
+                    item.last_error = "Session key decryption failed"
                 failed += len(items)
                 continue
 
@@ -209,20 +210,21 @@ async def process_scrobble_queue() -> dict:
                     processed += len(batch)
                     user_sent = True
                 except LastFmError as e:
+                    logger.warning("Scrobble failed for user=%s: %s", user_id, e)
                     for item in batch:
                         item.attempts += 1
-                        item.last_error = str(e)
+                        item.last_error = "Last.fm API error"
                         if item.attempts >= 3:
                             item.status = "failed"
                             failed += 1
                 except Exception as e:
+                    logger.warning("Scrobble batch failed for user=%s: %s", user_id, e)
                     for item in batch:
                         item.attempts += 1
-                        item.last_error = str(e)
+                        item.last_error = "Scrobble submission failed"
                         if item.attempts >= 3:
                             item.status = "failed"
                             failed += 1
-                    logger.warning("Scrobble batch failed for user=%s: %s", user_id, e)
 
             if user_sent:
                 users_to_refresh.append(user)

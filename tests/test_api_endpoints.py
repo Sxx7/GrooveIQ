@@ -135,8 +135,8 @@ class TestUserInteractions:
         assert i["track_id"] == "track-001"
         assert i["play_count"] == 5
         assert i["satisfaction_score"] == 0.85
-        # Track metadata joined
-        assert i["file_path"] == "/music/song.mp3"
+        # Track metadata joined (file_path stripped from responses for security)
+        assert "file_path" not in i
         assert i["bpm"] == 120.0
 
     async def test_get_interactions_not_found(self, client: AsyncClient):

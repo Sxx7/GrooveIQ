@@ -27,3 +27,9 @@ htmlcov/
 
 # Docker
 *.tar
+
+# OS
+.DS_Store
+
+# Claude Code
+.claude/

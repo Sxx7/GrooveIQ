@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.security import require_api_key
+from app.core.security import hash_key, require_admin, require_api_key
 from app.db.session import get_session
 from app.models.db import Playlist
 from app.models.schemas import (
@@ -43,11 +43,14 @@ async def create_playlist(
             params=body.params,
             max_tracks=body.max_tracks,
         )
+        # Record which API key created this playlist.
+        playlist.created_by = hash_key(_key)
+        await session.flush()
         # Reload with tracks for response
         detail = await get_playlist_with_tracks(session, playlist.id)
         return detail
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid playlist parameters.")
 
 
 @router.get(
@@ -83,7 +86,7 @@ async def get_playlist(
 ):
     detail = await get_playlist_with_tracks(session, playlist_id)
     if not detail:
-        raise HTTPException(status_code=404, detail=f"Playlist {playlist_id} not found")
+        raise HTTPException(status_code=404, detail="Not found.")
     return detail
 
 
@@ -97,6 +100,20 @@ async def remove_playlist(
     session: AsyncSession = Depends(get_session),
     _key: str = Depends(require_api_key),
 ):
+    # Check ownership: only the creator or an admin can delete.
+    result = await session.execute(
+        select(Playlist.created_by).where(Playlist.id == playlist_id)
+    )
+    row = result.scalar_one_or_none()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Playlist not found.")
+    if row and row != hash_key(_key):
+        # Not the creator — require admin.
+        require_admin(_key)
+
     found = await delete_playlist(session, playlist_id)
     if not found:
-        raise HTTPException(status_code=404, detail=f"Playlist {playlist_id} not found")
+        raise HTTPException(status_code=404, detail="Playlist not found.")
+
+    from app.core.audit import audit_log
+    audit_log("playlist_delete", api_key=_key, detail={"playlist_id": playlist_id})

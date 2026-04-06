@@ -81,6 +81,7 @@ class LastFmClient:
     def __init__(self) -> None:
         self._client = httpx.AsyncClient(
             timeout=15.0,
+            verify=True,
             headers={"User-Agent": "GrooveIQ/1.0"},
         )
         self._last_request = 0.0

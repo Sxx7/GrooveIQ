@@ -412,7 +412,6 @@ class PlaylistTrackItem(BaseModel):
     title: Optional[str] = None
     artist: Optional[str] = None
     album: Optional[str] = None
-    file_path: Optional[str] = None
     bpm: Optional[float] = None
     key: Optional[str] = None
     mode: Optional[str] = None

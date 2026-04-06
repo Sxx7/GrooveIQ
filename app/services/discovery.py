@@ -51,7 +51,7 @@ class LastFmClient:
     def __init__(self, api_key: str):
         self._api_key = api_key
         self._last_request: float = 0.0
-        self._client = httpx.AsyncClient(timeout=15.0)
+        self._client = httpx.AsyncClient(timeout=15.0, verify=True)
 
     async def close(self):
         await self._client.aclose()
@@ -133,6 +133,7 @@ class LidarrClient:
         self._base_url = base_url.rstrip("/")
         self._client = httpx.AsyncClient(
             timeout=30.0,
+            verify=True,
             headers={"X-Api-Key": api_key},
         )
 
@@ -434,12 +435,12 @@ async def run_discovery_pipeline() -> Dict[str, Any]:
                                 lidarr_mbids.add(foreign_id)
                             else:
                                 status = "failed"
-                                error_msg = f"HTTP {exc.response.status_code}: {exc.response.text[:200]}"
+                                error_msg = f"HTTP {exc.response.status_code}"
                                 summary["errors"] += 1
-                                logger.warning("Lidarr add failed for %r: %s", name, error_msg)
+                                logger.warning("Lidarr add failed for %r: HTTP %d: %s", name, exc.response.status_code, exc.response.text[:200])
                         except Exception as exc:
                             status = "failed"
-                            error_msg = str(exc)[:200]
+                            error_msg = "Internal error"
                             summary["errors"] += 1
                             logger.warning("Lidarr add failed for %r: %s", name, exc)
 

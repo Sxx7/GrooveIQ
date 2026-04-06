@@ -16,7 +16,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import select, func, asc, desc
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.security import require_api_key
+from app.core.security import require_admin, require_api_key
 from app.db.session import get_session
 from app.models.db import ScanLog, TrackFeatures
 from app.models.schemas import ScanStatusResponse, ScanTriggerResponse, TrackFeaturesResponse
@@ -49,6 +49,7 @@ async def trigger_sync(
     session: AsyncSession = Depends(get_session),
     _key: str = Depends(require_api_key),
 ):
+    require_admin(_key)
     from app.services.media_server import is_configured, sync_track_ids
 
     if not is_configured():
@@ -58,11 +59,14 @@ async def trigger_sync(
                    "and credentials in your .env file.",
         )
 
+    from app.core.audit import audit_log
+    audit_log("media_server_sync", api_key=_key)
+
     try:
         result = await sync_track_ids(session)
     except Exception as e:
         logger.exception("Media server sync failed")
-        raise HTTPException(status_code=502, detail=f"Sync failed: {e}")
+        raise HTTPException(status_code=502, detail="Media server sync failed. Check logs for details.")
 
     return {
         "message": "Sync complete",
@@ -100,6 +104,9 @@ Poll `GET /v1/library/scan/{scan_id}` for progress.
 async def trigger_library_scan(
     _key: str = Depends(require_api_key),
 ):
+    require_admin(_key)
+    from app.core.audit import audit_log
+    audit_log("library_scan", api_key=_key)
     scan_id = await trigger_scan()
     return ScanTriggerResponse(
         message="Scan started",
@@ -119,7 +126,7 @@ async def get_library_scan_status(
 ):
     result = await get_scan_status(scan_id)
     if result is None:
-        raise HTTPException(status_code=404, detail=f"Scan {scan_id} not found.")
+        raise HTTPException(status_code=404, detail="Not found.")
     return result
 
 
@@ -194,16 +201,15 @@ async def list_tracks(
 
     q = select(TrackFeatures).where(TrackFeatures.analysis_error.is_(None))
 
-    # Search
+    # Search (file_path excluded — prevents filesystem enumeration)
     if search and search.strip():
-        term = f"%{search.strip()}%"
+        term = f"%{search.strip()[:256]}%"
         q = q.where(or_(
             TrackFeatures.title.ilike(term),
             TrackFeatures.artist.ilike(term),
             TrackFeatures.album.ilike(term),
             TrackFeatures.genre.ilike(term),
             TrackFeatures.track_id.ilike(term),
-            TrackFeatures.file_path.ilike(term),
         ))
 
     # Filters
@@ -253,7 +259,6 @@ async def list_tracks(
                 "artist": t.artist,
                 "album": t.album,
                 "genre": t.genre,
-                "file_path": t.file_path,
                 "duration": t.duration,
                 "bpm": t.bpm,
                 "key": t.key,
@@ -301,7 +306,7 @@ async def get_track_features(
     if track is None:
         raise HTTPException(
             status_code=404,
-            detail=f"Track '{track_id}' not found. Trigger a library scan first.",
+            detail="Not found.",
         )
     return track
 
@@ -333,7 +338,7 @@ async def get_similar_tracks(
     )
     seed = result.scalar_one_or_none()
     if seed is None:
-        raise HTTPException(status_code=404, detail=f"Track '{track_id}' not found.")
+        raise HTTPException(status_code=404, detail="Not found.")
 
     # Try FAISS first (Phase 4).
     from app.services.faiss_index import is_ready, search_by_track_id
@@ -354,7 +359,6 @@ async def get_similar_tracks(
                     "title": c.title,
                     "artist": c.artist,
                     "album": c.album,
-                    "file_path": c.file_path,
                     "bpm": c.bpm,
                     "key": c.key,
                     "mode": c.mode,
@@ -417,7 +421,9 @@ async def get_similar_tracks(
     return [
         {
             "track_id": c.track_id,
-            "file_path": c.file_path,
+            "title": c.title,
+            "artist": c.artist,
+            "album": c.album,
             "bpm": c.bpm,
             "key": c.key,
             "mode": c.mode,

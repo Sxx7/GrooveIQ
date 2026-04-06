@@ -265,6 +265,7 @@ class Playlist(Base):
     params         = Column(JSON,        nullable=True)    # strategy-specific config
     track_count    = Column(Integer,     nullable=False, default=0)
     total_duration = Column(Float,       nullable=True)    # seconds
+    created_by     = Column(String(128), nullable=True)    # API key hash that created this playlist
     created_at     = Column(Integer,     nullable=False, default=lambda: int(time.time()))
 
 

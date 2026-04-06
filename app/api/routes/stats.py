@@ -10,7 +10,7 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy import select, func, case
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.security import require_api_key
+from app.core.security import require_admin, require_api_key
 from app.db.session import get_session
 from app.models.db import ListenEvent, ListenSession, Playlist, TrackFeatures, TrackInteraction, User, LibraryScanState, ScanLog
 from app.services.audio_analysis import ANALYSIS_VERSION
@@ -23,6 +23,7 @@ async def get_stats(
     session: AsyncSession = Depends(get_session),
     _key: str = Depends(require_api_key),
 ):
+    require_admin(_key)
     now = int(time.time())
     day_ago = now - 86400
     hour_ago = now - 3600
@@ -152,11 +153,14 @@ async def get_stats(
 async def trigger_pipeline(
     _key: str = Depends(require_api_key),
 ):
+    require_admin(_key)
+    from app.core.audit import audit_log
     from app.services.pipeline_state import get_current_run
     if get_current_run():
         return {"message": "Pipeline already running", "status": "running"}
     import asyncio
     from app.workers.scheduler import run_recommendation_pipeline_now
+    audit_log("pipeline_run", api_key=_key)
     asyncio.create_task(run_recommendation_pipeline_now(trigger="manual"))
     return {"message": "Pipeline started", "status": "running"}
 
@@ -170,9 +174,13 @@ async def reset_pipeline(
     session: AsyncSession = Depends(get_session),
     _key: str = Depends(require_api_key),
 ):
+    require_admin(_key)
     from sqlalchemy import delete, update
     import asyncio
+    from app.core.audit import audit_log
     from app.workers.scheduler import run_recommendation_pipeline_now
+
+    audit_log("pipeline_reset", api_key=_key)
 
     # Clear derived data
     await session.execute(delete(TrackInteraction))
@@ -199,6 +207,7 @@ async def pipeline_status(
     limit: int = Query(10, ge=1, le=50, description="Number of historical runs to return"),
     _key: str = Depends(require_api_key),
 ):
+    require_admin(_key)
     from app.services.pipeline_state import get_current_run, get_run_history
 
     return {
@@ -219,9 +228,14 @@ async def pipeline_status(
 async def pipeline_stream(
     _key: str = Depends(require_api_key),
 ):
+    require_admin(_key)
+    from fastapi import HTTPException as _HTTPException
     from app.services.pipeline_state import subscribe, unsubscribe
 
-    queue = subscribe()
+    try:
+        queue = subscribe()
+    except RuntimeError as exc:
+        raise _HTTPException(status_code=429, detail=str(exc))
 
     async def event_generator():
         try:
@@ -259,6 +273,7 @@ async def pipeline_stats_sessionizer(
     session: AsyncSession = Depends(get_session),
     _key: str = Depends(require_api_key),
 ):
+    require_admin(_key)
     total = (await session.execute(select(func.count(ListenSession.id)))).scalar() or 0
     if total == 0:
         return {"total_sessions": 0}
@@ -320,6 +335,7 @@ async def pipeline_stats_scoring(
     session: AsyncSession = Depends(get_session),
     _key: str = Depends(require_api_key),
 ):
+    require_admin(_key)
     total = (await session.execute(select(func.count(TrackInteraction.id)))).scalar() or 0
     if total == 0:
         return {"total_interactions": 0}
@@ -424,6 +440,7 @@ async def pipeline_stats_taste_profiles(
     session: AsyncSession = Depends(get_session),
     _key: str = Depends(require_api_key),
 ):
+    require_admin(_key)
     total_users = (await session.execute(select(func.count(User.id)))).scalar() or 0
     with_profiles = (await session.execute(
         select(func.count(User.id)).where(User.taste_profile.isnot(None))
@@ -443,6 +460,7 @@ async def pipeline_stats_events(
     session: AsyncSession = Depends(get_session),
     _key: str = Depends(require_api_key),
 ):
+    require_admin(_key)
     now = int(time.time())
     day_ago = now - 86400
     bucket_size = 900  # 15 minutes
@@ -472,6 +490,7 @@ async def pipeline_stats_activity(
     session: AsyncSession = Depends(get_session),
     _key: str = Depends(require_api_key),
 ):
+    require_admin(_key)
     now = int(time.time())
     cutoff = now - days * 86400
     bucket_size = 3600  # 1 hour
@@ -510,6 +529,7 @@ async def pipeline_stats_engagement(
     session: AsyncSession = Depends(get_session),
     _key: str = Depends(require_api_key),
 ):
+    require_admin(_key)
     now = int(time.time())
     cutoff = now - 30 * 86400
 
@@ -568,6 +588,7 @@ async def pipeline_stats_engagement(
 async def pipeline_models(
     _key: str = Depends(require_api_key),
 ):
+    require_admin(_key)
     from app.services.ranker import get_model_stats
     from app.services.collab_filter import model_stats as cf_stats
     from app.services.session_embeddings import vocab_size as emb_vocab_size

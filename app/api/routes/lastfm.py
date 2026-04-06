@@ -22,7 +22,7 @@ from sqlalchemy import select, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
-from app.core.security import require_api_key
+from app.core.security import check_user_access, require_api_key
 from app.db.session import get_session
 from app.models.db import ScrobbleQueue, User
 from app.models.schemas import (
@@ -44,7 +44,8 @@ def _require_lastfm_enabled() -> None:
         )
 
 
-async def _resolve_user(session: AsyncSession, user_id: str) -> User:
+async def _resolve_user(session: AsyncSession, user_id: str, api_key: str = "anonymous") -> User:
+    check_user_access(api_key, user_id)
     result = await session.execute(select(User).where(User.user_id == user_id))
     user = result.scalar_one_or_none()
     if not user:
@@ -67,7 +68,7 @@ async def connect_lastfm(
     _key: str = Depends(require_api_key),
 ):
     _require_lastfm_enabled()
-    user = await _resolve_user(session, user_id)
+    user = await _resolve_user(session, user_id, _key)
 
     if not settings.LASTFM_SESSION_ENCRYPTION_KEY:
         raise HTTPException(
@@ -87,20 +88,27 @@ async def connect_lastfm(
             body.lastfm_username, body.lastfm_password,
         )
     except LastFmError as e:
+        logger.warning("Last.fm auth failed for %s: %s", user_id, e.message)
         raise HTTPException(
             status_code=401,
-            detail=f"Last.fm authentication failed: {e.message}",
+            detail="Last.fm authentication failed. Check your username and password.",
         )
     except Exception as e:
         logger.error("Unexpected error during Last.fm auth: %s", e)
         raise HTTPException(
             status_code=502,
-            detail=f"Last.fm API error: {e}",
+            detail="Last.fm API is temporarily unavailable.",
         )
 
     # Store encrypted session key; password is already out of scope
     user.lastfm_username = body.lastfm_username
     user.lastfm_session_key = encrypt_session_key(result)
+
+    from app.core.audit import audit_log
+    audit_log("lastfm_connect", api_key=_key, detail={
+        "user_id": user_id,
+        "lastfm_username": body.lastfm_username,
+    })
 
     # Trigger immediate profile pull
     try:
@@ -125,7 +133,10 @@ async def disconnect_lastfm(
     session: AsyncSession = Depends(get_session),
     _key: str = Depends(require_api_key),
 ):
-    user = await _resolve_user(session, user_id)
+    user = await _resolve_user(session, user_id, _key)
+
+    from app.core.audit import audit_log
+    audit_log("lastfm_disconnect", api_key=_key, detail={"user_id": user_id})
 
     user.lastfm_username = None
     user.lastfm_session_key = None
@@ -156,12 +167,12 @@ async def sync_lastfm_profile(
     _key: str = Depends(require_api_key),
 ):
     _require_lastfm_enabled()
-    user = await _resolve_user(session, user_id)
+    user = await _resolve_user(session, user_id, _key)
 
     if not user.lastfm_username:
         raise HTTPException(
             status_code=404,
-            detail="No Last.fm account linked for this user.",
+            detail="Not found.",
         )
 
     from app.services.lastfm_profile import refresh_single_user
@@ -173,7 +184,7 @@ async def sync_lastfm_profile(
         logger.error("Last.fm profile sync failed for %s: %s", user_id, e)
         raise HTTPException(
             status_code=502,
-            detail=f"Failed to fetch Last.fm profile: {e}",
+            detail="Failed to fetch Last.fm profile. Try again later.",
         )
 
     return LastfmProfileResponse(
@@ -194,12 +205,12 @@ async def get_lastfm_profile(
     session: AsyncSession = Depends(get_session),
     _key: str = Depends(require_api_key),
 ):
-    user = await _resolve_user(session, user_id)
+    user = await _resolve_user(session, user_id, _key)
 
     if not user.lastfm_username:
         raise HTTPException(
             status_code=404,
-            detail="No Last.fm account linked for this user.",
+            detail="Not found.",
         )
 
     return LastfmProfileResponse(
