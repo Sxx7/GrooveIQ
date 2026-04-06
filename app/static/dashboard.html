@@ -395,6 +395,7 @@
   <button data-tab="users" onclick="switchTab('users')">Users</button>
   <button data-tab="tracks" onclick="switchTab('tracks')">Tracks</button>
   <button data-tab="playlists" onclick="switchTab('playlists')">Playlists</button>
+  <button data-tab="charts" onclick="switchTab('charts')">Charts</button>
   <button data-tab="discovery" onclick="switchTab('discovery')">Discovery</button>
 </div>
 
@@ -563,6 +564,7 @@ function switchTab(view) {
   else if (view === 'users') loadUsers();
   else if (view === 'tracks') loadTracks();
   else if (view === 'playlists') loadPlaylists();
+  else if (view === 'charts') loadCharts();
   else if (view === 'discovery') loadDiscovery();
 }
 
@@ -2016,6 +2018,169 @@ function stepStatusColor(status) {
   if (status === 'running') return 'yellow';
   if (status === 'skipped') return 'blue';
   return 'purple';
+}
+
+// ---------------------------------------------------------------------------
+// Discovery tab
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Charts tab
+// ---------------------------------------------------------------------------
+
+var chartsCurrentScope = 'global';
+var chartsCurrentType = 'top_tracks';
+
+function loadCharts() {
+  return Promise.all([
+    api('/v1/charts'),
+    api('/v1/charts/stats').catch(function() { return null; }),
+    api('/v1/charts/' + chartsCurrentType + '?scope=' + encodeURIComponent(chartsCurrentScope) + '&limit=100').catch(function() { return null; })
+  ]).then(function(results) {
+    renderCharts(results[0], results[1], results[2]);
+  });
+}
+
+function chartsLidarrBadge(status) {
+  if (!status) return '<span class="badge" style="opacity:0.4">not tracked</span>';
+  if (status === 'downloading') return '<span class="badge badge-blue">downloading</span>';
+  if (status === 'in_lidarr') return '<span class="badge badge-green">in lidarr</span>';
+  if (status === 'pending') return '<span class="badge badge-yellow">pending</span>';
+  if (status === 'failed') return '<span class="badge badge-red">failed</span>';
+  return '<span class="badge">' + esc(status) + '</span>';
+}
+
+function chartsLibraryBadge(entry) {
+  if (entry.in_library) return '<span class="badge badge-green">in library</span>';
+  return chartsLidarrBadge(entry.lidarr_status);
+}
+
+function renderCharts(available, stats, chartData) {
+  var h = '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">'
+    + '<h2 style="font-size:18px">Charts</h2>'
+    + '<button onclick="buildCharts(this)">Build Charts</button>'
+    + '</div>';
+
+  // Stats cards
+  if (stats) {
+    h += '<div class="stats-grid">'
+      + '<div class="stat-card"><div class="label">Charts</div><div class="value">' + (stats.chart_count || 0) + '</div></div>'
+      + '<div class="stat-card"><div class="label">Total Entries</div><div class="value">' + (stats.total_entries || 0) + '</div></div>'
+      + '<div class="stat-card"><div class="label">Library Matches</div><div class="value" style="color:var(--green)">' + (stats.library_matches || 0) + '</div></div>'
+      + '<div class="stat-card"><div class="label">Match Rate</div><div class="value">' + ((stats.match_rate || 0) * 100).toFixed(1) + '%</div>'
+      + (stats.last_fetched_at ? '<div class="sub">Updated ' + timeAgo(stats.last_fetched_at) + '</div>' : '') + '</div>'
+      + '</div>';
+  }
+
+  // Scope selector
+  var charts = (available && available.charts) || [];
+  if (!charts.length) {
+    h += '<div class="empty">No charts built yet. Click "Build Charts" to fetch from Last.fm.<br><br>'
+      + 'Configure <code>CHARTS_ENABLED=true</code> and <code>CHARTS_TAGS</code> / <code>CHARTS_COUNTRIES</code> in your .env file.</div>';
+    $('#app').innerHTML = h;
+    return;
+  }
+
+  // Build scope options grouped
+  var scopes = [];
+  var seenScopes = {};
+  for (var i = 0; i < charts.length; i++) {
+    if (!seenScopes[charts[i].scope]) {
+      seenScopes[charts[i].scope] = true;
+      scopes.push(charts[i].scope);
+    }
+  }
+
+  // Check which chart_types exist for current scope
+  var typesForScope = {};
+  for (var i = 0; i < charts.length; i++) {
+    if (charts[i].scope === chartsCurrentScope) typesForScope[charts[i].chart_type] = true;
+  }
+
+  h += '<div class="filter-bar">';
+  h += '<label>Scope</label><select class="inline-select" onchange="chartsCurrentScope=this.value;loadCharts()">';
+  for (var i = 0; i < scopes.length; i++) {
+    var label = scopes[i];
+    if (label === 'global') label = 'Global';
+    else if (label.indexOf('tag:') === 0) label = 'Genre: ' + label.substring(4);
+    else if (label.indexOf('geo:') === 0) label = 'Country: ' + label.substring(4);
+    h += '<option value="' + esc(scopes[i]) + '"' + (scopes[i] === chartsCurrentScope ? ' selected' : '') + '>' + esc(label) + '</option>';
+  }
+  h += '</select>';
+
+  h += '<label>Type</label><select class="inline-select" onchange="chartsCurrentType=this.value;loadCharts()">';
+  h += '<option value="top_tracks"' + (chartsCurrentType === 'top_tracks' ? ' selected' : '') + '>Top Tracks</option>';
+  h += '<option value="top_artists"' + (chartsCurrentType === 'top_artists' ? ' selected' : '') + '>Top Artists</option>';
+  h += '</select>';
+  h += '</div>';
+
+  // Chart table
+  if (!chartData || !chartData.entries || !chartData.entries.length) {
+    h += '<div class="empty">No data for this chart type / scope combination.</div>';
+    $('#app').innerHTML = h;
+    return;
+  }
+
+  var isTrack = chartsCurrentType === 'top_tracks';
+  h += '<div class="panel full-width"><div class="panel-header">'
+    + esc(chartsCurrentScope === 'global' ? 'Global' : chartsCurrentScope) + ' — '
+    + (isTrack ? 'Top Tracks' : 'Top Artists')
+    + ' <span style="font-weight:400;color:var(--text-dim);font-size:12px">' + chartData.total + ' entries'
+    + (chartData.fetched_at ? ', updated ' + timeAgo(chartData.fetched_at) : '') + '</span>'
+    + '</div>';
+
+  h += '<div class="panel-body" style="overflow-x:auto"><table>';
+  if (isTrack) {
+    h += '<tr><th style="width:40px">#</th><th>Title</th><th>Artist</th><th>Plays</th><th>Listeners</th><th>Status</th></tr>';
+  } else {
+    h += '<tr><th style="width:40px">#</th><th>Artist</th><th>Plays</th><th>Listeners</th><th>Library Tracks</th><th>Status</th></tr>';
+  }
+
+  for (var i = 0; i < chartData.entries.length; i++) {
+    var e = chartData.entries[i];
+    h += '<tr>';
+    h += '<td style="color:var(--text-dim);font-weight:600">' + (e.position + 1) + '</td>';
+
+    if (isTrack) {
+      h += '<td><b>' + esc(e.track_title || '') + '</b></td>';
+      h += '<td>' + esc(e.artist_name || '') + '</td>';
+    } else {
+      h += '<td><b>' + esc(e.artist_name || '') + '</b></td>';
+    }
+
+    h += '<td>' + fmtNumber(e.playcount) + '</td>';
+    h += '<td>' + fmtNumber(e.listeners) + '</td>';
+
+    if (!isTrack) {
+      h += '<td>' + (e.library_track_count || 0) + '</td>';
+    }
+
+    h += '<td>' + chartsLibraryBadge(e) + '</td>';
+    h += '</tr>';
+  }
+
+  h += '</table></div></div>';
+  $('#app').innerHTML = h;
+}
+
+function fmtNumber(n) {
+  if (n == null) return '\u2014';
+  if (n >= 1000000) return (n / 1000000).toFixed(1) + 'M';
+  if (n >= 1000) return (n / 1000).toFixed(1) + 'K';
+  return '' + n;
+}
+
+function buildCharts(btn) {
+  btn.disabled = true;
+  btn.textContent = 'Building...';
+  apiPost('/v1/charts/build', {}).then(function(data) {
+    btn.textContent = 'Done';
+    setTimeout(function() { loadCharts(); }, 1000);
+  }).catch(function(e) {
+    alert('Chart build failed: ' + e.message);
+    btn.disabled = false;
+    btn.textContent = 'Build Charts';
+  });
 }
 
 // ---------------------------------------------------------------------------

@@ -17,7 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.security import require_admin, require_api_key
 from app.db.session import get_session
-from app.models.db import ChartEntry, TrackFeatures
+from app.models.db import ChartEntry, DiscoveryRequest, TrackFeatures
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -92,7 +92,28 @@ async def get_chart(
     total = (await session.execute(count_q)).scalar() or 0
 
     if total == 0:
-        raise HTTPException(status_code=404, detail=f"No chart data for {chart_type}/{scope}. Run POST /v1/charts/build first.")
+        # Give a helpful error: distinguish "never built" from "scope not configured".
+        any_charts = (await session.execute(
+            select(func.count()).select_from(ChartEntry)
+        )).scalar() or 0
+
+        if any_charts == 0:
+            raise HTTPException(
+                status_code=404,
+                detail="No chart data available. Run POST /v1/charts/build first.",
+            )
+
+        # Charts exist but not for this scope — list available scopes.
+        available = (await session.execute(
+            select(ChartEntry.scope).where(ChartEntry.chart_type == chart_type).distinct()
+        )).scalars().all()
+
+        raise HTTPException(
+            status_code=404,
+            detail=f"No chart data for scope '{scope}'. "
+                   f"Available scopes for {chart_type}: {', '.join(sorted(available)) or 'none'}. "
+                   f"Configure CHARTS_TAGS or CHARTS_COUNTRIES in .env and rebuild.",
+        )
 
     q = (
         select(ChartEntry)
@@ -112,6 +133,19 @@ async def get_chart(
         )
         feat_map = {t.track_id: t for t in feat_q.scalars().all()}
 
+    # Build Lidarr status lookup for unmatched artists.
+    unmatched_artists = list({e.artist_name for e in entries if not e.matched_track_id and e.artist_name})
+    lidarr_status_map = {}
+    if unmatched_artists:
+        discovery_q = await session.execute(
+            select(DiscoveryRequest.artist_name, DiscoveryRequest.status)
+            .where(DiscoveryRequest.artist_name.in_(unmatched_artists))
+            .order_by(DiscoveryRequest.created_at.desc())
+        )
+        for artist_name, status in discovery_q.all():
+            if artist_name not in lidarr_status_map:
+                lidarr_status_map[artist_name] = status
+
     items = []
     for e in entries:
         item = {
@@ -127,6 +161,20 @@ async def get_chart(
 
         if chart_type == "top_artists":
             item["library_track_count"] = e.library_track_count
+
+        # Lidarr status for items not in library.
+        if not e.in_library:
+            lidarr_st = lidarr_status_map.get(e.artist_name)
+            if lidarr_st == "sent":
+                item["lidarr_status"] = "downloading"
+            elif lidarr_st == "in_lidarr":
+                item["lidarr_status"] = "in_lidarr"
+            elif lidarr_st == "pending":
+                item["lidarr_status"] = "pending"
+            elif lidarr_st == "failed":
+                item["lidarr_status"] = "failed"
+            else:
+                item["lidarr_status"] = None  # not sent to Lidarr
 
         # Enrich with local metadata if matched.
         tf = feat_map.get(e.matched_track_id) if e.matched_track_id else None
