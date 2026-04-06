@@ -26,6 +26,7 @@ from app.services import faiss_index
 from app.services import collab_filter
 from app.services import session_embeddings
 from app.services import lastfm_candidates
+from app.services import sasrec
 
 logger = logging.getLogger(__name__)
 
@@ -325,7 +326,17 @@ async def _get_candidates_impl(
             if tid not in exclude
         ]
 
-    # Source 5: Heuristic recall.
+    # Source 5: SASRec sequential predictions (transformer next-track).
+    sasrec_candidates: List[Dict[str, Any]] = []
+    if sasrec.is_ready():
+        raw = sasrec.get_top_predictions(user_id, k=100, exclude_ids=exclude)
+        sasrec_candidates = [
+            {"track_id": tid, "score": max(score * 0.6, 0.1), "source": "sasrec"}
+            for tid, score in raw
+            if tid not in exclude
+        ]
+
+    # Source 6: Heuristic recall.
     popular = await _get_popular_tracks(session, k=50)
     artist_recall = await _get_recently_played_artist_tracks(user_id, session, k=50)
 
@@ -333,7 +344,7 @@ async def _get_candidates_impl(
     seen: Set[str] = set()
     merged: List[Dict[str, Any]] = []
 
-    for candidate_list in [content_candidates, cf_candidates, session_emb_candidates, lastfm_sim_candidates, artist_recall, popular]:
+    for candidate_list in [content_candidates, cf_candidates, session_emb_candidates, sasrec_candidates, lastfm_sim_candidates, artist_recall, popular]:
         for c in candidate_list:
             tid = c["track_id"]
             if tid in seen or tid in exclude:

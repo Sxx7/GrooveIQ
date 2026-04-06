@@ -256,6 +256,26 @@ async def _periodic_recommendation_pipeline() -> None:
         logger.info(f"Last.fm candidates cache done ({time.time() - t0:.1f}s)", extra=lastfm_result)
     except Exception:
         logger.error(f"Last.fm candidates cache failed ({time.time() - t0:.1f}s): {traceback.format_exc()}")
+    await asyncio.sleep(0.1)
+
+    # Step 8: SASRec sequential model (transformer on listening sessions)
+    t0 = time.time()
+    try:
+        from app.services.sasrec import train as train_sasrec
+        sasrec_result = await train_sasrec()
+        logger.info(f"SASRec training done ({time.time() - t0:.1f}s)", extra=sasrec_result)
+    except Exception:
+        logger.error(f"SASRec training failed ({time.time() - t0:.1f}s): {traceback.format_exc()}")
+    await asyncio.sleep(0.1)
+
+    # Step 9: Session-level GRU for taste drift modeling
+    t0 = time.time()
+    try:
+        from app.services.session_gru import train as train_session_gru
+        gru_result = await train_session_gru()
+        logger.info(f"Session GRU training done ({time.time() - t0:.1f}s)", extra=gru_result)
+    except Exception:
+        logger.error(f"Session GRU training failed ({time.time() - t0:.1f}s): {traceback.format_exc()}")
 
     logger.info(f"Recommendation pipeline complete ({time.time() - t_pipeline:.1f}s total)")
 

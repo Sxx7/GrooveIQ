@@ -50,6 +50,14 @@ FEATURE_COLUMNS = [
     "delta_valence_short", "delta_valence_long",
     # Freshness: days since track was added to the library
     "days_since_added",
+    # Position bias (logged during reco_impression; zeroed at serving time)
+    "position_bias",
+    # Popularity personalization: user's preference for popular vs niche tracks
+    "popularity_preference",
+    # Sequential model score (SASRec next-track probability)
+    "sequential_score",
+    # Session GRU taste drift score (similarity to predicted next-session embedding)
+    "taste_drift_score",
 ]
 
 NUM_FEATURES = len(FEATURE_COLUMNS)
@@ -65,9 +73,16 @@ async def build_features(
     output_type: Optional[str] = None,
     context_type: Optional[str] = None,
     location_label: Optional[str] = None,
+    position_map: Optional[Dict[str, int]] = None,
 ) -> Dict[str, np.ndarray]:
     """
     Build feature vectors for a list of candidate tracks.
+
+    Args:
+        position_map: optional {track_id: position} for training data.
+            At serving time this is None → position_bias feature = 0.0
+            (position debiasing: model learns position effect during training
+            but cannot rely on it at inference).
 
     Returns:
         {
@@ -93,6 +108,7 @@ async def build_features(
     output_patterns = taste_profile.get("output_patterns", {})
     context_type_patterns = taste_profile.get("context_type_patterns", {})
     location_patterns = taste_profile.get("location_patterns", {})
+    popularity_pref = float(taste_profile.get("popularity_preference", 0.5))
 
     # --- Load track features in bulk ---
     feat_result = await session.execute(
@@ -146,6 +162,22 @@ async def build_features(
     location_affinity = float(location_patterns.get(location_label, 0.0)) if location_label else 0.0
     is_mobile = 1.0 if device_type == "mobile" else 0.0
     is_headphones = 1.0 if output_type == "headphones" else 0.0
+
+    # --- Sequential model scores (SASRec) ---
+    sasrec_scores: Dict[str, float] = {}
+    try:
+        from app.services.sasrec import predict_next_scores
+        sasrec_scores = predict_next_scores(user_id, set(candidate_track_ids))
+    except Exception:
+        pass  # model not trained yet
+
+    # --- Session GRU taste drift scores ---
+    gru_scores: Dict[str, float] = {}
+    try:
+        from app.services.session_gru import predict_drift_scores
+        gru_scores = predict_drift_scores(user_id, set(candidate_track_ids))
+    except Exception:
+        pass  # model not trained yet
 
     # --- Build feature rows ---
     rows: List[np.ndarray] = []
@@ -206,6 +238,15 @@ async def build_features(
                     conf = tag.get("confidence", 0.0)
                     mood_score += mood_prefs.get(label, 0.0) * conf
 
+        # Position bias: use logged position during training, 0 at serving.
+        pos_bias = float(position_map.get(tid, 0)) if position_map else 0.0
+
+        # Sequential model score (SASRec next-track probability).
+        seq_score = sasrec_scores.get(tid, 0.0)
+
+        # Session GRU taste drift score.
+        drift_score = gru_scores.get(tid, 0.0)
+
         row = np.array([
             bpm, energy, danceability, valence, loudness,
             instrumentalness, duration,
@@ -222,6 +263,10 @@ async def build_features(
             delta_energy_short, delta_energy_long,
             delta_valence_short, delta_valence_long,
             days_since_added,
+            pos_bias,
+            popularity_pref,
+            seq_score,
+            drift_score,
         ], dtype=np.float32)
 
         rows.append(row)
@@ -237,15 +282,90 @@ async def build_features(
     return {"track_ids": valid_ids, "features": features}
 
 
+async def _load_impression_positions(session: AsyncSession) -> Dict[str, Dict[str, int]]:
+    """
+    Load position data from reco_impression events for position bias debiasing.
+
+    Returns {user_id: {track_id: avg_position}}.
+    """
+    from sqlalchemy import func
+    from app.models.db import ListenEvent
+
+    result = await session.execute(
+        select(
+            ListenEvent.user_id,
+            ListenEvent.track_id,
+            func.avg(ListenEvent.position).label("avg_pos"),
+        )
+        .where(
+            ListenEvent.event_type == "reco_impression",
+            ListenEvent.position.isnot(None),
+        )
+        .group_by(ListenEvent.user_id, ListenEvent.track_id)
+    )
+    positions: Dict[str, Dict[str, int]] = {}
+    for row in result.all():
+        positions.setdefault(row.user_id, {})[row.track_id] = int(row.avg_pos or 0)
+    return positions
+
+
+async def _load_impression_negatives(session: AsyncSession) -> Dict[str, set]:
+    """
+    Find tracks that were shown (reco_impression) but never played.
+
+    These are stronger negatives than random unplayed tracks because
+    the user saw them and chose not to engage.
+
+    Returns {user_id: {track_id, ...}} of impression-only tracks.
+    """
+    from app.models.db import ListenEvent
+
+    # All impressed tracks per user.
+    imp_result = await session.execute(
+        select(
+            ListenEvent.user_id,
+            ListenEvent.track_id,
+        )
+        .where(ListenEvent.event_type == "reco_impression")
+        .distinct()
+    )
+    impressed: Dict[str, set] = {}
+    for row in imp_result.all():
+        impressed.setdefault(row.user_id, set()).add(row.track_id)
+
+    # All played tracks per user (play_start/play_end).
+    play_result = await session.execute(
+        select(
+            ListenEvent.user_id,
+            ListenEvent.track_id,
+        )
+        .where(ListenEvent.event_type.in_(["play_start", "play_end"]))
+        .distinct()
+    )
+    played: Dict[str, set] = {}
+    for row in play_result.all():
+        played.setdefault(row.user_id, set()).add(row.track_id)
+
+    # Impression-only = shown but never played.
+    negatives: Dict[str, set] = {}
+    for uid, imp_tracks in impressed.items():
+        played_tracks = played.get(uid, set())
+        neg = imp_tracks - played_tracks
+        if neg:
+            negatives[uid] = neg
+    return negatives
+
+
 async def build_training_data(session: AsyncSession) -> Dict[str, Any]:
     """
-    Build training data from all track_interactions.
+    Build training data from all track_interactions + impression-based negatives.
 
     Returns:
         {
             "features": np.ndarray (n_samples, NUM_FEATURES),
             "labels": np.ndarray (n_samples,),
             "groups": np.ndarray — number of candidates per user (for LGBMRanker),
+            "sample_weights": np.ndarray,
             "n_samples": int,
         }
     """
@@ -258,6 +378,12 @@ async def build_training_data(session: AsyncSession) -> Dict[str, Any]:
 
     if not interactions:
         return {"features": np.empty((0, NUM_FEATURES)), "labels": np.array([]), "groups": np.array([]), "sample_weights": np.array([]), "n_samples": 0}
+
+    # Load position bias data from impression events.
+    position_data = await _load_impression_positions(session)
+
+    # Load impression-based negatives (shown but not played).
+    impression_negatives = await _load_impression_negatives(session)
 
     # Group by user.
     from collections import defaultdict
@@ -272,7 +398,16 @@ async def build_training_data(session: AsyncSession) -> Dict[str, Any]:
 
     for user_id, user_inters in by_user.items():
         track_ids = [i.track_id for i in user_inters]
-        result = await build_features(user_id, track_ids, session)
+        user_positions = position_data.get(user_id, {})
+
+        # Add impression-based negatives: tracks shown but never played.
+        # These get satisfaction_score = 0.0 (true negatives).
+        imp_neg_ids = impression_negatives.get(user_id, set()) - set(track_ids)
+
+        result = await build_features(
+            user_id, track_ids, session,
+            position_map=user_positions,
+        )
 
         if result["features"].shape[0] == 0:
             continue
@@ -299,10 +434,26 @@ async def build_training_data(session: AsyncSession) -> Dict[str, Any]:
             elif inter.like_count > 0 or inter.repeat_count > 2:
                 weights[idx] = 2.0
 
+        # Append impression-based negatives as additional training examples.
+        if imp_neg_ids:
+            neg_list = list(imp_neg_ids)[:50]  # cap to avoid imbalance
+            neg_positions = {tid: user_positions.get(tid, 0) for tid in neg_list}
+            neg_result = await build_features(
+                user_id, neg_list, session,
+                position_map=neg_positions,
+            )
+            if neg_result["features"].shape[0] > 0:
+                n_neg = neg_result["features"].shape[0]
+                result["features"] = np.vstack([result["features"], neg_result["features"]])
+                result["track_ids"] = result["track_ids"] + neg_result["track_ids"]
+                # Impression negatives: label = 0.0, weight = 1.5 (stronger than random).
+                labels = np.concatenate([labels, np.zeros(n_neg, dtype=np.float32)])
+                weights = np.concatenate([weights, np.full(n_neg, 1.5, dtype=np.float32)])
+
         all_features.append(result["features"])
         all_labels.append(labels)
         all_weights.append(weights)
-        groups.append(len(result["track_ids"]))
+        groups.append(result["features"].shape[0])
 
     if not all_features:
         return {"features": np.empty((0, NUM_FEATURES)), "labels": np.array([]), "groups": np.array([]), "sample_weights": np.array([]), "n_samples": 0}

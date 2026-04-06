@@ -239,9 +239,15 @@ async def _build_profile(
         "listening_since": first_played,
     }
 
+    # --- Popularity preference (niche vs mainstream tendency) ---
+    # Measures whether user tends toward popular or niche tracks.
+    # 0.0 = strongly niche, 0.5 = neutral, 1.0 = strongly mainstream.
+    popularity_pref = await _compute_popularity_preference(session, user_id, interactions)
+
     profile = {
         "top_tracks": top_tracks,
         "behaviour": behaviour,
+        "popularity_preference": popularity_pref,
         "updated_at": now,
     }
 
@@ -463,6 +469,66 @@ def _compute_key_preferences(
         label: round(score / total_weight, 4)
         for label, score in sorted(key_scores.items(), key=lambda x: -x[1])
     }
+
+
+async def _compute_popularity_preference(
+    session: AsyncSession, user_id: str, interactions: list
+) -> float:
+    """
+    Compute user's preference for popular vs niche tracks.
+
+    Compares the user's listened tracks' global popularity against the
+    library median. Returns 0.0 (strongly niche) to 1.0 (strongly mainstream).
+    """
+    if not interactions:
+        return 0.5
+
+    # Get global play counts for user's tracks.
+    user_track_ids = [i.track_id for i in interactions]
+    result = await session.execute(
+        select(
+            TrackInteraction.track_id,
+            func.sum(TrackInteraction.play_count).label("total"),
+        )
+        .where(TrackInteraction.track_id.in_(user_track_ids))
+        .group_by(TrackInteraction.track_id)
+    )
+    user_track_pops = {row.track_id: row.total or 0 for row in result.all()}
+
+    # Get library-wide median popularity.
+    all_pop_result = await session.execute(
+        select(func.sum(TrackInteraction.play_count).label("total"))
+        .group_by(TrackInteraction.track_id)
+    )
+    all_pops = sorted([row.total or 0 for row in all_pop_result.all()])
+
+    if not all_pops:
+        return 0.5
+
+    median_pop = all_pops[len(all_pops) // 2] if all_pops else 1
+
+    # Weighted average popularity of user's tracks (weighted by satisfaction).
+    total_w = 0.0
+    total_pop = 0.0
+    for inter in interactions:
+        w = max(inter.satisfaction_score or 0.5, 0.1)
+        pop = user_track_pops.get(inter.track_id, 0)
+        total_w += w
+        total_pop += w * pop
+
+    if total_w < 1e-9:
+        return 0.5
+
+    user_avg_pop = total_pop / total_w
+
+    # Normalize: ratio of user's avg popularity to library median.
+    # Sigmoid-like mapping to [0, 1].
+    if median_pop < 1:
+        return 0.5
+    ratio = user_avg_pop / median_pop
+    # ratio > 1 = mainstream, < 1 = niche. Map via tanh to [0, 1].
+    import math
+    return round(0.5 + 0.5 * math.tanh(ratio - 1.0), 4)
 
 
 async def _compute_session_stats(
