@@ -236,6 +236,16 @@ async def _periodic_recommendation_pipeline() -> None:
         logger.info(f"Ranker training done ({time.time() - t0:.1f}s)", extra=ranker_result)
     except Exception:
         logger.error(f"Ranker training failed ({time.time() - t0:.1f}s): {traceback.format_exc()}")
+    await asyncio.sleep(0.1)
+
+    # Step 6: Session skip-gram embeddings
+    t0 = time.time()
+    try:
+        from app.services.session_embeddings import train as train_session_embeddings
+        emb_result = await train_session_embeddings()
+        logger.info(f"Session embeddings done ({time.time() - t0:.1f}s)", extra=emb_result)
+    except Exception:
+        logger.error(f"Session embeddings failed ({time.time() - t0:.1f}s): {traceback.format_exc()}")
 
     logger.info(f"Recommendation pipeline complete ({time.time() - t_pipeline:.1f}s total)")
 

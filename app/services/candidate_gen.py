@@ -24,6 +24,7 @@ from app.db.session import AsyncSessionLocal
 from app.models.db import TrackFeatures, TrackInteraction, User
 from app.services import faiss_index
 from app.services import collab_filter
+from app.services import session_embeddings
 
 logger = logging.getLogger(__name__)
 
@@ -271,7 +272,35 @@ async def _get_candidates_impl(
             if tid not in exclude
         ]
 
-    # Source 3: Heuristic recall.
+    # Source 3: Session skip-gram embeddings (behavioral co-occurrence).
+    session_emb_candidates: List[Dict[str, Any]] = []
+    if session_embeddings.is_ready():
+        if seed_track_id:
+            raw = session_embeddings.get_similar_tracks(
+                seed_track_id, k=100, exclude_ids=exclude,
+            )
+            session_emb_candidates = [
+                {"track_id": tid, "score": score * 0.8, "source": "session_skipgram"}
+                for tid, score in raw
+            ]
+        else:
+            # Use user's top tracks as centroid for session-based retrieval.
+            user_result = await session.execute(
+                select(User.taste_profile).where(User.user_id == user_id)
+            )
+            tp = user_result.scalar_one_or_none()
+            if tp:
+                top_ids = _get_user_top_track_ids(tp, limit=20)
+                if top_ids:
+                    raw = session_embeddings.get_similar_to_tracks(
+                        top_ids, k=100, exclude_ids=exclude,
+                    )
+                    session_emb_candidates = [
+                        {"track_id": tid, "score": score * 0.8, "source": "session_skipgram"}
+                        for tid, score in raw
+                    ]
+
+    # Source 4: Heuristic recall.
     popular = await _get_popular_tracks(session, k=50)
     artist_recall = await _get_recently_played_artist_tracks(user_id, session, k=50)
 
@@ -279,7 +308,7 @@ async def _get_candidates_impl(
     seen: Set[str] = set()
     merged: List[Dict[str, Any]] = []
 
-    for candidate_list in [content_candidates, cf_candidates, artist_recall, popular]:
+    for candidate_list in [content_candidates, cf_candidates, session_emb_candidates, artist_recall, popular]:
         for c in candidate_list:
             tid = c["track_id"]
             if tid in seen or tid in exclude:

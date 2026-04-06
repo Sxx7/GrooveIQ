@@ -8,12 +8,16 @@ Enforces diversity constraints and applies business rules:
   2. Anti-repetition — suppress tracks played in the last 2 hours
   3. Skip suppression — demote tracks early-skipped >2 times in last 24h
   4. Freshness boost — +10% score uplift for tracks the user has never played
+  5. Exploration slots — reserve ~15% of slots for low-interaction tracks with
+     score noise proportional to uncertainty (Thompson Sampling-inspired)
 """
 
 from __future__ import annotations
 
 import logging
+import math
 import os
+import random
 import time
 from collections import Counter
 from typing import Dict, List, Optional, Set, Tuple
@@ -41,6 +45,13 @@ _FRESHNESS_BOOST = 0.10
 # Skip suppression: demote tracks early-skipped >N times in 24h.
 _SKIP_THRESHOLD = 2
 _SKIP_DEMOTE_FACTOR = 0.5
+
+# Exploration: fraction of final slots reserved for under-explored tracks.
+_EXPLORATION_FRACTION = 0.15
+# Tracks with fewer than this many plays are considered "uncertain".
+_EXPLORATION_LOW_PLAYS = 3
+# Noise scale for exploration (applied as score += noise * scale / sqrt(plays+1)).
+_EXPLORATION_NOISE_SCALE = 0.25
 
 
 def _extract_artist(file_path: Optional[str]) -> str:
@@ -152,7 +163,10 @@ async def rerank(
     ]
     adjusted.sort(key=lambda x: x[1], reverse=True)
 
-    # --- Rule 4: Artist diversity in top N ---
+    # --- Rule 4: Exploration slots (before artist diversity so diversity is final) ---
+    adjusted = _inject_exploration_slots(adjusted, inter_map)
+
+    # --- Rule 5: Artist diversity in top N (applied last to guarantee constraint) ---
     artist_map = {tid: _extract_artist(path_map.get(tid)) for tid in track_ids}
     result = _enforce_artist_diversity(adjusted, artist_map)
 
@@ -186,3 +200,87 @@ def _enforce_artist_diversity(
             deferred.append((tid, score))
 
     return accepted + deferred
+
+
+def _inject_exploration_slots(
+    ranked: List[Tuple[str, float]],
+    inter_map: Dict[str, TrackInteraction],
+) -> List[Tuple[str, float]]:
+    """
+    Reserve ~15% of recommendation slots for under-explored tracks.
+
+    Tracks with few interactions have high uncertainty — they might be
+    great but the model lacks data.  We inject them into the final list
+    by adding score noise proportional to 1/sqrt(play_count + 1),
+    inspired by Thompson Sampling.
+
+    Exploration tracks are pulled from the bottom half of the ranked
+    list (tracks the model scored lower but hasn't seen enough data on)
+    and placed into evenly-spaced "exploration slots" in the output.
+    """
+    n = len(ranked)
+    if n < 5:
+        return ranked
+
+    n_explore = max(1, int(n * _EXPLORATION_FRACTION))
+
+    # Split: top half = exploitation pool, bottom half = exploration pool.
+    split = n // 2
+    exploit_pool = list(ranked[:split])
+    explore_pool = list(ranked[split:])
+
+    # Score exploration candidates with uncertainty noise.
+    scored_explore: List[Tuple[str, float, float]] = []  # (tid, original, noisy)
+    for tid, score in explore_pool:
+        plays = inter_map[tid].play_count if tid in inter_map else 0
+        # More noise for tracks with fewer plays.
+        noise = random.gauss(0, 1) * _EXPLORATION_NOISE_SCALE / math.sqrt(plays + 1)
+        noisy_score = score + abs(noise)  # bias upward to give them a chance
+        scored_explore.append((tid, score, noisy_score))
+
+    # Pick top exploration candidates by noisy score.
+    scored_explore.sort(key=lambda x: x[2], reverse=True)
+    explore_picks = [(tid, orig) for tid, orig, _ in scored_explore[:n_explore]]
+
+    # Interleave: place exploration tracks at evenly-spaced positions.
+    # E.g. for 25 results and 4 explore slots → positions ~6, 12, 18, 24.
+    result: List[Tuple[str, float]] = []
+    explore_ids = {tid for tid, _ in explore_picks}
+    # Remove explore picks from exploit pool if they somehow overlap.
+    exploit_pool = [(tid, s) for tid, s in exploit_pool if tid not in explore_ids]
+    # Also remove from the remaining explore pool.
+    remaining = [
+        (tid, s) for tid, s in explore_pool
+        if tid not in explore_ids
+    ]
+    # Full non-explore list in original rank order.
+    non_explore = exploit_pool + remaining
+
+    if not explore_picks:
+        return ranked
+
+    # Calculate spacing: spread explore tracks evenly across the output.
+    total_out = len(non_explore) + len(explore_picks)
+    spacing = total_out / (len(explore_picks) + 1)
+
+    explore_iter = iter(explore_picks)
+    non_explore_iter = iter(non_explore)
+    next_explore_pos = spacing
+
+    for i in range(total_out):
+        if i >= next_explore_pos - 0.5:
+            ex = next(explore_iter, None)
+            if ex is not None:
+                result.append(ex)
+                next_explore_pos += spacing
+                continue
+        ne = next(non_explore_iter, None)
+        if ne is not None:
+            result.append(ne)
+        else:
+            # Drain remaining explore picks.
+            ex = next(explore_iter, None)
+            if ex is not None:
+                result.append(ex)
+
+    return result
