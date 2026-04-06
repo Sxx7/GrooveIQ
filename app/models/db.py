@@ -454,6 +454,43 @@ class ScrobbleQueue(Base):
     )
 
 
+# ---------------------------------------------------------------------------
+# Charts  (Last.fm global / genre / country charts)
+# ---------------------------------------------------------------------------
+
+class ChartEntry(Base):
+    """
+    A single entry in a chart snapshot (e.g. position #3 in global top tracks).
+
+    Charts are rebuilt periodically from Last.fm and matched against the local
+    library.  chart_type + scope + position uniquely identify an entry.
+    """
+    __tablename__ = "chart_entries"
+
+    id               = Column(Integer, primary_key=True, autoincrement=True)
+    chart_type       = Column(String(32),  nullable=False, index=True)   # top_tracks, top_artists
+    scope            = Column(String(128), nullable=False, index=True)   # global, tag:rock, geo:germany
+    position         = Column(Integer,     nullable=False)               # 0-based chart position
+
+    # Track/artist info from Last.fm
+    track_title      = Column(String(512), nullable=True)                # null for artist charts
+    artist_name      = Column(String(512), nullable=False)
+    artist_mbid      = Column(String(64),  nullable=True)
+    playcount        = Column(Integer,     nullable=True)
+    listeners        = Column(Integer,     nullable=True)
+
+    # Library matching
+    matched_track_id = Column(String(128), nullable=True, index=True)    # set if matched to library
+    in_library       = Column(Boolean,     nullable=False, default=False)
+    library_track_count = Column(Integer,  nullable=True)                # for artist charts: how many tracks in library
+
+    fetched_at       = Column(Integer,     nullable=False)               # when this chart was fetched
+
+    __table_args__ = (
+        Index("ix_chart_type_scope_pos", "chart_type", "scope", "position"),
+    )
+
+
 class PlaylistTrack(Base):
     """Ordered track within a playlist."""
     __tablename__ = "playlist_tracks"

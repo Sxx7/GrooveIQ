@@ -14,7 +14,7 @@ from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import FileResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 
-from app.api.routes import discovery, events, health, lastfm, playlists, recommend, stats, tracks, users
+from app.api.routes import charts, discovery, events, health, lastfm, playlists, recommend, stats, tracks, users
 from app.core.config import settings
 from app.core.logging import setup_logging
 from app.db.session import init_db
@@ -137,6 +137,7 @@ app.include_router(playlists.router, prefix="/v1", tags=["playlists"])
 app.include_router(stats.router, prefix="/v1", tags=["stats"])
 app.include_router(recommend.router, prefix="/v1", tags=["recommendations"])
 app.include_router(discovery.router, prefix="/v1", tags=["discovery"])
+app.include_router(charts.router, prefix="/v1", tags=["charts"])
 app.include_router(lastfm.router, prefix="/v1", tags=["lastfm"])
 
 # ---------------------------------------------------------------------------

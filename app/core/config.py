@@ -98,7 +98,6 @@ class Settings(BaseSettings):
     ANALYSIS_BATCH_SIZE: int = 50      # tracks per job batch
     ANALYSIS_TIMEOUT: int = 300        # seconds before a single file analysis is killed
     RESCAN_INTERVAL_HOURS: int = 6     # how often to check for new files
-    ANALYSIS_TWO_PASS: bool = True     # fast DSP pass first, then TF enrichment pass
     ANALYSIS_GPU: bool = False         # use ONNX Runtime GPU for TF enrichment pass
     ANALYSIS_GPU_BACKEND: str = ""     # "cuda", "openvino", or "" (auto-detect)
     ANALYSIS_GPU_BATCH_SIZE: int = 64  # mel-spec patches per GPU forward pass
@@ -166,6 +165,17 @@ class Settings(BaseSettings):
     DISCOVERY_SIMILAR_LIMIT: int = 20  # similar artists per seed from Last.fm
 
     # ------------------------------------------------------------------
+    # Charts (Last.fm)
+    # ------------------------------------------------------------------
+    CHARTS_ENABLED: bool = False               # master toggle for periodic chart builds
+    CHARTS_INTERVAL_HOURS: int = 24            # how often to rebuild charts
+    CHARTS_TOP_LIMIT: int = 100                # entries per chart (max 200)
+    CHARTS_TAGS: str = ""                      # comma-separated genre tags, e.g. "rock,electronic,hip-hop"
+    CHARTS_COUNTRIES: str = ""                 # comma-separated country names, e.g. "germany,united states"
+    CHARTS_LIDARR_AUTO_ADD: bool = False       # auto-add chart artists to Lidarr
+    CHARTS_LIDARR_MAX_ADDS: int = 50           # max artists to add to Lidarr per build
+
+    # ------------------------------------------------------------------
     # Last.fm per-user integration (profile + scrobbling)
     # ------------------------------------------------------------------
     LASTFM_ENABLED: bool = False                # master toggle
@@ -197,6 +207,18 @@ class Settings(BaseSettings):
     @property
     def audio_extensions_list(self) -> List[str]:
         return _split_csv(self.AUDIO_EXTENSIONS)
+
+    @property
+    def charts_tags_list(self) -> List[str]:
+        return _split_csv(self.CHARTS_TAGS)
+
+    @property
+    def charts_countries_list(self) -> List[str]:
+        return _split_csv(self.CHARTS_COUNTRIES)
+
+    @property
+    def charts_enabled(self) -> bool:
+        return bool(self.CHARTS_ENABLED and self.LASTFM_API_KEY)
 
     @property
     def discovery_enabled(self) -> bool:

@@ -59,6 +59,15 @@ async def start_scheduler() -> None:
             replace_existing=True,
         )
 
+    # Charts rebuild (Last.fm)
+    if settings.charts_enabled:
+        _scheduler.add_job(
+            _periodic_charts_build,
+            trigger=IntervalTrigger(hours=settings.CHARTS_INTERVAL_HOURS),
+            id="charts_build",
+            replace_existing=True,
+        )
+
     # Last.fm scrobble queue processor (every 60s)
     if settings.lastfm_user_enabled and settings.LASTFM_SCROBBLE_ENABLED:
         _scheduler.add_job(
@@ -254,6 +263,22 @@ async def _process_scrobble_queue() -> None:
             logger.info("Scrobble queue: %s", result)
     except Exception:
         logger.error(f"Scrobble queue failed: {traceback.format_exc()}")
+
+
+async def _periodic_charts_build() -> None:
+    """Rebuild Last.fm charts (global, genre, country)."""
+    try:
+        from app.services.charts import build_charts
+        result = await build_charts()
+        logger.info("Charts build done: %s", result)
+    except Exception:
+        logger.error(f"Charts build failed: {traceback.format_exc()}")
+
+
+async def run_charts_build_now() -> dict:
+    """Run the charts build on demand. Returns summary."""
+    from app.services.charts import build_charts
+    return await build_charts()
 
 
 async def _refresh_lastfm_profiles() -> None:
