@@ -77,6 +77,7 @@ async def rerank(
     session: AsyncSession,
     device_type: Optional[str] = None,
     output_type: Optional[str] = None,
+    collect_actions: bool = False,
 ) -> List[Tuple[str, float]]:
     """
     Apply diversity and business-rule filters to ranked candidates.
@@ -99,6 +100,7 @@ async def rerank(
 
     # --- Load data needed for all rules ---
     now = int(time.time())
+    actions: List[Dict] = [] if collect_actions else None
 
     # Track features (for artist extraction and context-aware rules).
     feat_result = await session.execute(
@@ -124,7 +126,10 @@ async def rerank(
     # --- Rule 1: Freshness boost (never-played tracks get score uplift) ---
     for tid in track_ids:
         if tid not in inter_map:
-            score_map[tid] = score_map[tid] * (1.0 + _FRESHNESS_BOOST)
+            old = score_map[tid]
+            score_map[tid] = old * (1.0 + _FRESHNESS_BOOST)
+            if actions is not None:
+                actions.append({"track_id": tid, "action": "freshness_boost", "score_before": round(old, 4), "score_after": round(score_map[tid], 4)})
 
     # --- Rule 2: Skip suppression (early-skipped >2 times recently → demote) ---
     cutoff_24h = now - 86_400
@@ -132,7 +137,10 @@ async def rerank(
         inter = inter_map.get(tid)
         if inter and inter.early_skip_count > _SKIP_THRESHOLD:
             if inter.last_played_at and inter.last_played_at >= cutoff_24h:
-                score_map[tid] = score_map[tid] * _SKIP_DEMOTE_FACTOR
+                old = score_map[tid]
+                score_map[tid] = old * _SKIP_DEMOTE_FACTOR
+                if actions is not None:
+                    actions.append({"track_id": tid, "action": "skip_suppression", "score_before": round(old, 4), "score_after": round(score_map[tid], 4)})
 
     # --- Rule 3: Anti-repetition (suppress tracks played in last 2h) ---
     recently_played: Set[str] = set()
@@ -141,6 +149,8 @@ async def rerank(
         inter = inter_map.get(tid)
         if inter and inter.last_played_at and inter.last_played_at >= cutoff_repeat:
             recently_played.add(tid)
+            if actions is not None:
+                actions.append({"track_id": tid, "action": "anti_repetition_exclude", "reason": "played_within_2h"})
 
     # --- Rule 5: Context-aware — suppress short tracks in car/speaker mode ---
     short_tracks: Set[str] = set()
@@ -153,6 +163,8 @@ async def rerank(
             dur = duration_map.get(tid)
             if dur is not None and dur < _MIN_DURATION_CAR:
                 short_tracks.add(tid)
+                if actions is not None:
+                    actions.append({"track_id": tid, "action": "short_track_exclude", "duration": dur})
 
     # --- Rebuild sorted list with updated scores, excluding filtered tracks ---
     excluded = recently_played | short_tracks
@@ -164,18 +176,31 @@ async def rerank(
     adjusted.sort(key=lambda x: x[1], reverse=True)
 
     # --- Rule 4: Exploration slots (before artist diversity so diversity is final) ---
-    adjusted = _inject_exploration_slots(adjusted, inter_map)
+    adjusted = _inject_exploration_slots(adjusted, inter_map, actions=actions)
 
     # --- Rule 5: Artist diversity in top N (applied last to guarantee constraint) ---
     artist_map = {tid: _extract_artist(path_map.get(tid)) for tid in track_ids}
-    result = _enforce_artist_diversity(adjusted, artist_map)
+    result = _enforce_artist_diversity(adjusted, artist_map, actions=actions)
 
+    if collect_actions:
+        # Attach actions to result via module-level cache
+        _last_rerank_actions[:] = actions
     return result
+
+
+# Module-level cache for last rerank actions (for debug mode).
+_last_rerank_actions: List[Dict] = []
+
+
+def get_last_rerank_actions() -> List[Dict]:
+    """Return the actions from the most recent rerank call (debug mode)."""
+    return list(_last_rerank_actions)
 
 
 def _enforce_artist_diversity(
     ranked: List[Tuple[str, float]],
     artist_map: Dict[str, str],
+    actions: Optional[List[Dict]] = None,
 ) -> List[Tuple[str, float]]:
     """
     Ensure no more than _ARTIST_MAX_PER_TOP tracks from the same artist
@@ -196,6 +221,8 @@ def _enforce_artist_diversity(
                 artist_count[artist] += 1
             else:
                 deferred.append((tid, score))
+                if actions is not None:
+                    actions.append({"track_id": tid, "action": "artist_diversity_demote", "from_position": len(accepted) + len(deferred) - 1, "to_position": _ARTIST_DIVERSITY_TOP_N + len(deferred) - 1})
         else:
             deferred.append((tid, score))
 
@@ -205,6 +232,7 @@ def _enforce_artist_diversity(
 def _inject_exploration_slots(
     ranked: List[Tuple[str, float]],
     inter_map: Dict[str, TrackInteraction],
+    actions: Optional[List[Dict]] = None,
 ) -> List[Tuple[str, float]]:
     """
     Reserve ~15% of recommendation slots for under-explored tracks.
@@ -241,6 +269,9 @@ def _inject_exploration_slots(
     # Pick top exploration candidates by noisy score.
     scored_explore.sort(key=lambda x: x[2], reverse=True)
     explore_picks = [(tid, orig) for tid, orig, _ in scored_explore[:n_explore]]
+    if actions is not None:
+        for tid, orig, noisy in scored_explore[:n_explore]:
+            actions.append({"track_id": tid, "action": "exploration_slot", "noise_added": round(noisy - orig, 4)})
 
     # Interleave: place exploration tracks at evenly-spaced positions.
     # E.g. for 25 results and 4 explore slots → positions ~6, 12, 18, 24.

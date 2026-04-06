@@ -126,6 +126,15 @@ async def train_model() -> Dict[str, Any]:
     version = f"{engine}-{int(time.time())}"
     saved_path = _save_model(model, engine, version)
 
+    # Extract feature importances.
+    feature_importances = {}
+    try:
+        importances = model.feature_importances_
+        for i, col in enumerate(FEATURE_COLUMNS):
+            feature_importances[col] = float(importances[i])
+    except Exception:
+        pass
+
     stats = {
         "trained": True,
         "training_samples": n,
@@ -134,6 +143,7 @@ async def train_model() -> Dict[str, Any]:
         "engine": engine,
         "trained_at": int(time.time()),
         "saved_path": saved_path,
+        "feature_importances": feature_importances,
     }
 
     with _lock:

@@ -926,6 +926,7 @@ curl "http://localhost:8000/v1/recommend/simon?limit=10&device_type=mobile&outpu
 |-----------|------|---------|-------------|
 | `seed_track_id` | string | — | Bias results toward this track |
 | `limit` | int | 25 | 1–100 |
+| `debug` | bool | false | Include debug info: candidates by source, feature vectors, reranker actions |
 | `device_type` | string | — | `mobile`, `desktop`, `speaker`, `car`, `web` |
 | `output_type` | string | — | `headphones`, `speaker`, `bluetooth_speaker`, `car_audio`, `built_in`, `airplay` |
 | `context_type` | string | — | `playlist`, `album`, `radio`, `search`, `home_shelf` |
@@ -985,6 +986,9 @@ All context parameters are optional. The more context the client sends, the bett
 | `content` | FAISS-based acoustic similarity from seed track |
 | `content_profile` | Acoustic similarity from user's taste centroid |
 | `cf` | Collaborative filtering ("users who liked X also liked Y") |
+| `session_skipgram` | Word2Vec behavioral co-occurrence similarity |
+| `sasrec` | Transformer sequential next-track prediction |
+| `lastfm_similar` | External CF via Last.fm track.getSimilar |
 | `artist_recall` | Tracks from recently listened artists |
 | `popular` | Globally popular tracks (fallback) |
 
@@ -995,6 +999,40 @@ All context parameters are optional. The more context the client sends, the bett
 - When `device_type` is `car`/`speaker` or `output_type` is `car_audio`/`bluetooth_speaker`/`speaker`, tracks shorter than 90 seconds are suppressed
 - Context is logged on `reco_impression` events, so the ranking model learns from context over time
 - The `context` object is echoed in the response so the client can confirm what context was applied
+
+**Debug mode (`?debug=true`):**
+
+When `debug=true`, the response includes an additional `debug` field:
+
+```json
+{
+  "tracks": [...],
+  "debug": {
+    "candidates_by_source": {
+      "content": [{"track_id": "...", "score": 0.85}],
+      "cf": [...],
+      "session_skipgram": [...],
+      "sasrec": [...],
+      "lastfm_similar": [...],
+      "artist_recall": [...],
+      "popular": [...]
+    },
+    "total_candidates": 150,
+    "pre_rerank": [{"track_id": "...", "score": 0.92, "position": 0}],
+    "reranker_actions": [
+      {"track_id": "...", "action": "freshness_boost", "score_before": 0.5, "score_after": 0.55},
+      {"track_id": "...", "action": "skip_suppression", "score_before": 0.7, "score_after": 0.35},
+      {"track_id": "...", "action": "artist_diversity_demote", "from_position": 3, "to_position": 12},
+      {"track_id": "...", "action": "exploration_slot", "noise_added": 0.15}
+    ],
+    "feature_vectors": {
+      "track_id_1": {"bpm": 120.0, "energy": 0.8, "satisfaction_score": 0.72, "...all 39 features...": "..."}
+    }
+  }
+}
+```
+
+Reranker action types: `freshness_boost`, `skip_suppression`, `anti_repetition_exclude`, `short_track_exclude`, `exploration_slot`, `artist_diversity_demote`.
 
 **Closing the feedback loop:**
 
@@ -1545,11 +1583,17 @@ curl http://localhost:8000/v1/pipeline/models \
   "ranker": {
     "trained": true,
     "training_samples": 1200,
-    "n_features": 41,
+    "n_features": 39,
     "model_version": "lgbm-20260406-120000",
     "engine": "lgbm",
     "trained_at": 1743600005,
-    "saved_path": "/data/models/ranker_lgbm.pkl"
+    "saved_path": "/data/models/ranker_lgbm.pkl",
+    "feature_importances": {
+      "satisfaction_score": 450,
+      "play_count": 320,
+      "energy": 210,
+      "...": "..."
+    }
   },
   "collab_filter": {
     "trained": true,
@@ -1572,6 +1616,166 @@ curl http://localhost:8000/v1/pipeline/models \
     "seeds_cached": 50,
     "cache_age_seconds": 3600
   }
+}
+```
+
+### `GET /v1/pipeline/stats/sessionizer` — Sessionizer statistics
+
+Aggregate stats about materialised listening sessions.
+
+```bash
+curl http://localhost:8000/v1/pipeline/stats/sessionizer \
+  -H "Authorization: Bearer YOUR_API_KEY"
+```
+
+**Response:**
+
+```json
+{
+  "total_sessions": 142,
+  "avg_duration_s": 1823.5,
+  "avg_tracks_per_session": 8.3,
+  "avg_skip_rate": 0.187,
+  "skip_rate_distribution": {
+    "0-10%": 45,
+    "10-25%": 38,
+    "25-50%": 32,
+    "50%+": 27
+  },
+  "sessions_per_user": [
+    {"user_id": "alice", "sessions": 85},
+    {"user_id": "bob", "sessions": 57}
+  ]
+}
+```
+
+### `GET /v1/pipeline/stats/scoring` — Track scoring statistics
+
+Score distribution, top/bottom tracks, and signal counts from track interactions.
+
+```bash
+curl http://localhost:8000/v1/pipeline/stats/scoring \
+  -H "Authorization: Bearer YOUR_API_KEY"
+```
+
+**Response:**
+
+```json
+{
+  "total_interactions": 1200,
+  "score_distribution": [
+    {"range": "0.0-0.1", "count": 42},
+    {"range": "0.1-0.2", "count": 85},
+    "..."
+  ],
+  "top_tracks": [
+    {"track_id": "abc123", "score": 0.98, "plays": 15, "title": "Song", "artist": "Artist"}
+  ],
+  "bottom_tracks": [
+    {"track_id": "xyz789", "score": 0.02, "plays": 1, "title": "Track", "artist": "Artist"}
+  ],
+  "signal_counts": {
+    "likes": 120,
+    "dislikes": 15,
+    "repeats": 45,
+    "early_skips": 230,
+    "full_listens": 890,
+    "playlist_adds": 67
+  }
+}
+```
+
+### `GET /v1/pipeline/stats/taste_profiles` — Taste profile statistics
+
+How many users have computed taste profiles.
+
+```bash
+curl http://localhost:8000/v1/pipeline/stats/taste_profiles \
+  -H "Authorization: Bearer YOUR_API_KEY"
+```
+
+**Response:**
+
+```json
+{
+  "total_users": 5,
+  "users_with_profiles": 3
+}
+```
+
+### `GET /v1/pipeline/stats/events` — Event ingest rate (15-min buckets)
+
+Event counts over the last 24 hours in 15-minute buckets. Useful for sparkline visualisation.
+
+```bash
+curl http://localhost:8000/v1/pipeline/stats/events \
+  -H "Authorization: Bearer YOUR_API_KEY"
+```
+
+**Response:**
+
+```json
+{
+  "bucket_size_seconds": 900,
+  "buckets": [
+    {"timestamp": 1743513600, "count": 12},
+    {"timestamp": 1743514500, "count": 8},
+    "..."
+  ]
+}
+```
+
+### `GET /v1/pipeline/stats/activity` — Listening activity timeline
+
+Hourly event counts grouped by event type over a configurable window.
+
+```bash
+curl "http://localhost:8000/v1/pipeline/stats/activity?days=7" \
+  -H "Authorization: Bearer YOUR_API_KEY"
+```
+
+| Param | Type | Default | Description |
+|-------|------|---------|-------------|
+| `days` | int 1-30 | 7 | Number of days of history |
+
+**Response:**
+
+```json
+{
+  "bucket_size_seconds": 3600,
+  "days": 7,
+  "buckets": [
+    {"timestamp": 1743513600, "play_start": 5, "play_end": 4, "skip": 1},
+    {"timestamp": 1743517200, "play_start": 12, "play_end": 11, "like": 2},
+    "..."
+  ]
+}
+```
+
+### `GET /v1/pipeline/stats/engagement` — User engagement leaderboard
+
+Per-user engagement metrics over the last 30 days, ranked by total events.
+
+```bash
+curl http://localhost:8000/v1/pipeline/stats/engagement \
+  -H "Authorization: Bearer YOUR_API_KEY"
+```
+
+**Response:**
+
+```json
+{
+  "users": [
+    {
+      "user_id": "alice",
+      "total_events": 1250,
+      "plays": 480,
+      "skip_rate": 0.142,
+      "unique_tracks": 320,
+      "diversity": 0.256,
+      "last_active": 1743600000
+    }
+  ]
 }
 ```
 

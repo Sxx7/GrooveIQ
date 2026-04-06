@@ -57,6 +57,7 @@ async def get_recommendations(
     location_label: str = Query(None, description="Semantic location: home, work, gym, commute"),
     hour_of_day: int = Query(None, ge=0, le=23, description="Client's local hour (0-23)"),
     day_of_week: int = Query(None, ge=1, le=7, description="Client's local day of week (1=Mon, 7=Sun)"),
+    debug: bool = Query(False, description="Include debug info: candidates by source, feature vectors, reranker actions"),
     session: AsyncSession = Depends(get_session),
     _key: str = Depends(require_api_key),
 ):
@@ -121,6 +122,18 @@ async def get_recommendations(
 
     candidate_ids = [c["track_id"] for c in candidates]
 
+    # Collect debug data if requested.
+    debug_data = None
+    if debug:
+        from collections import defaultdict
+        candidates_by_source = defaultdict(list)
+        for c in candidates:
+            candidates_by_source[c["source"]].append({"track_id": c["track_id"], "score": round(c["score"], 4)})
+        debug_data = {
+            "candidates_by_source": dict(candidates_by_source),
+            "total_candidates": len(candidates),
+        }
+
     # --- Step 1: Score candidates with LightGBM ranker (or fallback) ---
     from app.services.ranker import score_candidates
     scored = await score_candidates(
@@ -132,13 +145,33 @@ async def get_recommendations(
     score_map = {tid: score for tid, score in scored}
     source_map = {c["track_id"]: c["source"] for c in candidates}
 
+    if debug:
+        debug_data["pre_rerank"] = [{"track_id": tid, "score": round(score, 4), "position": i} for i, (tid, score) in enumerate(scored)]
+
     # --- Step 2: Rerank for diversity / business rules ---
     from app.services.reranker import rerank
     reranked = await rerank(
         scored, user_id, session,
         device_type=device_type, output_type=output_type,
+        collect_actions=debug,
     )
     reranked = reranked[:limit]
+
+    if debug:
+        from app.services.reranker import get_last_rerank_actions
+        debug_data["reranker_actions"] = get_last_rerank_actions()
+        # Build feature vectors for debug output
+        from app.services.feature_eng import build_features, FEATURE_COLUMNS
+        feat_result_debug = await build_features(
+            user_id, [tid for tid, _ in reranked], session,
+            hour_of_day=hour_of_day, day_of_week=day_of_week,
+            device_type=device_type, output_type=output_type,
+            context_type=context_type, location_label=location_label,
+        )
+        feature_vectors = {}
+        for idx, tid in enumerate(feat_result_debug["track_ids"]):
+            feature_vectors[tid] = {col: round(float(feat_result_debug["features"][idx][ci]), 4) for ci, col in enumerate(FEATURE_COLUMNS)}
+        debug_data["feature_vectors"] = feature_vectors
 
     # Fetch track metadata for response.
     final_ids = [tid for tid, _ in reranked]
@@ -199,7 +232,7 @@ async def get_recommendations(
             })
         tracks.append(track_data)
 
-    return {
+    response = {
         "request_id": request_id,
         "model_version": model_version,
         "user_id": user_id,
@@ -214,6 +247,9 @@ async def get_recommendations(
         },
         "tracks": tracks,
     }
+    if debug and debug_data:
+        response["debug"] = debug_data
+    return response
 
 
 @router.get(
