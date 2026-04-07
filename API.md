@@ -1586,7 +1586,7 @@ Use `library.cover_url` when available (local, fast, album-specific). Fall back 
 
 ### `POST /v1/charts/build` — Trigger chart rebuild
 
-Fetches fresh charts from Last.fm, matches to library, and optionally sends missing artists to Lidarr. Requires admin API key.
+Fetches fresh charts from Last.fm, matches to library, and optionally sends missing artists to Lidarr or tracks to Spotizerr. Requires admin API key.
 
 ```bash
 curl -X POST http://localhost:8000/v1/charts/build \
@@ -1604,10 +1604,65 @@ curl -X POST http://localhost:8000/v1/charts/build \
     "total_entries": 350,
     "library_matches": 87,
     "artists_sent_to_lidarr": 12,
+    "tracks_sent_to_spotizerr": 45,
     "errors": 0
   }
 }
 ```
+
+---
+
+### `POST /v1/charts/download` — Download a chart track via Spotizerr
+
+Trigger download of a specific chart track via Spotizerr. Provide either a chart `position` or `artist_name` + `track_title`.
+
+Requires `SPOTIZERR_URL` to be configured.
+
+```bash
+curl -X POST http://localhost:8000/v1/charts/download \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"chart_type": "top_tracks", "scope": "global", "position": 0}'
+```
+
+Or by artist + title:
+
+```bash
+curl -X POST http://localhost:8000/v1/charts/download \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"artist_name": "Radiohead", "track_title": "Creep"}'
+```
+
+#### Request body
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `chart_type` | string | `top_tracks` | Chart type |
+| `scope` | string | `global` | Chart scope |
+| `position` | int\|null | — | Chart position (0-based) |
+| `artist_name` | string\|null | — | Artist name (alternative to position) |
+| `track_title` | string\|null | — | Track title (required with artist_name) |
+
+Must provide either `position` or both `artist_name` + `track_title`.
+
+**Response** `200 OK`
+
+```json
+{
+  "status": "downloading",
+  "task_id": "abc123-def456",
+  "artist_name": "PinkPantheress",
+  "track_title": "Stateside + Zara Larsson",
+  "spotify_id": "4iV5W9uYEdYUVa79Axb7Rh",
+  "matched_artist": "PinkPantheress",
+  "matched_title": "Stateside (feat. Zara Larsson)"
+}
+```
+
+**Error** `503` if Spotizerr not configured.
+**Error** `404` if chart entry not found or no Spotify match.
+**Error** `422` if neither position nor artist+title provided.
 
 ---
 

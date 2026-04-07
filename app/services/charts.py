@@ -27,12 +27,16 @@ logger = logging.getLogger(__name__)
 
 _STRIP_RE = re.compile(r"[^\w\s]", re.UNICODE)
 
+# Last.fm returns this hash as a generic placeholder for all tracks/artists
+# since ~2020.  It's a grey music note — useless as a real image.
+_LASTFM_PLACEHOLDER_HASH = "2a96cbd8b46e442fc41c2b86b821562f"
+
 
 def _pick_image_url(images: list) -> Optional[str]:
     """Pick the best image URL from Last.fm's image array.
 
     Prefers extralarge (300x300). Falls back through smaller sizes.
-    Returns None if all URLs are empty (common since ~2020).
+    Returns None if all URLs are empty or are the generic placeholder.
     """
     if not images:
         return None
@@ -40,6 +44,8 @@ def _pick_image_url(images: list) -> Optional[str]:
     for preferred in ("extralarge", "large", "mega", "medium", "small"):
         url = by_size.get(preferred, "")
         if url:
+            if _LASTFM_PLACEHOLDER_HASH in url:
+                return None  # generic placeholder, not a real image
             return url
     return None
 
@@ -269,6 +275,68 @@ async def _send_artists_to_lidarr(
 
 
 # ---------------------------------------------------------------------------
+# Spotizerr integration (individual track downloads)
+# ---------------------------------------------------------------------------
+
+async def _send_tracks_to_spotizerr(
+    tracks: List[Tuple[str, str]],
+    max_adds: int = 50,
+) -> Dict[str, int]:
+    """Send unmatched chart tracks to Spotizerr for individual download."""
+    from app.services.spotizerr import SpotizerrClient, _pick_best_match
+
+    client = SpotizerrClient(
+        settings.SPOTIZERR_URL,
+        settings.SPOTIZERR_USERNAME,
+        settings.SPOTIZERR_PASSWORD,
+    )
+    stats = {"sent": 0, "not_found": 0, "duplicate": 0, "errors": 0}
+
+    # Deduplicate by normalised artist+title.
+    seen: Set[Tuple[str, str]] = set()
+    unique: List[Tuple[str, str]] = []
+    for artist, title in tracks:
+        key = (_normalize(artist), _normalize(title))
+        if key not in seen and key[0] and key[1]:
+            seen.add(key)
+            unique.append((artist, title))
+
+    try:
+        sent = 0
+        for artist, title in unique:
+            if sent >= max_adds:
+                break
+
+            query = f"{artist} {title}"
+            results = await client.search(query, limit=5)
+            match = _pick_best_match(results, artist, title)
+
+            if not match or not match.get("id"):
+                stats["not_found"] += 1
+                continue
+
+            dl_result = await client.download(match["id"])
+            status = dl_result.get("status", "error")
+
+            if status == "downloading":
+                stats["sent"] += 1
+                sent += 1
+                logger.info("Charts/Spotizerr: downloading %s - %s", artist, title)
+            elif status == "duplicate":
+                stats["duplicate"] += 1
+            else:
+                stats["errors"] += 1
+
+    except Exception as exc:
+        logger.error("Charts/Spotizerr batch failed: %s", exc)
+        stats["errors"] += 1
+    finally:
+        await client.close()
+
+    return stats
+
+
+# ---------------------------------------------------------------------------
 # Chart build pipeline
 # ---------------------------------------------------------------------------
 
@@ -298,12 +366,14 @@ async def build_charts() -> Dict[str, Any]:
             track_lookup = await _build_library_lookup(session)
             artist_lookup = await _build_artist_lookup(session)
 
-            # Collect all artists we encounter for Lidarr.
+            # Collect candidates for external download services.
             lidarr_candidates: List[Tuple[str, Optional[str]]] = []
+            spotizerr_candidates: List[Tuple[str, str]] = []  # (artist, title)
 
             # --- 1. Global top tracks ---
             await _build_track_chart(
-                client, session, track_lookup, artist_lookup, lidarr_candidates,
+                client, session, track_lookup, artist_lookup,
+                lidarr_candidates, spotizerr_candidates,
                 chart_type="top_tracks",
                 scope="global",
                 fetch_fn=client.get_top_tracks,
@@ -326,7 +396,8 @@ async def build_charts() -> Dict[str, Any]:
             # --- 3. Genre/tag charts ---
             for tag in settings.charts_tags_list:
                 await _build_track_chart(
-                    client, session, track_lookup, artist_lookup, lidarr_candidates,
+                    client, session, track_lookup, artist_lookup,
+                    lidarr_candidates, spotizerr_candidates,
                     chart_type="top_tracks",
                     scope=f"tag:{tag}",
                     fetch_fn=lambda lim=100, pg=1, t=tag: client.get_tag_top_tracks(t, lim, pg),
@@ -347,7 +418,8 @@ async def build_charts() -> Dict[str, Any]:
             # --- 4. Country charts ---
             for country in settings.charts_countries_list:
                 await _build_track_chart(
-                    client, session, track_lookup, artist_lookup, lidarr_candidates,
+                    client, session, track_lookup, artist_lookup,
+                    lidarr_candidates, spotizerr_candidates,
                     chart_type="top_tracks",
                     scope=f"geo:{country}",
                     fetch_fn=lambda lim=100, pg=1, c=country: client.get_geo_top_tracks(c, lim, pg),
@@ -371,6 +443,15 @@ async def build_charts() -> Dict[str, Any]:
             summary["artists_sent_to_lidarr"] = lidarr_result.get("sent", 0)
             summary["lidarr_detail"] = lidarr_result
 
+        # Send unmatched tracks to Spotizerr for individual download.
+        if spotizerr_candidates and settings.CHARTS_SPOTIZERR_AUTO_ADD and settings.spotizerr_enabled:
+            spotizerr_result = await _send_tracks_to_spotizerr(
+                spotizerr_candidates,
+                max_adds=settings.CHARTS_SPOTIZERR_MAX_ADDS,
+            )
+            summary["tracks_sent_to_spotizerr"] = spotizerr_result.get("sent", 0)
+            summary["spotizerr_detail"] = spotizerr_result
+
     except Exception as exc:
         logger.error("Charts build failed: %s", exc, exc_info=True)
         summary["status"] = "error"
@@ -388,6 +469,7 @@ async def _build_track_chart(
     track_lookup: Dict[Tuple[str, str], str],
     artist_lookup: Dict[str, List[str]],
     lidarr_candidates: List[Tuple[str, Optional[str]]],
+    spotizerr_candidates: List[Tuple[str, str]],
     *,
     chart_type: str,
     scope: str,
@@ -439,11 +521,12 @@ async def _build_track_chart(
         if key[0] and key[1]:
             matched_track_id = track_lookup.get(key)
 
-        # Collect for Lidarr.
-        if not matched_track_id and artist_name:
+        # Collect for download services.
+        if not matched_track_id and artist_name and title:
             norm_artist = _normalize(artist_name)
             if norm_artist not in artist_lookup:
                 lidarr_candidates.append((artist_name, mbid))
+            spotizerr_candidates.append((artist_name, title))
 
         session.add(ChartEntry(
             chart_type=chart_type,

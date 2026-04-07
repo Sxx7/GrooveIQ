@@ -176,6 +176,15 @@ class Settings(BaseSettings):
     CHARTS_LIDARR_MAX_ADDS: int = 50           # max artists to add to Lidarr per build
 
     # ------------------------------------------------------------------
+    # Spotizerr (self-hosted music download — individual tracks)
+    # ------------------------------------------------------------------
+    SPOTIZERR_URL: str = ""                    # e.g. http://spotizerr:7171
+    SPOTIZERR_USERNAME: str = ""               # only needed if Spotizerr ENABLE_AUTH=true
+    SPOTIZERR_PASSWORD: str = ""               # only needed if Spotizerr ENABLE_AUTH=true
+    CHARTS_SPOTIZERR_AUTO_ADD: bool = False    # auto-download unmatched chart tracks
+    CHARTS_SPOTIZERR_MAX_ADDS: int = 50        # max tracks to download per chart build
+
+    # ------------------------------------------------------------------
     # Last.fm per-user integration (profile + scrobbling)
     # ------------------------------------------------------------------
     LASTFM_ENABLED: bool = False                # master toggle
@@ -219,6 +228,10 @@ class Settings(BaseSettings):
     @property
     def charts_enabled(self) -> bool:
         return bool(self.CHARTS_ENABLED and self.LASTFM_API_KEY)
+
+    @property
+    def spotizerr_enabled(self) -> bool:
+        return bool(self.SPOTIZERR_URL)
 
     @property
     def discovery_enabled(self) -> bool:
@@ -299,6 +312,12 @@ class Settings(BaseSettings):
         if self.LIDARR_URL and self.LIDARR_URL.startswith("http://"):
             warnings.warn(
                 "⚠️  LIDARR_URL uses plain HTTP. API key will be "
+                "transmitted in cleartext. Use HTTPS if possible.",
+                stacklevel=2,
+            )
+        if self.SPOTIZERR_URL and self.SPOTIZERR_URL.startswith("http://"):
+            warnings.warn(
+                "⚠️  SPOTIZERR_URL uses plain HTTP. Credentials will be "
                 "transmitted in cleartext. Use HTTPS if possible.",
                 stacklevel=2,
             )

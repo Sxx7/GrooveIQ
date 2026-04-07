@@ -19,6 +19,7 @@ from app.core.config import settings
 from app.core.security import require_admin, require_api_key
 from app.db.session import get_session
 from app.models.db import ChartEntry, DiscoveryRequest, TrackFeatures
+from app.models.schemas import ChartDownloadRequest
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -266,6 +267,75 @@ async def trigger_chart_build(
     from app.services.charts import build_charts
     result = await build_charts()
     return {"status": "completed", "result": result}
+
+
+@router.post(
+    "/charts/download",
+    summary="Download a chart track via Spotizerr",
+    description=(
+        "Trigger download of a chart track via Spotizerr. "
+        "Provide either a chart position or artist_name + track_title. "
+        "Returns the Spotizerr task_id for status tracking."
+    ),
+)
+async def download_chart_track(
+    body: ChartDownloadRequest,
+    session: AsyncSession = Depends(get_session),
+    _key: str = Depends(require_api_key),
+):
+    if not settings.spotizerr_enabled:
+        raise HTTPException(
+            status_code=503,
+            detail="Spotizerr not configured. Set SPOTIZERR_URL in .env.",
+        )
+
+    # Resolve artist + title from chart entry or request body.
+    artist_name = body.artist_name
+    track_title = body.track_title
+
+    if body.position is not None:
+        entry = (await session.execute(
+            select(ChartEntry)
+            .where(
+                ChartEntry.chart_type == body.chart_type,
+                ChartEntry.scope == body.scope,
+                ChartEntry.position == body.position,
+            )
+        )).scalar_one_or_none()
+
+        if not entry:
+            raise HTTPException(
+                status_code=404,
+                detail=f"No chart entry at position {body.position} "
+                       f"in {body.chart_type}/{body.scope}.",
+            )
+        artist_name = entry.artist_name
+        track_title = entry.track_title
+
+    if not artist_name or not track_title:
+        raise HTTPException(
+            status_code=400,
+            detail="Could not determine artist and track title for download.",
+        )
+
+    from app.services.spotizerr import search_and_download
+
+    result = await search_and_download(artist_name, track_title)
+    if not result:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No Spotify match found for '{artist_name} - {track_title}'.",
+        )
+
+    return {
+        "status": result.get("status", "unknown"),
+        "task_id": result.get("task_id", ""),
+        "artist_name": artist_name,
+        "track_title": track_title,
+        "spotify_id": result.get("spotify_id", ""),
+        "matched_artist": result.get("matched_artist", ""),
+        "matched_title": result.get("matched_title", ""),
+    }
 
 
 @router.get(
