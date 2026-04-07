@@ -84,6 +84,8 @@ async def _apply_column_migrations(conn) -> None:
         ("users", "lastfm_synced_at", "INTEGER"),
         # Playlist ownership
         ("playlists", "created_by", "VARCHAR(128)"),
+        # Chart entry images
+        ("chart_entries", "image_url", "VARCHAR(1024)"),
     ]
     for table, column, col_type in migrations:
         try:
