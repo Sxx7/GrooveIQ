@@ -530,3 +530,42 @@ class ChartDownloadRequest(BaseModel):
                 "Provide either 'position' or both 'artist_name' and 'track_title'."
             )
         return self
+
+
+# ---------------------------------------------------------------------------
+# Downloads (Spotizerr proxy)
+# ---------------------------------------------------------------------------
+
+class DownloadCreateRequest(BaseModel):
+    """Request body for POST /v1/downloads — download a specific track."""
+    spotify_id:  str = Field(..., min_length=1, max_length=64,
+                             description="Spotify track ID to download.")
+    track_title: Optional[str] = Field(None, max_length=512)
+    artist_name: Optional[str] = Field(None, max_length=512)
+    album_name:  Optional[str] = Field(None, max_length=512)
+    cover_url:   Optional[str] = Field(None, max_length=1024)
+
+
+class DownloadResponse(BaseModel):
+    """A persisted download request."""
+    id:            int
+    spotify_id:    str
+    task_id:       Optional[str] = None
+    status:        str
+    track_title:   Optional[str] = None
+    artist_name:   Optional[str] = None
+    album_name:    Optional[str] = None
+    cover_url:     Optional[str] = None
+    error_message: Optional[str] = None
+    created_at:    int
+    updated_at:    Optional[int] = None
+
+    model_config = {"from_attributes": True}
+
+
+class DownloadStatusResponse(BaseModel):
+    """Proxied Spotizerr task status."""
+    task_id:  str
+    status:   str
+    progress: Optional[float] = None
+    details:  Optional[Dict[str, Any]] = None

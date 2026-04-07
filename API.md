@@ -17,9 +17,10 @@
 7. [Discovery](#discovery)
 8. [Last.fm](#lastfm)
 9. [Charts](#charts)
-10. [Artists](#artists)
-11. [Stats & Pipeline Control](#stats--pipeline-control)
-12. [Configuration Reference](#configuration-reference)
+10. [Downloads](#downloads)
+11. [Artists](#artists)
+12. [Stats & Pipeline Control](#stats--pipeline-control)
+13. [Configuration Reference](#configuration-reference)
 
 ---
 
@@ -1682,6 +1683,176 @@ curl http://localhost:8000/v1/charts/stats \
   "match_rate": 0.249,
   "chart_count": 5,
   "last_fetched_at": 1743724800
+}
+```
+
+---
+
+## Downloads
+
+Spotizerr download proxy. GrooveIQ acts as a gateway — frontend apps search and download tracks through GrooveIQ without needing Spotizerr credentials or URL. Download history is persisted in the database.
+
+Requires `SPOTIZERR_URL` to be configured. Returns `503` if not set.
+
+### `GET /v1/downloads/search` — Search for tracks
+
+Proxies a Spotizerr track search. Returns results as Spotizerr sees them so the user can pick which track to download.
+
+```bash
+curl "http://localhost:8000/v1/downloads/search?q=Radiohead+Creep&limit=5" \
+  -H "Authorization: Bearer YOUR_API_KEY"
+```
+
+#### Query parameters
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `q` | string | (required) | Search query |
+| `limit` | int | 10 | 1–50 |
+
+**Response** `200 OK`
+
+```json
+{
+  "query": "Radiohead Creep",
+  "limit": 5,
+  "results": [
+    {
+      "id": "70LcF31zb1H0PyJoS1Sx3y",
+      "name": "Creep",
+      "artists": [{"name": "Radiohead", "id": "4Z8W4fKeB5YxbusRsdQVPb"}],
+      "album": {"name": "Pablo Honey", "images": [{"url": "https://..."}]},
+      "duration_ms": 238640
+    }
+  ]
+}
+```
+
+---
+
+### `POST /v1/downloads` — Download a track
+
+Trigger download of a specific track by Spotify ID. The user should first search via `GET /v1/downloads/search` and select a result. The download is persisted in the database.
+
+```bash
+curl -X POST http://localhost:8000/v1/downloads \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "spotify_id": "70LcF31zb1H0PyJoS1Sx3y",
+    "track_title": "Creep",
+    "artist_name": "Radiohead",
+    "album_name": "Pablo Honey",
+    "cover_url": "https://i.scdn.co/image/..."
+  }'
+```
+
+#### Request body
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `spotify_id` | string | yes | Spotify track ID (from search results) |
+| `track_title` | string | no | Track title (stored in download history) |
+| `artist_name` | string | no | Artist name (stored in download history) |
+| `album_name` | string | no | Album name (stored in download history) |
+| `cover_url` | string | no | Cover art URL (stored in download history) |
+
+**Response** `200 OK`
+
+```json
+{
+  "id": 1,
+  "spotify_id": "70LcF31zb1H0PyJoS1Sx3y",
+  "task_id": "abc123-def456",
+  "status": "downloading",
+  "track_title": "Creep",
+  "artist_name": "Radiohead",
+  "album_name": "Pablo Honey",
+  "cover_url": "https://i.scdn.co/image/...",
+  "error_message": null,
+  "created_at": 1743811200,
+  "updated_at": 1743811200
+}
+```
+
+Status values: `pending`, `downloading`, `duplicate`, `completed`, `error`.
+
+**Error** `503` if Spotizerr not configured.
+**Error** `502` if Spotizerr request failed.
+
+---
+
+### `GET /v1/downloads/status/{task_id}` — Check download progress
+
+Proxies Spotizerr task progress. Also opportunistically updates the DB record if one exists for this task.
+
+```bash
+curl http://localhost:8000/v1/downloads/status/abc123-def456 \
+  -H "Authorization: Bearer YOUR_API_KEY"
+```
+
+**Response** `200 OK`
+
+```json
+{
+  "task_id": "abc123-def456",
+  "status": "downloading",
+  "progress": 0.45,
+  "details": {
+    "status": "downloading",
+    "progress": 0.45,
+    "track": "Creep",
+    "artist": "Radiohead"
+  }
+}
+```
+
+The `details` field contains the raw Spotizerr status payload (varies by Spotizerr version).
+
+---
+
+### `GET /v1/downloads` — List download history
+
+Returns persisted download requests, newest first.
+
+```bash
+# All downloads
+curl "http://localhost:8000/v1/downloads?limit=20" \
+  -H "Authorization: Bearer YOUR_API_KEY"
+
+# Filter by status
+curl "http://localhost:8000/v1/downloads?status=downloading" \
+  -H "Authorization: Bearer YOUR_API_KEY"
+```
+
+#### Query parameters
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `status` | string | — | Filter by status: `pending`, `downloading`, `duplicate`, `completed`, `error` |
+| `limit` | int | 50 | 1–200 |
+| `offset` | int | 0 | — |
+
+**Response** `200 OK`
+
+```json
+{
+  "total": 42,
+  "downloads": [
+    {
+      "id": 1,
+      "spotify_id": "70LcF31zb1H0PyJoS1Sx3y",
+      "task_id": "abc123-def456",
+      "status": "downloading",
+      "track_title": "Creep",
+      "artist_name": "Radiohead",
+      "album_name": "Pablo Honey",
+      "cover_url": "https://i.scdn.co/image/...",
+      "error_message": null,
+      "created_at": 1743811200,
+      "updated_at": 1743811200
+    }
+  ]
 }
 ```
 

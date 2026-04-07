@@ -494,6 +494,44 @@ class ChartEntry(Base):
     )
 
 
+# ---------------------------------------------------------------------------
+# Downloads  (Spotizerr proxy)
+# ---------------------------------------------------------------------------
+
+class DownloadRequest(Base):
+    """
+    A track download requested through the Spotizerr proxy.
+
+    GrooveIQ acts as a proxy: the frontend only needs to talk to GrooveIQ,
+    which forwards search/download requests to the configured Spotizerr instance.
+    """
+    __tablename__ = "download_requests"
+
+    id            = Column(Integer, primary_key=True, autoincrement=True)
+    spotify_id    = Column(String(64),   nullable=False, index=True)
+    task_id       = Column(String(128),  nullable=True,  index=True)   # Spotizerr task ID
+    status        = Column(String(32),   nullable=False, default="pending")
+    # pending | downloading | duplicate | completed | error
+
+    # Track metadata (from Spotizerr search results)
+    track_title   = Column(String(512),  nullable=True)
+    artist_name   = Column(String(512),  nullable=True)
+    album_name    = Column(String(512),  nullable=True)
+    cover_url     = Column(String(1024), nullable=True)
+
+    # Who requested it
+    requested_by  = Column(String(128),  nullable=True)   # API key identity
+
+    error_message = Column(Text,         nullable=True)
+    created_at    = Column(Integer,      nullable=False, default=lambda: int(time.time()))
+    updated_at    = Column(Integer,      nullable=True)
+
+    __table_args__ = (
+        Index("ix_download_status", "status"),
+        Index("ix_download_created", "created_at"),
+    )
+
+
 class PlaylistTrack(Base):
     """Ordered track within a playlist."""
     __tablename__ = "playlist_tracks"
