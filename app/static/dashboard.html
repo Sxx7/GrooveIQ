@@ -2042,17 +2042,54 @@ function loadCharts() {
 }
 
 function chartsLidarrBadge(status) {
-  if (!status) return '<span class="badge" style="opacity:0.4">not tracked</span>';
-  if (status === 'downloading') return '<span class="badge badge-blue">downloading</span>';
-  if (status === 'in_lidarr') return '<span class="badge badge-green">in lidarr</span>';
-  if (status === 'pending') return '<span class="badge badge-yellow">pending</span>';
-  if (status === 'failed') return '<span class="badge badge-red">failed</span>';
+  if (!status) return '';
+  if (status === 'downloading') return '<span class="badge badge-blue" title="Lidarr">&#x2B07; lidarr</span>';
+  if (status === 'in_lidarr') return '<span class="badge badge-green" title="Lidarr">&#x2B07; lidarr</span>';
+  if (status === 'pending') return '<span class="badge badge-yellow" title="Lidarr">&#x23F3; lidarr</span>';
+  if (status === 'failed') return '<span class="badge badge-red" title="Lidarr">&#x2717; lidarr</span>';
   return '<span class="badge">' + esc(status) + '</span>';
 }
 
+function chartsDownloadBtn(entry) {
+  // Only show download button for unmatched tracks (not artist charts).
+  if (entry.in_library || !entry.track_title) return '';
+  return ' <button onclick="chartsDownloadTrack(this,' + entry.position + ')" '
+    + 'title="Download via Spotizerr" style="font-size:10px;padding:2px 8px;border-radius:4px;'
+    + 'background:rgba(96,165,250,0.15);color:var(--blue);border:none;cursor:pointer;font-weight:600"'
+    + '>&#x2B07; get</button>';
+}
+
 function chartsLibraryBadge(entry) {
-  if (entry.in_library) return '<span class="badge badge-green">in library</span>';
-  return chartsLidarrBadge(entry.lidarr_status);
+  if (entry.in_library) {
+    // Show source hint if we know how it got there.
+    if (entry.lidarr_status === 'in_lidarr' || entry.lidarr_status === 'downloading') {
+      return '<span class="badge badge-green">in library</span>'
+        + ' <span class="badge badge-purple" style="font-size:9px;opacity:0.7">via lidarr</span>';
+    }
+    return '<span class="badge badge-green">in library</span>';
+  }
+  var badges = chartsLidarrBadge(entry.lidarr_status);
+  badges += chartsDownloadBtn(entry);
+  return badges || '<span class="badge" style="opacity:0.4">not in library</span>';
+}
+
+function chartsDownloadTrack(btn, position) {
+  btn.disabled = true;
+  btn.textContent = '...';
+  apiPost('/v1/charts/download', {
+    chart_type: chartsCurrentType,
+    scope: chartsCurrentScope,
+    position: position
+  }).then(function(data) {
+    if (data.status === 'downloading' || data.status === 'duplicate') {
+      btn.outerHTML = '<span class="badge badge-blue" title="Spotizerr">&#x2B07; spotizerr</span>';
+    } else {
+      btn.textContent = data.status || 'sent';
+      btn.disabled = false;
+    }
+  }).catch(function(e) {
+    btn.outerHTML = '<span class="badge badge-red" title="' + esc(e.message || 'failed') + '">&#x2717; failed</span>';
+  });
 }
 
 function renderCharts(available, stats, chartData) {
