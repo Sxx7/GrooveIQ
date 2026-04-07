@@ -28,6 +28,22 @@ logger = logging.getLogger(__name__)
 _STRIP_RE = re.compile(r"[^\w\s]", re.UNICODE)
 
 
+def _pick_image_url(images: list) -> Optional[str]:
+    """Pick the best image URL from Last.fm's image array.
+
+    Prefers extralarge (300x300). Falls back through smaller sizes.
+    Returns None if all URLs are empty (common since ~2020).
+    """
+    if not images:
+        return None
+    by_size = {img.get("size", ""): img.get("#text", "") for img in images if isinstance(img, dict)}
+    for preferred in ("extralarge", "large", "mega", "medium", "small"):
+        url = by_size.get(preferred, "")
+        if url:
+            return url
+    return None
+
+
 def _normalize(s: str) -> str:
     """Lowercase, strip punctuation, collapse whitespace."""
     n = s.strip().lower()
@@ -415,6 +431,7 @@ async def _build_track_chart(
         title = track.get("name", "")
         playcount = int(track.get("playcount", 0))
         listeners = int(track.get("listeners", 0))
+        image_url = _pick_image_url(track.get("image", []))
 
         # Match to library.
         matched_track_id = None
@@ -437,6 +454,7 @@ async def _build_track_chart(
             artist_mbid=mbid,
             playcount=playcount,
             listeners=listeners,
+            image_url=image_url,
             matched_track_id=matched_track_id,
             fetched_at=now,
         ))
@@ -483,6 +501,7 @@ async def _build_artist_chart(
         mbid = artist.get("mbid") or None
         playcount = int(artist.get("playcount", 0))
         listeners = int(artist.get("listeners", 0))
+        image_url = _pick_image_url(artist.get("image", []))
 
         # Check if we have any tracks by this artist.
         norm = _normalize(name)
@@ -500,6 +519,7 @@ async def _build_artist_chart(
             artist_mbid=mbid,
             playcount=playcount,
             listeners=listeners,
+            image_url=image_url,
             matched_track_id=matched_track_id,
             in_library=len(matched_tracks) > 0,
             library_track_count=len(matched_tracks),

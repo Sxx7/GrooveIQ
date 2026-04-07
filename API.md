@@ -16,8 +16,10 @@
 6. [Playlists](#playlists)
 7. [Discovery](#discovery)
 8. [Last.fm](#lastfm)
-9. [Stats & Pipeline Control](#stats--pipeline-control)
-10. [Configuration Reference](#configuration-reference)
+9. [Charts](#charts)
+10. [Artists](#artists)
+11. [Stats & Pipeline Control](#stats--pipeline-control)
+12. [Configuration Reference](#configuration-reference)
 
 ---
 
@@ -1388,6 +1390,291 @@ curl http://localhost:8000/v1/users/simon/lastfm/profile \
   "profile": { ... }
 }
 ```
+
+---
+
+## Charts
+
+Last.fm-sourced charts with automatic library matching. Charts are rebuilt periodically (default: every 24h) or on demand.
+
+### `GET /v1/charts` — List available charts
+
+```bash
+curl http://localhost:8000/v1/charts \
+  -H "Authorization: Bearer YOUR_API_KEY"
+```
+
+**Response** `200 OK`
+
+```json
+{
+  "charts": [
+    {
+      "chart_type": "top_tracks",
+      "scope": "global",
+      "entries": 100,
+      "fetched_at": 1743724800
+    },
+    {
+      "chart_type": "top_artists",
+      "scope": "tag:rock",
+      "entries": 50,
+      "fetched_at": 1743724800
+    }
+  ]
+}
+```
+
+---
+
+### `GET /v1/charts/{chart_type}` — Get chart entries
+
+Returns chart entries for the given type. Each entry includes an `image_url` from Last.fm and, for library-matched entries, a `cover_url` pointing to your media server's cover art.
+
+```bash
+curl "http://localhost:8000/v1/charts/top_tracks?scope=global&limit=50" \
+  -H "Authorization: Bearer YOUR_API_KEY"
+```
+
+#### Path parameters
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `chart_type` | string | `top_tracks` or `top_artists` |
+
+#### Query parameters
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `scope` | string | `global` | Chart scope: `global`, `tag:<name>`, `geo:<country>` |
+| `limit` | int | 100 | 1–200 |
+| `offset` | int | 0 | — |
+
+**Response** `200 OK` — `top_tracks` example:
+
+```json
+{
+  "chart_type": "top_tracks",
+  "scope": "global",
+  "total": 100,
+  "fetched_at": 1743724800,
+  "entries": [
+    {
+      "position": 0,
+      "track_title": "Creep",
+      "artist_name": "Radiohead",
+      "playcount": 123456789,
+      "listeners": 2345678,
+      "in_library": true,
+      "matched_track_id": "nav-uuid-042",
+      "image_url": "https://lastfm.freetls.fastly.net/i/u/300x300/...",
+      "library": {
+        "track_id": "nav-uuid-042",
+        "title": "Creep",
+        "artist": "Radiohead",
+        "album": "Pablo Honey",
+        "genre": "Alternative Rock",
+        "bpm": 92.4,
+        "energy": 0.61,
+        "duration": 238.0,
+        "cover_url": "http://navidrome:4533/rest/getCoverArt.view?id=nav-uuid-042&size=300&u=admin&t=...&s=...&v=1.16.1&c=grooveiq"
+      }
+    },
+    {
+      "position": 1,
+      "track_title": "Bohemian Rhapsody",
+      "artist_name": "Queen",
+      "playcount": 98765432,
+      "listeners": 1876543,
+      "in_library": false,
+      "matched_track_id": null,
+      "image_url": "https://lastfm.freetls.fastly.net/i/u/300x300/...",
+      "lidarr_status": "downloading"
+    }
+  ]
+}
+```
+
+**Response** `200 OK` — `top_artists` example:
+
+```json
+{
+  "chart_type": "top_artists",
+  "scope": "tag:electronic",
+  "total": 50,
+  "fetched_at": 1743724800,
+  "entries": [
+    {
+      "position": 0,
+      "artist_name": "Daft Punk",
+      "playcount": 234567890,
+      "listeners": 5678901,
+      "in_library": true,
+      "matched_track_id": "nav-uuid-007",
+      "image_url": "https://lastfm.freetls.fastly.net/i/u/300x300/...",
+      "library_track_count": 42,
+      "library": {
+        "track_id": "nav-uuid-007",
+        "title": "Around the World",
+        "artist": "Daft Punk",
+        "album": "Homework",
+        "genre": "Electronic",
+        "bpm": 121.3,
+        "energy": 0.85,
+        "duration": 428.0,
+        "cover_url": "http://navidrome:4533/rest/getCoverArt.view?id=nav-uuid-007&size=300&..."
+      }
+    }
+  ]
+}
+```
+
+#### Entry fields
+
+**Common fields** (both `top_tracks` and `top_artists`):
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `position` | int | 0-based chart position |
+| `artist_name` | string | Artist name from Last.fm |
+| `playcount` | int | Total plays on Last.fm |
+| `listeners` | int | Unique listeners on Last.fm |
+| `in_library` | bool | Whether the track/artist exists in your library |
+| `matched_track_id` | string\|null | Library track ID if matched |
+| `image_url` | string\|null | Last.fm image URL (300x300 preferred, may be null for older entries) |
+
+**`top_tracks` only:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `track_title` | string | Track title from Last.fm |
+
+**`top_artists` only:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `library_track_count` | int | Number of tracks by this artist in your library |
+
+**When `in_library` is false:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `lidarr_status` | string\|null | `downloading`, `in_lidarr`, `pending`, `failed`, or `null` |
+
+**When matched (`library` object):**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `library.track_id` | string | Local library track ID |
+| `library.title` | string | Title from library metadata |
+| `library.artist` | string | Artist from library metadata |
+| `library.album` | string | Album from library metadata |
+| `library.genre` | string | Genre tags |
+| `library.bpm` | float | BPM |
+| `library.energy` | float | Energy (0.0–1.0) |
+| `library.duration` | float | Duration in seconds |
+| `library.cover_url` | string\|null | Media server cover art URL (Navidrome/Plex). Null if no media server configured or track has no external ID |
+
+#### Image URL priority for frontends
+
+Use `library.cover_url` when available (local, fast, album-specific). Fall back to `image_url` (Last.fm, external CDN, artist/track image).
+
+**Error** `400` if `chart_type` is not `top_tracks` or `top_artists`.
+**Error** `404` if no chart data exists for the given scope (includes available scopes in the error message).
+
+---
+
+### `POST /v1/charts/build` — Trigger chart rebuild
+
+Fetches fresh charts from Last.fm, matches to library, and optionally sends missing artists to Lidarr. Requires admin API key.
+
+```bash
+curl -X POST http://localhost:8000/v1/charts/build \
+  -H "Authorization: Bearer YOUR_ADMIN_API_KEY"
+```
+
+**Response** `200 OK`
+
+```json
+{
+  "status": "completed",
+  "result": {
+    "status": "completed",
+    "charts_built": 5,
+    "total_entries": 350,
+    "library_matches": 87,
+    "artists_sent_to_lidarr": 12,
+    "errors": 0
+  }
+}
+```
+
+---
+
+### `GET /v1/charts/stats` — Chart statistics
+
+```bash
+curl http://localhost:8000/v1/charts/stats \
+  -H "Authorization: Bearer YOUR_API_KEY"
+```
+
+**Response** `200 OK`
+
+```json
+{
+  "total_entries": 350,
+  "library_matches": 87,
+  "match_rate": 0.249,
+  "chart_count": 5,
+  "last_fetched_at": 1743724800
+}
+```
+
+---
+
+## Artists
+
+### `GET /v1/artists/{name}/meta` — Get artist metadata
+
+Returns rich artist metadata from Last.fm combined with local library info. Includes bio, tags, similar artists, top tracks, and an image URL.
+
+```bash
+curl "http://localhost:8000/v1/artists/Radiohead/meta" \
+  -H "Authorization: Bearer YOUR_API_KEY"
+```
+
+**Response** `200 OK`
+
+```json
+{
+  "name": "Radiohead",
+  "mbid": "a74b1b7f-71a5-4011-9441-d0b5e4122711",
+  "image_url": "https://lastfm.freetls.fastly.net/i/u/300x300/...",
+  "bio": "Radiohead are an English rock band from Abingdon, Oxfordshire...",
+  "bio_full": "...",
+  "tags": ["alternative", "rock", "alternative rock", "indie", "electronic"],
+  "similar_artists": [
+    {"name": "Thom Yorke", "match": 1.0},
+    {"name": "Atoms for Peace", "match": 0.85}
+  ],
+  "top_tracks": [
+    {"name": "Creep", "playcount": 123456789, "listeners": 2345678},
+    {"name": "Karma Police", "playcount": 98765432, "listeners": 1876543}
+  ],
+  "stats": {
+    "playcount": 500000000,
+    "listeners": 6000000
+  },
+  "library": {
+    "in_library": true,
+    "track_count": 85,
+    "albums": ["OK Computer", "Kid A", "In Rainbows"]
+  }
+}
+```
+
+**Error** `404` if artist not found on Last.fm.
+**Error** `503` if `LASTFM_API_KEY` is not configured.
 
 ---
 

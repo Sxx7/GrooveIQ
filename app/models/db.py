@@ -479,6 +479,9 @@ class ChartEntry(Base):
     playcount        = Column(Integer,     nullable=True)
     listeners        = Column(Integer,     nullable=True)
 
+    # Image URL from Last.fm (best available size)
+    image_url        = Column(String(1024), nullable=True)
+
     # Library matching
     matched_track_id = Column(String(128), nullable=True, index=True)    # set if matched to library
     in_library       = Column(Boolean,     nullable=False, default=False)

@@ -15,12 +15,60 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import settings
 from app.core.security import require_admin, require_api_key
 from app.db.session import get_session
 from app.models.db import ChartEntry, DiscoveryRequest, TrackFeatures
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+
+def _media_server_auth_params() -> Optional[str]:
+    """Pre-compute media server auth query string (reusable across entries)."""
+    server_type = (settings.MEDIA_SERVER_TYPE or "").lower()
+    base = (settings.MEDIA_SERVER_URL or "").rstrip("/")
+    if not base:
+        return None
+
+    if server_type == "navidrome":
+        user = settings.MEDIA_SERVER_USER
+        password = settings.MEDIA_SERVER_PASSWORD
+        if not user or not password:
+            return None
+        import hashlib
+        import secrets as _secrets
+        salt = _secrets.token_hex(8)
+        token = hashlib.md5((password + salt).encode()).hexdigest()
+        return f"u={user}&t={token}&s={salt}&v=1.16.1&c=grooveiq"
+    elif server_type == "plex":
+        token = settings.MEDIA_SERVER_TOKEN or ""
+        return f"X-Plex-Token={token}" if token else None
+
+    return None
+
+
+def _build_cover_url(tf: TrackFeatures, auth_qs: Optional[str]) -> Optional[str]:
+    """Build a media-server cover art URL for a matched track.
+
+    Navidrome (Subsonic API): /rest/getCoverArt.view?id=<external_id>&size=300
+    Plex: /library/metadata/<external_id>/thumb
+
+    Returns None if no media server is configured or the track has no external ID.
+    """
+    ext_id = tf.external_track_id
+    if not ext_id or not auth_qs or not settings.MEDIA_SERVER_URL:
+        return None
+
+    base = settings.MEDIA_SERVER_URL.rstrip("/")
+    server_type = (settings.MEDIA_SERVER_TYPE or "").lower()
+
+    if server_type == "navidrome":
+        return f"{base}/rest/getCoverArt.view?id={ext_id}&size=300&{auth_qs}"
+    elif server_type == "plex":
+        return f"{base}/library/metadata/{ext_id}/thumb?{auth_qs}"
+
+    return None
 
 
 @router.get(
@@ -133,6 +181,9 @@ async def get_chart(
         )
         feat_map = {t.track_id: t for t in feat_q.scalars().all()}
 
+    # Pre-compute media server auth for cover art URLs.
+    cover_auth = _media_server_auth_params() if feat_map else None
+
     # Build Lidarr status lookup for unmatched artists.
     unmatched_artists = list({e.artist_name for e in entries if not e.matched_track_id and e.artist_name})
     lidarr_status_map = {}
@@ -155,6 +206,7 @@ async def get_chart(
             "listeners": e.listeners,
             "in_library": e.in_library,
             "matched_track_id": e.matched_track_id,
+            "image_url": e.image_url,
         }
         if chart_type == "top_tracks":
             item["track_title"] = e.track_title
@@ -188,6 +240,7 @@ async def get_chart(
                 "bpm": tf.bpm,
                 "energy": tf.energy,
                 "duration": tf.duration,
+                "cover_url": _build_cover_url(tf, cover_auth),
             }
 
         items.append(item)
