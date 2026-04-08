@@ -79,6 +79,13 @@ services:
       DISCOVERY_MAX_REQUESTS_PER_DAY: ${DISCOVERY_MAX_REQUESTS_PER_DAY:-500}
       DISCOVERY_SIMILAR_LIMIT:     ${DISCOVERY_SIMILAR_LIMIT:-20}
 
+      # Spotizerr (individual track downloads)
+      SPOTIZERR_URL:               ${SPOTIZERR_URL:-}
+      SPOTIZERR_USERNAME:          ${SPOTIZERR_USERNAME:-}
+      SPOTIZERR_PASSWORD:          ${SPOTIZERR_PASSWORD:-}
+      CHARTS_SPOTIZERR_AUTO_ADD:   ${CHARTS_SPOTIZERR_AUTO_ADD:-false}
+      CHARTS_SPOTIZERR_MAX_ADDS:   ${CHARTS_SPOTIZERR_MAX_ADDS:-50}
+
     volumes:
       # Persistent database & state
       - grooveiq_data:/data
