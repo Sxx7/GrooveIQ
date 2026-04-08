@@ -59,15 +59,44 @@ async def search_tracks(
     limit: int = Query(10, ge=1, le=50),
     _key: str = Depends(require_api_key),
 ):
-    """Proxy Spotizerr track search.  Returns results as Spotizerr sees them
-    so the user can pick which track to download."""
+    """Proxy Spotizerr track search.  Flattens raw Spotify objects into a
+    simple format the mobile client can consume directly."""
     _require_spotizerr()
     client = _get_client()
     try:
-        results = await client.search(q, limit=limit)
-        return {"query": q, "limit": limit, "results": results}
+        raw = await client.search(q, limit=limit)
+        results = [_flatten_track(t) for t in raw]
+        return results
     finally:
         await client.close()
+
+
+def _flatten_track(track: dict) -> dict:
+    """Convert a raw Spotify track object into a flat search result."""
+    artists = track.get("artists") or []
+    artist_name = artists[0]["name"] if artists else ""
+
+    album = track.get("album") or {}
+    album_name = album.get("name")
+
+    images = album.get("images") or []
+    # Prefer the 300px image, fall back to first available.
+    image_url = None
+    for img in images:
+        if img.get("width") == 300 or img.get("height") == 300:
+            image_url = img["url"]
+            break
+    if not image_url and images:
+        image_url = images[0]["url"]
+
+    return {
+        "spotify_id": track.get("id", ""),
+        "title": track.get("name", ""),
+        "artist": artist_name,
+        "album": album_name,
+        "type": track.get("type", "track"),
+        "image_url": image_url,
+    }
 
 
 # ---------------------------------------------------------------------------
