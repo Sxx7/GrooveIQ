@@ -131,3 +131,75 @@ async def resolve_cover_art(
         ))
 
     return url
+
+
+async def resolve_artist_image(
+    session: AsyncSession,
+    artist: str,
+    client: Optional[SpotizerrClient] = None,
+) -> Optional[str]:
+    """Resolve a portrait image URL for an artist, with persistent cache.
+
+    Shares the cover_art_cache table with track cover art — artist entries
+    use an empty title_norm to distinguish them from per-track rows.
+    Source tag is ``spotizerr_artist`` so mixed audits can tell them apart.
+
+    Tries Spotizerr's ``type=artist`` search first for real portraits; if
+    that yields nothing, falls back to the top-track album art.  Both
+    happen inside SpotizerrClient.resolve_artist_image; this function
+    just wraps it with caching.
+    """
+    artist_norm = _normalize(artist)
+    if not artist_norm:
+        return None
+
+    now = int(time.time())
+
+    cached = (await session.execute(
+        select(CoverArtCache).where(
+            CoverArtCache.artist_norm == artist_norm,
+            CoverArtCache.title_norm == "",
+        )
+    )).scalar_one_or_none()
+
+    if cached is not None:
+        if cached.url:
+            return cached.url
+        if now - cached.fetched_at < _NEGATIVE_TTL_SECONDS:
+            return None
+
+    if not settings.spotizerr_enabled:
+        return None
+
+    owns_client = client is None
+    if owns_client:
+        client = SpotizerrClient(
+            settings.SPOTIZERR_URL,
+            settings.SPOTIZERR_USERNAME,
+            settings.SPOTIZERR_PASSWORD,
+        )
+
+    url: Optional[str] = None
+    try:
+        url = await client.resolve_artist_image(artist)
+    except Exception as exc:
+        logger.warning("Artist image lookup failed for %r: %s", artist, exc)
+        return None
+    finally:
+        if owns_client:
+            await client.close()
+
+    if cached is not None:
+        cached.url = url
+        cached.source = "spotizerr_artist"
+        cached.fetched_at = now
+    else:
+        session.add(CoverArtCache(
+            artist_norm=artist_norm,
+            title_norm="",
+            url=url,
+            source="spotizerr_artist",
+            fetched_at=now,
+        ))
+
+    return url

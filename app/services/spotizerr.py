@@ -35,6 +35,22 @@ def _normalize(s: str) -> str:
     return " ".join(n.split())
 
 
+def _pick_image(images: List[Dict[str, Any]]) -> Optional[str]:
+    """Pick the best URL from a Spotify images array.
+
+    Prefers 300px width/height, falls back to the first image (usually largest).
+    Returns None if the list is empty or every URL is empty.
+    """
+    if not images:
+        return None
+    for img in images:
+        if img.get("width") == 300 or img.get("height") == 300:
+            url = img.get("url")
+            if url:
+                return url
+    return images[0].get("url") or None
+
+
 # ---------------------------------------------------------------------------
 # Spotizerr HTTP client
 # ---------------------------------------------------------------------------
@@ -147,16 +163,60 @@ class SpotizerrClient:
 
         album = match.get("album") or {}
         images = album.get("images") or []
-        if not images:
-            return None
+        return _pick_image(images)
 
-        # Prefer the 300px image; fall back to first (usually largest).
-        for img in images:
-            if img.get("width") == 300 or img.get("height") == 300:
-                url = img.get("url")
+    async def resolve_artist_image(self, artist: str) -> Optional[str]:
+        """Look up a portrait image URL for an artist via Spotify (through Spotizerr).
+
+        Strategy:
+          1. Try `type=artist` search — Spotify artist objects have
+             top-level `images[]` that are real portraits.
+          2. If no artist match, fall back to `type=track` search and
+             use the top result's album art as a stand-in.  Visually
+             fine, just not a proper portrait — this is what many mobile
+             music apps do anyway.
+
+        Returns the best matching image URL, or None.
+        """
+        # -- 1. Try artist search (type=artist) -----------------------------
+        await self._ensure_auth()
+        await self._throttle()
+        try:
+            resp = await self._client.get(
+                f"{self._base_url}/api/search",
+                params={"q": artist, "type": "artist", "limit": 5},
+                headers=self._headers(),
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            items = data.get("items", []) or []
+        except Exception as exc:
+            logger.debug("Spotizerr artist search failed for %r: %s", artist, exc)
+            items = []
+
+        norm_target = _normalize(artist)
+
+        # Prefer exact normalised-name match.
+        for item in items:
+            if _normalize(item.get("name", "")) == norm_target:
+                url = _pick_image(item.get("images") or [])
                 if url:
                     return url
-        return images[0].get("url") or None
+
+        # Fall back to first result with any image.
+        for item in items:
+            url = _pick_image(item.get("images") or [])
+            if url:
+                return url
+
+        # -- 2. Fall back to track search — grab album art -----------------
+        results = await self.search(artist, limit=5)
+        for item in results:
+            album = item.get("album") or {}
+            url = _pick_image(album.get("images") or [])
+            if url:
+                return url
+        return None
 
     # -- Download -----------------------------------------------------------
 

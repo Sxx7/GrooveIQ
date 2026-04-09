@@ -29,6 +29,10 @@ logger = logging.getLogger(__name__)
 _STRIP_RE = re.compile(r"[^\w\s]", re.UNICODE)
 _CACHE_TTL = 3600  # 1 hour
 
+# Last.fm returns this hash as a generic grey-note placeholder for every
+# track/artist/album since ~2020 — useless as a real image.
+_LASTFM_PLACEHOLDER_HASH = "2a96cbd8b46e442fc41c2b86b821562f"
+
 
 def _normalize(s: str) -> str:
     """Lowercase, strip punctuation, collapse whitespace."""
@@ -103,7 +107,9 @@ def _pick_image_url(images: list) -> Optional[str]:
     """Pick the best image URL from Last.fm's image array.
 
     Prefers extralarge (300x300). Falls back to large, then any non-empty.
-    Returns None if all URLs are empty (common since ~2020).
+    Returns None if all URLs are empty OR if the URL is Last.fm's generic
+    grey-note placeholder (which it serves for virtually every artist
+    since ~2020).
     """
     if not images:
         return None
@@ -111,6 +117,8 @@ def _pick_image_url(images: list) -> Optional[str]:
     for preferred in ("extralarge", "large", "mega", "medium", "small"):
         url = by_size.get(preferred, "")
         if url:
+            if _LASTFM_PLACEHOLDER_HASH in url:
+                return None  # generic placeholder, not a real image
             return url
     return None
 
@@ -236,12 +244,29 @@ async def get_artist_meta(name: str) -> Optional[Dict[str, Any]]:
             info_tags = [info_tags]
         tag_names = [t.get("name", "") for t in info_tags if t.get("name")]
 
+    image_url = _pick_image_url(info.get("image", []))
+
+    # Last.fm's artist images have been placeholders since ~2020.  Fall back
+    # to the Spotizerr-backed resolver (which tries type=artist first, then
+    # drops to track album art).  Persistent cache in cover_art_cache absorbs
+    # repeat lookups across restarts.
+    if image_url is None:
+        try:
+            from app.services.cover_art import resolve_artist_image
+            async with AsyncSessionLocal() as cover_session:
+                image_url = await resolve_artist_image(
+                    cover_session, info.get("name", name),
+                )
+                await cover_session.commit()
+        except Exception as exc:
+            logger.debug("Artist image fallback failed for %r: %s", name, exc)
+
     result: Dict[str, Any] = {
         "name": info.get("name", name),
         "mbid": info.get("mbid") or None,
         "bio": bio_summary or None,
         "bio_full": bio_full or None,
-        "image_url": _pick_image_url(info.get("image", [])),
+        "image_url": image_url,
         "tags": tag_names,
         "listeners": listeners,
         "playcount": playcount,
