@@ -495,6 +495,42 @@ class ChartEntry(Base):
 
 
 # ---------------------------------------------------------------------------
+# Cover art cache  (fallback artwork for tracks not in the local library)
+# ---------------------------------------------------------------------------
+
+class CoverArtCache(Base):
+    """
+    Cached cover art URLs for tracks that are not (yet) in the local library.
+
+    Last.fm stopped distributing real track/album images in ~2020, so chart
+    entries that don't match the local library have no artwork.  This table
+    caches the result of looking up cover art from an external source
+    (currently Spotizerr's Spotify search) so we don't repeatedly hit the
+    upstream API across chart rebuilds and UI renders.
+
+    Once a track enters the local library and gets synced to the media server,
+    the chart API prefers the media server's cover URL and this cached entry
+    becomes a passive fallback — intentionally left in place for resilience
+    if the media server is unreachable.
+
+    Key is the normalised (artist, title) pair so lookups survive casing,
+    punctuation, and "The" prefix differences.
+    """
+    __tablename__ = "cover_art_cache"
+
+    artist_norm = Column(String(256), primary_key=True)
+    title_norm  = Column(String(256), primary_key=True)
+
+    url         = Column(String(1024), nullable=True)   # nullable = "looked up, found nothing"
+    source      = Column(String(32),   nullable=False)  # spotizerr | deezer | itunes | ...
+    fetched_at  = Column(Integer,      nullable=False, default=lambda: int(time.time()))
+
+    __table_args__ = (
+        Index("ix_cover_art_fetched", "fetched_at"),
+    )
+
+
+# ---------------------------------------------------------------------------
 # Downloads  (Spotizerr proxy)
 # ---------------------------------------------------------------------------
 

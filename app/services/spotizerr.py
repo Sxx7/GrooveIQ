@@ -124,6 +124,40 @@ class SpotizerrClient:
             logger.warning("Spotizerr search failed for %r: %s", query, exc)
             return []
 
+    # -- Cover art ----------------------------------------------------------
+
+    async def resolve_cover_art(
+        self,
+        artist: str,
+        title: str,
+    ) -> Optional[str]:
+        """Look up an album cover URL for a track via Spotify (through Spotizerr).
+
+        Used as a fallback when Last.fm returns no real image for a chart entry.
+        Reuses the existing search endpoint — no extra API is queried.
+
+        Returns the best-matching Spotify album image URL (prefers 300px,
+        falls back to largest available), or None if nothing found.
+        """
+        query = f"{artist} {title}"
+        results = await self.search(query, limit=5)
+        match = _pick_best_match(results, artist, title)
+        if not match:
+            return None
+
+        album = match.get("album") or {}
+        images = album.get("images") or []
+        if not images:
+            return None
+
+        # Prefer the 300px image; fall back to first (usually largest).
+        for img in images:
+            if img.get("width") == 300 or img.get("height") == 300:
+                url = img.get("url")
+                if url:
+                    return url
+        return images[0].get("url") or None
+
     # -- Download -----------------------------------------------------------
 
     async def download(self, spotify_track_id: str) -> Dict[str, Any]:

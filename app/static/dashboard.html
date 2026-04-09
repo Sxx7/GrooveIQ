@@ -2050,6 +2050,18 @@ function chartsLidarrBadge(status) {
   return '<span class="badge">' + esc(status) + '</span>';
 }
 
+function chartsThumbnail(entry) {
+  // Priority: media server cover (matched tracks) > cached fallback URL (Spotizerr/Last.fm).
+  var src = (entry.library && entry.library.cover_url) || entry.image_url || '';
+  if (!src) {
+    return '<div style="width:40px;height:40px;border-radius:4px;background:rgba(255,255,255,0.04);'
+      + 'display:flex;align-items:center;justify-content:center;color:var(--text-dim);font-size:16px">&#x266B;</div>';
+  }
+  return '<img src="' + esc(src) + '" alt="" loading="lazy" '
+    + 'style="width:40px;height:40px;border-radius:4px;object-fit:cover;display:block" '
+    + 'onerror="this.style.display=\'none\'">';
+}
+
 function chartsDownloadBtn(entry) {
   // Only show download button for unmatched tracks (not artist charts).
   if (entry.in_library || !entry.track_title) return '';
@@ -2168,15 +2180,16 @@ function renderCharts(available, stats, chartData) {
 
   h += '<div class="panel-body" style="overflow-x:auto"><table>';
   if (isTrack) {
-    h += '<tr><th style="width:40px">#</th><th>Title</th><th>Artist</th><th>Plays</th><th>Listeners</th><th>Status</th></tr>';
+    h += '<tr><th style="width:40px">#</th><th style="width:52px"></th><th>Title</th><th>Artist</th><th>Plays</th><th>Listeners</th><th>Status</th></tr>';
   } else {
-    h += '<tr><th style="width:40px">#</th><th>Artist</th><th>Plays</th><th>Listeners</th><th>Library Tracks</th><th>Status</th></tr>';
+    h += '<tr><th style="width:40px">#</th><th style="width:52px"></th><th>Artist</th><th>Plays</th><th>Listeners</th><th>Library Tracks</th><th>Status</th></tr>';
   }
 
   for (var i = 0; i < chartData.entries.length; i++) {
     var e = chartData.entries[i];
     h += '<tr>';
     h += '<td style="color:var(--text-dim);font-weight:600">' + (e.position + 1) + '</td>';
+    h += '<td>' + chartsThumbnail(e) + '</td>';
 
     if (isTrack) {
       h += '<td><b>' + esc(e.track_title || '') + '</b></td>';

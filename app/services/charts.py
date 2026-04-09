@@ -355,11 +355,26 @@ async def build_charts() -> Dict[str, Any]:
         "charts_built": 0,
         "total_entries": 0,
         "library_matches": 0,
+        "cover_art_resolved": 0,
         "artists_sent_to_lidarr": 0,
+        "tracks_sent_to_spotizerr": 0,
         "errors": 0,
     }
 
     now = int(time.time())
+
+    # Long-lived Spotizerr client used to fall back for cover art on
+    # unmatched entries when Last.fm returns its placeholder image.
+    # Shared across all chart builds in this run so connection pooling
+    # and auth token caching are reused.
+    from app.services.spotizerr import SpotizerrClient
+    cover_client: Optional[SpotizerrClient] = None
+    if settings.spotizerr_enabled:
+        cover_client = SpotizerrClient(
+            settings.SPOTIZERR_URL,
+            settings.SPOTIZERR_USERNAME,
+            settings.SPOTIZERR_PASSWORD,
+        )
 
     try:
         async with AsyncSessionLocal() as session:
@@ -380,6 +395,7 @@ async def build_charts() -> Dict[str, Any]:
                 limit=settings.CHARTS_TOP_LIMIT,
                 now=now,
                 summary=summary,
+                cover_client=cover_client,
             )
 
             # --- 2. Global top artists ---
@@ -404,6 +420,7 @@ async def build_charts() -> Dict[str, Any]:
                     limit=settings.CHARTS_TOP_LIMIT,
                     now=now,
                     summary=summary,
+                    cover_client=cover_client,
                 )
                 await _build_artist_chart(
                     client, session, artist_lookup, lidarr_candidates,
@@ -426,6 +443,7 @@ async def build_charts() -> Dict[str, Any]:
                     limit=settings.CHARTS_TOP_LIMIT,
                     now=now,
                     summary=summary,
+                    cover_client=cover_client,
                 )
 
             await session.commit()
@@ -458,6 +476,8 @@ async def build_charts() -> Dict[str, Any]:
         summary["error"] = str(exc)
     finally:
         await client.close()
+        if cover_client is not None:
+            await cover_client.close()
 
     logger.info("Charts build finished: %s", summary)
     return summary
@@ -477,6 +497,7 @@ async def _build_track_chart(
     limit: int,
     now: int,
     summary: Dict[str, Any],
+    cover_client=None,
 ) -> None:
     """Fetch a track chart, match to library, persist entries."""
     try:
@@ -488,6 +509,9 @@ async def _build_track_chart(
 
     if not raw_tracks:
         return
+
+    # Import once per chart build, not once per track.
+    from app.services.cover_art import resolve_cover_art as _resolve_cover_art
 
     # Delete old entries for this chart.
     await session.execute(
@@ -520,6 +544,18 @@ async def _build_track_chart(
         key = (_normalize(artist_name), _normalize(title))
         if key[0] and key[1]:
             matched_track_id = track_lookup.get(key)
+
+        # Fallback cover art: Last.fm dropped the placeholder filter above
+        # and we have no URL, AND the track isn't in the library yet (matched
+        # entries get media-server cover art at render time).  Hit Spotizerr.
+        if image_url is None and matched_track_id is None and cover_client is not None \
+                and artist_name and title:
+            resolved = await _resolve_cover_art(
+                session, artist_name, title, client=cover_client,
+            )
+            if resolved:
+                image_url = resolved
+                summary["cover_art_resolved"] += 1
 
         # Collect for download services.
         if not matched_track_id and artist_name and title:
