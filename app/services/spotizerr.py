@@ -289,7 +289,31 @@ class SpotizerrClient:
     # -- Status -------------------------------------------------------------
 
     async def get_status(self, task_id: str) -> Dict[str, Any]:
-        """Check the status of a download task."""
+        """Check the status of a download task.
+
+        Spotizerr's ``/api/prgs/{task_id}`` endpoint returns:
+
+            {
+              "original_url": "...",
+              "last_line": {"status": "downloading|complete|error|...", "error": "..."},
+              "timestamp": ...,
+              "task_id": "...",
+              "status_count": N
+            }
+
+        We flatten the useful bits into a stable shape so callers
+        don't have to dig into ``last_line.status`` themselves:
+
+            {
+              "status":   "downloading"|"complete"|"error"|...  (always lower-case)
+              "progress": float | None,
+              "error":    str | None,
+              "raw":      {full upstream response}
+            }
+
+        On transport error, returns ``status="error"`` with the
+        exception in ``error``.
+        """
         await self._ensure_auth()
         await self._throttle()
         try:
@@ -298,10 +322,39 @@ class SpotizerrClient:
                 headers=self._headers(),
             )
             resp.raise_for_status()
-            return resp.json()
+            raw = resp.json()
         except Exception as exc:
             logger.warning("Spotizerr status check failed for %s: %s", task_id, exc)
-            return {"status": "error", "error": str(exc)}
+            return {
+                "status": "error",
+                "progress": None,
+                "error": str(exc),
+                "raw": {},
+            }
+
+        last_line = raw.get("last_line") if isinstance(raw.get("last_line"), dict) else {}
+        # Fall back to top-level fields if last_line is missing/empty.
+        status = (
+            (last_line.get("status") if last_line else None)
+            or raw.get("status")
+            or "unknown"
+        )
+        error = (last_line.get("error") if last_line else None) or raw.get("error")
+        progress = (
+            (last_line.get("progress") if last_line else None)
+            or raw.get("progress")
+        )
+        try:
+            progress = float(progress) if progress is not None else None
+        except (TypeError, ValueError):
+            progress = None
+
+        return {
+            "status": str(status).lower(),
+            "progress": progress,
+            "error": str(error) if error else None,
+            "raw": raw,
+        }
 
 
 # ---------------------------------------------------------------------------

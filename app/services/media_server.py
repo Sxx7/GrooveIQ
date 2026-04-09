@@ -278,6 +278,127 @@ def is_configured() -> bool:
     return settings.MEDIA_SERVER_TYPE.lower().strip() in ("navidrome", "plex")
 
 
+# ---------------------------------------------------------------------------
+# Library refresh (API-triggered scan)
+# ---------------------------------------------------------------------------
+
+async def refresh_library(path: Optional[str] = None) -> bool:
+    """Trigger an immediate library rescan on the configured media server.
+
+    Used after a Spotizerr download completes so the new file becomes
+    playable without waiting for the next scheduled scan.
+
+    Both Plex and Navidrome efficiently skip files they've already
+    indexed, so a full rescan is cheap when only one new file has
+    arrived — no need for us to know the exact output path.
+
+    ``path`` is an optional server-visible absolute path for Plex's
+    partial-refresh feature (``/library/sections/{id}/refresh?path=``).
+    Navidrome's Subsonic ``startScan.view`` doesn't support partial
+    scans and ignores the argument.
+
+    Returns True if the upstream API accepted the request.  The scan
+    itself runs asynchronously on the media server; this function
+    does not wait for it to finish.
+    """
+    server_type = settings.MEDIA_SERVER_TYPE.lower().strip()
+
+    if server_type == "navidrome":
+        return await _refresh_navidrome()
+    if server_type == "plex":
+        return await _refresh_plex(path)
+
+    logger.debug("refresh_library: no media server configured")
+    return False
+
+
+async def _refresh_navidrome() -> bool:
+    """Fire Navidrome's Subsonic ``startScan.view`` endpoint."""
+    if not settings.MEDIA_SERVER_URL or not settings.MEDIA_SERVER_USER:
+        logger.warning("Navidrome refresh skipped: URL or user not configured")
+        return False
+
+    from app.core.credentials import get_media_server_password
+    import secrets as _secrets
+
+    base = settings.MEDIA_SERVER_URL.rstrip("/")
+    username = settings.MEDIA_SERVER_USER
+    password = get_media_server_password()
+    if not password:
+        logger.warning("Navidrome refresh skipped: no password configured")
+        return False
+
+    salt = _secrets.token_hex(8)
+    token = hashlib.md5((password + salt).encode()).hexdigest()
+    params = {
+        "u": username,
+        "t": token,
+        "s": salt,
+        "v": "1.16.1",
+        "c": "grooveiq",
+        "f": "json",
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT, verify=True) as client:
+            resp = await client.get(f"{base}/rest/startScan.view", params=params)
+            resp.raise_for_status()
+            data = resp.json()
+            sub = data.get("subsonic-response", {})
+            if sub.get("status") == "ok":
+                logger.info("Navidrome: library scan triggered")
+                return True
+            err = sub.get("error", {}).get("message", "unknown")
+            logger.warning("Navidrome scan trigger failed: %s", err)
+            return False
+    except Exception as exc:
+        logger.warning("Navidrome scan trigger error: %s", exc)
+        return False
+
+
+async def _refresh_plex(path: Optional[str] = None) -> bool:
+    """Fire Plex's ``/library/sections/{id}/refresh`` endpoint.
+
+    When ``path`` is supplied, Plex does a partial scan of that
+    directory only (much faster on huge libraries).  The path must
+    be Plex-visible — i.e. the path inside Plex's container, which
+    we approximate via ``MEDIA_SERVER_MUSIC_PATH``.
+    """
+    if not settings.MEDIA_SERVER_URL or not settings.MEDIA_SERVER_TOKEN:
+        logger.warning("Plex refresh skipped: URL or token not configured")
+        return False
+    if not settings.MEDIA_SERVER_LIBRARY_ID:
+        logger.warning("Plex refresh skipped: MEDIA_SERVER_LIBRARY_ID not set")
+        return False
+
+    from app.core.credentials import get_media_server_token
+
+    base = settings.MEDIA_SERVER_URL.rstrip("/")
+    token = get_media_server_token()
+    if not token:
+        logger.warning("Plex refresh skipped: no token configured")
+        return False
+
+    url = f"{base}/library/sections/{settings.MEDIA_SERVER_LIBRARY_ID}/refresh"
+    params: Dict[str, str] = {"X-Plex-Token": token}
+    if path:
+        params["path"] = path
+
+    try:
+        async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT, verify=True) as client:
+            resp = await client.get(url, params=params)
+            resp.raise_for_status()
+            scope = f"partial path={path}" if path else "full library"
+            logger.info(
+                "Plex: library scan triggered (section=%s, %s)",
+                settings.MEDIA_SERVER_LIBRARY_ID, scope,
+            )
+            return True
+    except Exception as exc:
+        logger.warning("Plex scan trigger error: %s", exc)
+        return False
+
+
 async def sync_track_ids(session: AsyncSession) -> SyncResult:
     """
     Synchronise GrooveIQ track IDs with the configured media server.

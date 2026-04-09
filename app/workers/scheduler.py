@@ -68,6 +68,18 @@ async def start_scheduler() -> None:
             replace_existing=True,
         )
 
+    # Download watcher reaper — periodically re-attaches watchers to
+    # Spotizerr downloads that were left in-flight by a previous
+    # process (e.g. container restart).  Also expires rows that have
+    # been "downloading" for >2h without reaching a terminal state.
+    if settings.spotizerr_enabled:
+        _scheduler.add_job(
+            _reap_stuck_downloads,
+            trigger=IntervalTrigger(minutes=5),
+            id="download_reaper",
+            replace_existing=True,
+        )
+
     # Last.fm scrobble queue processor (every 60s)
     if settings.lastfm_user_enabled and settings.LASTFM_SCROBBLE_ENABLED:
         _scheduler.add_job(
@@ -104,6 +116,12 @@ async def start_scheduler() -> None:
 
     # Start event loop health watchdog.
     asyncio.create_task(_event_loop_watchdog())
+
+    # Re-attach download watchers for any in-flight rows left by a
+    # previous process.  Runs once on startup; the periodic scheduled
+    # job above then keeps re-checking.
+    if settings.spotizerr_enabled:
+        asyncio.create_task(_reap_stuck_downloads())
 
 
 async def stop_scheduler() -> None:
@@ -290,3 +308,18 @@ async def _refresh_lastfm_profiles() -> None:
             logger.info("Last.fm profiles refreshed: %s", result)
     except Exception:
         logger.error(f"Last.fm profile refresh failed: {traceback.format_exc()}")
+
+
+async def _reap_stuck_downloads() -> None:
+    """Re-attach download watchers for in-flight Spotizerr downloads.
+
+    Handles the container-restart case where asyncio watcher tasks were
+    killed but ``download_requests`` rows are still in a non-terminal
+    state.  Also expires rows older than the watcher's max-age so they
+    don't linger as ``downloading`` forever.
+    """
+    try:
+        from app.services.download_watcher import reap_stuck_downloads
+        await reap_stuck_downloads()
+    except Exception:
+        logger.error(f"Download reaper failed: {traceback.format_exc()}")

@@ -282,8 +282,18 @@ async def _send_tracks_to_spotizerr(
     tracks: List[Tuple[str, str]],
     max_adds: int = 50,
 ) -> Dict[str, int]:
-    """Send unmatched chart tracks to Spotizerr for individual download."""
+    """Send unmatched chart tracks to Spotizerr for individual download.
+
+    For each successfully-queued download:
+      1. Persists a ``download_requests`` row so the download shows up
+         in ``GET /v1/downloads`` history alongside user-initiated ones.
+      2. Spawns a ``download_watcher`` so once the download finishes
+         the media server refresh + GrooveIQ library scan fire
+         automatically (same chain as user-initiated downloads).
+    """
     from app.services.spotizerr import SpotizerrClient, _pick_best_match
+    from app.services.download_watcher import start_watcher
+    from app.models.db import DownloadRequest
 
     client = SpotizerrClient(
         settings.SPOTIZERR_URL,
@@ -315,15 +325,53 @@ async def _send_tracks_to_spotizerr(
                 stats["not_found"] += 1
                 continue
 
-            dl_result = await client.download(match["id"])
+            spotify_id = match["id"]
+            dl_result = await client.download(spotify_id)
             status = dl_result.get("status", "error")
+            task_id = dl_result.get("task_id") or None
+
+            # Persist a download_requests row so the watcher and history
+            # endpoint can find it.  Use a fresh session per row to keep
+            # the write transactions short.
+            matched_title = match.get("name", title)
+            matched_artists = match.get("artists") or []
+            matched_artist_name = (
+                matched_artists[0].get("name", artist)
+                if matched_artists else artist
+            )
+            matched_album = (match.get("album") or {}).get("name")
+            try:
+                async with AsyncSessionLocal() as dl_session:
+                    dl_session.add(DownloadRequest(
+                        spotify_id=spotify_id,
+                        task_id=task_id,
+                        status=status,
+                        track_title=matched_title,
+                        artist_name=matched_artist_name,
+                        album_name=matched_album,
+                        requested_by="__charts__",
+                        error_message=dl_result.get("error"),
+                        updated_at=int(time.time()),
+                    ))
+                    await dl_session.commit()
+            except Exception as exc:
+                logger.warning(
+                    "Charts/Spotizerr: could not persist download row for %s-%s: %s",
+                    artist, title, exc,
+                )
 
             if status == "downloading":
                 stats["sent"] += 1
                 sent += 1
                 logger.info("Charts/Spotizerr: downloading %s - %s", artist, title)
+                if task_id:
+                    await start_watcher(task_id)
             elif status == "duplicate":
                 stats["duplicate"] += 1
+                if task_id:
+                    # Attach to the in-flight original task so its
+                    # completion still triggers the refresh chain.
+                    await start_watcher(task_id)
             else:
                 stats["errors"] += 1
 

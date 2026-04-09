@@ -140,6 +140,16 @@ async def create_download(
     session.add(record)
     await session.flush()
 
+    # Spawn a background watcher that polls Spotizerr until the download
+    # reaches a terminal state, then triggers the media server + GrooveIQ
+    # library scan so the new file becomes instantly playable.  Only
+    # in-flight downloads are worth watching — "error" results are already
+    # final and "duplicate" shares a task_id with whichever watcher owns
+    # the original request (start_watcher is idempotent).
+    if record.task_id and record.status not in ("error", "unknown"):
+        from app.services.download_watcher import start_watcher
+        await start_watcher(record.task_id)
+
     return DownloadResponse.model_validate(record)
 
 
@@ -171,18 +181,26 @@ async def get_download_status(
     )
     record = result.scalar_one_or_none()
 
+    # Flattened shape from SpotizerrClient.get_status():
+    # {"status", "progress", "error", "raw"}
     spotizerr_status = status_data.get("status", "unknown")
-    if record and spotizerr_status != record.status:
-        record.status = spotizerr_status
+    # Map Spotizerr terminal states onto our DB statuses so the history
+    # table shows "completed" / "error" rather than Spotizerr's internal
+    # enum strings.
+    db_status = spotizerr_status
+    if spotizerr_status in ("complete", "done"):
+        db_status = "completed"
+    if record and db_status != record.status:
+        record.status = db_status
         record.updated_at = int(time.time())
         if status_data.get("error"):
-            record.error_message = str(status_data["error"])
+            record.error_message = str(status_data["error"])[:1024]
 
     return DownloadStatusResponse(
         task_id=task_id,
         status=spotizerr_status,
         progress=status_data.get("progress"),
-        details=status_data,
+        details=status_data.get("raw") or status_data,
     )
 
 
