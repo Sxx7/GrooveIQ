@@ -225,31 +225,66 @@ class SpotizerrClient:
 
         Returns dict with 'task_id' and 'status'.
         On 409 (duplicate), returns the existing task_id.
+        On 4xx/5xx, returns ``status="error"`` and the upstream
+        ``error`` message from Spotizerr's JSON body (not httpx's
+        generic "Server error 500" string) so callers can see
+        exactly why Spotizerr rejected the request.
+
+        Spotizerr's success response uses ``{"prg_file": ...}``
+        (legacy name kept for backwards compat).  We treat both
+        ``prg_file`` and ``task_id`` as the task identifier so an
+        eventual field rename upstream won't break us.
         """
         await self._ensure_auth()
         await self._throttle()
+
+        url = f"{self._base_url}/api/track/download/{spotify_track_id}"
         try:
-            resp = await self._client.get(
-                f"{self._base_url}/api/track/download/{spotify_track_id}",
-                headers=self._headers(),
-            )
-            if resp.status_code == 409:
-                # Duplicate — already downloading or downloaded.
-                data = resp.json()
-                task_id = data.get("existing_task") or data.get("task_id", "")
-                return {"task_id": task_id, "status": "duplicate"}
-            resp.raise_for_status()
-            data = resp.json()
-            return {"task_id": data.get("task_id", ""), "status": "downloading"}
-        except httpx.HTTPStatusError as exc:
-            logger.warning(
-                "Spotizerr download failed for %s: HTTP %s",
-                spotify_track_id, exc.response.status_code,
-            )
-            return {"task_id": "", "status": "error", "error": str(exc)}
+            resp = await self._client.get(url, headers=self._headers())
         except Exception as exc:
-            logger.warning("Spotizerr download failed for %s: %s", spotify_track_id, exc)
+            logger.warning(
+                "Spotizerr download transport error for %s: %s",
+                spotify_track_id, exc,
+            )
             return {"task_id": "", "status": "error", "error": str(exc)}
+
+        # Always attempt to parse the body — Spotizerr embeds
+        # useful error details in the JSON, even on 4xx/5xx.
+        try:
+            data = resp.json()
+        except Exception:
+            data = {}
+
+        def _extract_task_id(payload: Dict[str, Any]) -> str:
+            return (
+                payload.get("prg_file")
+                or payload.get("task_id")
+                or payload.get("existing_task")
+                or ""
+            )
+
+        if resp.status_code == 409:
+            # Duplicate — already downloading or downloaded.
+            return {"task_id": _extract_task_id(data), "status": "duplicate"}
+
+        if resp.status_code >= 400:
+            err_msg = (
+                data.get("error")
+                or data.get("message")
+                or f"Spotizerr HTTP {resp.status_code}"
+            )
+            logger.warning(
+                "Spotizerr download failed for %s: %s",
+                spotify_track_id, err_msg,
+            )
+            return {
+                "task_id": _extract_task_id(data),
+                "status": "error",
+                "error": err_msg,
+            }
+
+        # Success path: Spotizerr returns 202 + {"prg_file": "..."}.
+        return {"task_id": _extract_task_id(data), "status": "downloading"}
 
     # -- Status -------------------------------------------------------------
 
