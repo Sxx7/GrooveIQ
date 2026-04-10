@@ -203,10 +203,11 @@ async def get_user_history(
             tf_map[tf.external_track_id] = tf
 
     # For each play_start, find the closest subsequent play_end for the same
-    # (user, track, session_id) to get completion/dwell info.
-    # Build a map of session_id+track_id → play_end events
+    # (user, track) to get completion/dwell info.
+    # Strategy: match by session_id+track_id when available, fall back to
+    # closest play_end after the play_start timestamp for the same track.
     session_ids = list({s.session_id for s in starts if s.session_id})
-    end_map = {}
+    end_by_session = {}  # (session_id, track_id) → play_end
     if session_ids:
         end_q = (
             select(ListenEvent)
@@ -219,14 +220,41 @@ async def get_user_history(
         ends = (await session.execute(end_q)).scalars().all()
         for e in ends:
             key = (e.session_id, e.track_id)
-            # Keep the one closest in time (latest) per key
-            if key not in end_map or e.timestamp > end_map[key].timestamp:
-                end_map[key] = e
+            if key not in end_by_session or e.timestamp > end_by_session[key].timestamp:
+                end_by_session[key] = e
+
+    # Fallback: fetch all play_end events for these tracks (for starts without session_id)
+    # Build a map of track_id → list of play_end events sorted by timestamp
+    end_by_track = {}  # track_id → [play_end events sorted by timestamp]
+    needs_fallback = any(not s.session_id for s in starts)
+    if needs_fallback:
+        fb_q = (
+            select(ListenEvent)
+            .where(
+                ListenEvent.user_id == user_id,
+                ListenEvent.event_type == "play_end",
+                ListenEvent.track_id.in_(track_ids),
+            )
+            .order_by(ListenEvent.timestamp)
+        )
+        fb_ends = (await session.execute(fb_q)).scalars().all()
+        for e in fb_ends:
+            end_by_track.setdefault(e.track_id, []).append(e)
 
     history = []
     for s in starts:
         tf = tf_map.get(s.track_id)
-        end = end_map.get((s.session_id, s.track_id)) if s.session_id else None
+        # Prefer session-based match, fall back to closest play_end after this play_start
+        end = None
+        if s.session_id:
+            end = end_by_session.get((s.session_id, s.track_id))
+        if not end:
+            candidates = end_by_track.get(s.track_id, [])
+            # Find the first play_end after this play_start (list is sorted by timestamp)
+            for c in candidates:
+                if c.timestamp >= s.timestamp:
+                    end = c
+                    break
 
         entry = {
             "track_id": s.track_id,

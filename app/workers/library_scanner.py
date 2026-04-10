@@ -125,13 +125,14 @@ async def get_scan_status(scan_id: int) -> Optional[dict]:
         percent = round(processed / scan.files_found * 100, 1) if scan.files_found > 0 else 0.0
         elapsed = (scan.scan_ended_at or int(time.time())) - scan.scan_started_at
 
-        # Rate and ETA based on analyzed+failed only (actual work, not skips)
-        work_done = scan.files_analyzed + scan.files_failed
-        work_remaining = scan.files_found - skipped - work_done
-        analysis_rate = round(work_done / elapsed, 2) if elapsed > 0 and work_done > 0 else None
+        # Rate and ETA based on total processed files (including skips)
+        # because skip-checking (hash lookup, DB query) dominates wall-clock time
+        total_processed = processed
+        total_remaining = scan.files_found - total_processed
+        throughput = round(total_processed / elapsed, 2) if elapsed > 0 and total_processed > 0 else None
         eta = None
-        if scan.status == "running" and analysis_rate and analysis_rate > 0:
-            eta = int(work_remaining / analysis_rate)
+        if scan.status == "running" and throughput and throughput > 0:
+            eta = int(total_remaining / throughput)
 
         return {
             "scan_id": scan.id,
@@ -143,7 +144,7 @@ async def get_scan_status(scan_id: int) -> Optional[dict]:
             "percent_complete": percent,
             "elapsed_seconds": elapsed,
             "eta_seconds": eta,
-            "rate_per_sec": analysis_rate,
+            "rate_per_sec": throughput,
             "current_file": scan.current_file,
             "started_at": scan.scan_started_at,
             "ended_at": scan.scan_ended_at,
@@ -292,9 +293,9 @@ def _log_progress(scan_id: int, found: int, analyzed: int, skipped: int, failed:
     processed = analyzed + skipped + failed
     pct = round(processed / found * 100, 1) if found > 0 else 0
     elapsed = time.time() - start
-    work_done = analyzed + failed
-    rate = work_done / elapsed if elapsed > 0 and work_done > 0 else 0
-    remaining = found - skipped - work_done
+    total_done = analyzed + skipped + failed
+    rate = total_done / elapsed if elapsed > 0 and total_done > 0 else 0
+    remaining = found - total_done
     eta = round(remaining / rate) if rate > 0 else 0
     eta_str = f"{eta // 60}m{eta % 60:02d}s" if eta >= 60 else f"{eta}s"
     logger.info(
