@@ -1,2 +1,1 @@
 spotdl>=4.2,<5
-uvicorn[standard]>=0.24,<1
