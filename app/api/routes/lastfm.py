@@ -195,6 +195,30 @@ async def sync_lastfm_profile(
     )
 
 
+@router.post(
+    "/users/{user_id}/lastfm/backfill",
+    summary="Backfill missed scrobbles",
+    description="Scans past play_end events and enqueues any that qualify "
+                "for scrobbling but were missed. The background worker will "
+                "send them to Last.fm on its next run.",
+)
+async def backfill_scrobbles(
+    user_id: str,
+    _key: str = Depends(require_api_key),
+):
+    _require_lastfm_enabled()
+
+    from app.core.security import check_user_access
+    check_user_access(_key, user_id)
+
+    from app.services.lastfm_scrobbler import backfill_scrobbles as do_backfill
+
+    result = await do_backfill(user_id)
+    if "error" in result:
+        raise HTTPException(status_code=400, detail=result["error"])
+    return result
+
+
 @router.get(
     "/users/{user_id}/lastfm/profile",
     response_model=LastfmProfileResponse,
