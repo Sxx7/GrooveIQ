@@ -62,18 +62,61 @@ _spotdl_instance = None
 _spotdl_lock = asyncio.Lock()
 
 
-def _patch_spotdl_genres_bug():
-    """Monkey-patch spotDL's SpotifyClient to inject missing 'genres' keys.
+def _patch_spotdl_sparse_api():
+    """Monkey-patch spotDL's Song.from_url to handle Spotify's sparse API responses.
 
-    Spotify stopped returning 'genres' on some artist/album API responses.
-    spotDL 4.x crashes with KeyError: 'genres' at Song.from_url (song.py:117).
+    Spotify's API no longer reliably returns all fields that spotDL expects
+    (genres, label, copyrights, external_ids, images, tracks, etc.).
+    spotDL 4.x uses raw dict['key'] access throughout Song.from_url and
+    crashes with KeyError on any missing field.
 
-    SpotifyClient is a singleton that inherits from spotipy.Spotify, so
-    .track(), .artist(), .album() are methods directly on it. We wrap
-    those to inject 'genres': [] into the response dict when missing.
+    Instead of patching individual fields, we wrap the SpotifyClient's
+    track/artist/album methods to return dicts that never raise KeyError
+    — a defaulting wrapper that returns sensible empty values for any
+    missing key.
     """
     try:
         from spotdl.utils.spotify import SpotifyClient
+
+        class SafeDict(dict):
+            """Dict subclass that returns safe defaults for missing keys.
+
+            Prevents KeyError crashes in spotDL's Song.from_url which uses
+            raw_meta["key"] access on Spotify API responses.
+            """
+            _DEFAULTS = {
+                "genres": [],
+                "label": "",
+                "copyrights": [],
+                "external_ids": {},
+                "external_urls": {},
+                "images": [],
+                "artists": [],
+                "tracks": {"items": []},
+                "album": {},
+                "name": "",
+                "id": "",
+                "type": "",
+                "release_date": "0000",
+                "total_tracks": 0,
+                "disc_number": 1,
+                "track_number": 0,
+                "duration_ms": 0,
+                "explicit": False,
+                "popularity": 0,
+                "is_local": False,
+            }
+
+            def __missing__(self, key):
+                return self._DEFAULTS.get(key, "")
+
+        def _to_safe(obj):
+            """Recursively convert dicts to SafeDict."""
+            if isinstance(obj, dict) and not isinstance(obj, SafeDict):
+                return SafeDict({k: _to_safe(v) for k, v in obj.items()})
+            if isinstance(obj, list):
+                return [_to_safe(i) for i in obj]
+            return obj
 
         for method_name in ("track", "artist", "album"):
             _orig = getattr(SpotifyClient, method_name)
@@ -81,24 +124,22 @@ def _patch_spotdl_genres_bug():
             def _make_safe(orig_method):
                 def _safe(self, *a, **kw):
                     result = orig_method(self, *a, **kw)
-                    if isinstance(result, dict):
-                        result.setdefault("genres", [])
-                    return result
+                    return _to_safe(result)
                 _safe.__name__ = orig_method.__name__
                 return _safe
 
             setattr(SpotifyClient, method_name, _make_safe(_orig))
 
-        logger.info("Patched SpotifyClient.track/artist/album for missing 'genres' key")
+        logger.info("Patched SpotifyClient methods for sparse Spotify API responses")
     except Exception as exc:
-        logger.warning("Failed to patch spotDL genres bug: %s", exc)
+        logger.warning("Failed to patch spotDL for sparse API: %s", exc)
 
 
 def _build_spotdl():
     """Create the Spotdl instance (called in the main thread once)."""
     from spotdl import Spotdl
 
-    _patch_spotdl_genres_bug()
+    _patch_spotdl_sparse_api()
 
     # client_id and client_secret are required positional args.
     # When not provided via env vars, pass empty strings — spotDL
