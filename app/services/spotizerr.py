@@ -399,19 +399,17 @@ async def search_and_download(
     artist: str,
     title: str,
 ) -> Optional[Dict[str, Any]]:
-    """Search Spotizerr for a track and trigger download.
+    """Search for a track and trigger download via the configured backend.
 
     Returns dict with task_id, spotify_id, matched artist/title,
     or None if search returned no results.
     """
-    if not settings.spotizerr_enabled:
+    from app.services.spotdl import get_download_client
+
+    client = get_download_client()
+    if client is None:
         return None
 
-    client = SpotizerrClient(
-        settings.SPOTIZERR_URL,
-        settings.SPOTIZERR_USERNAME,
-        settings.SPOTIZERR_PASSWORD,
-    )
     try:
         query = f"{artist} {title}"
         results = await client.search(query, limit=5)

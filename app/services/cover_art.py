@@ -3,8 +3,9 @@ GrooveIQ -- Cover art resolver with persistent cache.
 
 Last.fm stopped distributing real cover art in ~2020, so chart entries
 that don't match the local library need a fallback source.  This module
-provides a cached lookup via Spotizerr's Spotify search — no extra API
-key or integration required beyond what Spotizerr already has.
+provides a cached lookup via Spotify search (through spotdl-api or
+Spotizerr) -- no extra API key or integration required beyond what the
+download backend already has.
 
 Cache key: normalised (artist, title).
 Cache value: URL string, or None meaning "looked up, nothing found".
@@ -12,7 +13,7 @@ Cache storage: cover_art_cache table.
 
 At render time the chart API prefers, in order:
     1. media server cover URL (for tracks matched to the local library)
-    2. cached Spotizerr URL (this module)
+    2. cached cover URL from download backend (this module)
     3. None
 
 Once a downloaded track lands in the library and is synced, priority #1
@@ -32,7 +33,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.models.db import CoverArtCache
-from app.services.spotizerr import SpotizerrClient
+from app.services.spotdl import get_download_client
 
 logger = logging.getLogger(__name__)
 
@@ -40,7 +41,7 @@ _STRIP_RE = re.compile(r"[^\w\s]", re.UNICODE)
 
 # Refresh negative cache entries after a week — Spotify's catalog may have
 # added the track in the meantime.  Positive entries never expire; if an
-# image URL goes stale Spotizerr will return a new one on next manual rebuild.
+# image URL goes stale the backend will return a new one on next manual rebuild.
 _NEGATIVE_TTL_SECONDS = 7 * 24 * 3600
 
 
@@ -57,18 +58,18 @@ async def resolve_cover_art(
     session: AsyncSession,
     artist: str,
     title: str,
-    client: Optional[SpotizerrClient] = None,
+    client=None,
 ) -> Optional[str]:
     """Resolve an album cover URL for (artist, title), with persistent cache.
 
-    Cache hit → return immediately (positive *or* negative, with TTL).
-    Cache miss → query Spotizerr, persist the result, return it.
+    Cache hit -> return immediately (positive *or* negative, with TTL).
+    Cache miss -> query download backend, persist the result, return it.
 
     Pass an existing `client` to reuse connection pooling across many calls
     (e.g. during a chart build that resolves hundreds of tracks).  Without
     one, a temporary client is created and closed for a single lookup.
 
-    The caller controls commit timing — this function only stages changes
+    The caller controls commit timing -- this function only stages changes
     on the provided session.
     """
     artist_norm = _normalize(artist)
@@ -94,16 +95,14 @@ async def resolve_cover_art(
             return None
 
     # -- Upstream lookup ----------------------------------------------------
-    if not settings.spotizerr_enabled:
+    if not settings.download_enabled:
         return None
 
     owns_client = client is None
     if owns_client:
-        client = SpotizerrClient(
-            settings.SPOTIZERR_URL,
-            settings.SPOTIZERR_USERNAME,
-            settings.SPOTIZERR_PASSWORD,
-        )
+        client = get_download_client()
+        if client is None:
+            return None
 
     url: Optional[str] = None
     try:
@@ -117,16 +116,17 @@ async def resolve_cover_art(
             await client.close()
 
     # -- Persist (positive or negative) -------------------------------------
+    source = "spotdl" if settings.spotdl_enabled else "spotizerr"
     if cached is not None:
         cached.url = url
-        cached.source = "spotizerr"
+        cached.source = source
         cached.fetched_at = now
     else:
         session.add(CoverArtCache(
             artist_norm=artist_norm,
             title_norm=title_norm,
             url=url,
-            source="spotizerr",
+            source=source,
             fetched_at=now,
         ))
 
@@ -136,18 +136,15 @@ async def resolve_cover_art(
 async def resolve_artist_image(
     session: AsyncSession,
     artist: str,
-    client: Optional[SpotizerrClient] = None,
+    client=None,
 ) -> Optional[str]:
     """Resolve a portrait image URL for an artist, with persistent cache.
 
     Shares the cover_art_cache table with track cover art — artist entries
     use an empty title_norm to distinguish them from per-track rows.
-    Source tag is ``spotizerr_artist`` so mixed audits can tell them apart.
 
-    Tries Spotizerr's ``type=artist`` search first for real portraits; if
-    that yields nothing, falls back to the top-track album art.  Both
-    happen inside SpotizerrClient.resolve_artist_image; this function
-    just wraps it with caching.
+    Tries the download backend's artist image resolution; falls back to
+    top-track album art internally.
     """
     artist_norm = _normalize(artist)
     if not artist_norm:
@@ -168,16 +165,14 @@ async def resolve_artist_image(
         if now - cached.fetched_at < _NEGATIVE_TTL_SECONDS:
             return None
 
-    if not settings.spotizerr_enabled:
+    if not settings.download_enabled:
         return None
 
     owns_client = client is None
     if owns_client:
-        client = SpotizerrClient(
-            settings.SPOTIZERR_URL,
-            settings.SPOTIZERR_USERNAME,
-            settings.SPOTIZERR_PASSWORD,
-        )
+        client = get_download_client()
+        if client is None:
+            return None
 
     url: Optional[str] = None
     try:
@@ -189,16 +184,17 @@ async def resolve_artist_image(
         if owns_client:
             await client.close()
 
+    source = "spotdl_artist" if settings.spotdl_enabled else "spotizerr_artist"
     if cached is not None:
         cached.url = url
-        cached.source = "spotizerr_artist"
+        cached.source = source
         cached.fetched_at = now
     else:
         session.add(CoverArtCache(
             artist_norm=artist_norm,
             title_norm="",
             url=url,
-            source="spotizerr_artist",
+            source=source,
             fetched_at=now,
         ))
 

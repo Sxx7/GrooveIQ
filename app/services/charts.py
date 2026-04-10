@@ -291,15 +291,15 @@ async def _send_tracks_to_spotizerr(
          the media server refresh + GrooveIQ library scan fire
          automatically (same chain as user-initiated downloads).
     """
-    from app.services.spotizerr import SpotizerrClient, _pick_best_match
+    from app.services.spotizerr import _pick_best_match
+    from app.services.spotdl import get_download_client
     from app.services.download_watcher import start_watcher
     from app.models.db import DownloadRequest
 
-    client = SpotizerrClient(
-        settings.SPOTIZERR_URL,
-        settings.SPOTIZERR_USERNAME,
-        settings.SPOTIZERR_PASSWORD,
-    )
+    client = get_download_client()
+    if client is None:
+        logger.warning("Charts: no download backend configured, skipping track downloads")
+        return {"sent": 0, "not_found": 0, "duplicate": 0, "errors": 0}
     stats = {"sent": 0, "not_found": 0, "duplicate": 0, "errors": 0}
 
     # Deduplicate by normalised artist+title.
@@ -415,14 +415,10 @@ async def build_charts() -> Dict[str, Any]:
     # unmatched entries when Last.fm returns its placeholder image.
     # Shared across all chart builds in this run so connection pooling
     # and auth token caching are reused.
-    from app.services.spotizerr import SpotizerrClient
-    cover_client: Optional[SpotizerrClient] = None
-    if settings.spotizerr_enabled:
-        cover_client = SpotizerrClient(
-            settings.SPOTIZERR_URL,
-            settings.SPOTIZERR_USERNAME,
-            settings.SPOTIZERR_PASSWORD,
-        )
+    from app.services.spotdl import get_download_client
+    cover_client = None
+    if settings.download_enabled:
+        cover_client = get_download_client()
 
     try:
         async with AsyncSessionLocal() as session:

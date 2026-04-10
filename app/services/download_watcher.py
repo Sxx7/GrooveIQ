@@ -41,7 +41,7 @@ from sqlalchemy import select
 from app.core.config import settings
 from app.db.session import AsyncSessionLocal
 from app.models.db import DownloadRequest
-from app.services.spotizerr import SpotizerrClient
+from app.services.spotdl import get_download_client
 
 logger = logging.getLogger(__name__)
 
@@ -120,11 +120,12 @@ async def _watch_loop(task_id: str, timeout_s: int) -> None:
     logger.info("Download watcher started for task %s", task_id)
     started_at = time.monotonic()
 
-    client = SpotizerrClient(
-        settings.SPOTIZERR_URL,
-        settings.SPOTIZERR_USERNAME,
-        settings.SPOTIZERR_PASSWORD,
-    )
+    client = get_download_client()
+    if client is None:
+        logger.warning("Watcher %s: no download backend configured", task_id)
+        async with _watchers_lock:
+            _active_watchers.discard(task_id)
+        return
 
     terminal_status: Optional[str] = None
     terminal_error: str = ""

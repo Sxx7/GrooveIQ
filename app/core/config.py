@@ -176,8 +176,11 @@ class Settings(BaseSettings):
     CHARTS_LIDARR_MAX_ADDS: int = 50           # max artists to add to Lidarr per build
 
     # ------------------------------------------------------------------
-    # Spotizerr (self-hosted music download — individual tracks)
+    # Downloads — spotdl-api (preferred) or Spotizerr (legacy)
     # ------------------------------------------------------------------
+    # spotdl-api: lightweight REST wrapper around spotDL (YouTube Music audio)
+    SPOTDL_API_URL: str = ""                   # e.g. http://spotdl-api:8181
+    # Spotizerr (legacy, librespot-based — kept for backwards compat)
     SPOTIZERR_URL: str = ""                    # e.g. http://spotizerr:7171
     SPOTIZERR_USERNAME: str = ""               # only needed if Spotizerr ENABLE_AUTH=true
     SPOTIZERR_PASSWORD: str = ""               # only needed if Spotizerr ENABLE_AUTH=true
@@ -230,8 +233,17 @@ class Settings(BaseSettings):
         return bool(self.CHARTS_ENABLED and self.LASTFM_API_KEY)
 
     @property
+    def spotdl_enabled(self) -> bool:
+        return bool(self.SPOTDL_API_URL)
+
+    @property
     def spotizerr_enabled(self) -> bool:
         return bool(self.SPOTIZERR_URL)
+
+    @property
+    def download_enabled(self) -> bool:
+        """True if any download backend (spotdl-api or Spotizerr) is configured."""
+        return self.spotdl_enabled or self.spotizerr_enabled
 
     @property
     def discovery_enabled(self) -> bool:

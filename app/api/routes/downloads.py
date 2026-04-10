@@ -24,25 +24,28 @@ from app.models.schemas import (
     DownloadResponse,
     DownloadStatusResponse,
 )
-from app.services.spotizerr import SpotizerrClient
+from app.services.spotdl import get_download_client
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
-def _get_client() -> SpotizerrClient:
-    return SpotizerrClient(
-        settings.SPOTIZERR_URL,
-        settings.SPOTIZERR_USERNAME,
-        settings.SPOTIZERR_PASSWORD,
-    )
-
-
-def _require_spotizerr() -> None:
-    if not settings.spotizerr_enabled:
+def _get_client():
+    """Return the configured download client (spotdl-api or Spotizerr)."""
+    client = get_download_client()
+    if client is None:
         raise HTTPException(
             status_code=503,
-            detail="Spotizerr not configured. Set SPOTIZERR_URL in environment.",
+            detail="No download backend configured. Set SPOTDL_API_URL or SPOTIZERR_URL.",
+        )
+    return client
+
+
+def _require_download_backend() -> None:
+    if not settings.download_enabled:
+        raise HTTPException(
+            status_code=503,
+            detail="No download backend configured. Set SPOTDL_API_URL or SPOTIZERR_URL.",
         )
 
 
@@ -61,7 +64,7 @@ async def search_tracks(
 ):
     """Proxy Spotizerr track search.  Flattens raw Spotify objects into a
     simple format the mobile client can consume directly."""
-    _require_spotizerr()
+    _require_download_backend()
     client = _get_client()
     try:
         raw = await client.search(q, limit=limit)
@@ -115,7 +118,7 @@ async def create_download(
 ):
     """Trigger download of a specific Spotify track ID.  The user should
     first search via ``GET /v1/downloads/search`` and select a result."""
-    _require_spotizerr()
+    _require_download_backend()
     client = _get_client()
     try:
         dl_result = await client.download(body.spotify_id)
@@ -168,7 +171,7 @@ async def get_download_status(
     _key: str = Depends(require_api_key),
 ):
     """Proxy Spotizerr task progress.  Also updates the DB record if found."""
-    _require_spotizerr()
+    _require_download_backend()
     client = _get_client()
     try:
         status_data = await client.get_status(task_id)
