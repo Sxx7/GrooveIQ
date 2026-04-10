@@ -63,54 +63,33 @@ _spotdl_lock = asyncio.Lock()
 
 
 def _patch_spotdl_genres_bug():
-    """Monkey-patch spotDL's Song.from_url to handle missing 'genres' key.
+    """Monkey-patch spotDL's SpotifyClient to inject missing 'genres' keys.
 
     Spotify stopped returning 'genres' on some artist/album API responses.
-    spotDL 4.x crashes with KeyError: 'genres' at song.py:117. This patch
-    wraps the original method to use .get() with a default empty list.
+    spotDL 4.x crashes with KeyError: 'genres' at Song.from_url (song.py:117).
+
+    SpotifyClient is a singleton that inherits from spotipy.Spotify, so
+    .track(), .artist(), .album() are methods directly on it. We wrap
+    those to inject 'genres': [] into the response dict when missing.
     """
     try:
-        from spotdl.types.song import Song
+        from spotdl.utils.spotify import SpotifyClient
 
-        _original_from_url = Song.from_url.__func__  # unwrap classmethod
+        for method_name in ("track", "artist", "album"):
+            _orig = getattr(SpotifyClient, method_name)
 
-        @classmethod  # type: ignore[misc]
-        def _patched_from_url(cls, url: str) -> "Song":
-            # Patch the Spotify client's methods to return safe defaults
-            from spotdl.utils.spotify import SpotifyClient
+            def _make_safe(orig_method):
+                def _safe(self, *a, **kw):
+                    result = orig_method(self, *a, **kw)
+                    if isinstance(result, dict):
+                        result.setdefault("genres", [])
+                    return result
+                _safe.__name__ = orig_method.__name__
+                return _safe
 
-            client = SpotifyClient()
-            _orig_track = client.spotify.track
-            _orig_artist = client.spotify.artist
-            _orig_album = client.spotify.album
+            setattr(SpotifyClient, method_name, _make_safe(_orig))
 
-            def _safe_track(*a, **kw):
-                r = _orig_track(*a, **kw)
-                r.setdefault("genres", [])
-                return r
-
-            def _safe_artist(*a, **kw):
-                r = _orig_artist(*a, **kw)
-                r.setdefault("genres", [])
-                return r
-
-            def _safe_album(*a, **kw):
-                r = _orig_album(*a, **kw)
-                r.setdefault("genres", [])
-                return r
-
-            client.spotify.track = _safe_track
-            client.spotify.artist = _safe_artist
-            client.spotify.album = _safe_album
-            try:
-                return _original_from_url(cls, url)
-            finally:
-                client.spotify.track = _orig_track
-                client.spotify.artist = _orig_artist
-                client.spotify.album = _orig_album
-
-        Song.from_url = _patched_from_url
-        logger.info("Patched spotDL Song.from_url for missing 'genres' key")
+        logger.info("Patched SpotifyClient.track/artist/album for missing 'genres' key")
     except Exception as exc:
         logger.warning("Failed to patch spotDL genres bug: %s", exc)
 
