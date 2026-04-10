@@ -98,8 +98,8 @@ async def add_security_headers(request: Request, call_next):
     response.headers["Strict-Transport-Security"] = (
         "max-age=63072000; includeSubDomains"
     )
-    # CSP: the dashboard is a single HTML page with inline scripts/styles.
-    # Allow 'self' and 'unsafe-inline' for the dashboard, block everything else.
+    # CSP: the dashboard uses external CSS from /static/ and inline JS.
+    # Allow 'self' and 'unsafe-inline' for scripts/styles, block everything else.
     response.headers["Content-Security-Policy"] = (
         "default-src 'self'; "
         "script-src 'self' 'unsafe-inline'; "
@@ -156,7 +156,7 @@ async def root():
 
 @app.get("/dashboard", include_in_schema=False)
 async def dashboard():
-    return FileResponse(_static_dir / "dashboard.html")
+    return FileResponse(_static_dir / "index.html")
 
 
 @app.get("/favicon.ico", include_in_schema=False)
