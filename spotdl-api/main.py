@@ -240,6 +240,11 @@ async def search(
 ):
     """Search Spotify for tracks (metadata via Spotify, audio via YouTube Music)."""
     spotdl = await _get_spotdl()
+    if spotdl is None:
+        raise HTTPException(
+            status_code=503,
+            detail="spotDL not initialized. Set SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET.",
+        )
     loop = asyncio.get_running_loop()
     try:
         results = await loop.run_in_executor(
@@ -254,6 +259,12 @@ async def search(
 @app.post("/download", response_model=DownloadResponse)
 async def download(body: DownloadRequest):
     """Trigger a track download by Spotify ID. Returns immediately with a task_id."""
+    spotdl = await _get_spotdl()
+    if spotdl is None:
+        raise HTTPException(
+            status_code=503,
+            detail="spotDL not initialized. Set SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET.",
+        )
     spotify_url = f"https://open.spotify.com/track/{body.spotify_id}"
 
     now = time.time()
@@ -268,7 +279,6 @@ async def download(body: DownloadRequest):
     _tasks[task_id] = task
 
     # Fire and forget — download runs in the thread pool
-    spotdl = await _get_spotdl()
     loop = asyncio.get_running_loop()
     loop.run_in_executor(_executor, _do_download, spotdl, task_id, spotify_url)
 
@@ -310,8 +320,18 @@ async def startup():
         OUTPUT_FORMAT, BITRATE, OUTPUT_DIR, MAX_THREADS,
     )
     # Pre-warm spotDL instance (downloads Spotify client credentials, etc.)
-    await _get_spotdl()
-    logger.info("spotDL initialized")
+    try:
+        await _get_spotdl()
+        logger.info("spotDL initialized")
+    except Exception as exc:
+        logger.error(
+            "spotDL init failed: %s. "
+            "Set SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET env vars. "
+            "Get them free at https://developer.spotify.com/dashboard",
+            exc,
+        )
+        # Don't crash — let health endpoint run so container doesn't restart-loop.
+        # Search/download endpoints will fail gracefully when _spotdl_instance is None.
 
 
 @app.on_event("shutdown")
