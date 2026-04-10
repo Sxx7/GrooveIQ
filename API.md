@@ -1587,7 +1587,7 @@ Use `library.cover_url` when available (local, fast, album-specific). Fall back 
 
 ### `POST /v1/charts/build` — Trigger chart rebuild
 
-Fetches fresh charts from Last.fm, matches to library, and optionally sends missing artists to Lidarr or tracks to Spotizerr. Requires admin API key.
+Fetches fresh charts from Last.fm, matches to library, and optionally sends missing artists to Lidarr or tracks to spotdl-api/Spotizerr for download. Requires admin API key.
 
 ```bash
 curl -X POST http://localhost:8000/v1/charts/build \
@@ -1605,7 +1605,7 @@ curl -X POST http://localhost:8000/v1/charts/build \
     "total_entries": 350,
     "library_matches": 87,
     "artists_sent_to_lidarr": 12,
-    "tracks_sent_to_spotizerr": 45,
+    "tracks_sent_to_download": 45,
     "errors": 0
   }
 }
@@ -1613,11 +1613,11 @@ curl -X POST http://localhost:8000/v1/charts/build \
 
 ---
 
-### `POST /v1/charts/download` — Download a chart track via Spotizerr
+### `POST /v1/charts/download` — Download a chart track
 
-Trigger download of a specific chart track via Spotizerr. Provide either a chart `position` or `artist_name` + `track_title`.
+Trigger download of a specific chart track via spotdl-api (primary) or Spotizerr (legacy fallback). Provide either a chart `position` or `artist_name` + `track_title`.
 
-Requires `SPOTIZERR_URL` to be configured.
+Requires `SPOTDL_API_URL` or `SPOTIZERR_URL` to be configured.
 
 ```bash
 curl -X POST http://localhost:8000/v1/charts/download \
@@ -1661,7 +1661,7 @@ Must provide either `position` or both `artist_name` + `track_title`.
 }
 ```
 
-**Error** `503` if Spotizerr not configured.
+**Error** `503` if no download backend configured (neither spotdl-api nor Spotizerr).
 **Error** `404` if chart entry not found or no Spotify match.
 **Error** `422` if neither position nor artist+title provided.
 
@@ -1690,13 +1690,13 @@ curl http://localhost:8000/v1/charts/stats \
 
 ## Downloads
 
-Spotizerr download proxy. GrooveIQ acts as a gateway — frontend apps search and download tracks through GrooveIQ without needing Spotizerr credentials or URL. Download history is persisted in the database.
+Download proxy. GrooveIQ acts as a gateway — frontend apps search and download tracks through GrooveIQ without needing direct access to the download backend. Uses spotdl-api (primary) or Spotizerr (legacy fallback). The factory function `get_download_client()` in `app/services/spotdl.py` selects the backend automatically. Download history is persisted in the database.
 
-Requires `SPOTIZERR_URL` to be configured. Returns `503` if not set.
+Requires `SPOTDL_API_URL` (preferred) or `SPOTIZERR_URL` to be configured. Returns `503` if neither is set.
 
 ### `GET /v1/downloads/search` — Search for tracks
 
-Proxies a Spotizerr track search. Returns results as Spotizerr sees them so the user can pick which track to download.
+Searches for tracks via the configured download backend (spotdl-api or Spotizerr). Returns results so the user can pick which track to download.
 
 ```bash
 curl "http://localhost:8000/v1/downloads/search?q=Radiohead+Creep&limit=5" \
@@ -1777,14 +1777,14 @@ curl -X POST http://localhost:8000/v1/downloads \
 
 Status values: `pending`, `downloading`, `duplicate`, `completed`, `error`.
 
-**Error** `503` if Spotizerr not configured.
-**Error** `502` if Spotizerr request failed.
+**Error** `503` if no download backend configured.
+**Error** `502` if download backend request failed.
 
 ---
 
 ### `GET /v1/downloads/status/{task_id}` — Check download progress
 
-Proxies Spotizerr task progress. Also opportunistically updates the DB record if one exists for this task.
+Proxies download backend task progress. Also opportunistically updates the DB record if one exists for this task.
 
 ```bash
 curl http://localhost:8000/v1/downloads/status/abc123-def456 \
@@ -1807,7 +1807,7 @@ curl http://localhost:8000/v1/downloads/status/abc123-def456 \
 }
 ```
 
-The `details` field contains the raw Spotizerr status payload (varies by Spotizerr version).
+The `details` field contains the raw status payload from the download backend (format varies by backend and version).
 
 ---
 
