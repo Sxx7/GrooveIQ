@@ -156,23 +156,30 @@ class DownloadResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 def _song_to_search_result(song) -> Dict[str, Any]:
-    """Convert a spotDL Song object to a flat dict."""
+    """Convert a spotDL Song object to a flat dict.
+
+    Uses getattr for safety — Song field names vary across spotDL versions.
+    """
     return {
-        "spotify_id": song.song_id or "",
-        "title": song.name or "",
-        "artist": song.artist or "",
-        "artists": list(song.artists) if song.artists else [],
-        "album": song.album_name or None,
-        "album_artist": song.album_artist or None,
-        "duration": song.duration or None,
-        "cover_url": song.cover_url or None,
-        "url": song.url or "",
+        "spotify_id": getattr(song, "song_id", "") or "",
+        "title": getattr(song, "name", "") or "",
+        "artist": getattr(song, "artist", "") or "",
+        "artists": list(getattr(song, "artists", []) or []),
+        "album": getattr(song, "album_name", None),
+        "album_artist": getattr(song, "album_artist", None),
+        "duration": getattr(song, "duration", None),
+        "cover_url": getattr(song, "cover_url", None),
+        "url": getattr(song, "url", "") or "",
     }
 
 
 def _do_search(spotdl_instance, query: str, limit: int) -> List[Dict[str, Any]]:
     """Run spotDL search (blocking). Called in thread pool."""
-    songs = spotdl_instance.search([query])
+    try:
+        songs = spotdl_instance.search([query])
+    except Exception as exc:
+        logger.error("spotDL search error for %r: %s", query, exc, exc_info=True)
+        raise
     results = [_song_to_search_result(s) for s in songs[:limit]]
     return results
 
@@ -199,8 +206,8 @@ def _do_download(spotdl_instance, task_id: str, spotify_url: str) -> None:
             return
 
         song = songs[0]
-        task.title = song.name or ""
-        task.artist = song.artist or ""
+        task.title = getattr(song, "name", "") or ""
+        task.artist = getattr(song, "artist", "") or ""
         task.progress = 0.0
         task.updated_at = time.time()
 
