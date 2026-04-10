@@ -387,9 +387,15 @@ function renderDashboard(stats, users, events, model) {
     h += '<table><tr><th>Time</th><th>User</th><th>Track</th><th>Event</th><th>Value</th><th>Source</th><th>Device</th></tr>';
     for (var i = 0; i < events.length; i++) {
       var e = events[i];
-      var src = [e.context_type, e.surface].filter(Boolean).join(' / ') || '\u2014';
+      var src = [e.context_type, e.surface].filter(Boolean).join(' / ') || e.client_id || '\u2014';
       var dev = [e.device_type, e.device_id ? e.device_id.slice(0,12) : null].filter(Boolean).join(' ') || '\u2014';
-      h += '<tr><td class="nowrap">' + timeAgo(e.timestamp) + '</td><td><strong>' + esc(e.user_id) + '</strong></td><td class="mono text-sm">' + esc(e.track_id) + '</td><td>' + eventBadge(e.event_type) + '</td><td>' + (e.value != null ? e.value : '\u2014') + '</td><td>' + esc(src) + '</td><td>' + esc(dev) + '</td></tr>';
+      var val = '\u2014';
+      if (e.value != null) {
+        if (e.event_type === 'play_end' || e.event_type === 'pause' || e.event_type === 'resume' || e.event_type === 'skip') val = (e.value * 100).toFixed(0) + '%';
+        else if (e.event_type === 'rating') val = e.value.toFixed(1);
+        else val = e.value;
+      } else if (e.dwell_ms != null && e.dwell_ms > 0) { val = fmtDuration(Math.round(e.dwell_ms / 1000)); }
+      h += '<tr><td class="nowrap">' + timeAgo(e.timestamp) + '</td><td><strong>' + esc(e.user_id) + '</strong></td><td class="mono text-sm">' + esc(e.track_id) + '</td><td>' + eventBadge(e.event_type) + '</td><td>' + val + '</td><td>' + esc(src) + '</td><td>' + esc(dev) + '</td></tr>';
     }
     h += '</table>';
   }
