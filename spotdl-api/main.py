@@ -66,8 +66,16 @@ def _build_spotdl():
     """Create the Spotdl instance (called in the main thread once)."""
     from spotdl import Spotdl
 
-    kwargs: Dict[str, Any] = {
-        "downloader_settings": {
+    # client_id and client_secret are required positional args.
+    # When not provided via env vars, pass empty strings — spotDL
+    # falls back to its own hardcoded Spotify app credentials.
+    client_id = SPOTIFY_CLIENT_ID or ""
+    client_secret = SPOTIFY_CLIENT_SECRET or ""
+
+    return Spotdl(
+        client_id=client_id,
+        client_secret=client_secret,
+        downloader_settings={
             "format": OUTPUT_FORMAT,
             "bitrate": BITRATE,
             "output": os.path.join(OUTPUT_DIR, OUTPUT_TEMPLATE),
@@ -75,12 +83,7 @@ def _build_spotdl():
             "overwrite": "skip",
             "simple_tui": True,
         },
-    }
-    if SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET:
-        kwargs["client_id"] = SPOTIFY_CLIENT_ID
-        kwargs["client_secret"] = SPOTIFY_CLIENT_SECRET
-
-    return Spotdl(**kwargs)
+    )
 
 
 async def _get_spotdl():
