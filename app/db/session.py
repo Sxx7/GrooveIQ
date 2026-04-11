@@ -93,6 +93,8 @@ async def _apply_column_migrations(conn) -> None:
         ("playlists", "created_by", "VARCHAR(128)"),
         # Chart entry images
         ("chart_entries", "image_url", "VARCHAR(1024)"),
+        # User onboarding preferences
+        ("users", "onboarding_preferences", "TEXT"),
     ]
     for table, column, col_type in migrations:
         # Validate identifiers to prevent SQL injection via migration list.
