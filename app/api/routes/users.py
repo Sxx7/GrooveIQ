@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.security import check_user_access, require_api_key
 from app.db.session import get_session
 from app.models.db import ListenEvent, ListenSession, TrackFeatures, TrackInteraction, User
-from app.models.schemas import UserCreate, UserResponse, UserUpdate
+from app.models.schemas import OnboardingRequest, OnboardingResponse, UserCreate, UserResponse, UserUpdate
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -67,6 +67,137 @@ async def get_user_profile(
             "profile": user.lastfm_cache,
         }
     return response
+
+
+# ---------------------------------------------------------------------------
+# Onboarding
+# ---------------------------------------------------------------------------
+
+@router.post(
+    "/users/{user_id}/onboarding",
+    response_model=OnboardingResponse,
+    summary="Submit onboarding preferences",
+    description="""
+Submit explicit user preferences for cold-start recommendation seeding.
+
+Preferences are stored on the user and blended into the taste profile.
+Subsequent calls overwrite previous onboarding data (full replace).
+As real listening data accumulates, onboarding influence fades via decay.
+""",
+)
+async def submit_onboarding(
+    user_id: str,
+    body: OnboardingRequest,
+    session: AsyncSession = Depends(get_session),
+    _key: str = Depends(require_api_key),
+):
+    user = await _resolve_user(session, user_id, _key)
+
+    import time as _time
+    from sqlalchemy import or_
+
+    prefs: dict = {}
+    prefs_saved = 0
+    matched_tracks = 0
+    matched_artists = 0
+
+    # --- Match favourite tracks against library ---
+    if body.favourite_tracks:
+        result = await session.execute(
+            select(TrackFeatures.track_id).where(or_(
+                TrackFeatures.track_id.in_(body.favourite_tracks),
+                TrackFeatures.external_track_id.in_(body.favourite_tracks),
+            ))
+        )
+        found = {r[0] for r in result.all()}
+        prefs["favourite_tracks"] = list(found) if found else body.favourite_tracks
+        matched_tracks = len(found)
+        prefs_saved += 1
+
+    # --- Match favourite artists against library ---
+    if body.favourite_artists:
+        # Case-insensitive substring match against artist column
+        artist_ids: list[str] = []
+        for artist_name in body.favourite_artists:
+            result = await session.execute(
+                select(TrackFeatures.track_id, TrackFeatures.artist)
+                .where(func.lower(TrackFeatures.artist).contains(artist_name.lower()))
+                .limit(1)
+            )
+            if result.first():
+                matched_artists += 1
+        prefs["favourite_artists"] = body.favourite_artists
+        prefs_saved += 1
+
+    # --- Store remaining preferences ---
+    if body.favourite_genres:
+        prefs["favourite_genres"] = body.favourite_genres
+        prefs_saved += 1
+    if body.mood_preferences:
+        prefs["mood_preferences"] = body.mood_preferences
+        prefs_saved += 1
+    if body.listening_contexts:
+        prefs["listening_contexts"] = body.listening_contexts
+        prefs_saved += 1
+    if body.device_types:
+        prefs["device_types"] = body.device_types
+        prefs_saved += 1
+    if body.energy_preference is not None:
+        prefs["energy_preference"] = body.energy_preference
+        prefs_saved += 1
+    if body.danceability_preference is not None:
+        prefs["danceability_preference"] = body.danceability_preference
+        prefs_saved += 1
+
+    prefs["submitted_at"] = int(_time.time())
+
+    user.onboarding_preferences = prefs
+    await session.flush()
+
+    # --- Trigger a taste profile seed if user has no interactions yet ---
+    profile_seeded = False
+    interaction_count = (await session.execute(
+        select(func.count()).select_from(
+            select(TrackInteraction.id)
+            .where(TrackInteraction.user_id == user_id)
+            .subquery()
+        )
+    )).scalar() or 0
+
+    if interaction_count == 0:
+        from app.services.taste_profile import build_seed_profile
+        seed = await build_seed_profile(session, user)
+        if seed:
+            user.taste_profile = seed
+            user.profile_updated_at = int(_time.time())
+            profile_seeded = True
+
+    await session.commit()
+
+    return OnboardingResponse(
+        user_id=user_id,
+        preferences_saved=prefs_saved,
+        matched_tracks=matched_tracks,
+        matched_artists=matched_artists,
+        profile_seeded=profile_seeded,
+    )
+
+
+@router.get(
+    "/users/{user_id}/onboarding",
+    summary="Get onboarding preferences",
+)
+async def get_onboarding(
+    user_id: str,
+    session: AsyncSession = Depends(get_session),
+    _key: str = Depends(require_api_key),
+):
+    """Returns the user's stored onboarding preferences, or null if not submitted."""
+    user = await _resolve_user(session, user_id, _key)
+    return {
+        "user_id": user_id,
+        "onboarding_preferences": user.onboarding_preferences,
+    }
 
 
 # ---------------------------------------------------------------------------

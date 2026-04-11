@@ -152,7 +152,8 @@ async def _build_profile(
     """
     Build the full taste profile for one user.
 
-    Returns None if the user has no interactions.
+    Returns None if the user has no interactions AND no external data
+    (Last.fm / onboarding) to seed from.
     """
     # Fetch all interactions for this user, ordered by satisfaction_score desc.
     result = await session.execute(
@@ -163,6 +164,16 @@ async def _build_profile(
     interactions = result.scalars().all()
 
     if not interactions:
+        # No local interactions — try to build a seed profile from
+        # Last.fm cache and/or onboarding preferences.
+        user_result = await session.execute(
+            select(User).where(User.user_id == user_id)
+        )
+        user = user_result.scalar_one_or_none()
+        if user:
+            seed = await build_seed_profile(session, user)
+            if seed:
+                return seed
         return None
 
     now = int(time.time())
@@ -269,6 +280,15 @@ async def _build_profile(
         profile["context_type_patterns"] = context_type_patterns
     if location_patterns:
         profile["location_patterns"] = location_patterns
+
+    # --- Enrich with Last.fm data and onboarding preferences ---
+    user_result = await session.execute(
+        select(User).where(User.user_id == user_id)
+    )
+    user = user_result.scalar_one_or_none()
+    if user:
+        _enrich_with_lastfm(profile, user.lastfm_cache, len(interactions))
+        _enrich_with_onboarding(profile, user.onboarding_preferences, len(interactions))
 
     return profile
 
@@ -699,3 +719,333 @@ async def _compute_location_patterns(
         r.location_label: round(r.cnt / total, 4)
         for r in rows
     }
+
+
+# ---------------------------------------------------------------------------
+# Last.fm enrichment
+# ---------------------------------------------------------------------------
+
+def _enrich_with_lastfm(
+    profile: Dict[str, Any],
+    lastfm_cache: Optional[Dict[str, Any]],
+    interaction_count: int,
+) -> None:
+    """
+    Enrich a taste profile with Last.fm cached data.
+
+    Last.fm data provides genre/artist preferences that may not be fully
+    captured by local listening alone.  The influence decays as local
+    interactions grow — at 500+ interactions, Last.fm contributes <10%.
+    """
+    if not lastfm_cache:
+        return
+
+    # Weight: high when few local interactions, fading as local data grows.
+    # At 0 interactions: 1.0, at 100: ~0.37, at 500: ~0.007
+    lastfm_weight = math.exp(-interaction_count / 150.0)
+    if lastfm_weight < 0.05:
+        return  # negligible, skip computation
+
+    # --- Genre preferences from Last.fm ---
+    genres = lastfm_cache.get("genres")
+    if genres and isinstance(genres, dict):
+        total = sum(genres.values()) or 1
+        lastfm_genres = {
+            g: round(c / total, 4) for g, c in genres.items()
+        }
+        existing = profile.get("lastfm_genres")
+        if not existing:
+            profile["lastfm_genres"] = lastfm_genres
+
+    # --- Top artists from Last.fm (overall period) ---
+    top_artists = lastfm_cache.get("top_artists", {}).get("overall", [])
+    if top_artists:
+        profile["lastfm_top_artists"] = [
+            {
+                "name": a.get("name", ""),
+                "playcount": int(a.get("playcount", 0)),
+            }
+            for a in top_artists[:30]
+            if a.get("name")
+        ]
+
+    # --- Loved tracks from Last.fm ---
+    loved = lastfm_cache.get("loved_tracks", [])
+    if loved:
+        profile["lastfm_loved_tracks"] = [
+            {
+                "artist": t.get("artist", {}).get("name", "") if isinstance(t.get("artist"), dict) else str(t.get("artist", "")),
+                "title": t.get("name", ""),
+            }
+            for t in loved[:30]
+            if t.get("name")
+        ]
+
+    profile["lastfm_weight"] = round(lastfm_weight, 4)
+
+
+# ---------------------------------------------------------------------------
+# Onboarding enrichment
+# ---------------------------------------------------------------------------
+
+def _enrich_with_onboarding(
+    profile: Dict[str, Any],
+    onboarding: Optional[Dict[str, Any]],
+    interaction_count: int,
+) -> None:
+    """
+    Enrich a taste profile with explicit onboarding preferences.
+
+    Onboarding influence decays faster than Last.fm — it's meant for
+    cold-start only.  At 200+ interactions, onboarding is negligible.
+    """
+    if not onboarding:
+        return
+
+    onboarding_weight = math.exp(-interaction_count / 80.0)
+    if onboarding_weight < 0.05:
+        return
+
+    # Blend explicit audio preferences if the user specified them.
+    audio_prefs = profile.get("audio_preferences", {})
+    if onboarding.get("energy_preference") is not None and "energy" in audio_prefs:
+        local_mean = audio_prefs["energy"]["mean"]
+        blended = local_mean * (1 - onboarding_weight) + onboarding["energy_preference"] * onboarding_weight
+        audio_prefs["energy"]["mean"] = round(blended, 4)
+    if onboarding.get("danceability_preference") is not None and "danceability" in audio_prefs:
+        local_mean = audio_prefs["danceability"]["mean"]
+        blended = local_mean * (1 - onboarding_weight) + onboarding["danceability_preference"] * onboarding_weight
+        audio_prefs["danceability"]["mean"] = round(blended, 4)
+
+    # Blend mood preferences.
+    if onboarding.get("mood_preferences"):
+        existing_moods = profile.get("mood_preferences", {})
+        for mood in onboarding["mood_preferences"]:
+            mood_lower = mood.lower()
+            existing_val = existing_moods.get(mood_lower, 0.0)
+            # Boost the onboarded mood by blending in a synthetic score.
+            blended = existing_val * (1 - onboarding_weight) + 0.5 * onboarding_weight
+            existing_moods[mood_lower] = round(blended, 4)
+        if existing_moods:
+            profile["mood_preferences"] = existing_moods
+
+    # Add context/device preferences from onboarding.
+    if onboarding.get("listening_contexts"):
+        existing = profile.get("context_type_patterns", {})
+        if not existing:
+            n = len(onboarding["listening_contexts"])
+            profile["context_type_patterns"] = {
+                ctx: round(1.0 / n, 4) for ctx in onboarding["listening_contexts"]
+            }
+
+    if onboarding.get("device_types"):
+        existing = profile.get("device_patterns", {})
+        if not existing:
+            n = len(onboarding["device_types"])
+            profile["device_patterns"] = {
+                dev: round(1.0 / n, 4) for dev in onboarding["device_types"]
+            }
+
+    profile["onboarding_weight"] = round(onboarding_weight, 4)
+
+
+# ---------------------------------------------------------------------------
+# Seed profile builder (cold-start from Last.fm + onboarding only)
+# ---------------------------------------------------------------------------
+
+async def build_seed_profile(
+    session: AsyncSession,
+    user: "User",
+) -> Optional[Dict[str, Any]]:
+    """
+    Build a minimal taste profile for a user with zero local interactions,
+    using Last.fm cache and/or onboarding preferences.
+
+    This gives the recommendation system something to work with before
+    the user has generated any local listening events.
+
+    Returns None if neither Last.fm nor onboarding data is available.
+    """
+    lastfm_cache = user.lastfm_cache
+    onboarding = user.onboarding_preferences
+
+    if not lastfm_cache and not onboarding:
+        return None
+
+    now = int(time.time())
+    profile: Dict[str, Any] = {
+        "top_tracks": [],
+        "behaviour": {
+            "avg_session_tracks": None,
+            "avg_skip_rate": None,
+            "avg_completion": None,
+            "total_plays": 0,
+            "active_days": 0,
+            "listening_since": None,
+        },
+        "popularity_preference": 0.5,
+        "updated_at": now,
+        "seed_source": [],
+    }
+
+    # --- Seed from onboarding ---
+    if onboarding:
+        profile["seed_source"].append("onboarding")
+
+        if onboarding.get("energy_preference") is not None or onboarding.get("danceability_preference") is not None:
+            audio = {}
+            if onboarding.get("energy_preference") is not None:
+                audio["energy"] = {"mean": onboarding["energy_preference"], "std": 0.15}
+            if onboarding.get("danceability_preference") is not None:
+                audio["danceability"] = {"mean": onboarding["danceability_preference"], "std": 0.15}
+            profile["audio_preferences"] = audio
+
+        if onboarding.get("mood_preferences"):
+            n = len(onboarding["mood_preferences"])
+            profile["mood_preferences"] = {
+                m.lower(): round(1.0 / n, 4)
+                for m in onboarding["mood_preferences"]
+            }
+
+        if onboarding.get("listening_contexts"):
+            n = len(onboarding["listening_contexts"])
+            profile["context_type_patterns"] = {
+                ctx: round(1.0 / n, 4)
+                for ctx in onboarding["listening_contexts"]
+            }
+
+        if onboarding.get("device_types"):
+            n = len(onboarding["device_types"])
+            profile["device_patterns"] = {
+                dev: round(1.0 / n, 4)
+                for dev in onboarding["device_types"]
+            }
+
+        # Match favourite tracks/artists against library to build audio prefs.
+        if onboarding.get("favourite_tracks"):
+            from sqlalchemy import or_
+            result = await session.execute(
+                select(TrackFeatures).where(or_(
+                    TrackFeatures.track_id.in_(onboarding["favourite_tracks"]),
+                    TrackFeatures.external_track_id.in_(onboarding["favourite_tracks"]),
+                ))
+            )
+            tracks = result.scalars().all()
+            if tracks:
+                profile["top_tracks"] = [
+                    {"track_id": t.track_id, "score": 1.0}
+                    for t in tracks[:_TOP_TRACKS_LIMIT]
+                ]
+                # Compute audio preferences from favourite tracks.
+                audio = profile.get("audio_preferences", {})
+                for feat in _AUDIO_FEATURES:
+                    vals = [getattr(t, feat) for t in tracks if getattr(t, feat, None) is not None]
+                    if vals:
+                        mean = sum(vals) / len(vals)
+                        audio[feat] = {"mean": round(mean, 4), "std": 0.15}
+                profile["audio_preferences"] = audio
+
+        if onboarding.get("favourite_artists"):
+            from sqlalchemy import func as sa_func
+            artist_tracks = []
+            for artist in onboarding["favourite_artists"]:
+                result = await session.execute(
+                    select(TrackFeatures)
+                    .where(sa_func.lower(TrackFeatures.artist).contains(artist.lower()))
+                    .limit(20)
+                )
+                artist_tracks.extend(result.scalars().all())
+            if artist_tracks:
+                audio = profile.get("audio_preferences", {})
+                for feat in _AUDIO_FEATURES:
+                    vals = [getattr(t, feat) for t in artist_tracks if getattr(t, feat, None) is not None]
+                    if vals:
+                        mean = sum(vals) / len(vals)
+                        # Only set if not already seeded from favourite tracks.
+                        if feat not in audio:
+                            audio[feat] = {"mean": round(mean, 4), "std": 0.15}
+                profile["audio_preferences"] = audio
+
+        profile["onboarding_weight"] = 1.0
+
+    # --- Seed from Last.fm ---
+    if lastfm_cache:
+        profile["seed_source"].append("lastfm")
+
+        # Match Last.fm top tracks to library for audio preferences.
+        lastfm_top = lastfm_cache.get("top_tracks", {}).get("overall", [])
+        if lastfm_top:
+            # Try to match by artist + title.
+            matched_features = []
+            for lt in lastfm_top[:30]:
+                title = lt.get("name", "")
+                artist = lt.get("artist", {})
+                artist_name = artist.get("name", "") if isinstance(artist, dict) else str(artist)
+                if not title or not artist_name:
+                    continue
+                result = await session.execute(
+                    select(TrackFeatures).where(
+                        func.lower(TrackFeatures.title) == title.lower(),
+                        func.lower(TrackFeatures.artist).contains(artist_name.lower()),
+                    ).limit(1)
+                )
+                tf = result.scalar_one_or_none()
+                if tf:
+                    matched_features.append(tf)
+
+            if matched_features:
+                # Compute audio prefs from matched Last.fm tracks.
+                audio = profile.get("audio_preferences", {})
+                for feat in _AUDIO_FEATURES:
+                    vals = [getattr(t, feat) for t in matched_features if getattr(t, feat, None) is not None]
+                    if vals:
+                        mean = sum(vals) / len(vals)
+                        if feat in audio:
+                            # Blend with onboarding if both present.
+                            existing = audio[feat]["mean"]
+                            audio[feat]["mean"] = round((existing + mean) / 2, 4)
+                        else:
+                            audio[feat] = {"mean": round(mean, 4), "std": 0.15}
+                profile["audio_preferences"] = audio
+
+                # Add matched Last.fm tracks to top_tracks.
+                existing_ids = {t["track_id"] for t in profile["top_tracks"]}
+                for tf in matched_features:
+                    if tf.track_id not in existing_ids:
+                        profile["top_tracks"].append(
+                            {"track_id": tf.track_id, "score": 0.8}
+                        )
+                profile["top_tracks"] = profile["top_tracks"][:_TOP_TRACKS_LIMIT]
+
+        # Genres from Last.fm.
+        genres = lastfm_cache.get("genres")
+        if genres and isinstance(genres, dict):
+            total = sum(genres.values()) or 1
+            profile["lastfm_genres"] = {
+                g: round(c / total, 4) for g, c in genres.items()
+            }
+
+        # Top artists from Last.fm.
+        top_artists = lastfm_cache.get("top_artists", {}).get("overall", [])
+        if top_artists:
+            profile["lastfm_top_artists"] = [
+                {"name": a.get("name", ""), "playcount": int(a.get("playcount", 0))}
+                for a in top_artists[:30]
+                if a.get("name")
+            ]
+
+        # Loved tracks from Last.fm.
+        loved = lastfm_cache.get("loved_tracks", [])
+        if loved:
+            profile["lastfm_loved_tracks"] = [
+                {
+                    "artist": t.get("artist", {}).get("name", "") if isinstance(t.get("artist"), dict) else str(t.get("artist", "")),
+                    "title": t.get("name", ""),
+                }
+                for t in loved[:30]
+                if t.get("name")
+            ]
+
+        profile["lastfm_weight"] = 1.0
+
+    return profile if (profile.get("audio_preferences") or profile.get("lastfm_genres") or profile.get("top_tracks")) else None

@@ -215,6 +215,9 @@ class User(Base):
     taste_profile = Column(JSON, nullable=True)
     profile_updated_at = Column(Integer, nullable=True)
 
+    # Onboarding preferences (explicit user input, seeds cold-start)
+    onboarding_preferences = Column(JSON, nullable=True)
+
     # Last.fm integration (per-user, opt-in)
     lastfm_username    = Column(String(128), nullable=True)
     lastfm_session_key = Column(String(512), nullable=True)   # Fernet-encrypted

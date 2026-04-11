@@ -479,6 +479,61 @@ class RecommendationContext(BaseModel):
     location_label: Optional[str] = Field(None, max_length=32)
 
 
+class OnboardingRequest(BaseModel):
+    """User onboarding preferences for cold-start recommendation seeding."""
+    favourite_artists: Optional[List[str]] = Field(
+        None, max_length=50,
+        description="List of favourite artist names (matched against local library).",
+    )
+    favourite_genres: Optional[List[str]] = Field(
+        None, max_length=30,
+        description="Preferred genres, e.g. ['rock', 'electronic', 'jazz'].",
+    )
+    favourite_tracks: Optional[List[str]] = Field(
+        None, max_length=50,
+        description="List of track_ids from the local library.",
+    )
+    mood_preferences: Optional[List[str]] = Field(
+        None, max_length=10,
+        description="Preferred moods, e.g. ['happy', 'relaxed', 'energetic'].",
+    )
+    listening_contexts: Optional[List[str]] = Field(
+        None, max_length=10,
+        description="Typical listening contexts, e.g. ['home', 'gym', 'commute'].",
+    )
+    device_types: Optional[List[str]] = Field(
+        None, max_length=10,
+        description="Typical devices, e.g. ['mobile', 'desktop', 'speaker'].",
+    )
+    energy_preference: Optional[float] = Field(
+        None, ge=0.0, le=1.0,
+        description="Preferred energy level (0=calm, 1=intense).",
+    )
+    danceability_preference: Optional[float] = Field(
+        None, ge=0.0, le=1.0,
+        description="Preferred danceability (0=not danceable, 1=very danceable).",
+    )
+
+    @model_validator(mode="after")
+    def at_least_one_field(self):
+        fields = [
+            self.favourite_artists, self.favourite_genres, self.favourite_tracks,
+            self.mood_preferences, self.listening_contexts, self.device_types,
+            self.energy_preference, self.danceability_preference,
+        ]
+        if all(f is None for f in fields):
+            raise ValueError("At least one onboarding preference must be provided.")
+        return self
+
+
+class OnboardingResponse(BaseModel):
+    user_id: str
+    preferences_saved: int = Field(..., description="Number of preference fields saved.")
+    matched_tracks: int = Field(0, description="Favourite tracks matched to library.")
+    matched_artists: int = Field(0, description="Favourite artists matched to library.")
+    profile_seeded: bool = Field(False, description="Whether a taste profile was seeded from onboarding.")
+
+
 class UserCreate(BaseModel):
     user_id:      str = Field(..., min_length=1, max_length=128)
     display_name: Optional[str] = Field(None, max_length=255)
