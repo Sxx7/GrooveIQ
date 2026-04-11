@@ -243,7 +243,7 @@ services:
 volumes:
   grooveiq_data:
   grooveiq_models:
-  # ablookup_data:
+  ablookup_data:
   # grooveiq_pg:
   # caddy_data:
   # caddy_config:
