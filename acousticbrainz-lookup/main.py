@@ -307,9 +307,20 @@ async def health():
         return {"status": "ready", "tracks": track_count, "ingestion": "completed"}
 
     last = status.get("last_archive", "")
+    # Extract archive number for friendlier progress (e.g. "archive 3/30")
+    progress = "starting"
+    if last:
+        import re
+        m = re.search(r"-(\d+)\.tar\.zst$", last)
+        if m:
+            idx = int(m.group(1)) + 1
+            total = 1 if "sample" in last else 30
+            progress = f"archive {idx}/{total}"
+        else:
+            progress = last
     return {
         "status": "ingesting",
-        "progress": f"last: {last}" if last else "starting",
+        "progress": progress,
         "tracks_so_far": track_count,
     }
 

@@ -222,15 +222,19 @@ def _process_archive(
                     if len(batch) >= BATCH_SIZE:
                         conn.executemany(INSERT_TRACK, batch)
                         conn.commit()
-                        inserted += len(batch)
+                        batch_len = len(batch)
+                        inserted += batch_len
                         if progress_cb:
-                            progress_cb(inserted)
+                            progress_cb(batch_len)
                         batch.clear()
 
     if batch:
         conn.executemany(INSERT_TRACK, batch)
         conn.commit()
-        inserted += len(batch)
+        batch_len = len(batch)
+        inserted += batch_len
+        if progress_cb:
+            progress_cb(batch_len)
 
     return inserted
 
@@ -298,15 +302,21 @@ def run_ingestion(
                         f.write(chunk)
 
         logger.info("Processing %s ...", archive_name)
-        count = _process_archive(conn, archive_path, progress_cb)
-        total_inserted += count
+        _set_state(conn, "last_archive", archive_name)
+
+        def _on_progress(batch_inserted: int) -> None:
+            nonlocal total_inserted
+            total_inserted += batch_inserted
+            _set_state(conn, "total_tracks", str(total_inserted))
+            if progress_cb:
+                progress_cb(total_inserted)
+
+        count = _process_archive(conn, archive_path, _on_progress)
         logger.info("Inserted %d tracks from %s (total: %d)", count, archive_name, total_inserted)
 
         # Update state
         processed.add(archive_name)
         _set_state(conn, "processed_archives", ",".join(processed))
-        _set_state(conn, "last_archive", archive_name)
-        _set_state(conn, "total_tracks", str(total_inserted))
 
         # Clean up archive
         archive_path.unlink(missing_ok=True)
