@@ -64,6 +64,13 @@ function apiPatch(path, body) {
   });
 }
 
+function apiPut(path, body) {
+  return fetch(BASE + path, { method: 'PUT', headers: headers(), body: JSON.stringify(body) }).then(function(res) {
+    if (!res.ok) return res.json().then(function(d) { throw new Error(d.detail || res.statusText); });
+    return res.json();
+  });
+}
+
 function apiDelete(path) {
   return fetch(BASE + path, { method: 'DELETE', headers: headers() }).then(function(res) {
     if (!res.ok) throw new Error(res.status);
@@ -206,6 +213,7 @@ function switchTab(view) {
   else if (view === 'charts') loadCharts();
   else if (view === 'radio') loadRadio();
   else if (view === 'discovery') loadDiscovery();
+  else if (view === 'algorithm') loadAlgorithm();
 }
 
 // =========================================================================
@@ -911,6 +919,7 @@ function renderPipeline() {
     var triggerBadge = run.trigger === 'manual' ? 'primary' : run.trigger === 'startup' ? 'info' : 'warning';
     var statusBadge = run.status === 'completed' ? 'success' : run.status === 'failed' ? 'danger' : 'warning';
     h += 'Pipeline Run <span class="badge badge-' + triggerBadge + '">' + esc(run.trigger) + '</span> <span class="badge badge-' + statusBadge + '">' + esc(run.status).toUpperCase() + '</span>';
+    if (run.config_version != null) h += ' <span class="badge badge-info" title="Algorithm config version">cfg v' + run.config_version + '</span>';
     h += '<span class="subtitle" style="margin-left:var(--space-3)">' + esc(run.run_id);
     if (run.duration_ms != null) h += ' \u00B7 ' + fmtMs(run.duration_ms);
     if (run.started_at) h += ' \u00B7 ' + fmtTime(run.started_at);
@@ -983,6 +992,7 @@ function renderPipeline() {
       h += '<span class="run-id">' + esc(rn.run_id) + '</span>';
       h += '<span class="badge badge-' + (rn.status === 'completed' ? 'success' : rn.status === 'failed' ? 'danger' : 'warning') + '">' + esc(rn.status) + '</span>';
       h += '<span class="text-xs text-muted">' + esc(rn.trigger) + '</span>';
+      if (rn.config_version != null) h += '<span class="badge badge-info" style="font-size:10px" title="Algorithm config version">cfg v' + rn.config_version + '</span>';
       h += '<span class="run-steps">'; if (rn.steps) { for (var s = 0; s < rn.steps.length; s++) h += '<span class="run-step-dot ' + esc(rn.steps[s].status) + '" title="' + esc(rn.steps[s].name) + ': ' + esc(rn.steps[s].status) + '"></span>'; } h += '</span>';
       h += '<span class="text-xs text-muted" style="min-width:70px;text-align:right">' + (rn.duration_ms != null ? fmtMs(rn.duration_ms) : '\u2014') + '</span>';
       h += '<span class="text-xs text-muted" style="min-width:80px;text-align:right">' + timeAgo(rn.started_at) + '</span></div>';
@@ -1627,6 +1637,410 @@ function radioStop(sessionId) {
   }).catch(function(e) {
     alert('Error stopping radio: ' + e.message);
   });
+}
+
+// =========================================================================
+// Algorithm Config Tab (Phase B+C)
+// =========================================================================
+var algoDefaults = null;
+var algoCurrent = null;
+var algoEdited = null;
+var algoHistory = null;
+
+function loadAlgorithm() {
+  $('#app').innerHTML = '<div class="empty">Loading algorithm config\u2026</div>';
+  Promise.all([
+    api('/v1/algorithm/config/defaults'),
+    api('/v1/algorithm/config'),
+    api('/v1/algorithm/config/history?limit=50')
+  ]).then(function(results) {
+    algoDefaults = results[0];
+    algoCurrent = results[1];
+    algoEdited = JSON.parse(JSON.stringify(algoCurrent.config));
+    algoHistory = results[2];
+    renderAlgorithm();
+  }).catch(function(e) {
+    $('#app').innerHTML = '<div class="empty">Failed to load config: ' + esc(e.message) + '</div>';
+  });
+}
+
+var ALGO_FIELD_META = {
+  track_scoring: {
+    w_full_listen: { desc: "Weight for a full listen (completion >= 0.8 or dwell >= 30s)", min: -10, max: 10, step: 0.1 },
+    w_mid_listen: { desc: "Weight for a mid-length listen (2s-30s dwell)", min: -10, max: 10, step: 0.1 },
+    w_early_skip: { desc: "Default weight for an early skip (<2s dwell)", min: -10, max: 10, step: 0.1 },
+    w_early_skip_playlist: { desc: "Early skip weight in playlist/album context", min: -10, max: 10, step: 0.1 },
+    w_early_skip_radio: { desc: "Early skip weight in radio/search context", min: -10, max: 10, step: 0.1 },
+    w_like: { desc: "Weight for an explicit like", min: -10, max: 10, step: 0.1 },
+    w_dislike: { desc: "Weight for an explicit dislike", min: -10, max: 10, step: 0.1 },
+    w_repeat: { desc: "Weight for a repeat action", min: -10, max: 10, step: 0.1 },
+    w_playlist_add: { desc: "Weight for adding track to a playlist", min: -10, max: 10, step: 0.1 },
+    w_queue_add: { desc: "Weight for adding track to the queue", min: -10, max: 10, step: 0.1 },
+    w_heavy_seek: { desc: "Penalty per excess seek above threshold", min: -10, max: 10, step: 0.1 },
+    early_skip_ms: { desc: "Milliseconds threshold for early skip classification", min: 100, max: 30000, step: 100, integer: true },
+    mid_skip_ms: { desc: "Milliseconds threshold for mid-skip classification", min: 1000, max: 120000, step: 500, integer: true },
+    heavy_seek_threshold: { desc: "Seeks per play above which heavy-seek penalty applies", min: 1, max: 20, step: 1, integer: true }
+  },
+  reranker: {
+    artist_diversity_top_n: { desc: "Number of top positions to enforce artist diversity in", min: 1, max: 100, step: 1, integer: true },
+    artist_max_per_top: { desc: "Max tracks from same artist in top N", min: 1, max: 20, step: 1, integer: true },
+    repeat_window_hours: { desc: "Hours to suppress recently played tracks", min: 0, max: 168, step: 0.5 },
+    freshness_boost: { desc: "Score multiplier boost for never-played tracks", min: 0, max: 1, step: 0.01 },
+    skip_threshold: { desc: "Early skip count above which skip suppression activates", min: 1, max: 50, step: 1, integer: true },
+    skip_demote_factor: { desc: "Score multiplier for skip-suppressed tracks", min: 0, max: 1, step: 0.05 },
+    exploration_fraction: { desc: "Fraction of slots for under-explored tracks", min: 0, max: 0.5, step: 0.01 },
+    exploration_low_plays: { desc: "Play count below which track is under-explored", min: 1, max: 50, step: 1, integer: true },
+    exploration_noise_scale: { desc: "Noise magnitude for exploration scoring", min: 0, max: 2, step: 0.05 },
+    min_duration_car: { desc: "Min track duration (seconds) in car/speaker mode", min: 0, max: 600, step: 5 }
+  },
+  candidate_sources: {
+    content: { desc: "FAISS content-based similarity (from seed track)", min: 0, max: 5, step: 0.1 },
+    content_profile: { desc: "FAISS similarity from user taste centroid", min: 0, max: 5, step: 0.1 },
+    cf: { desc: "Collaborative filtering", min: 0, max: 5, step: 0.1 },
+    session_skipgram: { desc: "Session skip-gram behavioural co-occurrence", min: 0, max: 5, step: 0.1 },
+    lastfm_similar: { desc: "Last.fm similar tracks (external CF)", min: 0, max: 5, step: 0.1 },
+    sasrec: { desc: "SASRec transformer next-track prediction", min: 0, max: 5, step: 0.1 },
+    popular: { desc: "Global popularity fallback", min: 0, max: 5, step: 0.1 },
+    artist_recall: { desc: "Recently heard artist tracks", min: 0, max: 5, step: 0.1 }
+  },
+  taste_profile: {
+    timescale_short_days: { desc: "Short-term taste window (days)", min: 1, max: 90, step: 1 },
+    timescale_long_days: { desc: "Long-term taste window (days)", min: 30, max: 3650, step: 10 },
+    top_tracks_limit: { desc: "Top tracks in taste profile", min: 10, max: 500, step: 10, integer: true },
+    lastfm_decay_interactions: { desc: "Interactions at which Last.fm weight reaches ~37%", min: 10, max: 1000, step: 10 },
+    onboarding_decay_interactions: { desc: "Interactions at which onboarding weight reaches ~37%", min: 10, max: 500, step: 10 },
+    enrichment_min_weight: { desc: "Min weight below which enrichment is skipped", min: 0.001, max: 0.5, step: 0.005 }
+  },
+  ranker: {
+    n_estimators: { desc: "Number of boosting rounds (trees) [RETRAIN]", min: 10, max: 2000, step: 10, integer: true },
+    max_depth: { desc: "Maximum tree depth [RETRAIN]", min: 2, max: 20, step: 1, integer: true },
+    learning_rate: { desc: "Boosting learning rate [RETRAIN]", min: 0.001, max: 1.0, step: 0.005 },
+    num_leaves: { desc: "Max leaves per tree [RETRAIN]", min: 4, max: 256, step: 1, integer: true },
+    min_child_samples: { desc: "Min samples per leaf [RETRAIN]", min: 1, max: 100, step: 1, integer: true },
+    subsample: { desc: "Row subsampling ratio [RETRAIN]", min: 0.1, max: 1.0, step: 0.05 },
+    colsample_bytree: { desc: "Column subsampling ratio [RETRAIN]", min: 0.1, max: 1.0, step: 0.05 },
+    reg_alpha: { desc: "L1 regularisation [RETRAIN]", min: 0, max: 10, step: 0.1 },
+    reg_lambda: { desc: "L2 regularisation [RETRAIN]", min: 0, max: 10, step: 0.1 },
+    min_training_samples: { desc: "Min samples required to train [RETRAIN]", min: 5, max: 1000, step: 5, integer: true },
+    weight_disliked: { desc: "Sample weight for disliked tracks", min: 1, max: 10, step: 0.1 },
+    weight_heavy_skip: { desc: "Sample weight for heavily skipped tracks", min: 1, max: 10, step: 0.1 },
+    weight_strong_positive: { desc: "Sample weight for liked/repeated tracks", min: 1, max: 10, step: 0.1 },
+    weight_impression_negative: { desc: "Sample weight for shown-but-not-played tracks", min: 1, max: 10, step: 0.1 }
+  },
+  radio: {
+    seed_weight: { desc: "How much the seed anchor influences drift embedding", min: 0, max: 1, step: 0.05 },
+    feedback_weight: { desc: "How much feedback shifts drift embedding", min: 0, max: 1, step: 0.05 },
+    profile_weight: { desc: "How much user global taste contributes", min: 0, max: 1, step: 0.05 },
+    source_drift: { desc: "Score multiplier for drift-FAISS candidates", min: 0, max: 5, step: 0.1 },
+    source_seed: { desc: "Score multiplier for seed-FAISS candidates", min: 0, max: 5, step: 0.1 },
+    source_content: { desc: "Score multiplier for content similarity candidates", min: 0, max: 5, step: 0.1 },
+    source_skipgram: { desc: "Score multiplier for session skip-gram candidates", min: 0, max: 5, step: 0.1 },
+    source_lastfm: { desc: "Score multiplier for Last.fm similar candidates", min: 0, max: 5, step: 0.1 },
+    source_cf: { desc: "Score multiplier for CF candidates", min: 0, max: 5, step: 0.1 },
+    source_artist: { desc: "Score multiplier for same-artist candidates", min: 0, max: 5, step: 0.1 },
+    feedback_like_weight: { desc: "Attraction weight when user likes a track", min: 0, max: 5, step: 0.1 },
+    feedback_dislike_weight: { desc: "Repulsion weight when user dislikes", min: 0, max: 5, step: 0.1 },
+    feedback_skip_weight: { desc: "Mild repulsion weight on skip", min: 0, max: 5, step: 0.1 },
+    feedback_decay: { desc: "Exponential decay for older feedback", min: 0.1, max: 1, step: 0.05 },
+    session_ttl_hours: { desc: "Hours of inactivity before session expires", min: 0.5, max: 24, step: 0.5 },
+    max_sessions: { desc: "Maximum concurrent radio sessions", min: 1, max: 500, step: 1, integer: true }
+  },
+  session_embeddings: {
+    embedding_dim: { desc: "Embedding vector dimensionality [RETRAIN]", min: 16, max: 512, step: 16, integer: true },
+    window_size: { desc: "Context window size (tracks before/after) [RETRAIN]", min: 1, max: 20, step: 1, integer: true },
+    min_count: { desc: "Ignore tracks appearing fewer times [RETRAIN]", min: 1, max: 50, step: 1, integer: true },
+    epochs: { desc: "Training iterations [RETRAIN]", min: 1, max: 100, step: 1, integer: true },
+    min_sessions: { desc: "Minimum sessions required to train", min: 1, max: 500, step: 1, integer: true },
+    min_vocab: { desc: "Minimum unique tracks required to train", min: 2, max: 100, step: 1, integer: true }
+  }
+};
+
+function algoGetFieldMeta(groupKey, fieldKey) {
+  var group = ALGO_FIELD_META[groupKey];
+  if (group && group[fieldKey]) return group[fieldKey];
+  var defVal = algoDefaults.config[groupKey][fieldKey];
+  if (typeof defVal === 'number' && Number.isInteger(defVal))
+    return { desc: fieldKey.replace(/_/g, ' '), min: 0, max: defVal * 10 || 100, step: 1, integer: true };
+  return { desc: fieldKey.replace(/_/g, ' '), min: 0, max: 10, step: 0.1 };
+}
+
+function algoHasChanges() {
+  return JSON.stringify(algoEdited) !== JSON.stringify(algoCurrent.config);
+}
+
+function algoHasRetrainChanges() {
+  if (!algoDefaults) return false;
+  var groups = algoDefaults.groups;
+  for (var i = 0; i < groups.length; i++) {
+    if (!groups[i].retrain_required) continue;
+    if (JSON.stringify(algoEdited[groups[i].key]) !== JSON.stringify(algoCurrent.config[groups[i].key])) return true;
+  }
+  return false;
+}
+
+function renderAlgorithm() {
+  var groups = algoDefaults.groups;
+  var hasChanges = algoHasChanges();
+  var retrainWarning = hasChanges && algoHasRetrainChanges();
+
+  var h = '<div class="page-header"><div>';
+  h += '<h2 class="page-title">Algorithm Configuration</h2>';
+  h += '<span class="subtitle">Version ' + algoCurrent.version + (algoCurrent.name ? ' \u2014 ' + esc(algoCurrent.name) : '') + '</span>';
+  h += '</div><div class="page-actions">';
+  h += '<button class="btn btn-secondary btn-sm" onclick="algoExport()">Export</button>';
+  h += '<button class="btn btn-secondary btn-sm" onclick="algoShowImport()">Import</button>';
+  h += '<button class="btn btn-secondary btn-sm" onclick="algoShowHistory()">History</button>';
+  h += '<button class="btn btn-secondary btn-sm" onclick="algoShowDiff()">Diff</button>';
+  h += '<span class="divider-v"></span>';
+  h += '<button class="btn btn-secondary btn-sm" style="color:var(--color-warning)" onclick="algoResetToDefaults()">Reset to Defaults</button>';
+  if (hasChanges) h += '<button class="btn btn-secondary btn-sm" onclick="algoDiscardChanges()">Discard</button>';
+  h += '<button class="btn btn-primary btn-sm"' + (hasChanges ? '' : ' disabled') + ' onclick="algoSaveAndApply()">Save & Apply</button>';
+  h += '</div></div>';
+
+  if (retrainWarning) {
+    h += '<div class="alert alert-warning" style="margin-bottom:var(--space-4)">';
+    h += '\u26A0 Changes include parameters that trigger a full model retrain (Ranking Model and/or Session Embeddings).';
+    h += '</div>';
+  }
+
+  for (var g = 0; g < groups.length; g++) {
+    var group = groups[g];
+    var gk = group.key;
+    var groupChanged = JSON.stringify(algoEdited[gk]) !== JSON.stringify(algoCurrent.config[gk]);
+
+    h += '<div class="card" style="margin-bottom:var(--space-3)">';
+    h += '<div class="card-header algo-group-header" onclick="algoToggleGroup(\'' + gk + '\')">';
+    h += '<div style="display:flex;align-items:center;gap:var(--space-2)">';
+    h += '<span class="algo-chevron" id="algo-chev-' + gk + '">\u25B6</span>';
+    h += '<span>' + esc(group.label) + '</span>';
+    if (group.retrain_required) h += ' <span class="badge badge-warning" style="font-size:10px">RETRAIN</span>';
+    if (groupChanged) h += ' <span class="badge badge-primary" style="font-size:10px">MODIFIED</span>';
+    h += '</div>';
+    h += '<span class="text-xs text-muted" style="font-weight:400">' + esc(group.description) + '</span>';
+    h += '</div>';
+
+    h += '<div class="card-body algo-group-body" id="algo-body-' + gk + '" style="display:none;padding:var(--space-4)">';
+    h += '<div class="algo-fields-grid">';
+    var defaults = algoDefaults.config[gk];
+    for (var fk in defaults) {
+      if (!defaults.hasOwnProperty(fk)) continue;
+      var meta = algoGetFieldMeta(gk, fk);
+      var val = algoEdited[gk][fk];
+      var defVal = defaults[fk];
+      var changed = val !== algoCurrent.config[gk][fk];
+      var isRetrain = meta.desc.indexOf('[RETRAIN]') >= 0;
+
+      h += '<div class="algo-field' + (changed ? ' algo-field-changed' : '') + '">';
+      h += '<div class="algo-field-header">';
+      h += '<label class="algo-field-label">' + esc(fk.replace(/_/g, ' ')) + '</label>';
+      if (isRetrain) h += '<span class="badge badge-warning" style="font-size:9px;padding:1px 4px">RETRAIN</span>';
+      h += '</div>';
+      h += '<div class="algo-field-controls">';
+      h += '<input type="range" class="algo-slider" min="' + meta.min + '" max="' + meta.max + '" step="' + meta.step + '" value="' + val + '" data-gk="' + gk + '" data-fk="' + fk + '" data-int="' + (meta.integer ? '1' : '0') + '">';
+      h += '<input type="number" class="algo-num" min="' + meta.min + '" max="' + meta.max + '" step="' + meta.step + '" value="' + val + '" data-gk="' + gk + '" data-fk="' + fk + '" data-int="' + (meta.integer ? '1' : '0') + '">';
+      h += '</div>';
+      h += '<div class="algo-field-info">';
+      h += '<span class="text-muted">' + esc(meta.desc.replace(' [RETRAIN]', '')) + '</span>';
+      if (val !== defVal) h += ' <span style="color:var(--color-primary)">(default: ' + defVal + ')</span>';
+      h += '</div></div>';
+    }
+    h += '</div></div></div>';
+  }
+
+  $('#app').innerHTML = h;
+
+  // Attach input handlers via delegation
+  document.querySelectorAll('.algo-slider').forEach(function(sl) {
+    sl.addEventListener('input', function() {
+      var gk = this.dataset.gk, fk = this.dataset.fk, isInt = this.dataset.int === '1';
+      var v = isInt ? parseInt(this.value, 10) : parseFloat(this.value);
+      algoEdited[gk][fk] = v;
+      var num = this.parentElement.querySelector('.algo-num');
+      if (num) num.value = v;
+    });
+  });
+  document.querySelectorAll('.algo-num').forEach(function(num) {
+    num.addEventListener('change', function() {
+      var gk = this.dataset.gk, fk = this.dataset.fk, isInt = this.dataset.int === '1';
+      var meta = algoGetFieldMeta(gk, fk);
+      var v = isInt ? parseInt(this.value, 10) : parseFloat(this.value);
+      if (isNaN(v)) return;
+      if (v < meta.min) v = meta.min;
+      if (v > meta.max) v = meta.max;
+      algoEdited[gk][fk] = v;
+      renderAlgorithm();
+    });
+  });
+}
+
+function algoToggleGroup(gk) {
+  var body = document.getElementById('algo-body-' + gk);
+  var chev = document.getElementById('algo-chev-' + gk);
+  if (!body) return;
+  var open = body.style.display !== 'none';
+  body.style.display = open ? 'none' : 'block';
+  if (chev) chev.textContent = open ? '\u25B6' : '\u25BC';
+}
+
+function algoSaveAndApply() {
+  var retrainWarn = algoHasRetrainChanges();
+  var msg = 'Save configuration as new version and run the pipeline?';
+  if (retrainWarn) msg = 'This will trigger a full model retrain. Save and run pipeline?';
+  if (!confirm(msg)) return;
+  var name = prompt('Version name (optional):', '');
+  apiPut('/v1/algorithm/config', { name: name || null, config: algoEdited }).then(function(saved) {
+    algoCurrent = saved;
+    algoEdited = JSON.parse(JSON.stringify(saved.config));
+    switchTab('pipeline');
+    setTimeout(function() {
+      apiPost('/v1/pipeline/reset').then(function() {
+        pipelineConnectSSE();
+        setTimeout(function() { pipelineRefreshStatus(); }, 500);
+      }).catch(function(e) { alert('Pipeline run failed: ' + e.message); });
+    }, 200);
+  }).catch(function(e) { alert('Save failed: ' + e.message); });
+}
+
+function algoDiscardChanges() {
+  algoEdited = JSON.parse(JSON.stringify(algoCurrent.config));
+  renderAlgorithm();
+}
+
+function algoResetToDefaults() {
+  if (!confirm('Reset all algorithm parameters to their default values? This creates a new config version.')) return;
+  apiPost('/v1/algorithm/config/reset').then(function(saved) {
+    algoCurrent = saved;
+    algoEdited = JSON.parse(JSON.stringify(saved.config));
+    renderAlgorithm();
+  }).catch(function(e) { alert('Reset failed: ' + e.message); });
+}
+
+function algoExport() {
+  fetch(BASE + '/v1/algorithm/config/export', { headers: headers() }).then(function(res) {
+    if (!res.ok) throw new Error(res.statusText);
+    return res.blob().then(function(blob) {
+      var a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = 'grooveiq-config-v' + algoCurrent.version + '.json';
+      a.click();
+      URL.revokeObjectURL(a.href);
+    });
+  }).catch(function(e) { alert('Export failed: ' + e.message); });
+}
+
+function algoShowImport() {
+  var overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.innerHTML = '<div class="modal"><h2>Import Configuration</h2>'
+    + '<div class="field"><label>JSON file</label>'
+    + '<input type="file" id="algo-import-file" accept=".json"></div>'
+    + '<div class="field"><label>Name (optional)</label>'
+    + '<input type="text" id="algo-import-name" placeholder="e.g., Imported from backup"></div>'
+    + '<div class="actions">'
+    + '<button class="btn btn-secondary btn-sm" onclick="this.closest(\'.modal-overlay\').remove()">Cancel</button>'
+    + '<button class="btn btn-primary btn-sm" onclick="algoDoImport()">Import</button>'
+    + '</div></div>';
+  document.body.appendChild(overlay);
+}
+
+function algoDoImport() {
+  var fileInput = document.getElementById('algo-import-file');
+  var nameInput = document.getElementById('algo-import-name');
+  if (!fileInput || !fileInput.files.length) { alert('Select a JSON file'); return; }
+  var reader = new FileReader();
+  reader.onload = function(e) {
+    try {
+      var data = JSON.parse(e.target.result);
+      var config = data.config || data;
+      var name = (nameInput && nameInput.value) || data.name || 'Imported';
+      apiPost('/v1/algorithm/config/import', { name: name, config: config }).then(function(saved) {
+        var overlay = document.querySelector('.modal-overlay');
+        if (overlay) overlay.remove();
+        algoCurrent = saved;
+        algoEdited = JSON.parse(JSON.stringify(saved.config));
+        api('/v1/algorithm/config/history?limit=50').then(function(h) { algoHistory = h; });
+        renderAlgorithm();
+      }).catch(function(err) { alert('Import failed: ' + err.message); });
+    } catch (ex) { alert('Invalid JSON: ' + ex.message); }
+  };
+  reader.readAsText(fileInput.files[0]);
+}
+
+function algoShowHistory() {
+  var overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  var h = '<div class="modal" style="min-width:600px;max-width:700px;max-height:80vh;overflow:auto">';
+  h += '<h2>Version History</h2>';
+  h += '<table style="width:100%;font-size:13px"><tr><th>Version</th><th>Name</th><th>Active</th><th>Created</th><th>Actions</th></tr>';
+  for (var i = 0; i < algoHistory.length; i++) {
+    var v = algoHistory[i];
+    h += '<tr><td>v' + v.version + '</td>';
+    h += '<td>' + esc(v.name || '\u2014') + '</td>';
+    h += '<td>' + (v.is_active ? '<span class="badge badge-success">active</span>' : '') + '</td>';
+    h += '<td class="text-xs text-muted">' + fmtTime(v.created_at) + '</td>';
+    h += '<td style="display:flex;gap:4px">';
+    if (!v.is_active) h += '<button class="btn btn-secondary btn-sm" style="font-size:11px;padding:2px 8px" onclick="algoActivateVersion(' + v.version + ')">Activate</button>';
+    h += '<button class="btn btn-secondary btn-sm" style="font-size:11px;padding:2px 8px" onclick="algoDiffVersion(' + v.version + ')">Diff</button>';
+    h += '</td></tr>';
+  }
+  h += '</table>';
+  h += '<div style="display:flex;justify-content:flex-end;margin-top:var(--space-4)"><button class="btn btn-secondary btn-sm" onclick="this.closest(\'.modal-overlay\').remove()">Close</button></div>';
+  h += '</div>';
+  overlay.innerHTML = h;
+  document.body.appendChild(overlay);
+}
+
+function algoActivateVersion(version) {
+  if (!confirm('Activate config v' + version + '? This rolls back to that version.')) return;
+  apiPost('/v1/algorithm/config/activate/' + version).then(function(saved) {
+    var overlay = document.querySelector('.modal-overlay');
+    if (overlay) overlay.remove();
+    algoCurrent = saved;
+    algoEdited = JSON.parse(JSON.stringify(saved.config));
+    api('/v1/algorithm/config/history?limit=50').then(function(h) { algoHistory = h; });
+    renderAlgorithm();
+  }).catch(function(e) { alert('Activate failed: ' + e.message); });
+}
+
+function algoShowDiff() {
+  algoDiffAgainst(algoCurrent.config, 'current (v' + algoCurrent.version + ')');
+}
+
+function algoDiffVersion(version) {
+  api('/v1/algorithm/config/' + version).then(function(ver) {
+    var overlay = document.querySelector('.modal-overlay');
+    if (overlay) overlay.remove();
+    algoDiffAgainst(ver.config, 'v' + ver.version + (ver.name ? ' (' + ver.name + ')' : ''));
+  }).catch(function(e) { alert('Failed: ' + e.message); });
+}
+
+function algoDiffAgainst(compareConfig, compareLabel) {
+  var groups = algoDefaults.groups;
+  var overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  var h = '<div class="modal" style="min-width:640px;max-width:720px;max-height:80vh;overflow:auto">';
+  h += '<h2>Diff: Working Copy vs ' + esc(compareLabel) + '</h2>';
+  var anyDiff = false;
+  for (var g = 0; g < groups.length; g++) {
+    var gk = groups[g].key, diffs = [];
+    var edited = algoEdited[gk], compare = compareConfig[gk];
+    for (var key in edited) { if (edited.hasOwnProperty(key) && edited[key] !== compare[key]) diffs.push({ key: key, from: compare[key], to: edited[key] }); }
+    if (!diffs.length) continue;
+    anyDiff = true;
+    h += '<div style="margin-bottom:var(--space-3)"><div style="font-weight:600;font-size:13px;margin-bottom:4px">' + esc(groups[g].label) + '</div>';
+    h += '<table style="width:100%;font-size:12px"><tr><th>Parameter</th><th>From</th><th>To</th></tr>';
+    for (var d = 0; d < diffs.length; d++) {
+      h += '<tr><td style="font-family:var(--font-mono)">' + esc(diffs[d].key) + '</td>';
+      h += '<td style="color:var(--color-danger)">' + diffs[d].from + '</td>';
+      h += '<td style="color:var(--color-success)">' + diffs[d].to + '</td></tr>';
+    }
+    h += '</table></div>';
+  }
+  if (!anyDiff) h += '<div class="text-muted" style="padding:var(--space-4) 0">No differences found.</div>';
+  h += '<div style="display:flex;justify-content:flex-end;margin-top:var(--space-4)"><button class="btn btn-secondary btn-sm" onclick="this.closest(\'.modal-overlay\').remove()">Close</button></div>';
+  h += '</div>';
+  overlay.innerHTML = h;
+  document.body.appendChild(overlay);
 }
 
 // =========================================================================

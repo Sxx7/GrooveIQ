@@ -1242,4 +1242,137 @@ td.truncate {
   .stats-grid {
     grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
   }
+
+  .algo-fields-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* --- Utility: alert banner --- */
+.alert {
+  border-radius: var(--radius-lg);
+  padding: var(--space-3) var(--space-4);
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.alert-warning {
+  background: rgba(245, 158, 11, 0.08);
+  border: 1px solid rgba(245, 158, 11, 0.3);
+  color: var(--color-warning);
+}
+
+/* --- Utility: vertical divider --- */
+.divider-v {
+  width: 1px;
+  height: 20px;
+  background: var(--border);
+}
+
+/* --- Algorithm Config Tab --- */
+.algo-group-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: var(--space-3);
+  cursor: pointer;
+  user-select: none;
+}
+
+.algo-chevron {
+  font-size: 11px;
+  color: var(--text-muted);
+  display: inline-block;
+  width: 14px;
+  transition: transform var(--transition-fast);
+}
+
+.algo-fields-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--space-4);
+}
+
+.algo-field {
+  background: var(--bg-base);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: var(--space-3) var(--space-4);
+}
+
+.algo-field-changed {
+  border-color: var(--color-primary);
+  background: rgba(99, 102, 241, 0.04);
+}
+
+.algo-field-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: var(--space-2);
+}
+
+.algo-field-label {
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: capitalize;
+  color: var(--text-primary);
+}
+
+.algo-field-controls {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  margin-bottom: var(--space-1);
+}
+
+.algo-slider {
+  flex: 1;
+  height: 4px;
+  appearance: none;
+  -webkit-appearance: none;
+  background: var(--border-strong);
+  border-radius: 2px;
+  outline: none;
+  cursor: pointer;
+}
+
+.algo-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--color-primary);
+  cursor: pointer;
+}
+
+.algo-slider::-moz-range-thumb {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--color-primary);
+  cursor: pointer;
+  border: none;
+}
+
+.algo-num {
+  width: 80px;
+  background: var(--bg-base);
+  border: 1px solid var(--border);
+  color: var(--text-primary);
+  padding: 4px 8px;
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+  font-family: var(--font-mono);
+  text-align: right;
+}
+
+.algo-num:focus {
+  border-color: var(--color-primary);
+  outline: none;
+}
+
+.algo-field-info {
+  font-size: 11px;
+  line-height: 1.4;
 }
