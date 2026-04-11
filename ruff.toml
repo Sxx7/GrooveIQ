@@ -1,0 +1,47 @@
+# GrooveIQ – Ruff configuration
+# https://docs.astral.sh/ruff/settings/
+
+target-version = "py312"
+line-length = 120
+
+[lint]
+select = [
+    "E",      # pycodestyle errors
+    "W",      # pycodestyle warnings
+    "F",      # pyflakes
+    "I",      # isort
+    "N",      # pep8-naming
+    "UP",     # pyupgrade
+    "B",      # flake8-bugbear
+    "S",      # flake8-bandit (security)
+    "A",      # flake8-builtins
+    "T20",    # flake8-print
+    "SIM",    # flake8-simplify
+    "TCH",    # flake8-type-checking
+    "RUF",    # ruff-specific rules
+    "ASYNC",  # flake8-async
+]
+ignore = [
+    "E501",   # line length — handled by formatter
+    "S104",   # binding to 0.0.0.0 — intentional in container
+    "S108",   # /tmp usage — fine in container with tmpfs
+    "B008",   # function call in default arg — FastAPI Depends() pattern
+    "UP007",  # X | Y union syntax — keep Optional[] for pydantic compat
+    "RUF012", # mutable class var annotations — SQLAlchemy models use these
+]
+
+[lint.per-file-ignores]
+"tests/*" = [
+    "S101",   # assert is fine in tests
+    "S106",   # hardcoded passwords in test fixtures
+]
+"app/services/analysis_worker.py" = [
+    "T20",    # print() used for subprocess IPC
+]
+
+[lint.isort]
+known-first-party = ["app"]
+
+[format]
+quote-style = "double"
+indent-style = "space"

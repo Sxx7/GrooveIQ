@@ -1,15 +1,57 @@
+# Git
+.git/
+.gitignore
+
+# Environment
 .env
 *.env.local
+
+# Python
 .venv/
 __pycache__/
 *.py[cod]
-*.db
-*.db-shm
-*.db-wal
+*.egg-info/
+dist/
+build/
+
+# Testing
+tests/
 .pytest_cache/
 .coverage
 htmlcov/
-.git/
-.gitignore
-tests/
+pytest.ini
+
+# Database
+*.db
+*.db-shm
+*.db-wal
+
+# Documentation
 *.md
+*.pdf
+LICENSE
+
+# IDE
+.vscode/
+.idea/
+
+# Docker
+*.tar
+docker-compose*.yml
+Dockerfile.gpu
+Dockerfile.igpu
+Caddyfile
+
+# CI
+.gitlab-ci.yml
+ruff.toml
+
+# Claude Code
+.claude/
+CLAUDE.md
+
+# OS
+.DS_Store
+
+# spotdl-api (separate build context)
+spotdl-api/

@@ -1,65 +1,56 @@
 # GrooveIQ
 
-**Behavioral music recommendation engine for self-hosted libraries.**
+**Self-hosted behavioral music recommendation engine.**
 
-GrooveIQ sits alongside your existing media server (Navidrome, Jellyfin, Plex, etc.) and learns *how* you listen — not just *what* you listen to. It collects behavioral signals like skips, replays, volume changes, and completion rates, analyzes your audio files locally, and returns a personalized recommendation feed via a simple REST API.
+GrooveIQ sits alongside your media server (Navidrome, Jellyfin, Plex) and learns *how* you listen — not just *what*. It collects behavioral signals (skips, replays, volume changes, completion rates), analyzes your audio files locally with [Essentia](https://essentia.upf.edu/), trains ML models on your habits, and serves personalized recommendations via a REST API.
 
 No cloud. No tracking. Runs on your hardware.
 
----
+## Features
 
-## What it does
-
-```
-Your music app  ──► POST /v1/events  ──► GrooveIQ  ──► GET /v1/feed
-  (Navidrome,           (skip, like,       (learns your      (ranked
-   Symfonium,            play_end, etc.)    taste model)       track IDs)
-   any Subsonic app)
-```
-
-**Phase 1** (this release): Event ingestion — collect behavioral signals, store them securely, expose a query API.
-
-**Phase 3** (this release): Audio analysis — extract BPM, key, energy, mood, and a similarity embedding from every file in your library using [Essentia](https://essentia.upf.edu/).
-
-Phases 2, 4, 5 (recommendation engine, feed API, context awareness) follow in subsequent releases.
-
----
+- **Behavioral event ingestion** — 17 event types from any Subsonic-compatible app
+- **Local audio analysis** — BPM, key, energy, mood, danceability, 64-dim embeddings via Essentia + ONNX
+- **9-step recommendation pipeline** — sessionization, scoring, taste profiles, collaborative filtering, LightGBM ranking, transformer sequential model, diversity reranking
+- **8 candidate sources** — content similarity (FAISS), collaborative filtering, session skip-gram, SASRec, Last.fm external CF, artist recall, popularity
+- **Context-aware ranking** — device, output, location, time-of-day features
+- **Playlist generation** — flow, mood, energy curve, and key-compatible (Camelot wheel) strategies
+- **Last.fm integration** — scrobbling, profile sync, similar-artist discovery, chart fetching
+- **Download proxy** — search and download tracks via spotdl-api (YouTube Music) or Spotizerr
+- **Media server sync** — Navidrome/Plex track ID mapping with cascading updates
+- **Web dashboard** — real-time pipeline visualization, recommendation debugger, system health panels
+- **Music discovery** — Last.fm similar artists auto-added to Lidarr
 
 ## Quick start
 
 ### Prerequisites
-- Docker & Docker Compose
+
+- Docker and Docker Compose
 - A music library accessible on the host
-- 10 minutes
+- (Optional) Navidrome or Plex for track ID sync
 
 ### 1. Clone and configure
 
 ```bash
-git clone https://github.com/yourname/grooveiq
+git clone https://gitlab.local.devii.ch/simon/grooveiq.git
 cd grooveiq
 cp .env.example .env
 ```
 
-Edit `.env`:
+Edit `.env` — at minimum set these three values:
 
 ```bash
-# Generate a secret key
-openssl rand -base64 32
-# → paste as SECRET_KEY
+# Generate secrets
+SECRET_KEY=$(openssl rand -base64 32)
+API_KEYS=$(openssl rand -base64 32)
 
-# Generate an API key for your music app
-openssl rand -base64 32
-# → paste as API_KEYS
-
-# Set the path to your music on the host
-MUSIC_LIBRARY_PATH=/mnt/music
+# Point to your music
+MUSIC_LIBRARY_PATH=/path/to/your/music
 ```
 
 ### 2. Start
 
 ```bash
 docker compose up -d
-docker compose logs -f grooveiq
 ```
 
 ### 3. Verify
@@ -69,19 +60,14 @@ curl http://localhost:8000/health
 # {"status":"ok","service":"grooveiq"}
 ```
 
-### 4. Trigger a library scan
+### 4. Scan your library
 
 ```bash
 curl -X POST http://localhost:8000/v1/library/scan \
   -H "Authorization: Bearer YOUR_API_KEY"
-# {"message":"Scan started","scan_id":1,"status":"running"}
-
-# Check progress
-curl http://localhost:8000/v1/library/scan/1 \
-  -H "Authorization: Bearer YOUR_API_KEY"
 ```
 
-### 5. Send your first event
+### 5. Send events
 
 ```bash
 curl -X POST http://localhost:8000/v1/events \
@@ -95,311 +81,209 @@ curl -X POST http://localhost:8000/v1/events \
   }'
 ```
 
----
+### 6. Get recommendations
 
-## API reference
+After the pipeline runs (hourly by default, or trigger manually):
 
-Full interactive docs available at `/docs` when `ENABLE_DOCS=true` (development only).
-
-### Authentication
-
-All endpoints require an API key passed as a Bearer token:
-
-```
-Authorization: Bearer your-api-key-here
+```bash
+curl "http://localhost:8000/v1/recommend/alice?limit=10" \
+  -H "Authorization: Bearer YOUR_API_KEY"
 ```
 
-### Event ingestion
+## Architecture
 
-#### `POST /v1/events`
-
-Ingest a single behavioral event.
-
-**Request body:**
-
-```json
-{
-  "user_id":    "alice",
-  "track_id":   "abc123",
-  "event_type": "play_end",
-  "value":      0.94,
-  "context":    "evening",
-  "session_id": "sess-xyz",
-  "timestamp":  1700000000
-}
+```
+Music app  ──►  POST /v1/events  ──►  GrooveIQ  ──►  GET /v1/recommend/{user}
+ (Navidrome,      (behavioral           (pipeline        (ranked
+  Symfonium,       signals)              trains ML        track IDs)
+  Plexamp)                               models)
 ```
 
-| Field        | Required | Description |
-|---|---|---|
-| `user_id`    | ✓ | Your media server's user identifier |
-| `track_id`   | ✓ | Your media server's track identifier |
-| `event_type` | ✓ | See event types table below |
-| `value`      | –  | Event-specific payload (see table) |
-| `context`    | –  | Free-text session label (e.g. "workout") |
-| `session_id` | –  | Groups events from the same listening session |
-| `timestamp`  | –  | Unix UTC timestamp. Defaults to server time. Must be within 24h. |
+### Recommendation pipeline
 
-**Event types:**
+Runs every hour (configurable). Each step is error-isolated.
 
-| `event_type`   | `value` meaning               | Notes |
-|---|---|---|
-| `play_end`     | Completion ratio (0–1)        | Values below 5% are dropped as noise |
-| `skip`         | Elapsed seconds at skip time  | Skip at 12s vs 180s carry different weight |
-| `pause`        | Elapsed seconds               | |
-| `resume`       | Elapsed seconds               | |
-| `like`         | (none)                        | Explicit positive signal |
-| `dislike`      | (none)                        | Explicit negative signal |
-| `rating`       | Star rating (1–5)             | |
-| `playlist_add` | (none)                        | Strong positive signal |
-| `queue_add`    | (none)                        | Moderate positive signal |
-| `seek_back`    | Seconds jumped backward       | User replaying — strong positive |
-| `seek_forward` | Seconds skipped forward       | Mild negative |
-| `repeat`       | (none)                        | Very strong positive |
-| `volume_up`    | New volume (0–100)            | Implicit positive |
-| `volume_down`  | New volume (0–100)            | Mild negative |
+| # | Step | What it does |
+|---|------|-------------|
+| 1 | **Sessionizer** | Groups events into listening sessions by inactivity gaps |
+| 2 | **Track scoring** | Computes per-(user, track) satisfaction scores from engagement signals |
+| 3 | **Taste profiles** | Builds multi-timescale audio preference profiles (7d / 30d / all-time) |
+| 4 | **Collaborative filtering** | User-user and item-item similarity matrices |
+| 5 | **Ranker training** | LightGBM model on 39 features with hard negative weighting |
+| 6 | **Session embeddings** | Word2Vec skip-gram on listening sessions |
+| 7 | **Last.fm cache** | External CF via Last.fm track.getSimilar |
+| 8 | **SASRec** | Transformer decoder for next-track prediction |
+| 9 | **Session GRU** | Taste drift modeling across sessions |
 
-**Response:** `202 Accepted`
+### Serving flow
 
-```json
-{"accepted": 1, "rejected": 0, "errors": []}
-```
+1. **Candidate retrieval** — 8 sources merged and deduplicated
+2. **Feature engineering** — 39 features per candidate (audio, behavioral, context, sequential)
+3. **Ranking** — LightGBM scores candidates (falls back to satisfaction score)
+4. **Reranking** — artist diversity, anti-repetition, freshness boost, skip suppression, ~15% exploration slots
+5. **Impression logging** — closes the feedback loop for model improvement
 
----
+## Tech stack
 
-#### `POST /v1/events/batch`
+| Layer | Technology |
+|-------|-----------|
+| Language | Python 3.12 |
+| Framework | FastAPI (async), Pydantic v2 |
+| ORM | SQLAlchemy 2.x async |
+| Database | SQLite (default) / PostgreSQL |
+| Audio analysis | Essentia 2.1b6 + ONNX Runtime (Discogs-EffNet) |
+| Ranking | LightGBM / scikit-learn fallback |
+| Similarity | FAISS (IndexFlatIP, 64-dim) + gensim Word2Vec |
+| Scheduler | APScheduler 3.x |
+| Packaging | Docker multi-stage build |
 
-Send up to 50 events in one request. Recommended for clients that buffer locally and flush every 30 seconds.
+## Configuration
 
-```json
-{
-  "events": [
-    {"user_id": "alice", "track_id": "abc123", "event_type": "play_end", "value": 0.94},
-    {"user_id": "alice", "track_id": "def456", "event_type": "skip", "value": 8.2}
-  ]
-}
-```
+All settings via environment variables or `.env` file. See [`.env.example`](.env.example) for the full list with documentation.
 
----
+### Key variables
 
-#### `GET /v1/events`
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `SECRET_KEY` | *required* | Random secret for internal signing |
+| `API_KEYS` | *required* | Comma-separated bearer tokens |
+| `MUSIC_LIBRARY_PATH` | `/music` | Host path to music (bind-mounted read-only) |
+| `DATABASE_URL` | SQLite | `sqlite+aiosqlite:///...` or `postgresql+asyncpg://...` |
+| `SCORING_INTERVAL_HOURS` | `1` | Pipeline run frequency |
+| `RESCAN_INTERVAL_HOURS` | `6` | Library rescan frequency |
+| `ANALYSIS_WORKERS` | CPU-1 | Parallel audio analysis processes |
 
-Query stored events (admin/debug use).
+### Optional integrations
 
-| Parameter  | Default | Description |
-|---|---|---|
-| `user_id`  | –       | Filter by user |
-| `track_id` | –       | Filter by track |
-| `limit`    | 50      | Max results (1–500) |
-| `offset`   | 0       | Pagination offset |
-
----
-
-### Library & audio analysis
-
-#### `POST /v1/library/scan`
-
-Trigger a full library scan. Analyzes new and changed files. Returns immediately with a `scan_id`; the scan runs in the background.
-
-#### `GET /v1/library/scan/{scan_id}`
-
-Poll scan progress.
-
-```json
-{
-  "scan_id": 1,
-  "status": "running",
-  "files_found": 4823,
-  "files_analyzed": 1240,
-  "files_failed": 3,
-  "started_at": 1700000000,
-  "ended_at": null,
-  "last_error": null
-}
-```
-
-Possible statuses: `running` → `completed` | `failed`
-
----
-
-#### `GET /v1/tracks/{track_id}/features`
-
-Get extracted audio features for a single track.
-
-```json
-{
-  "track_id": "abc123",
-  "duration": 214.5,
-  "bpm": 128.0,
-  "key": "A",
-  "mode": "minor",
-  "energy": 0.82,
-  "danceability": 0.74,
-  "valence": 0.61,
-  "acousticness": 0.12,
-  "instrumentalness": 0.03,
-  "mood_tags": [
-    {"label": "energetic", "confidence": 0.88},
-    {"label": "happy",     "confidence": 0.61}
-  ],
-  "analyzed_at": 1700000000,
-  "analysis_version": "1.0"
-}
-```
-
----
-
-#### `GET /v1/tracks/{track_id}/similar`
-
-Get acoustically similar tracks (pre-FAISS fallback, available now).
-
-| Parameter          | Default | Description |
-|---|---|---|
-| `limit`            | 10      | Number of results (1–50) |
-| `include_features` | false   | Include full feature objects |
-
----
-
-### Users
-
-#### `POST /v1/users`
-
-Pre-register a user. Optional — users are auto-created on their first event.
-
-#### `GET /v1/users/{user_id}`
-
-Get user record and last-seen timestamp.
-
----
-
-## Configuration reference
-
-All settings are read from environment variables (or `.env` file). See `.env.example` for the full list.
-
-| Variable                  | Default         | Description |
-|---|---|---|
-| `SECRET_KEY`              | **required**    | Random secret for internal signing |
-| `API_KEYS`                | **required**    | Comma-separated API keys for clients |
-| `DATABASE_URL`            | SQLite          | SQLite or PostgreSQL connection string |
-| `MUSIC_LIBRARY_PATH`      | `/music`        | Path to music inside container (mount your library here) |
-| `ANALYSIS_WORKERS`        | `2`             | Parallel Essentia worker processes |
-| `RESCAN_INTERVAL_HOURS`   | `6`             | Library re-scan frequency |
-| `EVENT_RETENTION_DAYS`    | `365`           | Raw event retention before aggregation |
-| `EVENT_BATCH_MAX`         | `50`            | Max events per batch request |
-| `MIN_PLAY_PERCENTAGE`     | `0.05`          | Minimum completion to count as a real listen |
-| `ALLOWED_HOSTS`           | `*`             | Comma-separated host whitelist |
-| `CORS_ORIGINS`            | `*`             | Comma-separated CORS origin whitelist |
-| `ENABLE_DOCS`             | `false`         | Enable `/docs` and `/redoc` (dev only) |
-| `LOG_LEVEL`               | `INFO`          | `DEBUG` / `INFO` / `WARNING` / `ERROR` |
-| `LOG_JSON`                | `true`          | Structured JSON logs |
-
----
+| Integration | Required variables |
+|-------------|-------------------|
+| Navidrome/Plex sync | `MEDIA_SERVER_TYPE`, `MEDIA_SERVER_URL`, credentials |
+| Last.fm | `LASTFM_API_KEY`, `LASTFM_API_SECRET` |
+| Lidarr discovery | `LIDARR_URL`, `LIDARR_API_KEY` |
+| spotdl-api downloads | `SPOTDL_API_URL`, `SPOTIFY_CLIENT_ID`, `SPOTIFY_CLIENT_SECRET` |
+| Charts | `CHARTS_ENABLED=true`, `LASTFM_API_KEY` |
 
 ## Connecting your music app
 
 ### Navidrome + Symfonium
 
-Symfonium supports custom scrobble webhooks. Configure it to POST to:
+Symfonium supports custom scrobble webhooks. Point it at:
+
 ```
 http://your-server:8000/v1/events/batch
 ```
+
 with `Authorization: Bearer YOUR_KEY`.
 
 ### Any Subsonic-compatible app
 
-Apps that expose a "scrobble" or "now playing" webhook can be pointed at GrooveIQ's event endpoint. Map Subsonic events to GrooveIQ event types:
+Map events to GrooveIQ event types:
 
-| Subsonic action    | GrooveIQ event_type |
-|---|---|
-| `scrobble`         | `play_end`          |
-| `nowPlaying start` | `play_start`        |
-| Skip (app-level)   | `skip`              |
-| Star               | `like`              |
+| App action | GrooveIQ `event_type` |
+|------------|----------------------|
+| Scrobble | `play_end` |
+| Now playing | `play_start` |
+| Skip | `skip` |
+| Star/heart | `like` |
 
-### Manual / custom integration
-
-Any HTTP client works. A minimal Python example:
+### Custom integration
 
 ```python
-import requests, time
+import httpx, time
 
-GROOVEIQ = "http://localhost:8000"
-HEADERS  = {"Authorization": "Bearer your-key"}
+client = httpx.Client(
+    base_url="http://localhost:8000",
+    headers={"Authorization": "Bearer your-key"},
+)
 
-def send_event(user_id, track_id, event_type, value=None, context=None):
-    requests.post(f"{GROOVEIQ}/v1/events",
-        headers=HEADERS,
-        json={"user_id": user_id, "track_id": track_id,
-              "event_type": event_type, "value": value,
-              "context": context, "timestamp": int(time.time())},
-        timeout=5,
-    )
-
-# Examples
-send_event("alice", "track-123", "play_end", value=0.88)
-send_event("alice", "track-123", "like")
-send_event("alice", "track-456", "skip", value=9.2, context="workout")
+client.post("/v1/events", json={
+    "user_id": "alice",
+    "track_id": "track-123",
+    "event_type": "play_end",
+    "value": 0.88,
+    "timestamp": int(time.time()),
+})
 ```
 
----
+## GPU acceleration
+
+Two Dockerfiles are provided for GPU-accelerated audio analysis:
+
+| File | Hardware | Notes |
+|------|----------|-------|
+| `Dockerfile.gpu` | NVIDIA GPU | Requires nvidia-container-toolkit |
+| `Dockerfile.igpu` | Intel iGPU | Requires `/dev/dri` passthrough |
+
+Use the matching compose override:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d
+```
+
+## API reference
+
+See [API.md](API.md) for the full endpoint reference with request/response examples.
+
+Interactive docs available at `/docs` when `ENABLE_DOCS=true` (development only).
+
+### Endpoint overview
+
+| Group | Endpoints |
+|-------|-----------|
+| Health | `GET /health`, `GET /dashboard` |
+| Events | `POST /v1/events`, `POST /v1/events/batch`, `GET /v1/events` |
+| Library | `POST /v1/library/scan`, `GET /v1/library/scan/{id}`, `POST /v1/library/sync` |
+| Tracks | `GET /v1/tracks`, `GET /v1/tracks/{id}/features`, `GET /v1/tracks/{id}/similar` |
+| Users | `GET/POST /v1/users`, `GET/PATCH /v1/users/{id}`, profile, interactions, history, sessions |
+| Recommendations | `GET /v1/recommend/{user_id}`, history, model stats |
+| Playlists | `POST/GET /v1/playlists`, `GET/DELETE /v1/playlists/{id}` |
+| Discovery | `GET/POST /v1/discovery`, stats |
+| Last.fm | connect, disconnect, sync, profile per user |
+| Charts | list, get, build, download, stats |
+| Downloads | search, download, status, history |
+| Artists | `GET /v1/artists/{name}/meta` |
+| Pipeline | run, reset, status, SSE stream, model readiness, per-step stats |
 
 ## HTTPS / public deployment
 
-If you're exposing GrooveIQ on the internet (e.g. to reach it from your phone away from home):
+If exposing GrooveIQ on the internet:
 
-1. **Always use HTTPS.** Uncomment the `caddy` service in `docker-compose.yml` and set your domain in `Caddyfile`.
-
-2. **Set `ALLOWED_HOSTS`** to your domain:
-   ```
-   ALLOWED_HOSTS=grooveiq.yourdomain.com
-   ```
-
-3. **Restrict `CORS_ORIGINS`** if you have a web frontend:
-   ```
-   CORS_ORIGINS=https://grooveiq.yourdomain.com
-   ```
-
-4. **Rotate API keys** periodically. Generate new ones with:
-   ```bash
-   openssl rand -base64 32
-   ```
-   Then update `API_KEYS` in `.env` and `docker compose up -d` to reload.
-
-5. **Firewall.** Expose only port 443 (via Caddy) externally. Keep port 8000 internal.
-
----
+1. **Use HTTPS.** Uncomment the `caddy` service in `docker-compose.yml` and configure `Caddyfile` with your domain.
+2. **Set `ALLOWED_HOSTS`** to your domain.
+3. **Restrict `CORS_ORIGINS`** to your frontend origin.
+4. **Rotate API keys** periodically (`openssl rand -base64 32`).
+5. **Firewall** — expose only port 443 externally.
 
 ## Development
 
 ```bash
-# Install dependencies
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 
-# Run with hot reload
-APP_ENV=development ENABLE_DOCS=true DISABLE_AUTH=true API_KEYS="" uvicorn app.main:app --reload
+# Run with hot reload (auth disabled)
+APP_ENV=development ENABLE_DOCS=true DISABLE_AUTH=true API_KEYS="" \
+  uvicorn app.main:app --reload
 
 # Run tests
 pytest tests/ -v
 
-# Build Docker image
-docker build -t grooveiq:dev .
+# Lint
+pip install ruff
+ruff check app/ tests/
+
+# Build Docker image (amd64 only — essentia has no ARM wheels)
+docker build --platform linux/amd64 -t grooveiq:dev .
 ```
 
----
+## CI/CD
 
-## Upgrade notes
+GitLab CI pipeline (`.gitlab-ci.yml`) runs automatically on push:
 
-GrooveIQ uses Alembic for database migrations. After pulling a new version:
-
-```bash
-docker compose down
-docker compose pull
-docker compose run --rm grooveiq alembic upgrade head
-docker compose up -d
-```
-
----
+- **Lint** — ruff check + format
+- **Test** — pytest with JUnit reporting
+- **Security** — pip-audit (dependency CVEs), semgrep (SAST), trivy (container scan)
+- **Build** — Docker image pushed to GitLab Container Registry (main branch + tags only)
 
 ## License
 
-MIT. See `LICENSE`.
+[CC BY-NC 4.0](LICENSE) — free to use, copy, and modify for non-commercial purposes with attribution.

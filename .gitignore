@@ -2,10 +2,10 @@
 __pycache__/
 *.py[cod]
 *.pyo
-.venv/
 *.egg-info/
 dist/
 build/
+.venv/
 
 # Environment
 .env
@@ -30,9 +30,6 @@ htmlcov/
 
 # OS
 .DS_Store
-
-# Documents
-*.pdf
 
 # Claude Code
 .claude/
