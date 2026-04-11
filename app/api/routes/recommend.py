@@ -15,7 +15,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.security import check_user_access, require_api_key
+from app.core.security import check_user_access, require_admin, require_api_key
 from app.db.session import get_session
 from app.models.db import ListenEvent, TrackFeatures, TrackInteraction, User
 
@@ -63,15 +63,10 @@ async def get_recommendations(
     session: AsyncSession = Depends(get_session),
     _key: str = Depends(require_api_key),
 ):
-    from app.core.config import settings as _settings
-
-    # Debug mode is development-only — it exposes model internals and
-    # feature vectors that could leak user taste profile information.
-    if debug and _settings.APP_ENV != "development":
-        raise HTTPException(
-            status_code=403,
-            detail="Debug mode is only available when APP_ENV=development.",
-        )
+    # Debug mode exposes model internals and feature vectors — restrict
+    # to admin API keys regardless of environment.
+    if debug:
+        require_admin(_key)
 
     # Per-user authorization check.
     check_user_access(_key, user_id)
@@ -386,5 +381,7 @@ async def get_recommendation_history(
 async def get_model_stats(
     _key: str = Depends(require_api_key),
 ):
+    from app.core.security import require_admin
+    require_admin(_key)
     from app.services.evaluation import get_model_report
     return await get_model_report()

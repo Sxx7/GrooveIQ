@@ -124,7 +124,7 @@ Entries are sorted by chart position. Each entry includes library match info
 )
 async def get_chart(
     chart_type: str,
-    scope: str = Query("global", description="Chart scope: global, tag:<name>, geo:<country>"),
+    scope: str = Query("global", max_length=128, description="Chart scope: global, tag:<name>, geo:<country>"),
     limit: int = Query(100, ge=1, le=200),
     offset: int = Query(0, ge=0),
     session: AsyncSession = Depends(get_session),

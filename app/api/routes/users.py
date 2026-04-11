@@ -341,6 +341,8 @@ async def list_users(
     session: AsyncSession = Depends(get_session),
     _key: str = Depends(require_api_key),
 ):
+    from app.core.security import require_admin
+    require_admin(_key)
     q = (
         select(
             User,
@@ -415,6 +417,8 @@ async def update_user(
     user = result.scalar_one_or_none()
     if not user:
         raise HTTPException(status_code=404, detail="Not found.")
+
+    check_user_access(_key, user.user_id)
 
     old_user_id = user.user_id
 

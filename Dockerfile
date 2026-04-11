@@ -8,7 +8,8 @@
 # Stage 2 (runtime): copy only what's needed to run
 
 # ── Stage 1: builder ─────��─────────────────────���──────────────────────────
-FROM python:3.12-slim AS builder
+# Pin digest — update on a scheduled cadence (last pulled: 2026-04-11)
+FROM python:3.12-slim@sha256:e31013b9573989b2dc2f0cb688044c9e650c2721dd52c54d0fd3c669d3548bb6 AS builder
 
 WORKDIR /build
 
@@ -25,7 +26,7 @@ RUN pip install --upgrade pip wheel && \
 
 
 # ── Stage 2: runtime ──────────���───────────────────────────────────────────
-FROM python:3.12-slim AS runtime
+FROM python:3.12-slim@sha256:e31013b9573989b2dc2f0cb688044c9e650c2721dd52c54d0fd3c669d3548bb6 AS runtime
 
 LABEL org.opencontainers.image.title="GrooveIQ"
 LABEL org.opencontainers.image.description="Behavioral music recommendation engine"
@@ -85,11 +86,13 @@ EXPOSE 8000
 # tini as PID 1 ensures clean shutdown and SIGTERM forwarding to uvicorn
 ENTRYPOINT ["/usr/bin/tini", "--"]
 
-CMD ["uvicorn", "app.main:app", \
-     "--host", "0.0.0.0", \
-     "--port", "8000", \
-     "--workers", "1", \
-     "--loop", "uvloop", \
-     "--http", "httptools", \
-     "--proxy-headers", \
-     "--forwarded-allow-ips", "*"]
+ENV FORWARDED_ALLOW_IPS="127.0.0.1"
+
+CMD ["sh", "-c", "exec uvicorn app.main:app \
+     --host 0.0.0.0 \
+     --port 8000 \
+     --workers 1 \
+     --loop uvloop \
+     --http httptools \
+     --proxy-headers \
+     --forwarded-allow-ips \"$FORWARDED_ALLOW_IPS\""]

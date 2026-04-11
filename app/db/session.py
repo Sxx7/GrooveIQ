@@ -8,6 +8,7 @@ and PostgreSQL (recommended for multi-user or high-volume deployments).
 from __future__ import annotations
 
 import logging
+import re
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
@@ -28,7 +29,7 @@ _connect_args = (
 
 engine = create_async_engine(
     settings.DATABASE_URL,
-    echo=settings.APP_ENV == "development",
+    echo=settings.DB_ECHO,
     pool_size=settings.DB_POOL_SIZE if "sqlite" not in settings.DATABASE_URL else 5,
     max_overflow=settings.DB_MAX_OVERFLOW if "sqlite" not in settings.DATABASE_URL else 10,
     pool_pre_ping=True,
@@ -62,6 +63,12 @@ async def init_db() -> None:
     logger.info("Database initialized.")
 
 
+_SAFE_IDENTIFIER = re.compile(r"^[a-z_][a-z0-9_]*$", re.IGNORECASE)
+_SAFE_COL_TYPE = re.compile(
+    r"^(VARCHAR\(\d+\)|INTEGER( DEFAULT \d+)?|TEXT|REAL|BLOB)$", re.IGNORECASE
+)
+
+
 async def _apply_column_migrations(conn) -> None:
     """Add missing columns to existing tables. Safe to run repeatedly."""
     migrations = [
@@ -88,6 +95,13 @@ async def _apply_column_migrations(conn) -> None:
         ("chart_entries", "image_url", "VARCHAR(1024)"),
     ]
     for table, column, col_type in migrations:
+        # Validate identifiers to prevent SQL injection via migration list.
+        if not _SAFE_IDENTIFIER.match(table):
+            raise ValueError(f"Unsafe table name in migration: {table!r}")
+        if not _SAFE_IDENTIFIER.match(column):
+            raise ValueError(f"Unsafe column name in migration: {column!r}")
+        if not _SAFE_COL_TYPE.match(col_type):
+            raise ValueError(f"Unsafe column type in migration: {col_type!r}")
         try:
             await conn.exec_driver_sql(
                 f"ALTER TABLE {table} ADD COLUMN {column} {col_type}"

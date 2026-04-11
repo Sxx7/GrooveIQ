@@ -10,6 +10,7 @@ from __future__ import annotations
 import os
 import secrets
 from typing import List, Optional
+from urllib.parse import urlparse
 
 from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -21,6 +22,29 @@ _MIN_API_KEY_LENGTH = 32  # 32 chars ≈ 192 bits of entropy (token_urlsafe)
 def _split_csv(v: str) -> List[str]:
     """Split a comma-separated string into a list, stripping whitespace."""
     return [item.strip() for item in v.split(",") if item.strip()]
+
+
+def _validate_service_url(url: str, name: str) -> None:
+    """Validate that a service URL has a safe scheme and hostname.
+
+    Rejects URLs with no scheme, non-HTTP(S) schemes, missing hostnames,
+    and embedded credentials (``user:pass@host``).
+    """
+    if not url:
+        return
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https"):
+        raise ValueError(
+            f"{name} has invalid scheme '{parsed.scheme}'. "
+            f"Only http:// and https:// are allowed."
+        )
+    if not parsed.hostname:
+        raise ValueError(f"{name} is missing a hostname.")
+    if parsed.username or parsed.password:
+        raise ValueError(
+            f"{name} must not contain embedded credentials. "
+            f"Use dedicated config fields for authentication."
+        )
 
 
 class Settings(BaseSettings):
@@ -47,6 +71,7 @@ class Settings(BaseSettings):
 
     DB_POOL_SIZE: int = 5
     DB_MAX_OVERFLOW: int = 10
+    DB_ECHO: bool = False  # Log all SQL statements (including params) — use with care
 
     # ------------------------------------------------------------------
     # Security
@@ -56,6 +81,11 @@ class Settings(BaseSettings):
     # Stored as a raw string to avoid pydantic-settings JSON parsing;
     # split into a list in the model_validator below.
     API_KEYS: str = ""
+
+    # Explicitly disable authentication (development only).
+    # Must be set to true AND API_KEYS left empty for auth to be skipped.
+    # Ignored when APP_ENV=production.
+    DISABLE_AUTH: bool = False
 
     # Rate limiting (requests per minute per API key)
     RATE_LIMIT_EVENTS: int = 300   # event ingestion endpoint (high for batch clients)
@@ -289,6 +319,26 @@ class Settings(BaseSettings):
             )
             raise SystemExit(1)
 
+        if not is_prod and not self.api_keys_list:
+            if not self.DISABLE_AUTH:
+                print(
+                    "\n❌  FATAL: No API_KEYS configured.\n"
+                    "   Either set API_KEYS in your .env file, or explicitly\n"
+                    "   set DISABLE_AUTH=true to run without authentication.\n",
+                    file=sys.stderr,
+                )
+                raise SystemExit(1)
+            import logging as _logging
+            _logging.getLogger("grooveiq.security").warning(
+                "Authentication is DISABLED (DISABLE_AUTH=true, no API_KEYS). "
+                "All endpoints are open. Do NOT expose this instance to a network."
+            )
+            warnings.warn(
+                "⚠️  Authentication is DISABLED (DISABLE_AUTH=true, no API_KEYS). "
+                "All endpoints are open. Do NOT expose this instance to a network.",
+                stacklevel=2,
+            )
+
         for key in self.api_keys_list:
             if len(key) < _MIN_API_KEY_LENGTH:
                 print(
@@ -314,7 +364,13 @@ class Settings(BaseSettings):
                     stacklevel=2,
                 )
 
-        # --- Media server HTTPS warning ---
+        # --- Service URL validation (SSRF prevention) ---
+        _validate_service_url(self.MEDIA_SERVER_URL, "MEDIA_SERVER_URL")
+        _validate_service_url(self.LIDARR_URL, "LIDARR_URL")
+        _validate_service_url(self.SPOTDL_API_URL, "SPOTDL_API_URL")
+        _validate_service_url(self.SPOTIZERR_URL, "SPOTIZERR_URL")
+
+        # --- HTTP cleartext warnings ---
         if self.MEDIA_SERVER_URL and self.MEDIA_SERVER_URL.startswith("http://"):
             warnings.warn(
                 "⚠️  MEDIA_SERVER_URL uses plain HTTP. Credentials will be "

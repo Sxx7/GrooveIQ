@@ -41,8 +41,12 @@ def hash_key(raw_key: str) -> str:
     return hashlib.sha256(raw_key.encode()).hexdigest()
 
 
-def _hashed_configured_keys() -> list[str]:
-    return [hash_key(k) for k in settings.api_keys_list]
+# Pre-compute at import time — settings are immutable after startup.
+# A frozen tuple avoids re-hashing on every request and keeps the
+# collection size constant (no timing side-channel on key count).
+_HASHED_CONFIGURED_KEYS: tuple[str, ...] = tuple(
+    hash_key(k) for k in settings.api_keys_list
+)
 
 
 # ---------------------------------------------------------------------------
@@ -55,6 +59,17 @@ class RateLimiter(ABC):
     @abstractmethod
     def is_allowed(self, key: str, limit: int, window_seconds: int = 60) -> bool:
         ...
+
+    def is_batch_allowed(self, key: str, count: int, limit: int, window_seconds: int = 60) -> bool:
+        """Check whether *count* new entries fit within the rate limit window.
+
+        Default implementation calls is_allowed() in a loop — subclasses
+        may override for atomicity.
+        """
+        for _ in range(count):
+            if not self.is_allowed(key, limit, window_seconds):
+                return False
+        return True
 
 
 class InMemoryLimiter(RateLimiter):
@@ -77,6 +92,18 @@ class InMemoryLimiter(RateLimiter):
         if len(window) >= limit:
             return False
         window.append(now)
+        return True
+
+    def is_batch_allowed(self, key: str, count: int, limit: int, window_seconds: int = 60) -> bool:
+        now = time.monotonic()
+        window = self._windows[key]
+        cutoff = now - window_seconds
+        while window and window[0] < cutoff:
+            window.popleft()
+        if len(window) + count > limit:
+            return False
+        for _ in range(count):
+            window.append(now)
         return True
 
 
@@ -229,8 +256,8 @@ async def require_api_key(
     FastAPI dependency.  Raises 401/429 on auth or rate-limit failure.
     Returns the raw API key on success (can be used as an identity token).
     """
-    # If no keys are configured, allow all (dev mode)
-    if not settings.api_keys_list:
+    # Only skip auth when explicitly opted in via DISABLE_AUTH=true
+    if settings.DISABLE_AUTH and not settings.api_keys_list:
         return "anonymous"
 
     if credentials is None or credentials.scheme.lower() != "bearer":
@@ -243,12 +270,12 @@ async def require_api_key(
 
     raw_key = credentials.credentials
     candidate_hash = hash_key(raw_key)
-    configured_hashes = _hashed_configured_keys()
+    configured_hashes = _HASHED_CONFIGURED_KEYS
 
-    # Constant-time comparison against all configured keys
-    authenticated = any(
-        hmac.compare_digest(candidate_hash, h) for h in configured_hashes
-    )
+    # Constant-time comparison against all configured keys (no short-circuit)
+    authenticated = False
+    for h in configured_hashes:
+        authenticated |= hmac.compare_digest(candidate_hash, h)
 
     if not authenticated:
         raise HTTPException(
@@ -276,15 +303,23 @@ async def require_api_key(
 # Per-user event rate limiting
 # ---------------------------------------------------------------------------
 
-def check_user_event_rate(user_id: str) -> None:
+def check_user_event_rate(user_id: str, count: int = 1) -> None:
     """Enforce per-user rate limit on event ingestion.
 
     Raises HTTPException(429) if the user exceeds the event rate limit.
     Called from event ingestion routes after authentication.
+
+    *count* is the number of events being ingested in this request
+    (default 1 for single-event ingestion, >1 for batches).
     """
-    if not _user_event_limiter.is_allowed(
-        f"user_event:{user_id}", limit=_USER_EVENT_LIMIT
-    ):
+    rkey = f"user_event:{user_id}"
+    if count <= 1:
+        allowed = _user_event_limiter.is_allowed(rkey, limit=_USER_EVENT_LIMIT)
+    else:
+        allowed = _user_event_limiter.is_batch_allowed(
+            rkey, count=count, limit=_USER_EVENT_LIMIT,
+        )
+    if not allowed:
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
             detail=f"Event rate limit exceeded for user. Max {_USER_EVENT_LIMIT}/minute.",

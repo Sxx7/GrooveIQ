@@ -124,6 +124,7 @@ async def get_library_scan_status(
     scan_id: int,
     _key: str = Depends(require_api_key),
 ):
+    require_admin(_key)
     result = await get_scan_status(scan_id)
     if result is None:
         raise HTTPException(status_code=404, detail="Not found.")
@@ -143,6 +144,7 @@ async def get_scan_logs(
 ):
     """Returns recent per-file log entries for a scan.
     Use `after_id` to poll for new entries since the last fetch."""
+    require_admin(_key)
     q = select(ScanLog).where(ScanLog.scan_id == scan_id)
     if after_id > 0:
         q = q.where(ScanLog.id > after_id)

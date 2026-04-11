@@ -123,8 +123,8 @@ async def create_download(
     try:
         dl_result = await client.download(body.spotify_id)
     except Exception as exc:
-        logger.error("Spotizerr download error for %s: %s", body.spotify_id, exc)
-        raise HTTPException(status_code=502, detail=str(exc))
+        logger.error("Download service error for %s: %s", body.spotify_id, exc)
+        raise HTTPException(status_code=502, detail="Download service temporarily unavailable")
     finally:
         await client.close()
 

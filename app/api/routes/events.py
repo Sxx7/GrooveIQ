@@ -101,13 +101,16 @@ async def ingest_event_batch(
     session: AsyncSession = Depends(get_session),
     _key: str = Depends(require_api_key),
 ):
-    # Check authorization and rate limit for all user_ids in the batch.
-    seen_users: set[str] = set()
+    # Count events per user so we can rate-limit accurately.
+    user_event_counts: dict[str, int] = {}
     for event in batch.events:
-        if event.user_id not in seen_users:
-            check_user_access(_key, event.user_id)
-            check_user_event_rate(event.user_id)
-            seen_users.add(event.user_id)
+        user_event_counts[event.user_id] = user_event_counts.get(event.user_id, 0) + 1
+
+    # Check authorization and rate limit for each user with their full
+    # batch count (not just 1 hit per unique user).
+    for uid, count in user_event_counts.items():
+        check_user_access(_key, uid)
+        check_user_event_rate(uid, count=count)
 
     accepted = 0
     rejected = 0

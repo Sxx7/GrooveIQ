@@ -20,6 +20,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import httpx
 
 from app.core.config import settings
+from app.services.spotdl import _validate_id
 
 logger = logging.getLogger(__name__)
 
@@ -235,6 +236,7 @@ class SpotizerrClient:
         ``prg_file`` and ``task_id`` as the task identifier so an
         eventual field rename upstream won't break us.
         """
+        _validate_id(spotify_track_id, "spotify_track_id")
         await self._ensure_auth()
         await self._throttle()
 
@@ -314,6 +316,7 @@ class SpotizerrClient:
         On transport error, returns ``status="error"`` with the
         exception in ``error``.
         """
+        _validate_id(task_id, "task_id")
         await self._ensure_auth()
         await self._throttle()
         try:

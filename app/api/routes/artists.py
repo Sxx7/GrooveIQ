@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Path
 
 from app.core.config import settings
 from app.core.security import require_api_key
@@ -27,7 +27,7 @@ router = APIRouter()
     ),
 )
 async def get_artist_meta(
-    name: str,
+    name: str = Path(..., min_length=1, max_length=256),
     _key: str = Depends(require_api_key),
 ):
     if not settings.LASTFM_API_KEY:

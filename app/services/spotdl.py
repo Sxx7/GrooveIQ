@@ -18,9 +18,19 @@ import logging
 import time
 from typing import Any, Dict, List, Optional
 
+import re
+
 import httpx
 
 from app.core.config import settings
+
+# Alphanumeric IDs only — prevents path traversal in URL interpolation.
+_SAFE_ID_RE = re.compile(r"^[a-zA-Z0-9]{1,64}$")
+
+
+def _validate_id(value: str, label: str = "ID") -> None:
+    if not _SAFE_ID_RE.match(value):
+        raise ValueError(f"Invalid {label}: must be alphanumeric, 1-64 chars")
 
 logger = logging.getLogger(__name__)
 
@@ -139,6 +149,7 @@ class SpotdlClient:
         Returns dict with 'task_id' and 'status', shaped identically to
         SpotizerrClient.download() so callers work unchanged.
         """
+        _validate_id(spotify_track_id, "spotify_track_id")
         await self._throttle()
 
         try:
@@ -187,6 +198,7 @@ class SpotdlClient:
         Returns the same shape as SpotizerrClient.get_status():
             {"status", "progress", "error", "raw"}
         """
+        _validate_id(task_id, "task_id")
         await self._throttle()
         try:
             resp = await self._client.get(

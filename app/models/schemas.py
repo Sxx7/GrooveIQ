@@ -517,11 +517,11 @@ class ChartDownloadRequest(BaseModel):
     Provide either ``position`` (with chart_type/scope) to download a specific
     chart entry, or ``artist_name`` + ``track_title`` to search and download.
     """
-    chart_type:  str = Field("top_tracks", description="Chart type: top_tracks")
-    scope:       str = Field("global", description="Chart scope: global, tag:<name>, geo:<country>")
+    chart_type:  str = Field("top_tracks", max_length=32, description="Chart type: top_tracks")
+    scope:       str = Field("global", max_length=128, description="Chart scope: global, tag:<name>, geo:<country>")
     position:    Optional[int] = Field(None, ge=0, description="Chart position (0-based)")
-    artist_name: Optional[str] = Field(None, description="Artist name (alternative to position)")
-    track_title: Optional[str] = Field(None, description="Track title (required with artist_name)")
+    artist_name: Optional[str] = Field(None, max_length=512, description="Artist name (alternative to position)")
+    track_title: Optional[str] = Field(None, max_length=512, description="Track title (required with artist_name)")
 
     @model_validator(mode="after")
     def require_position_or_track(self) -> "ChartDownloadRequest":

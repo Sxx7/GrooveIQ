@@ -22,6 +22,9 @@ services:
     platform: linux/amd64
     container_name: grooveiq
     restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
 
     ports:
       - "${GROOVEIQ_PORT:-8000}:8000"
@@ -34,8 +37,8 @@ services:
 
       # Auth & Security
       API_KEYS:             ${API_KEYS:?API_KEYS must be set in .env}
-      ALLOWED_HOSTS:        ${ALLOWED_HOSTS:-*}
-      CORS_ORIGINS:         ${CORS_ORIGINS:-*}
+      ALLOWED_HOSTS:        ${ALLOWED_HOSTS:-localhost,127.0.0.1}
+      CORS_ORIGINS:         ${CORS_ORIGINS:-}
 
       # Database (SQLite by default; swap for Postgres below)
       DATABASE_URL:         ${DATABASE_URL:-sqlite+aiosqlite:////data/grooveiq.db}
@@ -94,6 +97,8 @@ services:
       - grooveiq_models:/cache/essentia
       # Your music library (read-only – GrooveIQ never modifies your files)
       - ${MUSIC_LIBRARY_PATH:-/mnt/music}:/music:ro
+    tmpfs:
+      - /tmp:noexec,nosuid,size=64M
 
     healthcheck:
       test: ["CMD", "python", "-c",
@@ -128,6 +133,11 @@ services:
     image: spotdl-api:latest
     container_name: spotdl-api
     restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    tmpfs:
+      - /tmp:noexec,nosuid,size=128M
     ports:
       - "${SPOTDL_API_PORT:-8181}:8181"
     environment:

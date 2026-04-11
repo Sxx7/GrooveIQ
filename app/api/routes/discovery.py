@@ -16,7 +16,7 @@ from sqlalchemy import case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
-from app.core.security import require_api_key
+from app.core.security import require_admin, require_api_key
 from app.db.session import get_session
 from app.models.db import DiscoveryRequest
 
@@ -30,8 +30,8 @@ router = APIRouter()
     description="Returns discovery requests with optional filtering by user_id and status.",
 )
 async def list_discovery_requests(
-    user_id: str = Query(None),
-    status: str = Query(None),
+    user_id: str = Query(None, max_length=128),
+    status: str = Query(None, max_length=32),
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
     session: AsyncSession = Depends(get_session),
@@ -81,6 +81,7 @@ async def list_discovery_requests(
 async def trigger_discovery(
     _key: str = Depends(require_api_key),
 ):
+    require_admin(_key)
     if not settings.discovery_enabled:
         return {
             "status": "error",

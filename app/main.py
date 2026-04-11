@@ -88,21 +88,29 @@ if settings.cors_origins_list:
 async def add_security_headers(request: Request, call_next):
     """Attach security headers to every response."""
     response = await call_next(request)
+    response.headers["Server"] = "GrooveIQ"
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["X-Frame-Options"] = "DENY"
     response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
     response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
     response.headers["X-Permitted-Cross-Domain-Policies"] = "none"
+    # Prevent caches from storing sensitive API responses.
+    if request.url.path.startswith("/v1/"):
+        response.headers["Cache-Control"] = "no-store, private"
     # HSTS: instruct browsers to only use HTTPS.  The reverse proxy should
     # handle TLS termination, but this header ensures browsers remember.
     response.headers["Strict-Transport-Security"] = (
         "max-age=63072000; includeSubDomains"
     )
-    # CSP: the dashboard uses external CSS from /static/ and inline JS.
-    # Allow 'self' and 'unsafe-inline' for scripts/styles, block everything else.
+    # CSP: all JS is loaded from /static/js/app.js (same-origin).
+    # script-src 'self' blocks injected <script> tags (primary XSS vector).
+    # script-src-attr 'unsafe-inline' allows onclick/onchange handlers in
+    # JS-generated HTML (all user data is escaped via esc()).
+    # style-src keeps 'unsafe-inline' for inline styles in generated HTML.
     response.headers["Content-Security-Policy"] = (
         "default-src 'self'; "
-        "script-src 'self' 'unsafe-inline'; "
+        "script-src 'self'; "
+        "script-src-attr 'unsafe-inline'; "
         "style-src 'self' 'unsafe-inline'; "
         "img-src 'self' data:; "
         "connect-src 'self'; "
