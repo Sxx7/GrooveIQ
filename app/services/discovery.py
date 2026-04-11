@@ -21,6 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import settings
 from app.db.session import AsyncSessionLocal
 from app.models.db import DiscoveryRequest, TrackFeatures, TrackInteraction, User
+from app.services.ab_lookup import AcousticBrainzClient
 
 logger = logging.getLogger(__name__)
 
@@ -478,5 +479,148 @@ async def run_discovery_pipeline() -> Dict[str, Any]:
         await lastfm.close()
         await lidarr.close()
 
+    # --- AcousticBrainz discovery (optional, runs alongside Last.fm) ---
+    if settings.ab_lookup_enabled:
+        try:
+            ab_results = await _run_ab_discovery(session=None)
+            summary["ab_tracks_discovered"] = ab_results.get("tracks_discovered", 0)
+            summary["ab_artists_sent"] = ab_results.get("artists_sent_to_lidarr", 0)
+        except Exception as exc:
+            logger.error("AcousticBrainz discovery failed: %s", exc, exc_info=True)
+            summary["ab_error"] = str(exc)
+
     logger.info("Discovery pipeline finished: %s", summary)
+    return summary
+
+
+async def _run_ab_discovery(session: Optional[AsyncSession] = None) -> Dict[str, Any]:
+    """Discover tracks via the AcousticBrainz Lookup container.
+
+    For each user with a taste profile, query AB Lookup for matching tracks
+    not in the local library, then send new artists to Lidarr or tracks
+    to spotdl-api for download.
+    """
+    summary: Dict[str, Any] = {
+        "users_processed": 0,
+        "tracks_discovered": 0,
+        "artists_sent_to_lidarr": 0,
+        "errors": 0,
+    }
+
+    ab_client = AcousticBrainzClient(settings.AB_LOOKUP_URL)
+    lidarr: Optional[LidarrClient] = None
+    if settings.LIDARR_URL and settings.LIDARR_API_KEY:
+        lidarr = LidarrClient(settings.LIDARR_URL, settings.LIDARR_API_KEY)
+
+    try:
+        # Check AB Lookup is ready
+        health = await ab_client.health_check()
+        if health.get("status") != "ready":
+            logger.info("AcousticBrainz Lookup not ready (%s), skipping", health.get("status"))
+            return summary
+
+        async with AsyncSessionLocal() as db:
+            # Get library artists for dedup
+            library_artists_raw = (await db.execute(
+                select(TrackFeatures.artist).where(TrackFeatures.artist.isnot(None)).distinct()
+            )).all()
+            library_artists_norm = {_normalize_artist(r[0]) for r in library_artists_raw}
+
+            lidarr_mbids: Set[str] = set()
+            if lidarr:
+                try:
+                    lidarr_mbids = await lidarr.get_existing_artist_mbids()
+                except Exception as exc:
+                    logger.warning("Failed to fetch Lidarr artists for AB discovery: %s", exc)
+
+            users = (await db.execute(select(User))).scalars().all()
+
+            for user in users:
+                profile = user.taste_profile
+                if not profile or not profile.get("audio_preferences"):
+                    continue
+
+                try:
+                    results = await ab_client.search(
+                        profile, limit=settings.AB_DISCOVERY_LIMIT
+                    )
+                    if not results:
+                        continue
+
+                    # Filter out artists already in library
+                    new_artists: Dict[str, Dict[str, Any]] = {}
+                    for track in results:
+                        artist = track.get("artist")
+                        if not artist:
+                            continue
+                        norm = _normalize_artist(artist)
+                        if norm in library_artists_norm:
+                            continue
+                        mb_artist_id = track.get("mb_artist_id")
+                        if mb_artist_id and mb_artist_id in lidarr_mbids:
+                            continue
+                        if norm not in new_artists:
+                            new_artists[norm] = {
+                                "name": artist,
+                                "mb_artist_id": mb_artist_id,
+                                "sample_track": track.get("title"),
+                                "mbid": track.get("mbid"),
+                            }
+
+                    # Send to Lidarr by artist MBID
+                    for norm, info in new_artists.items():
+                        mb_artist_id = info.get("mb_artist_id")
+                        name = info["name"]
+
+                        if lidarr and mb_artist_id:
+                            try:
+                                lookup = await lidarr.lookup_artist(mbid=mb_artist_id)
+                                if lookup:
+                                    foreign_id = lookup.get("foreignArtistId")
+                                    if foreign_id and foreign_id not in lidarr_mbids:
+                                        await lidarr.add_artist(foreign_id, name)
+                                        lidarr_mbids.add(foreign_id)
+                                        summary["artists_sent_to_lidarr"] += 1
+                                        logger.info(
+                                            "AB discovery: added %s to Lidarr (mbid=%s)",
+                                            name, foreign_id,
+                                        )
+                            except httpx.HTTPStatusError as exc:
+                                if exc.response.status_code != 409:
+                                    logger.warning(
+                                        "AB discovery: Lidarr add failed for %s: %s",
+                                        name, exc,
+                                    )
+                                    summary["errors"] += 1
+                            except Exception as exc:
+                                logger.warning("AB discovery: Lidarr add failed for %s: %s", name, exc)
+                                summary["errors"] += 1
+
+                        # Record discovery
+                        db.add(DiscoveryRequest(
+                            user_id=user.user_id,
+                            artist_name=name,
+                            artist_mbid=mb_artist_id,
+                            source="acousticbrainz",
+                            status="sent" if mb_artist_id else "pending",
+                        ))
+                        summary["tracks_discovered"] += 1
+                        library_artists_norm.add(norm)
+
+                    summary["users_processed"] += 1
+                    await db.commit()
+
+                except Exception as exc:
+                    logger.error(
+                        "AB discovery failed for user %s: %s",
+                        user.user_id, exc, exc_info=True,
+                    )
+                    summary["errors"] += 1
+
+    finally:
+        await ab_client.close()
+        if lidarr:
+            await lidarr.close()
+
+    logger.info("AcousticBrainz discovery finished: %s", summary)
     return summary

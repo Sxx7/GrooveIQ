@@ -218,6 +218,13 @@ class Settings(BaseSettings):
     CHARTS_SPOTIZERR_MAX_ADDS: int = 50        # max tracks to download per chart build
 
     # ------------------------------------------------------------------
+    # AcousticBrainz Lookup (optional add-on container)
+    # ------------------------------------------------------------------
+    AB_LOOKUP_URL: str = ""                    # e.g. http://acousticbrainz-lookup:8200
+    AB_LOOKUP_ENABLED: bool = False
+    AB_DISCOVERY_LIMIT: int = 50
+
+    # ------------------------------------------------------------------
     # Last.fm per-user integration (profile + scrobbling)
     # ------------------------------------------------------------------
     LASTFM_ENABLED: bool = False                # master toggle
@@ -274,6 +281,10 @@ class Settings(BaseSettings):
     def download_enabled(self) -> bool:
         """True if any download backend (spotdl-api or Spotizerr) is configured."""
         return self.spotdl_enabled or self.spotizerr_enabled
+
+    @property
+    def ab_lookup_enabled(self) -> bool:
+        return bool(self.AB_LOOKUP_ENABLED and self.AB_LOOKUP_URL)
 
     @property
     def discovery_enabled(self) -> bool:
@@ -369,6 +380,7 @@ class Settings(BaseSettings):
         _validate_service_url(self.LIDARR_URL, "LIDARR_URL")
         _validate_service_url(self.SPOTDL_API_URL, "SPOTDL_API_URL")
         _validate_service_url(self.SPOTIZERR_URL, "SPOTIZERR_URL")
+        _validate_service_url(self.AB_LOOKUP_URL, "AB_LOOKUP_URL")
 
         # --- HTTP cleartext warnings ---
         if self.MEDIA_SERVER_URL and self.MEDIA_SERVER_URL.startswith("http://"):

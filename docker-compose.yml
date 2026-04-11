@@ -170,6 +170,40 @@ services:
         max-file: "3"
 
   # ---------------------------------------------------------------------------
+  # Optional: AcousticBrainz Lookup (audio-feature discovery from 29.5M tracks)
+  # ---------------------------------------------------------------------------
+  # Uncomment to enable. Set AB_LOOKUP_ENABLED=true in .env on the grooveiq
+  # container.  First run downloads ~39 GB (or 85 MB with AB_SAMPLE_MODE=true).
+  #
+  # acousticbrainz-lookup:
+  #   build: ./acousticbrainz-lookup
+  #   container_name: acousticbrainz-lookup
+  #   restart: unless-stopped
+  #   ports:
+  #     - "${AB_LOOKUP_PORT:-8200}:8200"
+  #   environment:
+  #     SAMPLE_MODE: ${AB_SAMPLE_MODE:-false}
+  #     LOG_LEVEL: ${AB_LOG_LEVEL:-INFO}
+  #   volumes:
+  #     - ablookup_data:/data
+  #   healthcheck:
+  #     test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8200/health')"]
+  #     interval: 30s
+  #     timeout: 5s
+  #     retries: 3
+  #     start_period: 60s
+  #   deploy:
+  #     resources:
+  #       limits:
+  #         cpus: "${AB_CPU_LIMIT:-1.0}"
+  #         memory: "${AB_MEM_LIMIT:-2G}"
+  #   logging:
+  #     driver: "json-file"
+  #     options:
+  #       max-size: "10m"
+  #       max-file: "3"
+
+  # ---------------------------------------------------------------------------
   # Optional: PostgreSQL (uncomment for multi-user / production deployments)
   # ---------------------------------------------------------------------------
   # db:
@@ -209,6 +243,7 @@ services:
 volumes:
   grooveiq_data:
   grooveiq_models:
+  # ablookup_data:
   # grooveiq_pg:
   # caddy_data:
   # caddy_config:
