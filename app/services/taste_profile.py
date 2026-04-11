@@ -79,6 +79,7 @@ from app.models.db import (
     TrackInteraction,
     User,
 )
+from app.services.algorithm_config import get_config
 
 logger = logging.getLogger(__name__)
 
@@ -87,13 +88,6 @@ _AUDIO_FEATURES = [
     "bpm", "energy", "danceability", "valence",
     "acousticness", "instrumentalness", "loudness",
 ]
-
-# Multi-timescale decay periods (days).
-_TIMESCALE_SHORT_DAYS = 7.0     # captures current mood/phase
-_TIMESCALE_LONG_DAYS = 365.0    # captures core identity (effectively all-time)
-
-# Top-N tracks to include in profile.
-_TOP_TRACKS_LIMIT = 50
 
 # Process users in batches.
 _USER_BATCH_SIZE = 100
@@ -188,9 +182,10 @@ async def _build_profile(
         weighted_interactions.append((inter, weight))
 
     # --- Top tracks ---
+    tp_cfg = get_config().taste_profile
     top_tracks = [
         {"track_id": inter.track_id, "score": round(inter.satisfaction_score or 0, 4)}
-        for inter, _ in weighted_interactions[:_TOP_TRACKS_LIMIT]
+        for inter, _ in weighted_interactions[:tp_cfg.top_tracks_limit]
     ]
 
     # --- Audio preferences (weighted by satisfaction * recency) ---
@@ -387,10 +382,11 @@ def _compute_timescale_audio_preferences(
     Returns {short: {bpm: mean, energy: mean, ...}, medium: {...}, long: {...}}
     Only includes features with enough weighted data.
     """
+    tp_cfg = get_config().taste_profile
     timescales = {
-        "short": _TIMESCALE_SHORT_DAYS * 86_400,
+        "short": tp_cfg.timescale_short_days * 86_400,
         "medium": settings.TASTE_PROFILE_DECAY_DAYS * 86_400,
-        "long": _TIMESCALE_LONG_DAYS * 86_400,
+        "long": tp_cfg.timescale_long_days * 86_400,
     }
     result: Dict[str, Dict[str, float]] = {}
 
@@ -742,8 +738,9 @@ def _enrich_with_lastfm(
 
     # Weight: high when few local interactions, fading as local data grows.
     # At 0 interactions: 1.0, at 100: ~0.37, at 500: ~0.007
-    lastfm_weight = math.exp(-interaction_count / 150.0)
-    if lastfm_weight < 0.05:
+    tp_cfg = get_config().taste_profile
+    lastfm_weight = math.exp(-interaction_count / tp_cfg.lastfm_decay_interactions)
+    if lastfm_weight < tp_cfg.enrichment_min_weight:
         return  # negligible, skip computation
 
     # --- Genre preferences from Last.fm ---
@@ -802,8 +799,9 @@ def _enrich_with_onboarding(
     if not onboarding:
         return
 
-    onboarding_weight = math.exp(-interaction_count / 80.0)
-    if onboarding_weight < 0.05:
+    tp_cfg = get_config().taste_profile
+    onboarding_weight = math.exp(-interaction_count / tp_cfg.onboarding_decay_interactions)
+    if onboarding_weight < tp_cfg.enrichment_min_weight:
         return
 
     # Blend explicit audio preferences if the user specified them.
@@ -934,7 +932,7 @@ async def build_seed_profile(
             if tracks:
                 profile["top_tracks"] = [
                     {"track_id": t.track_id, "score": 1.0}
-                    for t in tracks[:_TOP_TRACKS_LIMIT]
+                    for t in tracks[:get_config().taste_profile.top_tracks_limit]
                 ]
                 # Compute audio preferences from favourite tracks.
                 audio = profile.get("audio_preferences", {})
@@ -1015,7 +1013,7 @@ async def build_seed_profile(
                         profile["top_tracks"].append(
                             {"track_id": tf.track_id, "score": 0.8}
                         )
-                profile["top_tracks"] = profile["top_tracks"][:_TOP_TRACKS_LIMIT]
+                profile["top_tracks"] = profile["top_tracks"][:get_config().taste_profile.top_tracks_limit]
 
         # Genres from Last.fm.
         genres = lastfm_cache.get("genres")

@@ -21,6 +21,7 @@ import numpy as np
 
 from app.db.session import AsyncSessionLocal
 from app.services.feature_eng import FEATURE_COLUMNS, NUM_FEATURES, build_features, build_training_data
+from app.services.algorithm_config import get_config
 
 logger = logging.getLogger(__name__)
 
@@ -31,7 +32,6 @@ _model_version: Optional[str] = None
 _model_stats: Dict[str, Any] = {}
 
 # Config.
-_MIN_TRAINING_SAMPLES = 50
 _MODEL_DIR = os.environ.get("GROOVEIQ_MODEL_DIR", "/data/models")
 
 
@@ -40,18 +40,19 @@ def _create_model():
     Create the best available gradient boosting model.
     Prefers LightGBM, falls back to scikit-learn GBR if libomp is missing.
     """
+    cfg = get_config().ranker
     try:
         import lightgbm as lgb
         return lgb.LGBMRegressor(
-            n_estimators=200,
-            max_depth=6,
-            learning_rate=0.05,
-            num_leaves=31,
-            min_child_samples=5,
-            subsample=0.8,
-            colsample_bytree=0.8,
-            reg_alpha=0.1,
-            reg_lambda=0.1,
+            n_estimators=cfg.n_estimators,
+            max_depth=cfg.max_depth,
+            learning_rate=cfg.learning_rate,
+            num_leaves=cfg.num_leaves,
+            min_child_samples=cfg.min_child_samples,
+            subsample=cfg.subsample,
+            colsample_bytree=cfg.colsample_bytree,
+            reg_alpha=cfg.reg_alpha,
+            reg_lambda=cfg.reg_lambda,
             random_state=42,
             verbose=-1,
         ), "lgbm"
@@ -59,10 +60,10 @@ def _create_model():
         from sklearn.ensemble import GradientBoostingRegressor
         logger.info("LightGBM unavailable, using sklearn GradientBoostingRegressor.")
         return GradientBoostingRegressor(
-            n_estimators=200,
-            max_depth=6,
-            learning_rate=0.05,
-            subsample=0.8,
+            n_estimators=cfg.n_estimators,
+            max_depth=cfg.max_depth,
+            learning_rate=cfg.learning_rate,
+            subsample=cfg.subsample,
             random_state=42,
         ), "sklearn-gbr"
 
@@ -108,9 +109,10 @@ async def train_model() -> Dict[str, Any]:
     async with AsyncSessionLocal() as session:
         data = await build_training_data(session)
 
+    cfg = get_config().ranker
     n = data["n_samples"]
-    if n < _MIN_TRAINING_SAMPLES:
-        logger.warning(f"Ranker: only {n} samples (<{_MIN_TRAINING_SAMPLES}), skipping training.")
+    if n < cfg.min_training_samples:
+        logger.warning(f"Ranker: only {n} samples (<{cfg.min_training_samples}), skipping training.")
         return {"trained": False, "training_samples": n, "reason": "insufficient_data"}
 
     features = data["features"]

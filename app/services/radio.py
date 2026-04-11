@@ -35,20 +35,16 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.db import Playlist, PlaylistTrack, TrackFeatures, TrackInteraction
 
+from app.services.algorithm_config import get_config
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Configuration
+# Configuration (non-tunable constants)
 # ---------------------------------------------------------------------------
 
-_SESSION_TTL_S = 4 * 3600          # 4 hours inactivity timeout
-_MAX_SESSIONS = 50                 # evict oldest when full
-_SEED_WEIGHT = 0.50                # how much the seed anchor influences candidates
-_FEEDBACK_WEIGHT = 0.30            # how much in-session feedback shifts the vector
-_PROFILE_WEIGHT = 0.20             # how much the user's global taste profile contributes
 _BATCH_OVERFETCH = 5               # multiplier for candidate overfetch
 _ARTIST_MAX_CONSECUTIVE = 2        # max tracks from same artist in a row
-_FEEDBACK_DECAY = 0.9              # exponential decay for older feedback signals
 
 
 # ---------------------------------------------------------------------------
@@ -114,7 +110,7 @@ def _evict_expired() -> None:
     now = time.time()
     expired = [
         sid for sid, s in _sessions.items()
-        if now - s.last_active > _SESSION_TTL_S
+        if now - s.last_active > get_config().radio.session_ttl_hours * 3600
     ]
     for sid in expired:
         del _sessions[sid]
@@ -122,7 +118,7 @@ def _evict_expired() -> None:
 
 def _evict_oldest() -> None:
     """Remove oldest session if at capacity (caller must hold _lock)."""
-    if len(_sessions) >= _MAX_SESSIONS:
+    if len(_sessions) >= get_config().radio.max_sessions:
         oldest_sid = min(_sessions, key=lambda s: _sessions[s].last_active)
         del _sessions[oldest_sid]
 
@@ -319,28 +315,30 @@ def _update_drift_embedding(s: RadioSession) -> None:
         if emb is None:
             continue
         # More recent feedback gets higher weight
-        recency = _FEEDBACK_DECAY ** (n - 1 - i)
+        radio_cfg = get_config().radio
+        recency = radio_cfg.feedback_decay ** (n - 1 - i)
 
         if fb.action == "like":
-            attract_vecs.append((emb, recency * 1.5))
+            attract_vecs.append((emb, recency * radio_cfg.feedback_like_weight))
         elif fb.action == "dislike":
-            repel_vecs.append((emb, recency * 1.0))
+            repel_vecs.append((emb, recency * radio_cfg.feedback_dislike_weight))
         elif fb.action == "skip":
-            repel_vecs.append((emb, recency * 0.5))
+            repel_vecs.append((emb, recency * radio_cfg.feedback_skip_weight))
 
     if not attract_vecs and not repel_vecs:
         return
 
     # Start from seed
+    radio_cfg = get_config().radio
     drift = s.seed_embedding.copy().astype(np.float64)
 
     # Pull toward liked tracks
     for vec, weight in attract_vecs:
-        drift += vec.astype(np.float64) * weight * _FEEDBACK_WEIGHT
+        drift += vec.astype(np.float64) * weight * radio_cfg.feedback_weight
 
     # Push away from skipped/disliked tracks
     for vec, weight in repel_vecs:
-        drift -= vec.astype(np.float64) * weight * _FEEDBACK_WEIGHT * 0.5
+        drift -= vec.astype(np.float64) * weight * radio_cfg.feedback_weight * 0.5
 
     # Normalize
     norm = np.linalg.norm(drift)
@@ -397,11 +395,13 @@ async def get_next_tracks(
                 seen.add(tid)
                 candidates.append(c)
 
+    radio_cfg = get_config().radio
+
     # --- Source 1: FAISS similarity to drift embedding (primary, weighted high) ---
     if faiss_index.is_ready() and s.drift_embedding is not None:
         results = faiss_index.search(s.drift_embedding, k=overfetch, exclude_ids=exclude)
         _add([
-            {"track_id": tid, "score": score * 1.2, "source": "radio_drift"}
+            {"track_id": tid, "score": score * radio_cfg.source_drift, "source": "radio_drift"}
             for tid, score in results
         ])
 
@@ -409,7 +409,7 @@ async def get_next_tracks(
     if faiss_index.is_ready() and s.seed_embedding is not None and s.drift_embedding is not s.seed_embedding:
         results = faiss_index.search(s.seed_embedding, k=overfetch // 2, exclude_ids=exclude)
         _add([
-            {"track_id": tid, "score": score, "source": "radio_seed"}
+            {"track_id": tid, "score": score * radio_cfg.source_seed, "source": "radio_seed"}
             for tid, score in results
         ])
 
@@ -418,7 +418,7 @@ async def get_next_tracks(
         for seed_tid in s.seed_track_ids[:3]:
             results = faiss_index.search_by_track_id(seed_tid, k=50, exclude_ids=exclude)
             _add([
-                {"track_id": tid, "score": score * 0.9, "source": "radio_content"}
+                {"track_id": tid, "score": score * radio_cfg.source_content, "source": "radio_content"}
                 for tid, score in results
             ])
 
@@ -427,7 +427,7 @@ async def get_next_tracks(
         for seed_tid in s.seed_track_ids[:5]:
             raw = session_embeddings.get_similar_tracks(seed_tid, k=50, exclude_ids=exclude)
             _add([
-                {"track_id": tid, "score": score * 0.7, "source": "radio_skipgram"}
+                {"track_id": tid, "score": score * radio_cfg.source_skipgram, "source": "radio_skipgram"}
                 for tid, score in raw
             ])
 
@@ -436,7 +436,7 @@ async def get_next_tracks(
         for seed_tid in s.seed_track_ids[:5]:
             raw = lastfm_candidates.get_similar_for_track(seed_tid, k=50, exclude_ids=exclude)
             _add([
-                {"track_id": tid, "score": score * 0.6, "source": "radio_lastfm"}
+                {"track_id": tid, "score": score * radio_cfg.source_lastfm, "source": "radio_lastfm"}
                 for tid, score in raw
             ])
 
@@ -444,7 +444,7 @@ async def get_next_tracks(
     if collab_filter.is_ready():
         raw = collab_filter.get_cf_candidates(s.user_id, k=80)
         _add([
-            {"track_id": tid, "score": score * 0.4, "source": "radio_cf"}
+            {"track_id": tid, "score": score * radio_cfg.source_cf, "source": "radio_cf"}
             for tid, score in raw
             if tid not in exclude
         ])
@@ -453,7 +453,7 @@ async def get_next_tracks(
     if s.seed_type == "artist" and s.seed_track_ids:
         # Include more tracks from the seeded artist
         _add([
-            {"track_id": tid, "score": 0.8, "source": "radio_artist"}
+            {"track_id": tid, "score": radio_cfg.source_artist, "source": "radio_artist"}
             for tid in s.seed_track_ids
             if tid not in seen
         ])

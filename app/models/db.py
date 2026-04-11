@@ -571,6 +571,33 @@ class DownloadRequest(Base):
     )
 
 
+# ---------------------------------------------------------------------------
+# Algorithm config  (tunable pipeline weights & hyperparameters)
+# ---------------------------------------------------------------------------
+
+class AlgorithmConfig(Base):
+    """
+    A versioned snapshot of all tunable algorithm parameters.
+
+    Only one row is active at a time (is_active=True).  Each save creates
+    a new version so the history is auditable and rollback is trivial.
+    """
+    __tablename__ = "algorithm_configs"
+
+    id          = Column(Integer, primary_key=True, autoincrement=True)
+    version     = Column(Integer, nullable=False)
+    name        = Column(String(256), nullable=True)           # optional human label
+    config      = Column(JSON, nullable=False)                 # full config dict
+    is_active   = Column(Boolean, nullable=False, default=False)
+    created_at  = Column(Integer, nullable=False, default=lambda: int(time.time()))
+    created_by  = Column(String(128), nullable=True)           # API key identity
+
+    __table_args__ = (
+        Index("ix_algo_config_active", "is_active"),
+        Index("ix_algo_config_version", "version"),
+    )
+
+
 class PlaylistTrack(Base):
     """Ordered track within a playlist."""
     __tablename__ = "playlist_tracks"

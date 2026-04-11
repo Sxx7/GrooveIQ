@@ -80,6 +80,7 @@ class PipelineRun:
     status: RunStatus = RunStatus.RUNNING
     steps: Dict[str, StepResult] = field(default_factory=dict)
     trigger: str = "scheduled"  # "scheduled" | "manual" | "startup"
+    config_version: Optional[int] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -89,6 +90,7 @@ class PipelineRun:
             "status": self.status.value,
             "duration_ms": int((self.ended_at - self.started_at) * 1000) if self.ended_at else None,
             "trigger": self.trigger,
+            "config_version": self.config_version,
             "steps": [
                 self.steps[name].to_dict()
                 for name in PIPELINE_STEPS
@@ -158,11 +160,13 @@ def unsubscribe(q: asyncio.Queue) -> None:
 
 def start_run(trigger: str = "scheduled") -> PipelineRun:
     """Begin tracking a new pipeline run."""
+    from app.services.algorithm_config import get_config_version
     global _current_run
     run = PipelineRun(
         run_id=uuid.uuid4().hex[:12],
         started_at=time.time(),
         trigger=trigger,
+        config_version=get_config_version(),
     )
     # Pre-populate all steps as pending.
     for name in PIPELINE_STEPS:

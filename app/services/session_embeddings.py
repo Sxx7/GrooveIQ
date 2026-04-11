@@ -22,6 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.session import AsyncSessionLocal
 from app.models.db import ListenEvent, ListenSession
+from app.services.algorithm_config import get_config
 
 logger = logging.getLogger(__name__)
 
@@ -29,14 +30,6 @@ logger = logging.getLogger(__name__)
 _lock = threading.Lock()
 _model: Optional[object] = None  # gensim Word2Vec
 _track_ids: List[str] = []       # tracks in the model vocabulary
-
-# Training config.
-_EMBEDDING_DIM = 64
-_WINDOW_SIZE = 5       # context window (tracks before/after)
-_MIN_COUNT = 2         # ignore tracks appearing fewer than this many times
-_EPOCHS = 20           # training iterations
-_MIN_SESSIONS = 10     # don't train if fewer sessions than this
-_MIN_VOCAB = 5         # don't train if fewer unique tracks than this
 
 
 async def _load_session_sequences() -> List[List[str]]:
@@ -91,14 +84,15 @@ def _train_model_sync(sequences: List[List[str]]) -> Optional[object]:
     """CPU-bound Word2Vec training. Runs in a thread executor."""
     from gensim.models import Word2Vec
 
+    cfg = get_config().session_embeddings
     model = Word2Vec(
         sentences=sequences,
-        vector_size=_EMBEDDING_DIM,
-        window=_WINDOW_SIZE,
-        min_count=_MIN_COUNT,
+        vector_size=cfg.embedding_dim,
+        window=cfg.window_size,
+        min_count=cfg.min_count,
         sg=1,           # skip-gram (not CBOW)
         workers=1,      # single thread inside executor
-        epochs=_EPOCHS,
+        epochs=cfg.epochs,
         seed=42,
     )
     return model
@@ -112,12 +106,13 @@ async def train() -> Dict:
     """
     import asyncio
 
+    cfg = get_config().session_embeddings
     sequences = await _load_session_sequences()
 
-    if len(sequences) < _MIN_SESSIONS:
+    if len(sequences) < cfg.min_sessions:
         logger.info(
             f"Session embeddings: only {len(sequences)} sessions "
-            f"(< {_MIN_SESSIONS}), skipping training."
+            f"(< {cfg.min_sessions}), skipping training."
         )
         return {
             "trained": False,
@@ -130,10 +125,10 @@ async def train() -> Dict:
     for seq in sequences:
         all_tracks.update(seq)
 
-    if len(all_tracks) < _MIN_VOCAB:
+    if len(all_tracks) < cfg.min_vocab:
         logger.info(
             f"Session embeddings: only {len(all_tracks)} unique tracks "
-            f"(< {_MIN_VOCAB}), skipping training."
+            f"(< {cfg.min_vocab}), skipping training."
         )
         return {
             "trained": False,
@@ -164,7 +159,7 @@ async def train() -> Dict:
         "trained": True,
         "sessions": len(sequences),
         "vocab_size": vocab_size,
-        "embedding_dim": _EMBEDDING_DIM,
+        "embedding_dim": cfg.embedding_dim,
     }
 
 

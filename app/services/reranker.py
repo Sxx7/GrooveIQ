@@ -26,32 +26,9 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.db import TrackFeatures, TrackInteraction
-
-# Context-aware: suppress short tracks in car/speaker mode.
-_MIN_DURATION_CAR = 90.0  # seconds
+from app.services.algorithm_config import get_config
 
 logger = logging.getLogger(__name__)
-
-# Max tracks from the same artist in the top N positions.
-_ARTIST_DIVERSITY_TOP_N = 10
-_ARTIST_MAX_PER_TOP = 2
-
-# Anti-repetition window.
-_REPEAT_WINDOW_S = 2 * 3600  # 2 hours
-
-# Freshness boost multiplier for never-played tracks.
-_FRESHNESS_BOOST = 0.10
-
-# Skip suppression: demote tracks early-skipped >N times in 24h.
-_SKIP_THRESHOLD = 2
-_SKIP_DEMOTE_FACTOR = 0.5
-
-# Exploration: fraction of final slots reserved for under-explored tracks.
-_EXPLORATION_FRACTION = 0.15
-# Tracks with fewer than this many plays are considered "uncertain".
-_EXPLORATION_LOW_PLAYS = 3
-# Noise scale for exploration (applied as score += noise * scale / sqrt(plays+1)).
-_EXPLORATION_NOISE_SCALE = 0.25
 
 
 def _extract_artist(file_path: Optional[str]) -> str:
@@ -123,34 +100,36 @@ async def rerank(
         i.track_id: i for i in inter_result.scalars().all()
     }
 
+    cfg = get_config().reranker
+
     # --- Rule 1: Freshness boost (never-played tracks get score uplift) ---
     for tid in track_ids:
         if tid not in inter_map:
             old = score_map[tid]
-            score_map[tid] = old * (1.0 + _FRESHNESS_BOOST)
+            score_map[tid] = old * (1.0 + cfg.freshness_boost)
             if actions is not None:
                 actions.append({"track_id": tid, "action": "freshness_boost", "score_before": round(old, 4), "score_after": round(score_map[tid], 4)})
 
-    # --- Rule 2: Skip suppression (early-skipped >2 times recently → demote) ---
+    # --- Rule 2: Skip suppression (early-skipped >threshold times recently → demote) ---
     cutoff_24h = now - 86_400
     for tid in track_ids:
         inter = inter_map.get(tid)
-        if inter and inter.early_skip_count > _SKIP_THRESHOLD:
+        if inter and inter.early_skip_count > cfg.skip_threshold:
             if inter.last_played_at and inter.last_played_at >= cutoff_24h:
                 old = score_map[tid]
-                score_map[tid] = old * _SKIP_DEMOTE_FACTOR
+                score_map[tid] = old * cfg.skip_demote_factor
                 if actions is not None:
                     actions.append({"track_id": tid, "action": "skip_suppression", "score_before": round(old, 4), "score_after": round(score_map[tid], 4)})
 
-    # --- Rule 3: Anti-repetition (suppress tracks played in last 2h) ---
+    # --- Rule 3: Anti-repetition (suppress tracks played recently) ---
     recently_played: Set[str] = set()
-    cutoff_repeat = now - _REPEAT_WINDOW_S
+    cutoff_repeat = now - int(cfg.repeat_window_hours * 3600)
     for tid in track_ids:
         inter = inter_map.get(tid)
         if inter and inter.last_played_at and inter.last_played_at >= cutoff_repeat:
             recently_played.add(tid)
             if actions is not None:
-                actions.append({"track_id": tid, "action": "anti_repetition_exclude", "reason": "played_within_2h"})
+                actions.append({"track_id": tid, "action": "anti_repetition_exclude", "reason": f"played_within_{cfg.repeat_window_hours}h"})
 
     # --- Rule 5: Context-aware — suppress short tracks in car/speaker mode ---
     short_tracks: Set[str] = set()
@@ -161,7 +140,7 @@ async def rerank(
     if is_car_or_speaker:
         for tid in track_ids:
             dur = duration_map.get(tid)
-            if dur is not None and dur < _MIN_DURATION_CAR:
+            if dur is not None and dur < cfg.min_duration_car:
                 short_tracks.add(tid)
                 if actions is not None:
                     actions.append({"track_id": tid, "action": "short_track_exclude", "duration": dur})
@@ -208,6 +187,7 @@ def _enforce_artist_diversity(
 
     Excess tracks are pushed past position N, preserving relative order.
     """
+    cfg = get_config().reranker
     # Two-pass: first fill the top N slots respecting diversity, then append the rest.
     accepted: List[Tuple[str, float]] = []
     deferred: List[Tuple[str, float]] = []
@@ -215,14 +195,14 @@ def _enforce_artist_diversity(
 
     for tid, score in ranked:
         artist = artist_map.get(tid, "__unknown__")
-        if len(accepted) < _ARTIST_DIVERSITY_TOP_N:
-            if artist_count[artist] < _ARTIST_MAX_PER_TOP:
+        if len(accepted) < cfg.artist_diversity_top_n:
+            if artist_count[artist] < cfg.artist_max_per_top:
                 accepted.append((tid, score))
                 artist_count[artist] += 1
             else:
                 deferred.append((tid, score))
                 if actions is not None:
-                    actions.append({"track_id": tid, "action": "artist_diversity_demote", "from_position": len(accepted) + len(deferred) - 1, "to_position": _ARTIST_DIVERSITY_TOP_N + len(deferred) - 1})
+                    actions.append({"track_id": tid, "action": "artist_diversity_demote", "from_position": len(accepted) + len(deferred) - 1, "to_position": cfg.artist_diversity_top_n + len(deferred) - 1})
         else:
             deferred.append((tid, score))
 
@@ -246,11 +226,12 @@ def _inject_exploration_slots(
     list (tracks the model scored lower but hasn't seen enough data on)
     and placed into evenly-spaced "exploration slots" in the output.
     """
+    cfg = get_config().reranker
     n = len(ranked)
     if n < 5:
         return ranked
 
-    n_explore = max(1, int(n * _EXPLORATION_FRACTION))
+    n_explore = max(1, int(n * cfg.exploration_fraction))
 
     # Split: top half = exploitation pool, bottom half = exploration pool.
     split = n // 2
@@ -262,7 +243,7 @@ def _inject_exploration_slots(
     for tid, score in explore_pool:
         plays = inter_map[tid].play_count if tid in inter_map else 0
         # More noise for tracks with fewer plays.
-        noise = random.gauss(0, 1) * _EXPLORATION_NOISE_SCALE / math.sqrt(plays + 1)
+        noise = random.gauss(0, 1) * cfg.exploration_noise_scale / math.sqrt(plays + 1)
         noisy_score = score + abs(noise)  # bias upward to give them a chance
         scored_explore.append((tid, score, noisy_score))
 

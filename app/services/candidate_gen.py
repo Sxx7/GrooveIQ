@@ -27,6 +27,7 @@ from app.services import collab_filter
 from app.services import session_embeddings
 from app.services import lastfm_candidates
 from app.services import sasrec
+from app.services.algorithm_config import get_config
 
 logger = logging.getLogger(__name__)
 
@@ -145,8 +146,9 @@ async def _get_popular_tracks(session: AsyncSession, k: int = 50) -> List[Dict[s
     )
     rows = result.all()
 
+    cfg = get_config().candidate_sources
     return [
-        {"track_id": row.track_id, "score": 0.3, "source": "popular"}
+        {"track_id": row.track_id, "score": cfg.popular, "source": "popular"}
         for row in rows
     ]
 
@@ -209,8 +211,9 @@ async def _get_recently_played_artist_tracks(
     )
     tracks = [row[0] for row in result.all()]
 
+    cfg = get_config().candidate_sources
     return [
-        {"track_id": tid, "score": 0.2, "source": "artist_recall"}
+        {"track_id": tid, "score": cfg.artist_recall, "source": "artist_recall"}
         for tid in tracks
     ]
 
@@ -247,6 +250,8 @@ async def _get_candidates_impl(
     k: int,
     session: AsyncSession,
 ) -> List[Dict[str, Any]]:
+    cfg = get_config().candidate_sources
+
     # Build exclusion set.
     disliked = await _get_disliked_track_ids(user_id, session)
     recently_skipped = await _get_recently_skipped_ids(user_id, session)
@@ -256,20 +261,28 @@ async def _get_candidates_impl(
     content_candidates: List[Dict[str, Any]] = []
     if faiss_index.is_ready():
         if seed_track_id:
-            content_candidates = await get_content_candidates(
+            raw = await get_content_candidates(
                 seed_track_id, k=100, exclude_ids=exclude,
             )
+            content_candidates = [
+                {"track_id": c["track_id"], "score": c["score"] * cfg.content, "source": "content"}
+                for c in raw
+            ]
         else:
-            content_candidates = await get_content_candidates_for_user(
+            raw = await get_content_candidates_for_user(
                 user_id, k=100, exclude_ids=exclude, session=session,
             )
+            content_candidates = [
+                {"track_id": c["track_id"], "score": c["score"] * cfg.content_profile, "source": "content_profile"}
+                for c in raw
+            ]
 
     # Source 2: Collaborative filtering.
     cf_candidates: List[Dict[str, Any]] = []
     if collab_filter.is_ready():
         raw = collab_filter.get_cf_candidates(user_id, k=100)
         cf_candidates = [
-            {"track_id": tid, "score": score, "source": "cf"}
+            {"track_id": tid, "score": score * cfg.cf, "source": "cf"}
             for tid, score in raw
             if tid not in exclude
         ]
@@ -282,7 +295,7 @@ async def _get_candidates_impl(
                 seed_track_id, k=100, exclude_ids=exclude,
             )
             session_emb_candidates = [
-                {"track_id": tid, "score": score * 0.8, "source": "session_skipgram"}
+                {"track_id": tid, "score": score * cfg.session_skipgram, "source": "session_skipgram"}
                 for tid, score in raw
             ]
         else:
@@ -298,7 +311,7 @@ async def _get_candidates_impl(
                         top_ids, k=100, exclude_ids=exclude,
                     )
                     session_emb_candidates = [
-                        {"track_id": tid, "score": score * 0.8, "source": "session_skipgram"}
+                        {"track_id": tid, "score": score * cfg.session_skipgram, "source": "session_skipgram"}
                         for tid, score in raw
                     ]
 
@@ -321,7 +334,7 @@ async def _get_candidates_impl(
             ) if top_ids else []
 
         lastfm_sim_candidates = [
-            {"track_id": tid, "score": score * 0.7, "source": "lastfm_similar"}
+            {"track_id": tid, "score": score * cfg.lastfm_similar, "source": "lastfm_similar"}
             for tid, score in raw
             if tid not in exclude
         ]
@@ -331,7 +344,7 @@ async def _get_candidates_impl(
     if sasrec.is_ready():
         raw = sasrec.get_top_predictions(user_id, k=100, exclude_ids=exclude)
         sasrec_candidates = [
-            {"track_id": tid, "score": max(score * 0.6, 0.1), "source": "sasrec"}
+            {"track_id": tid, "score": max(score * cfg.sasrec, 0.1), "source": "sasrec"}
             for tid, score in raw
             if tid not in exclude
         ]

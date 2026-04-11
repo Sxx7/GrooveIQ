@@ -42,41 +42,30 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.session import AsyncSessionLocal
 from app.models.db import ListenEvent, TrackInteraction, TrackFeatures
+from app.services.algorithm_config import get_config
 
 logger = logging.getLogger(__name__)
 
-# --- Satisfaction weight constants -------------------------------------------
-_W_FULL_LISTEN   =  1.0
-_W_MID_LISTEN    =  0.2
-_W_EARLY_SKIP    = -0.5   # default; modulated by context_type (see _context_skip_multiplier)
-_W_EARLY_SKIP_PLAYLIST = -0.75  # skip in playlist/album = strong rejection
-_W_EARLY_SKIP_RADIO    = -0.25  # skip in radio/search = expected behaviour
-_W_LIKE          =  2.0
-_W_DISLIKE       = -2.0
-_W_REPEAT        =  1.5
-_W_PLAYLIST_ADD  =  1.5
-_W_QUEUE_ADD     =  0.5
-_W_HEAVY_SEEK    = -0.3
-
-# Skip thresholds (milliseconds).
-_EARLY_SKIP_MS   = 2_000    # < 2s = hate / accidental
-_MID_SKIP_MS     = 30_000   # < 30s = mild mismatch
-# >= 30s or completion >= 0.8 = full listen
-
-# Seek threshold: more than this many seeks in a single play = dissatisfaction.
-_HEAVY_SEEK_THRESHOLD = 2
-
-# Context-modulated skip weights: context_type → early-skip weight override.
-_CONTEXT_SKIP_WEIGHTS: Dict[str, float] = {
-    "playlist": _W_EARLY_SKIP_PLAYLIST,
-    "album": _W_EARLY_SKIP_PLAYLIST,
-    "radio": _W_EARLY_SKIP_RADIO,
-    "search": _W_EARLY_SKIP_RADIO,
-    "home_shelf": _W_EARLY_SKIP,  # default
-}
-
 # Process in chunks.
 _EVENT_CHUNK_SIZE = 5000
+
+
+def _get_scoring_weights():
+    """Read current scoring weights from the active algorithm config."""
+    cfg = get_config().track_scoring
+    return cfg
+
+
+def _get_context_skip_weights() -> Dict[str, float]:
+    """Build context_type → early-skip weight map from config."""
+    cfg = get_config().track_scoring
+    return {
+        "playlist": cfg.w_early_skip_playlist,
+        "album": cfg.w_early_skip_playlist,
+        "radio": cfg.w_early_skip_radio,
+        "search": cfg.w_early_skip_radio,
+        "home_shelf": cfg.w_early_skip,
+    }
 
 
 async def run_track_scoring() -> dict:
@@ -326,14 +315,16 @@ def _compute_delta(events: List) -> dict:
             # Classify listen depth.
             dwell = ev.dwell_ms
             ctx = getattr(ev, "context_type", None)
-            skip_w = _CONTEXT_SKIP_WEIGHTS.get(ctx, _W_EARLY_SKIP) if ctx else _W_EARLY_SKIP
+            ctx_skip_map = _get_context_skip_weights()
+            cfg = _get_scoring_weights()
+            skip_w = ctx_skip_map.get(ctx, cfg.w_early_skip) if ctx else cfg.w_early_skip
             if dwell is not None:
                 has_dwell = True
                 total_dwell_ms += dwell
-                if dwell < _EARLY_SKIP_MS:
+                if dwell < cfg.early_skip_ms:
                     early_skip_count += 1
                     context_skip_penalty += skip_w
-                elif dwell < _MID_SKIP_MS:
+                elif dwell < cfg.mid_skip_ms:
                     mid_skip_count += 1
                     # Mid-skips get half the context penalty of early skips.
                     context_skip_penalty += skip_w * 0.4
@@ -358,14 +349,16 @@ def _compute_delta(events: List) -> dict:
         elif et == "skip":
             skip_count += 1
             ctx = getattr(ev, "context_type", None)
-            skip_w = _CONTEXT_SKIP_WEIGHTS.get(ctx, _W_EARLY_SKIP) if ctx else _W_EARLY_SKIP
+            ctx_skip_map = _get_context_skip_weights()
+            cfg = _get_scoring_weights()
+            skip_w = ctx_skip_map.get(ctx, cfg.w_early_skip) if ctx else cfg.w_early_skip
             # A skip event without a preceding play_end: classify by value (seconds elapsed).
             if ev.value is not None:
                 elapsed_ms = int(ev.value * 1000)
-                if elapsed_ms < _EARLY_SKIP_MS:
+                if elapsed_ms < cfg.early_skip_ms:
                     early_skip_count += 1
                     context_skip_penalty += skip_w
-                elif elapsed_ms < _MID_SKIP_MS:
+                elif elapsed_ms < cfg.mid_skip_ms:
                     mid_skip_count += 1
                     context_skip_penalty += skip_w * 0.4
 
@@ -419,31 +412,32 @@ def _raw_satisfaction(delta: dict) -> float:
     radio/search are weakly negative, skips mid-playlist are strongly negative).
     Falls back to flat weights when context_skip_penalty is absent.
     """
+    cfg = _get_scoring_weights()
     score = 0.0
-    score += delta["full_listen_count"] * _W_FULL_LISTEN
+    score += delta["full_listen_count"] * cfg.w_full_listen
     # Use context-modulated skip penalty when available.  The penalty
     # already accounts for both early and mid skips weighted by context_type,
     # so we only add the mid-listen positive signal on top.
     ctx_penalty = delta.get("context_skip_penalty")
     if ctx_penalty is not None and ctx_penalty != 0.0:
         score += ctx_penalty  # negative, context-weighted
-        score += delta["mid_skip_count"] * _W_MID_LISTEN  # partial positive
+        score += delta["mid_skip_count"] * cfg.w_mid_listen  # partial positive
     else:
         # Fallback: flat weights (no context info on events).
-        score += delta["early_skip_count"] * _W_EARLY_SKIP
-        score += delta["mid_skip_count"] * _W_MID_LISTEN
-    score += delta["like_count"] * _W_LIKE
-    score += delta["dislike_count"] * _W_DISLIKE
-    score += delta["repeat_count"] * _W_REPEAT
-    score += delta["playlist_add_count"] * _W_PLAYLIST_ADD
-    score += delta["queue_add_count"] * _W_QUEUE_ADD
+        score += delta["early_skip_count"] * cfg.w_early_skip
+        score += delta["mid_skip_count"] * cfg.w_mid_listen
+    score += delta["like_count"] * cfg.w_like
+    score += delta["dislike_count"] * cfg.w_dislike
+    score += delta["repeat_count"] * cfg.w_repeat
+    score += delta["playlist_add_count"] * cfg.w_playlist_add
+    score += delta["queue_add_count"] * cfg.w_queue_add
 
     # Penalise heavy seeking (proportional to total seeks above threshold).
     total_seeks = delta["total_seekfwd"] + delta["total_seekbk"]
     plays = max(delta["play_count"], 1)
     seeks_per_play = total_seeks / plays
-    if seeks_per_play > _HEAVY_SEEK_THRESHOLD:
-        score += (seeks_per_play - _HEAVY_SEEK_THRESHOLD) * _W_HEAVY_SEEK
+    if seeks_per_play > cfg.heavy_seek_threshold:
+        score += (seeks_per_play - cfg.heavy_seek_threshold) * cfg.w_heavy_seek
 
     return score
 

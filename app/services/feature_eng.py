@@ -22,6 +22,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.db import TrackFeatures, TrackInteraction, User
+from app.services.algorithm_config import get_config
 
 # Feature columns in deterministic order (model input contract).
 FEATURE_COLUMNS = [
@@ -419,6 +420,7 @@ async def build_training_data(session: AsyncSession) -> Dict[str, Any]:
         # Hard negative sample weights: upweight explicitly skipped/disliked
         # tracks (hard negatives) and strong positives so the model focuses
         # on informative examples rather than the neutral middle.
+        ranker_cfg = get_config().ranker
         inter_map = {i.track_id: i for i in user_inters}
         weights = np.ones(len(result["track_ids"]), dtype=np.float32)
         for idx, tid in enumerate(result["track_ids"]):
@@ -427,12 +429,12 @@ async def build_training_data(session: AsyncSession) -> Dict[str, Any]:
                 continue
             # Hard negatives: tracks with explicit dislike or heavy early skips.
             if inter.dislike_count > 0:
-                weights[idx] = 3.0
+                weights[idx] = ranker_cfg.weight_disliked
             elif inter.early_skip_count > 2 and inter.full_listen_count == 0:
-                weights[idx] = 2.0
+                weights[idx] = ranker_cfg.weight_heavy_skip
             # Strong positives: liked or heavily repeated tracks.
             elif inter.like_count > 0 or inter.repeat_count > 2:
-                weights[idx] = 2.0
+                weights[idx] = ranker_cfg.weight_strong_positive
 
         # Append impression-based negatives as additional training examples.
         if imp_neg_ids:
@@ -446,9 +448,9 @@ async def build_training_data(session: AsyncSession) -> Dict[str, Any]:
                 n_neg = neg_result["features"].shape[0]
                 result["features"] = np.vstack([result["features"], neg_result["features"]])
                 result["track_ids"] = result["track_ids"] + neg_result["track_ids"]
-                # Impression negatives: label = 0.0, weight = 1.5 (stronger than random).
+                # Impression negatives: label = 0.0, weight stronger than random.
                 labels = np.concatenate([labels, np.zeros(n_neg, dtype=np.float32)])
-                weights = np.concatenate([weights, np.full(n_neg, 1.5, dtype=np.float32)])
+                weights = np.concatenate([weights, np.full(n_neg, ranker_cfg.weight_impression_negative, dtype=np.float32)])
 
         all_features.append(result["features"])
         all_labels.append(labels)

@@ -14,7 +14,7 @@ from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import FileResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 
-from app.api.routes import artists, charts, discovery, downloads, events, health, lastfm, playlists, radio, recommend, stats, tracks, users
+from app.api.routes import algorithm_config, artists, charts, discovery, downloads, events, health, lastfm, playlists, radio, recommend, stats, tracks, users
 from app.core.config import settings
 from app.core.logging import setup_logging
 from app.db.session import init_db
@@ -29,6 +29,13 @@ async def lifespan(app: FastAPI):
     """Startup and shutdown lifecycle."""
     logger.info("GrooveIQ starting up...")
     await init_db()
+
+    # Load algorithm config from DB (seeds defaults on first run).
+    try:
+        from app.services.algorithm_config import load_active_config
+        await load_active_config()
+    except Exception as e:
+        logger.warning(f"Algorithm config load failed on startup: {e}")
 
     # Build FAISS index from existing embeddings (non-blocking if empty).
     try:
@@ -150,6 +157,7 @@ app.include_router(downloads.router, prefix="/v1", tags=["downloads"])
 app.include_router(lastfm.router, prefix="/v1", tags=["lastfm"])
 app.include_router(artists.router, prefix="/v1", tags=["artists"])
 app.include_router(radio.router, prefix="/v1", tags=["radio"])
+app.include_router(algorithm_config.router, prefix="/v1", tags=["algorithm"])
 
 # ---------------------------------------------------------------------------
 # Dashboard (static)
