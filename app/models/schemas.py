@@ -527,6 +527,8 @@ class RadioStartRequest(BaseModel):
     seed_type: RadioSeedType
     seed_value: str = Field(..., min_length=1, max_length=512,
                             description="track_id, artist name, or playlist_id")
+    count: int = Field(10, ge=1, le=50,
+                       description="Number of tracks in the first batch")
     # Optional context (updatable on each /next call)
     device_type: Optional[str] = Field(None, max_length=32)
     output_type: Optional[str] = Field(None, max_length=32)

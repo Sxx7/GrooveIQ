@@ -61,7 +61,6 @@ Returns the session ID and the first batch of tracks.
 )
 async def start_radio(
     body: RadioStartRequest,
-    count: int = Query(10, ge=1, le=50, description="Number of tracks in the first batch"),
     db: AsyncSession = Depends(get_session),
     _key: str = Depends(require_api_key),
 ):
@@ -125,7 +124,7 @@ async def start_radio(
         )
 
     # Generate first batch.
-    tracks = await radio_service.get_next_tracks(session.session_id, count, db)
+    tracks = await radio_service.get_next_tracks(session.session_id, body.count, db)
 
     if not tracks:
         radio_service.remove_session(session.session_id)

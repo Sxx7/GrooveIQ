@@ -1474,8 +1474,8 @@ function startRadio() {
   if (!seedValue) { alert('Enter a seed value.'); return; }
   var btn = document.getElementById('radio-start-btn');
   btn.disabled = true; btn.textContent = 'Starting...';
-  apiPost('/v1/radio/start?count=10', {
-    user_id: userId, seed_type: seedType, seed_value: seedValue
+  apiPost('/v1/radio/start', {
+    user_id: userId, seed_type: seedType, seed_value: seedValue, count: 10
   }).then(function(data) {
     radioState.sessionId = data.session_id;
     radioState.seedType = data.seed_type;
