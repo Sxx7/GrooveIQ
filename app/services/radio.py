@@ -470,6 +470,7 @@ async def get_next_tracks(
     candidates = candidates[:overfetch]
 
     candidate_ids = [c["track_id"] for c in candidates]
+    retrieval_scores = {c["track_id"]: c["score"] for c in candidates}
 
     # --- Score with LightGBM ranker ---
     scored = await score_candidates(
@@ -479,6 +480,16 @@ async def get_next_tracks(
         context_type="radio", location_label=s.location_label,
     )
     source_map = {c["track_id"]: c["source"] for c in candidates}
+
+    # Blend ranker score with retrieval score.  When the ranker has no model
+    # (fallback mode), satisfaction_score is 0.0 for unplayed tracks, which
+    # kills all differentiation.  Blending preserves the FAISS similarity
+    # ordering while still respecting any ranker signal that exists.
+    scored = [
+        (tid, ranker_score * 0.6 + retrieval_scores.get(tid, 0.0) * 0.4)
+        for tid, ranker_score in scored
+    ]
+    scored.sort(key=lambda x: x[1], reverse=True)
 
     # --- Rerank for diversity ---
     reranked = await rerank(
