@@ -204,6 +204,7 @@ function switchTab(view) {
   else if (view === 'tracks') loadTracks();
   else if (view === 'playlists') loadPlaylists();
   else if (view === 'charts') loadCharts();
+  else if (view === 'radio') loadRadio();
   else if (view === 'discovery') loadDiscovery();
 }
 
@@ -1370,6 +1371,258 @@ function renderDiscovery(stats, data) {
 function runDiscovery(btn) {
   btn.disabled = true; btn.textContent = 'Running...';
   apiPost('/v1/discovery/run', {}).then(function() { btn.textContent = 'Started'; setTimeout(function() { loadDiscovery(); }, 3000); setTimeout(function() { loadDiscovery(); }, 10000); }).catch(function(e) { alert('Discovery failed: ' + e.message); btn.disabled = false; btn.textContent = 'Run Discovery'; });
+}
+
+// =========================================================================
+// Radio View
+// =========================================================================
+var radioState = { sessionId: null, seedType: 'track', tracks: [], totalServed: 0, seedDisplayName: '' };
+
+function loadRadio() {
+  var h = '<div class="page-header"><h1 class="page-title">Radio</h1></div>';
+  h += '<div class="grid-2">';
+
+  // Start panel
+  h += '<div class="card"><div class="card-header">Start Radio</div><div class="card-body">';
+  h += '<div style="display:flex;flex-direction:column;gap:var(--space-3)">';
+  h += '<div style="display:flex;gap:var(--space-2);align-items:center">';
+  h += '<select id="radio-user" class="form-select" style="flex:1"><option value="">Select user...</option>';
+  for (var i = 0; i < cachedUsers.length; i++) h += '<option value="' + esc(cachedUsers[i].user_id) + '">' + esc(cachedUsers[i].user_id) + '</option>';
+  h += '</select></div>';
+  h += '<div style="display:flex;gap:var(--space-2);align-items:center">';
+  h += '<label class="text-sm" style="min-width:70px">Seed type:</label>';
+  h += '<select id="radio-seed-type" class="form-select" style="flex:1" onchange="radioSeedTypeChanged()">';
+  h += '<option value="track">Track</option><option value="artist">Artist</option><option value="playlist">Playlist</option>';
+  h += '</select></div>';
+  h += '<div id="radio-seed-input-wrap">';
+  h += radioSeedInput('track');
+  h += '</div>';
+  h += '<div style="display:flex;gap:var(--space-2)">';
+  h += '<button class="btn btn-primary" onclick="startRadio()" id="radio-start-btn">Start Radio</button>';
+  h += '</div></div></div></div>';
+
+  // Active sessions panel
+  h += '<div class="card"><div class="card-header">Active Sessions</div><div class="card-body" id="radio-sessions-list"><div class="empty">Loading...</div></div></div>';
+  h += '</div>';
+
+  // Now playing / queue
+  h += '<div id="radio-now-playing"></div>';
+  $('#app').innerHTML = h;
+
+  // Load active sessions
+  radioLoadSessions();
+}
+
+function radioSeedInput(type) {
+  if (type === 'track') {
+    return '<input id="radio-seed-value" class="form-input" placeholder="Track ID" style="width:100%">';
+  } else if (type === 'artist') {
+    return '<input id="radio-seed-value" class="form-input" placeholder="Artist name" style="width:100%">';
+  } else {
+    return '<select id="radio-seed-value" class="form-select" style="width:100%"><option value="">Loading playlists...</option></select>';
+  }
+}
+
+function radioSeedTypeChanged() {
+  var type = document.getElementById('radio-seed-type').value;
+  var wrap = document.getElementById('radio-seed-input-wrap');
+  wrap.innerHTML = radioSeedInput(type);
+  if (type === 'playlist') {
+    api('/v1/playlists?limit=50').then(function(data) {
+      var playlists = data.playlists || data || [];
+      var sel = document.getElementById('radio-seed-value');
+      if (!sel) return;
+      var h = '<option value="">Select playlist...</option>';
+      for (var i = 0; i < playlists.length; i++) {
+        h += '<option value="' + playlists[i].id + '">' + esc(playlists[i].name) + ' (' + playlists[i].track_count + ' tracks)</option>';
+      }
+      sel.innerHTML = h;
+    });
+  }
+}
+
+function radioLoadSessions() {
+  api('/v1/radio').then(function(data) {
+    var el = document.getElementById('radio-sessions-list');
+    if (!el) return;
+    var sessions = data.sessions || [];
+    if (!sessions.length) { el.innerHTML = '<div class="empty">No active radio sessions.</div>'; return; }
+    var h = '';
+    for (var i = 0; i < sessions.length; i++) {
+      var s = sessions[i];
+      h += '<div style="display:flex;align-items:center;justify-content:space-between;padding:var(--space-2) 0;border-bottom:1px solid var(--border)">';
+      h += '<div><strong>' + esc(s.seed_display_name || s.seed_value) + '</strong>';
+      h += ' <span class="badge badge-primary">' + esc(s.seed_type) + '</span>';
+      h += '<br><span class="text-xs text-muted">' + esc(s.user_id) + ' &middot; ' + s.total_served + ' tracks served &middot; ' + timeAgo(s.last_active) + '</span></div>';
+      h += '<div style="display:flex;gap:var(--space-2)">';
+      h += '<button class="btn btn-primary btn-sm" onclick="radioResume(\'' + esc(s.session_id) + '\')">Resume</button>';
+      h += '<button class="btn btn-danger btn-sm" onclick="radioStop(\'' + esc(s.session_id) + '\')">Stop</button>';
+      h += '</div></div>';
+    }
+    el.innerHTML = h;
+  }).catch(function(e) {
+    var el = document.getElementById('radio-sessions-list');
+    if (el) el.innerHTML = '<div class="empty text-danger">Error: ' + esc(e.message) + '</div>';
+  });
+}
+
+function startRadio() {
+  var userId = document.getElementById('radio-user').value;
+  if (!userId) { alert('Select a user first.'); return; }
+  var seedType = document.getElementById('radio-seed-type').value;
+  var seedValue = document.getElementById('radio-seed-value').value.trim();
+  if (!seedValue) { alert('Enter a seed value.'); return; }
+  var btn = document.getElementById('radio-start-btn');
+  btn.disabled = true; btn.textContent = 'Starting...';
+  apiPost('/v1/radio/start?count=10', {
+    user_id: userId, seed_type: seedType, seed_value: seedValue
+  }).then(function(data) {
+    radioState.sessionId = data.session_id;
+    radioState.seedType = data.seed_type;
+    radioState.tracks = data.tracks || [];
+    radioState.totalServed = data.tracks ? data.tracks.length : 0;
+    radioState.seedDisplayName = data.seed_display_name || data.seed_value;
+    renderRadioNowPlaying();
+    radioLoadSessions();
+    btn.disabled = false; btn.textContent = 'Start Radio';
+  }).catch(function(e) {
+    alert('Failed to start radio: ' + e.message);
+    btn.disabled = false; btn.textContent = 'Start Radio';
+  });
+}
+
+function radioResume(sessionId) {
+  radioState.sessionId = sessionId;
+  radioFetchNext(10);
+}
+
+function radioFetchNext(count) {
+  if (!radioState.sessionId) return;
+  var el = document.getElementById('radio-now-playing');
+  if (el) {
+    var loading = document.getElementById('radio-loading');
+    if (loading) loading.style.display = 'block';
+  }
+  api('/v1/radio/' + radioState.sessionId + '/next?count=' + (count || 10)).then(function(data) {
+    radioState.tracks = data.tracks || [];
+    radioState.totalServed = data.total_served || 0;
+    renderRadioNowPlaying();
+  }).catch(function(e) {
+    if (e.message.indexOf('404') >= 0) {
+      radioState.sessionId = null;
+      var np = document.getElementById('radio-now-playing');
+      if (np) np.innerHTML = '<div class="card" style="margin-top:var(--space-4)"><div class="card-body"><div class="empty">Radio session expired.</div></div></div>';
+    } else {
+      alert('Error fetching next tracks: ' + e.message);
+    }
+  });
+}
+
+function renderRadioNowPlaying() {
+  var el = document.getElementById('radio-now-playing');
+  if (!el) return;
+  var tracks = radioState.tracks;
+  var h = '<div class="card" style="margin-top:var(--space-4)">';
+  h += '<div class="card-header" style="display:flex;justify-content:space-between;align-items:center">';
+  h += '<span>Now Playing: <strong>' + esc(radioState.seedDisplayName) + '</strong>';
+  h += ' <span class="badge badge-primary">' + esc(radioState.seedType) + ' radio</span>';
+  h += ' <span class="text-xs text-muted">' + radioState.totalServed + ' tracks served</span></span>';
+  h += '<div style="display:flex;gap:var(--space-2)">';
+  h += '<button class="btn btn-primary btn-sm" onclick="radioFetchNext(10)">Next 10</button>';
+  h += '<button class="btn btn-secondary btn-sm" onclick="radioFetchNext(25)">Next 25</button>';
+  h += '<button class="btn btn-danger btn-sm" onclick="radioStop(\'' + esc(radioState.sessionId) + '\')">Stop</button>';
+  h += '</div></div>';
+
+  if (!tracks.length) {
+    h += '<div class="card-body"><div class="empty">No more tracks available. Try adjusting the seed.</div></div></div>';
+    el.innerHTML = h; return;
+  }
+
+  var maxScore = 0;
+  for (var i = 0; i < tracks.length; i++) { if (tracks[i].score > maxScore) maxScore = tracks[i].score; }
+
+  h += '<div class="card-body" style="overflow-x:auto;padding:0"><table><tr><th>#</th><th>Track</th><th>Artist</th><th>Source</th><th>Score</th><th>BPM</th><th>Key</th><th>Energy</th><th>Mood</th><th>Duration</th><th style="min-width:140px">Feedback</th></tr>';
+  for (var i = 0; i < tracks.length; i++) {
+    var t = tracks[i];
+    h += '<tr id="radio-row-' + esc(t.track_id) + '">';
+    h += '<td>' + (t.position + 1) + '</td>';
+    h += '<td class="truncate" title="' + esc(t.track_id) + '">' + esc(t.title || t.track_id) + '</td>';
+    h += '<td class="truncate" style="max-width:150px">' + esc(t.artist || '\u2014') + '</td>';
+    h += '<td>' + radioSourceBadge(t.source) + '</td>';
+    h += '<td class="nowrap">' + scoreBar(t.score, maxScore) + '</td>';
+    h += '<td>' + (t.bpm ? t.bpm.toFixed(1) : '\u2014') + '</td>';
+    h += '<td>' + esc(t.key || '\u2014') + ' ' + (t.mode ? t.mode.charAt(0) : '') + '</td>';
+    h += '<td>' + (t.energy != null ? t.energy.toFixed(2) : '\u2014') + '</td>';
+    h += '<td>' + topMood(t.mood_tags) + '</td>';
+    h += '<td>' + fmtTrackDur(t.duration) + '</td>';
+    h += '<td>';
+    h += '<button class="btn btn-sm" style="background:var(--color-success);color:#fff;padding:2px 8px;font-size:11px" onclick="radioFeedback(\'' + esc(t.track_id) + '\',\'like\',this)" title="Like">&#9829;</button> ';
+    h += '<button class="btn btn-sm" style="background:var(--color-warning);color:#fff;padding:2px 8px;font-size:11px" onclick="radioFeedback(\'' + esc(t.track_id) + '\',\'skip\',this)" title="Skip">&#9654;</button> ';
+    h += '<button class="btn btn-sm" style="background:var(--color-danger);color:#fff;padding:2px 8px;font-size:11px" onclick="radioFeedback(\'' + esc(t.track_id) + '\',\'dislike\',this)" title="Dislike">&#10005;</button>';
+    h += '</td></tr>';
+  }
+  h += '</table></div>';
+
+  // Source distribution
+  var srcCounts = {};
+  for (var i = 0; i < tracks.length; i++) { var s = tracks[i].source || 'unknown'; srcCounts[s] = (srcCounts[s] || 0) + 1; }
+  h += '<div style="padding:var(--space-3) var(--space-5);border-top:1px solid var(--border)">';
+  h += '<span class="text-xs text-muted font-semibold">Sources: </span>';
+  var srcKeys = Object.keys(srcCounts);
+  for (var i = 0; i < srcKeys.length; i++) {
+    h += radioSourceBadge(srcKeys[i]) + ' <span class="text-xs text-muted">' + srcCounts[srcKeys[i]] + '</span> ';
+  }
+  h += '</div>';
+
+  h += '<div id="radio-loading" style="display:none;padding:var(--space-3);text-align:center"><span class="text-muted">Loading next batch...</span></div>';
+  h += '</div>';
+  el.innerHTML = h;
+}
+
+function radioSourceBadge(s) {
+  if (!s) return '<span class="badge">unknown</span>';
+  var cls = 'badge ';
+  if (s.indexOf('radio_drift') === 0) cls += 'badge-primary';
+  else if (s.indexOf('radio_seed') === 0) cls += 'source-content';
+  else if (s.indexOf('radio_content') === 0) cls += 'source-content';
+  else if (s.indexOf('radio_skipgram') === 0) cls += 'badge-info';
+  else if (s.indexOf('radio_lastfm') === 0) cls += 'badge-purple';
+  else if (s.indexOf('radio_cf') === 0) cls += 'source-cf';
+  else if (s.indexOf('radio_artist') === 0) cls += 'source-artist';
+  else cls += 'badge-primary';
+  // Shorten label for display
+  var label = s.replace('radio_', '');
+  return '<span class="' + cls + '">' + esc(label) + '</span>';
+}
+
+function radioFeedback(trackId, action, btn) {
+  if (!radioState.sessionId) return;
+  btn.disabled = true;
+  apiPost('/v1/radio/' + radioState.sessionId + '/feedback', {
+    track_id: trackId, action: action
+  }).then(function() {
+    var row = document.getElementById('radio-row-' + trackId);
+    if (row) {
+      if (action === 'like') row.style.background = 'rgba(16,185,129,0.08)';
+      else if (action === 'dislike') row.style.background = 'rgba(239,68,68,0.08)';
+      else if (action === 'skip') row.style.background = 'rgba(245,158,11,0.08)';
+    }
+  }).catch(function(e) {
+    btn.disabled = false;
+  });
+}
+
+function radioStop(sessionId) {
+  apiDelete('/v1/radio/' + sessionId).then(function() {
+    if (radioState.sessionId === sessionId) {
+      radioState.sessionId = null;
+      var np = document.getElementById('radio-now-playing');
+      if (np) np.innerHTML = '';
+    }
+    radioLoadSessions();
+  }).catch(function(e) {
+    alert('Error stopping radio: ' + e.message);
+  });
 }
 
 // =========================================================================

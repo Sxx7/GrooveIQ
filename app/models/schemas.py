@@ -511,6 +511,90 @@ class UserResponse(BaseModel):
 # Chart download request (Spotizerr integration)
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Radio
+# ---------------------------------------------------------------------------
+
+class RadioSeedType(str, Enum):
+    TRACK = "track"
+    ARTIST = "artist"
+    PLAYLIST = "playlist"
+
+
+class RadioStartRequest(BaseModel):
+    """Start a radio session from a seed."""
+    user_id: str = Field(..., min_length=1, max_length=128)
+    seed_type: RadioSeedType
+    seed_value: str = Field(..., min_length=1, max_length=512,
+                            description="track_id, artist name, or playlist_id")
+    # Optional context (updatable on each /next call)
+    device_type: Optional[str] = Field(None, max_length=32)
+    output_type: Optional[str] = Field(None, max_length=32)
+    location_label: Optional[str] = Field(None, max_length=32)
+    hour_of_day: Optional[int] = Field(None, ge=0, le=23)
+    day_of_week: Optional[int] = Field(None, ge=1, le=7)
+
+    model_config = {"use_enum_values": True}
+
+
+class RadioFeedbackRequest(BaseModel):
+    """In-session feedback for a radio track."""
+    track_id: str = Field(..., min_length=1, max_length=128)
+    action: str = Field(..., pattern="^(skip|like|dislike)$",
+                        description="Feedback action: skip, like, or dislike")
+
+
+class RadioTrackItem(BaseModel):
+    position: int
+    track_id: str
+    source: str
+    score: float
+    title: Optional[str] = None
+    artist: Optional[str] = None
+    album: Optional[str] = None
+    genre: Optional[str] = None
+    bpm: Optional[float] = None
+    key: Optional[str] = None
+    mode: Optional[str] = None
+    energy: Optional[float] = None
+    danceability: Optional[float] = None
+    valence: Optional[float] = None
+    mood_tags: Optional[List[MoodTag]] = None
+    duration: Optional[float] = None
+
+
+class RadioSessionResponse(BaseModel):
+    session_id: str
+    user_id: str
+    seed_type: str
+    seed_value: str
+    seed_display_name: Optional[str] = None
+    total_served: int
+    tracks_played: int
+    tracks_skipped: int
+    tracks_liked: int
+    created_at: int
+    last_active: int
+
+
+class RadioStartResponse(BaseModel):
+    session_id: str
+    seed_type: str
+    seed_value: str
+    seed_display_name: Optional[str] = None
+    tracks: List[RadioTrackItem]
+
+
+class RadioNextResponse(BaseModel):
+    session_id: str
+    total_served: int
+    tracks: List[RadioTrackItem]
+
+
+# ---------------------------------------------------------------------------
+# Chart download request (Spotizerr integration)
+# ---------------------------------------------------------------------------
+
 class ChartDownloadRequest(BaseModel):
     """Request body for POST /v1/charts/download.
 
