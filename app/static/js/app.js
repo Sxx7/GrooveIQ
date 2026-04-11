@@ -1597,9 +1597,13 @@ function radioSourceBadge(s) {
 
 function radioFeedback(trackId, action, btn) {
   if (!radioState.sessionId) return;
+  var userId = document.getElementById('radio-user') ? document.getElementById('radio-user').value : '';
+  if (!userId) return;
   btn.disabled = true;
-  apiPost('/v1/radio/' + radioState.sessionId + '/feedback', {
-    track_id: trackId, action: action
+  // Send feedback through normal event ingestion with context_type=radio
+  apiPost('/v1/events', {
+    user_id: userId, track_id: trackId, event_type: action,
+    context_type: 'radio', context_id: radioState.sessionId
   }).then(function() {
     var row = document.getElementById('radio-row-' + trackId);
     if (row) {

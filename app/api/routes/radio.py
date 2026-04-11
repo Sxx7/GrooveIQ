@@ -4,10 +4,13 @@ GrooveIQ – Radio endpoints.
 Stateful radio sessions that seed from a track, artist, or playlist
 and adapt in real-time based on in-session feedback.
 
+Feedback flows through the normal event ingestion pipeline (POST /v1/events)
+with context_type=radio and context_id=session_id. The event_service hooks
+into radio.record_feedback() automatically for skip/like/dislike events.
+
 Endpoints:
   POST /v1/radio/start          — create a radio session, return first batch
   GET  /v1/radio/{id}/next      — fetch next batch of tracks
-  POST /v1/radio/{id}/feedback  — send skip/like/dislike feedback
   DELETE /v1/radio/{id}         — stop a radio session
   GET  /v1/radio                — list active radio sessions
 """
@@ -24,9 +27,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.security import check_user_access, require_api_key
 from app.db.session import get_session
-from app.models.db import ListenEvent, Playlist, TrackFeatures, User
+from app.models.db import ListenEvent, Playlist, TrackFeatures, User  # noqa: F401 (Playlist used in validation)
 from app.models.schemas import (
-    RadioFeedbackRequest,
     RadioNextResponse,
     RadioSessionResponse,
     RadioStartRequest,
@@ -239,45 +241,6 @@ async def radio_next(
         total_served=s.total_served,
         tracks=[RadioTrackItem(**t) for t in tracks],
     )
-
-
-@router.post(
-    "/radio/{session_id}/feedback",
-    summary="Send feedback for a radio track",
-    description="""
-Report in-session feedback (skip, like, dislike) for a track
-in an active radio session. This immediately influences which
-tracks appear in the next batch.
-
-- **skip**: Track was skipped — the radio will drift away from similar tracks
-- **like**: Track was enjoyed — the radio will favor similar tracks
-- **dislike**: Strong negative — track won't appear again and radio drifts away
-""",
-)
-async def radio_feedback(
-    session_id: str,
-    body: RadioFeedbackRequest,
-    _key: str = Depends(require_api_key),
-):
-    s = radio_service.get_session(session_id)
-    if s is None:
-        raise HTTPException(status_code=404, detail="Radio session not found or expired.")
-
-    check_user_access(_key, s.user_id)
-
-    ok = radio_service.record_feedback(session_id, body.track_id, body.action)
-    if not ok:
-        raise HTTPException(status_code=404, detail="Radio session not found or expired.")
-
-    return {
-        "status": "ok",
-        "session_id": session_id,
-        "action": body.action,
-        "track_id": body.track_id,
-        "tracks_played": len(s.played),
-        "tracks_skipped": len(s.skipped),
-        "tracks_liked": len(s.liked),
-    }
 
 
 @router.delete(

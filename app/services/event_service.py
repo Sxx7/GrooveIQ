@@ -122,6 +122,17 @@ async def process_event(
     session.add(row)
     # Commit is handled by the get_session dependency on request close.
 
+    # Fire radio session feedback hook (best-effort).
+    # Updates the drift embedding in real-time when events arrive for active radio sessions.
+    if event.context_type == "radio" and event.context_id:
+        _radio_event_types = {"skip", "like", "dislike"}
+        if event.event_type in _radio_event_types:
+            try:
+                from app.services.radio import record_feedback
+                record_feedback(event.context_id, event.track_id, event.event_type)
+            except Exception:
+                logger.debug("Radio feedback hook error", exc_info=True)
+
     # Fire Last.fm scrobble/now-playing hook (best-effort, non-blocking).
     # Enqueue is a DB insert — the actual HTTP call happens in the background worker.
     if settings.lastfm_user_enabled and settings.LASTFM_SCROBBLE_ENABLED:
