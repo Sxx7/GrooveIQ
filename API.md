@@ -13,14 +13,15 @@
 3. [Users](#users)
 4. [Tracks & Library](#tracks--library)
 5. [Recommendations](#recommendations)
-6. [Playlists](#playlists)
-7. [Discovery](#discovery)
-8. [Last.fm](#lastfm)
-9. [Charts](#charts)
-10. [Downloads](#downloads)
-11. [Artists](#artists)
-12. [Pipeline & Stats](#pipeline--stats)
-13. [Configuration Reference](#configuration-reference)
+6. [Integrations](#integrations)
+7. [Playlists](#playlists)
+8. [Discovery](#discovery)
+9. [Last.fm](#lastfm)
+10. [Charts](#charts)
+11. [Downloads](#downloads)
+12. [Artists](#artists)
+13. [Pipeline & Stats](#pipeline--stats)
+14. [Configuration Reference](#configuration-reference)
 
 ---
 
@@ -512,9 +513,106 @@ Past recommendations with impression-to-stream attribution.
 
 ---
 
+### `GET /v1/recommend/{user_id}/artists` — Recommended artists
+
+Returns a ranked list of recommended artists derived from listening behavior, Last.fm similarity, and Last.fm top artists.
+
+| Parameter | Default |
+|-----------|---------|
+| `limit` | 20 (1-100) |
+
+**Response:**
+
+```json
+{
+  "user_id": "simon",
+  "total": 20,
+  "artists": [
+    {
+      "name": "Radiohead",
+      "score": 0.8523,
+      "source": "listening",
+      "plays": 142,
+      "likes": 8,
+      "track_count": 45,
+      "avg_satisfaction": 0.7812,
+      "last_played": 1712000000,
+      "in_library": true,
+      "audio": {
+        "energy": 0.612,
+        "danceability": 0.423,
+        "valence": 0.385,
+        "bpm": 128.3
+      }
+    },
+    {
+      "name": "Portishead",
+      "score": 0.5100,
+      "source": "lastfm_similar",
+      "similar_to": ["Radiohead", "Massive Attack"],
+      "mbid": "8f6bd1e4-...",
+      "in_library": false,
+      "plays": 0,
+      "likes": 0,
+      "track_count": 0
+    }
+  ]
+}
+```
+
+**Sources:**
+- `listening` — artists from the user's played/liked tracks, ranked by satisfaction + recency
+- `lastfm_similar` — similar artists to the user's top artists via Last.fm API
+- `lastfm_top` — user's Last.fm top artists (if connected)
+
+---
+
 ### `GET /v1/recommend/stats/model` — Model stats
 
 Ranker training info, offline evaluation metrics (NDCG), impression-to-stream rates.
+
+---
+
+## Integrations
+
+### `GET /v1/integrations/status` — Integration connectivity status
+
+Probes all 5 external services in parallel (5s timeout each). Returns connected/error/not-configured status.
+
+**Response:**
+
+```json
+{
+  "checked_at": 1712000000,
+  "integrations": {
+    "spotdl_api": {
+      "configured": true,
+      "url": "http://spotdl-api:8181",
+      "connected": true,
+      "version": "1.0.0",
+      "details": { "output_format": "opus", "active_tasks": 0 }
+    },
+    "lidarr": {
+      "configured": true,
+      "url": "http://lidarr:8686",
+      "connected": true,
+      "version": "2.8.5.4875"
+    },
+    "acousticbrainz_lookup": { "configured": false },
+    "lastfm": {
+      "configured": true,
+      "connected": true,
+      "scrobbling": true
+    },
+    "media_server": {
+      "configured": true,
+      "type": "navidrome",
+      "url": "http://navidrome:4533",
+      "connected": true
+    }
+  }
+}
+```
 
 ---
 

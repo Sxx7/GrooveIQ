@@ -374,6 +374,202 @@ async def get_recommendation_history(
 
 
 @router.get(
+    "/recommend/{user_id}/artists",
+    summary="Get recommended artists for a user",
+    description="""
+Returns a ranked list of recommended artists for the given user,
+derived from listening behavior, taste profile, and Last.fm similarity.
+
+Sources:
+- **listening**: Artists from the user's most-played/liked tracks, ranked by
+  aggregate satisfaction and recency.
+- **lastfm_similar**: Similar artists to the user's top artists via Last.fm API.
+- **lastfm_top**: User's Last.fm top artists (if connected).
+
+Each artist includes aggregate audio stats from their library tracks and
+the user's listening history with that artist (if any).
+""",
+)
+async def get_recommended_artists(
+    user_id: str,
+    limit: int = Query(20, ge=1, le=100),
+    session: AsyncSession = Depends(get_session),
+    _key: str = Depends(require_api_key),
+):
+    check_user_access(_key, user_id)
+
+    # --- Verify user & load taste profile ---
+    user_row = (await session.execute(
+        select(User).where(User.user_id == user_id)
+    )).scalar_one_or_none()
+    if user_row is None:
+        raise HTTPException(status_code=404, detail="User not found.")
+
+    taste = user_row.taste_profile or {}
+    top_track_ids = [t["track_id"] for t in taste.get("top_tracks", [])]
+
+    # --- Source 1: Local listening (artist aggregation from interactions) ---
+    from sqlalchemy import func as sa_func, desc
+
+    # Join interactions with features to get artist + satisfaction data
+    q = (
+        select(
+            TrackFeatures.artist,
+            sa_func.sum(TrackInteraction.play_count).label("plays"),
+            sa_func.sum(TrackInteraction.like_count).label("likes"),
+            sa_func.avg(TrackInteraction.satisfaction_score).label("avg_satisfaction"),
+            sa_func.count(TrackInteraction.track_id).label("track_count"),
+            sa_func.max(TrackInteraction.last_played_at).label("last_played"),
+            sa_func.avg(TrackFeatures.energy).label("avg_energy"),
+            sa_func.avg(TrackFeatures.danceability).label("avg_danceability"),
+            sa_func.avg(TrackFeatures.valence).label("avg_valence"),
+            sa_func.avg(TrackFeatures.bpm).label("avg_bpm"),
+        )
+        .join(TrackFeatures, TrackFeatures.track_id == TrackInteraction.track_id)
+        .where(
+            TrackInteraction.user_id == user_id,
+            TrackFeatures.artist.isnot(None),
+            TrackFeatures.artist != "",
+        )
+        .group_by(TrackFeatures.artist)
+        .having(sa_func.sum(TrackInteraction.play_count) > 0)
+        .order_by(desc("avg_satisfaction"))
+        .limit(200)
+    )
+    rows = (await session.execute(q)).all()
+
+    # Build artist dict: normalized_name -> data
+    import time as _time
+    now = _time.time()
+    artist_map = {}
+    for r in rows:
+        name = r.artist.strip()
+        if not name:
+            continue
+        norm = name.lower()
+        # Recency factor: more recent = higher boost
+        recency = 1.0
+        if r.last_played:
+            days_ago = (now - r.last_played) / 86400
+            import math
+            recency = math.exp(-days_ago / 60)  # 60-day half-life
+
+        score = (r.avg_satisfaction or 0) * 0.5 + min((r.plays or 0) / 50, 1.0) * 0.3 + recency * 0.2
+        artist_map[norm] = {
+            "name": name,
+            "score": round(score, 4),
+            "source": "listening",
+            "plays": r.plays or 0,
+            "likes": r.likes or 0,
+            "track_count": r.track_count or 0,
+            "avg_satisfaction": round(r.avg_satisfaction or 0, 4),
+            "last_played": r.last_played,
+            "audio": {
+                "energy": round(r.avg_energy, 3) if r.avg_energy is not None else None,
+                "danceability": round(r.avg_danceability, 3) if r.avg_danceability is not None else None,
+                "valence": round(r.avg_valence, 3) if r.avg_valence is not None else None,
+                "bpm": round(r.avg_bpm, 1) if r.avg_bpm is not None else None,
+            },
+            "in_library": True,
+        }
+
+    # --- Source 2: Last.fm similar artists ---
+    similar_artists = []
+    if settings.LASTFM_API_KEY:
+        from app.services.discovery import LastFmClient as DiscoveryLastFm
+
+        # Pick top seed artists (top by score from local listening)
+        seed_artists = sorted(artist_map.values(), key=lambda a: a["score"], reverse=True)[:8]
+        if seed_artists:
+            lfm = DiscoveryLastFm(settings.LASTFM_API_KEY)
+            try:
+                import asyncio
+                tasks = [lfm.get_similar_artists(a["name"], limit=15) for a in seed_artists]
+                results = await asyncio.gather(*tasks, return_exceptions=True)
+                for seed_idx, result in enumerate(results):
+                    if isinstance(result, Exception):
+                        continue
+                    seed_name = seed_artists[seed_idx]["name"]
+                    for sim in result:
+                        sim_name = sim.get("name", "").strip()
+                        if not sim_name:
+                            continue
+                        sim_norm = sim_name.lower()
+                        match_score = float(sim.get("match", 0))
+                        # If already known from listening, boost; don't replace
+                        if sim_norm in artist_map:
+                            existing = artist_map[sim_norm]
+                            existing["score"] = round(existing["score"] + match_score * 0.15, 4)
+                            if "similar_to" not in existing:
+                                existing["similar_to"] = []
+                            existing["similar_to"].append(seed_name)
+                            continue
+                        # New artist discovery
+                        if sim_norm not in artist_map:
+                            artist_map[sim_norm] = {
+                                "name": sim_name,
+                                "score": round(match_score * 0.6, 4),
+                                "source": "lastfm_similar",
+                                "similar_to": [seed_name],
+                                "mbid": sim.get("mbid"),
+                                "in_library": False,
+                                "plays": 0,
+                                "likes": 0,
+                                "track_count": 0,
+                            }
+            finally:
+                await lfm.close()
+
+    # --- Source 3: Last.fm top artists (from cached profile) ---
+    lastfm_top = taste.get("lastfm_top_artists", [])
+    for entry in lastfm_top:
+        name = entry.get("name", "").strip()
+        if not name:
+            continue
+        norm = name.lower()
+        if norm in artist_map:
+            # Already present — tag it
+            if artist_map[norm].get("source") != "listening":
+                artist_map[norm]["lastfm_playcount"] = entry.get("playcount", 0)
+            continue
+        artist_map[norm] = {
+            "name": name,
+            "score": round(min((entry.get("playcount", 0) or 0) / 500, 1.0) * 0.4, 4),
+            "source": "lastfm_top",
+            "lastfm_playcount": entry.get("playcount", 0),
+            "in_library": False,
+            "plays": 0,
+            "likes": 0,
+            "track_count": 0,
+        }
+
+    # --- Check library presence for non-listening artists ---
+    non_library = [n for n, a in artist_map.items() if not a.get("in_library")]
+    if non_library:
+        # Batch check which of these artists have tracks in the library
+        lib_q = (
+            select(TrackFeatures.artist, sa_func.count().label("cnt"))
+            .where(TrackFeatures.artist.isnot(None))
+            .group_by(TrackFeatures.artist)
+        )
+        lib_rows = (await session.execute(lib_q)).all()
+        lib_norm = {r.artist.strip().lower(): r.cnt for r in lib_rows if r.artist}
+        for norm, a in artist_map.items():
+            if not a.get("in_library") and norm in lib_norm:
+                a["in_library"] = True
+                a["track_count"] = lib_norm[norm]
+
+    # --- Rank and return ---
+    ranked = sorted(artist_map.values(), key=lambda a: a["score"], reverse=True)[:limit]
+
+    return {
+        "user_id": user_id,
+        "total": len(ranked),
+        "artists": ranked,
+    }
+
+
+@router.get(
     "/stats/model",
     summary="Get recommendation model stats and evaluation metrics",
     description="Returns ranker training info, latest offline evaluation metrics, and impression-to-stream stats.",
