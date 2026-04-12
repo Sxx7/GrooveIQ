@@ -130,6 +130,9 @@ trivy-image:
   script:
     - trivy image --exit-code 1 --severity CRITICAL,HIGH --ignore-unfixed "$IMAGE_TAG"
   allow_failure: true
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+    - if: $CI_COMMIT_TAG
   artifacts:
     when: always
     paths:
