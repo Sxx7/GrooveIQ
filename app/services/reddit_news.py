@@ -185,13 +185,26 @@ def _rebuild_artist_index() -> None:
 # ---------------------------------------------------------------------------
 
 _USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+_BROWSER_HEADERS = {
+    "User-Agent": _USER_AGENT,
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.5",
+    "Accept-Encoding": "gzip, deflate, br",
+    "DNT": "1",
+    "Connection": "keep-alive",
+    "Upgrade-Insecure-Requests": "1",
+    "Sec-Fetch-Dest": "document",
+    "Sec-Fetch-Mode": "navigate",
+    "Sec-Fetch-Site": "none",
+    "Sec-Fetch-User": "?1",
+}
 _FETCH_TIMEOUT = 15.0
 _THROTTLE_SECONDS = 2.0
 
 
 async def _fetch_subreddit(client: httpx.AsyncClient, subreddit: str) -> List[RedditPost]:
     """Fetch posts from a single subreddit via Reddit's public JSON API."""
-    url = f"https://www.reddit.com/r/{subreddit}/.json"
+    url = f"https://old.reddit.com/r/{subreddit}/.json"
     params = {"limit": settings.NEWS_MAX_POSTS_PER_SUB, "raw_json": 1}
 
     try:
@@ -285,7 +298,7 @@ async def refresh_cache() -> Dict[str, Any]:
 
     async with httpx.AsyncClient(
         timeout=_FETCH_TIMEOUT,
-        headers={"User-Agent": _USER_AGENT},
+        headers=_BROWSER_HEADERS,
         follow_redirects=True,
     ) as client:
         for sub in sorted(subs_to_fetch):
