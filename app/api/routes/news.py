@@ -15,6 +15,26 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
+@router.post(
+    "/news/refresh",
+    summary="Refresh news feed cache",
+    description="Manually trigger a refresh of the Reddit news cache.",
+)
+async def refresh_news(
+    _key: str = Depends(require_api_key),
+):
+    if not settings.news_enabled:
+        raise HTTPException(
+            status_code=503,
+            detail="News feed is not enabled. Set NEWS_ENABLED=true in your .env file.",
+        )
+
+    from app.services.reddit_news import refresh_cache
+
+    result = await refresh_cache()
+    return result
+
+
 @router.get(
     "/news/{user_id}",
     summary="Personalized music news feed",

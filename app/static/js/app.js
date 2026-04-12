@@ -1445,25 +1445,35 @@ function loadNews() {
   });
 }
 
+function refreshNewsFeed() {
+  apiPost('/v1/news/refresh', {}).then(function(result) {
+    loadNews();
+  }).catch(function(e) {
+    alert('Failed to refresh news: ' + e.message);
+  });
+}
+
 function renderNews(data) {
   var h = '<div class="page-header"><h1 class="page-title">Music News</h1>';
   h += '<div class="page-actions">';
   // User selector
   if (cachedUsers && cachedUsers.length > 1) {
-    h += '<select class="input input-sm" onchange="newsUser=this.value;loadNews()" style="width:auto;margin-right:8px">';
+    h += '<select class="form-select" onchange="newsUser=this.value;loadNews()" style="width:auto;height:32px;font-size:0.75rem;padding:4px 10px;margin-right:8px">';
     for (var i = 0; i < cachedUsers.length; i++) {
       h += '<option value="' + esc(cachedUsers[i].user_id) + '"' + (cachedUsers[i].user_id === newsUser ? ' selected' : '') + '>' + esc(cachedUsers[i].user_id) + '</option>';
     }
     h += '</select>';
   }
   // Tag filter
-  h += '<select class="input input-sm" onchange="newsTagFilter=this.value;loadNews()" style="width:auto">';
+  h += '<select class="form-select" onchange="newsTagFilter=this.value;loadNews()" style="width:auto;height:32px;font-size:0.75rem;padding:4px 10px">';
   h += '<option value="">All Posts</option>';
   var tags = ['FRESH', 'NEWS', 'DISCUSSION'];
   for (var t = 0; t < tags.length; t++) {
     h += '<option value="' + tags[t] + '"' + (newsTagFilter === tags[t] ? ' selected' : '') + '>' + tags[t] + '</option>';
   }
   h += '</select>';
+  // Refresh button
+  h += '<button class="btn btn-primary btn-sm" onclick="refreshNewsFeed()" style="margin-left:8px">Refresh Feed</button>';
   h += '</div></div>';
 
   // Cache status
