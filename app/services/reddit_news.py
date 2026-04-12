@@ -184,7 +184,7 @@ def _rebuild_artist_index() -> None:
 # Reddit fetcher
 # ---------------------------------------------------------------------------
 
-_USER_AGENT = "GrooveIQ/1.0 (self-hosted music recommendation engine)"
+_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
 _FETCH_TIMEOUT = 15.0
 _THROTTLE_SECONDS = 2.0
 
