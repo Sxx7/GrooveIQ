@@ -11,7 +11,6 @@ import base64
 import time
 
 import numpy as np
-import pytest
 import pytest_asyncio
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
@@ -130,7 +129,7 @@ class TestContentCandidates:
         """Content candidates from a seed track via FAISS."""
         from app.services.candidate_gen import get_content_candidates
 
-        track_ids = await _setup_library(20)
+        await _setup_library(20)
         results = await get_content_candidates("t0", k=5)
         assert len(results) == 5
         for r in results:

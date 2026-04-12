@@ -14,7 +14,24 @@ from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import FileResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 
-from app.api.routes import algorithm_config, artists, charts, discovery, downloads, events, health, integrations, lastfm, news, playlists, radio, recommend, stats, tracks, users
+from app.api.routes import (
+    algorithm_config,
+    artists,
+    charts,
+    discovery,
+    downloads,
+    events,
+    health,
+    integrations,
+    lastfm,
+    news,
+    playlists,
+    radio,
+    recommend,
+    stats,
+    tracks,
+    users,
+)
 from app.core.config import settings
 from app.core.logging import setup_logging
 from app.db.session import init_db

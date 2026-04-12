@@ -21,13 +21,10 @@ from __future__ import annotations
 import logging
 import math
 import threading
-import time
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any
 
 import numpy as np
-
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.session import AsyncSessionLocal
 from app.models.db import ListenEvent, ListenSession
@@ -36,10 +33,10 @@ logger = logging.getLogger(__name__)
 
 # Singleton state.
 _lock = threading.Lock()
-_model: Optional[object] = None  # SASRecModel instance
-_vocab: Optional[Dict[str, int]] = None  # track_id -> token index
-_inv_vocab: Optional[Dict[int, str]] = None  # token index -> track_id
-_user_sequences: Dict[str, List[str]] = {}  # cached recent sequences per user
+_model: object | None = None  # SASRecModel instance
+_vocab: dict[str, int] | None = None  # track_id -> token index
+_inv_vocab: dict[int, str] | None = None  # token index -> track_id
+_user_sequences: dict[str, list[str]] = {}  # cached recent sequences per user
 
 # Config.
 _EMBED_DIM = 64
@@ -77,7 +74,7 @@ class SASRecModel:
         self.position_embeddings = np.random.randn(max_seq_len, embed_dim).astype(np.float32) * 0.02
 
         # Per-layer weights: Q, K, V projections + FFN.
-        self.layers: List[Dict[str, np.ndarray]] = []
+        self.layers: list[dict[str, np.ndarray]] = []
         for _ in range(num_layers):
             layer = {
                 "Wq": np.random.randn(embed_dim, embed_dim).astype(np.float32) * scale,
@@ -174,7 +171,7 @@ class SASRecModel:
         scores = last_hidden @ self.item_embeddings.T
         return scores
 
-    def _collect_params(self) -> List[np.ndarray]:
+    def _collect_params(self) -> list[np.ndarray]:
         """Collect all trainable parameters as a flat list."""
         params = [self.item_embeddings, self.position_embeddings]
         for layer in self.layers:
@@ -182,7 +179,7 @@ class SASRecModel:
         params.extend([self.final_ln_gamma, self.final_ln_beta])
         return params
 
-    def train_epoch(self, sequences: List[np.ndarray], lr: float) -> float:
+    def train_epoch(self, sequences: list[np.ndarray], lr: float) -> float:
         """
         One training epoch with simple SGD + cross-entropy loss.
 
@@ -240,7 +237,7 @@ class SASRecModel:
         return total_loss / max(n_samples, 1)
 
 
-async def _load_sequences() -> Tuple[List[List[str]], Dict[str, List[str]]]:
+async def _load_sequences() -> tuple[list[list[str]], dict[str, list[str]]]:
     """
     Load track sequences from sessions for training.
 
@@ -261,8 +258,8 @@ async def _load_sequences() -> Tuple[List[List[str]], Dict[str, List[str]]]:
         if not sessions:
             return [], {}
 
-        sequences: List[List[str]] = []
-        user_sessions: Dict[str, List[Tuple[int, List[str]]]] = {}
+        sequences: list[list[str]] = []
+        user_sessions: dict[str, list[tuple[int, list[str]]]] = {}
 
         for sess_key, user_id, eid_min, eid_max, started_at in sessions:
             ev_result = await session.execute(
@@ -278,7 +275,7 @@ async def _load_sequences() -> Tuple[List[List[str]], Dict[str, List[str]]]:
             track_ids = [row[0] for row in ev_result.all()]
 
             # Deduplicate consecutive.
-            deduped: List[str] = []
+            deduped: list[str] = []
             for tid in track_ids:
                 if not deduped or deduped[-1] != tid:
                     deduped.append(tid)
@@ -288,10 +285,10 @@ async def _load_sequences() -> Tuple[List[List[str]], Dict[str, List[str]]]:
                 user_sessions.setdefault(user_id, []).append((started_at, deduped))
 
         # Build user_recent: last N tracks from most recent sessions.
-        user_recent: Dict[str, List[str]] = {}
+        user_recent: dict[str, list[str]] = {}
         for uid, sess_list in user_sessions.items():
             sess_list.sort(key=lambda x: x[0])
-            recent: List[str] = []
+            recent: list[str] = []
             for _, tracks in sess_list[-5:]:  # last 5 sessions
                 recent.extend(tracks)
             user_recent[uid] = recent[-_MAX_SEQ_LEN:]
@@ -300,11 +297,11 @@ async def _load_sequences() -> Tuple[List[List[str]], Dict[str, List[str]]]:
 
 
 def _train_model_sync(
-    sequences: List[List[str]],
-) -> Tuple[Optional[SASRecModel], Dict[str, int], Dict[int, str]]:
+    sequences: list[list[str]],
+) -> tuple[SASRecModel | None, dict[str, int], dict[int, str]]:
     """CPU-bound SASRec training. Runs in a thread executor."""
     # Build vocabulary.
-    track_counts: Dict[str, int] = {}
+    track_counts: dict[str, int] = {}
     for seq in sequences:
         for tid in seq:
             track_counts[tid] = track_counts.get(tid, 0) + 1
@@ -322,7 +319,7 @@ def _train_model_sync(
     vocab_size = len(vocab)
 
     # Convert sequences to token arrays.
-    token_sequences: List[np.ndarray] = []
+    token_sequences: list[np.ndarray] = []
     for seq in sequences:
         tokens = [vocab[tid] for tid in seq if tid in vocab]
         if len(tokens) >= 2:
@@ -349,7 +346,7 @@ def _train_model_sync(
     return model, vocab, inv_vocab
 
 
-async def train() -> Dict[str, Any]:
+async def train() -> dict[str, Any]:
     """
     Train SASRec model from listening sessions.
 
@@ -396,8 +393,8 @@ async def train() -> Dict[str, Any]:
 
 def predict_next_scores(
     user_id: str,
-    candidate_ids: Set[str],
-) -> Dict[str, float]:
+    candidate_ids: set[str],
+) -> dict[str, float]:
     """
     Get SASRec next-track probability scores for candidate tracks.
 
@@ -409,7 +406,6 @@ def predict_next_scores(
     with _lock:
         model = _model
         vocab = _vocab
-        inv_vocab = _inv_vocab
         recent = _user_sequences.get(user_id)
 
     if model is None or vocab is None or recent is None or len(recent) < 2:
@@ -446,8 +442,8 @@ def predict_next_scores(
 def get_top_predictions(
     user_id: str,
     k: int = 50,
-    exclude_ids: Optional[Set[str]] = None,
-) -> List[Tuple[str, float]]:
+    exclude_ids: set[str] | None = None,
+) -> list[tuple[str, float]]:
     """
     Get top-k next-track predictions for a user.
 
@@ -474,7 +470,7 @@ def get_top_predictions(
     # Get top-k by raw score.
     top_indices = np.argsort(raw_scores)[::-1]
 
-    results: List[Tuple[str, float]] = []
+    results: list[tuple[str, float]] = []
     recent_set = set(recent)
     for idx in top_indices:
         tid = inv_vocab.get(idx)

@@ -12,10 +12,9 @@ Design:
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from pydantic import BaseModel, Field
-
 
 # ---------------------------------------------------------------------------
 # Per-group schemas
@@ -162,23 +161,23 @@ class AlgorithmConfigResponse(BaseModel):
     """Response when reading a config."""
     id: int
     version: int
-    name: Optional[str] = None
+    name: str | None = None
     config: AlgorithmConfigData
     is_active: bool
     created_at: int
-    created_by: Optional[str] = None
+    created_by: str | None = None
 
 
 class AlgorithmConfigUpdate(BaseModel):
     """Request body for updating config. Partial updates supported."""
-    name: Optional[str] = None
+    name: str | None = None
     config: AlgorithmConfigData
 
 
 class AlgorithmConfigImport(BaseModel):
     """Request body for importing a config (e.g. shared by another user)."""
-    name: Optional[str] = None
-    config: Dict[str, Any]
+    name: str | None = None
+    config: dict[str, Any]
 
 
 # ---------------------------------------------------------------------------
@@ -186,7 +185,7 @@ class AlgorithmConfigImport(BaseModel):
 # ---------------------------------------------------------------------------
 
 # Groups with metadata for the future GUI.
-CONFIG_GROUPS: List[Dict[str, Any]] = [
+CONFIG_GROUPS: list[dict[str, Any]] = [
     {
         "key": "track_scoring",
         "label": "Track Scoring",
@@ -237,6 +236,6 @@ def get_defaults() -> AlgorithmConfigData:
     return AlgorithmConfigData()
 
 
-def get_defaults_dict() -> Dict[str, Any]:
+def get_defaults_dict() -> dict[str, Any]:
     """Return the default configuration as a plain dict."""
     return get_defaults().model_dump()

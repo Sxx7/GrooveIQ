@@ -8,10 +8,9 @@ the fetch_tracks function.
 from __future__ import annotations
 
 import time
-from typing import AsyncGenerator
+from collections.abc import AsyncGenerator
 from unittest.mock import AsyncMock, patch
 
-import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
@@ -22,7 +21,6 @@ from app.main import app
 from app.models.db import Base, ListenEvent, TrackFeatures, TrackInteraction, User
 from app.services.media_server import (
     MediaServerTrack,
-    SyncResult,
     _normalise_path,
     sync_track_ids,
 )

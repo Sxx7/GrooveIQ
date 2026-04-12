@@ -15,21 +15,19 @@ import os
 import threading
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
-
-import numpy as np
+from typing import Any
 
 from app.db.session import AsyncSessionLocal
-from app.services.feature_eng import FEATURE_COLUMNS, NUM_FEATURES, build_features, build_training_data
 from app.services.algorithm_config import get_config
+from app.services.feature_eng import FEATURE_COLUMNS, NUM_FEATURES, build_features, build_training_data
 
 logger = logging.getLogger(__name__)
 
 # Singleton state.
 _lock = threading.Lock()
-_model: Optional[object] = None  # lightgbm.LGBMRegressor
-_model_version: Optional[str] = None
-_model_stats: Dict[str, Any] = {}
+_model: object | None = None  # lightgbm.LGBMRegressor
+_model_version: str | None = None
+_model_stats: dict[str, Any] = {}
 
 # Config.
 _MODEL_DIR = os.environ.get("GROOVEIQ_MODEL_DIR", "/data/models")
@@ -68,7 +66,7 @@ def _create_model():
         ), "sklearn-gbr"
 
 
-def _save_model(model, engine: str, version: str) -> Optional[str]:
+def _save_model(model, engine: str, version: str) -> str | None:
     """Persist model to disk. Returns saved path or None."""
     try:
         model_dir = Path(_MODEL_DIR)
@@ -97,7 +95,7 @@ def _train_ranker_sync(features, labels, sample_weights=None) -> tuple:
     return model, engine
 
 
-async def train_model() -> Dict[str, Any]:
+async def train_model() -> dict[str, Any]:
     """
     Train a ranking model on all track_interactions.
 
@@ -160,15 +158,15 @@ async def train_model() -> Dict[str, Any]:
 
 async def score_candidates(
     user_id: str,
-    candidate_track_ids: List[str],
+    candidate_track_ids: list[str],
     session,
-    hour_of_day: Optional[int] = None,
-    day_of_week: Optional[int] = None,
-    device_type: Optional[str] = None,
-    output_type: Optional[str] = None,
-    context_type: Optional[str] = None,
-    location_label: Optional[str] = None,
-) -> List[Tuple[str, float]]:
+    hour_of_day: int | None = None,
+    day_of_week: int | None = None,
+    device_type: str | None = None,
+    output_type: str | None = None,
+    context_type: str | None = None,
+    location_label: str | None = None,
+) -> list[tuple[str, float]]:
     """
     Score candidate tracks using the trained model.
 
@@ -205,12 +203,12 @@ async def score_candidates(
     return scored
 
 
-def get_model_version() -> Optional[str]:
+def get_model_version() -> str | None:
     with _lock:
         return _model_version
 
 
-def get_model_stats() -> Dict[str, Any]:
+def get_model_stats() -> dict[str, Any]:
     with _lock:
         if not _model_stats:
             return {"trained": False}

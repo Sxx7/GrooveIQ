@@ -23,10 +23,9 @@ from __future__ import annotations
 import logging
 import time
 from collections import Counter
-from typing import List, Optional, Sequence
+from collections.abc import Sequence
 
 from sqlalchemy import func, select
-from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
@@ -147,7 +146,7 @@ async def _process_events(
     return created, updated
 
 
-def _split_into_sessions(events: List) -> List[List]:
+def _split_into_sessions(events: list) -> list[list]:
     """
     Split a user's ordered events into session groups.
 
@@ -187,7 +186,7 @@ def _split_into_sessions(events: List) -> List[List]:
     return sessions
 
 
-def _split_by_gap(events: List, gap_seconds: int) -> List[List]:
+def _split_by_gap(events: list, gap_seconds: int) -> list[list]:
     """Split ordered events into groups whenever the gap exceeds threshold."""
     if not events:
         return []
@@ -203,7 +202,7 @@ def _split_by_gap(events: List, gap_seconds: int) -> List[List]:
     return groups
 
 
-def _build_session_row(user_id: str, events: List) -> Optional[dict]:
+def _build_session_row(user_id: str, events: list) -> dict | None:
     """
     Compute session aggregates from a list of events.
 
@@ -296,7 +295,7 @@ def _build_session_row(user_id: str, events: List) -> Optional[dict]:
     }
 
 
-def _most_common(values) -> Optional[str]:
+def _most_common(values) -> str | None:
     """Return the most common value, or None if empty."""
     counts = Counter(values)
     if not counts:

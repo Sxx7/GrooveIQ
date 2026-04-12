@@ -64,8 +64,8 @@ from __future__ import annotations
 import logging
 import math
 import time
-from collections import Counter, defaultdict
-from typing import Any, Dict, List, Optional
+from collections import defaultdict
+from typing import Any
 
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -142,7 +142,7 @@ async def run_taste_profile_builder() -> dict:
 
 async def _build_profile(
     session: AsyncSession, user_id: str
-) -> Optional[Dict[str, Any]]:
+) -> dict[str, Any] | None:
     """
     Build the full taste profile for one user.
 
@@ -289,8 +289,8 @@ async def _build_profile(
 
 
 async def _fetch_track_features(
-    session: AsyncSession, track_ids: List[str]
-) -> Dict[str, TrackFeatures]:
+    session: AsyncSession, track_ids: list[str]
+) -> dict[str, TrackFeatures]:
     """Fetch TrackFeatures for a list of track_ids."""
     if not track_ids:
         return {}
@@ -300,7 +300,7 @@ async def _fetch_track_features(
     # media-server IDs (stored as external_track_id) resolve correctly.
     from sqlalchemy import or_
 
-    features_map: Dict[str, TrackFeatures] = {}
+    features_map: dict[str, TrackFeatures] = {}
     for i in range(0, len(track_ids), 500):
         batch = track_ids[i : i + 500]
         result = await session.execute(
@@ -319,8 +319,8 @@ async def _fetch_track_features(
 
 def _compute_audio_preferences(
     weighted_interactions: list,
-    features_map: Dict[str, TrackFeatures],
-) -> Optional[Dict[str, Any]]:
+    features_map: dict[str, TrackFeatures],
+) -> dict[str, Any] | None:
     """
     Compute weighted mean and std of audio features.
 
@@ -328,7 +328,7 @@ def _compute_audio_preferences(
     or with null values for a feature are excluded from that feature's stats.
     """
     # Accumulate weighted values per feature.
-    feature_values: Dict[str, List[tuple]] = {f: [] for f in _AUDIO_FEATURES}
+    feature_values: dict[str, list[tuple]] = {f: [] for f in _AUDIO_FEATURES}
 
     for inter, recency_weight in weighted_interactions:
         tf = features_map.get(inter.track_id)
@@ -370,9 +370,9 @@ def _compute_audio_preferences(
 
 def _compute_timescale_audio_preferences(
     interactions: list,
-    features_map: Dict[str, TrackFeatures],
+    features_map: dict[str, TrackFeatures],
     now: int,
-) -> Optional[Dict[str, Any]]:
+) -> dict[str, Any] | None:
     """
     Compute audio preference means at three timescales:
       - short (7 days)  — current mood/phase
@@ -388,7 +388,7 @@ def _compute_timescale_audio_preferences(
         "medium": settings.TASTE_PROFILE_DECAY_DAYS * 86_400,
         "long": tp_cfg.timescale_long_days * 86_400,
     }
-    result: Dict[str, Dict[str, float]] = {}
+    result: dict[str, dict[str, float]] = {}
 
     for scale_name, decay_seconds in timescales.items():
         weighted = []
@@ -399,7 +399,7 @@ def _compute_timescale_audio_preferences(
             weighted.append((inter, weight))
 
         # Compute weighted means for key audio features.
-        scale_prefs: Dict[str, float] = {}
+        scale_prefs: dict[str, float] = {}
         for feat in _AUDIO_FEATURES:
             total_w = 0.0
             total_v = 0.0
@@ -425,12 +425,12 @@ def _compute_timescale_audio_preferences(
 
 def _compute_mood_preferences(
     weighted_interactions: list,
-    features_map: Dict[str, TrackFeatures],
-) -> Optional[Dict[str, float]]:
+    features_map: dict[str, TrackFeatures],
+) -> dict[str, float] | None:
     """
     Aggregate mood tag preferences across tracks, weighted by satisfaction * recency.
     """
-    mood_scores: Dict[str, float] = defaultdict(float)
+    mood_scores: dict[str, float] = defaultdict(float)
     total_weight = 0.0
 
     for inter, recency_weight in weighted_interactions:
@@ -460,10 +460,10 @@ def _compute_mood_preferences(
 
 def _compute_key_preferences(
     weighted_interactions: list,
-    features_map: Dict[str, TrackFeatures],
-) -> Optional[Dict[str, float]]:
+    features_map: dict[str, TrackFeatures],
+) -> dict[str, float] | None:
     """Aggregate key/mode preferences."""
-    key_scores: Dict[str, float] = defaultdict(float)
+    key_scores: dict[str, float] = defaultdict(float)
     total_weight = 0.0
 
     for inter, recency_weight in weighted_interactions:
@@ -549,7 +549,7 @@ async def _compute_popularity_preference(
 
 async def _compute_session_stats(
     session: AsyncSession, user_id: str
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Compute aggregate session statistics for a user."""
     result = await session.execute(
         select(
@@ -574,7 +574,7 @@ async def _compute_session_stats(
 
 async def _compute_time_patterns(
     session: AsyncSession, user_id: str
-) -> Optional[Dict[str, float]]:
+) -> dict[str, float] | None:
     """Fraction of sessions per hour-of-day."""
     result = await session.execute(
         select(
@@ -603,7 +603,7 @@ async def _compute_time_patterns(
 
 async def _compute_device_patterns(
     session: AsyncSession, user_id: str
-) -> Optional[Dict[str, float]]:
+) -> dict[str, float] | None:
     """Fraction of sessions per device type."""
     result = await session.execute(
         select(
@@ -632,7 +632,7 @@ async def _compute_device_patterns(
 
 async def _compute_output_patterns(
     session: AsyncSession, user_id: str
-) -> Optional[Dict[str, float]]:
+) -> dict[str, float] | None:
     """Fraction of events per audio output type (headphones, speaker, etc.)."""
     result = await session.execute(
         select(
@@ -661,7 +661,7 @@ async def _compute_output_patterns(
 
 async def _compute_context_type_patterns(
     session: AsyncSession, user_id: str
-) -> Optional[Dict[str, float]]:
+) -> dict[str, float] | None:
     """Fraction of sessions per listening context type (playlist, album, radio, etc.)."""
     result = await session.execute(
         select(
@@ -690,7 +690,7 @@ async def _compute_context_type_patterns(
 
 async def _compute_location_patterns(
     session: AsyncSession, user_id: str
-) -> Optional[Dict[str, float]]:
+) -> dict[str, float] | None:
     """Fraction of events per location label (home, work, gym, commute, etc.)."""
     result = await session.execute(
         select(
@@ -722,8 +722,8 @@ async def _compute_location_patterns(
 # ---------------------------------------------------------------------------
 
 def _enrich_with_lastfm(
-    profile: Dict[str, Any],
-    lastfm_cache: Optional[Dict[str, Any]],
+    profile: dict[str, Any],
+    lastfm_cache: dict[str, Any] | None,
     interaction_count: int,
 ) -> None:
     """
@@ -786,8 +786,8 @@ def _enrich_with_lastfm(
 # ---------------------------------------------------------------------------
 
 def _enrich_with_onboarding(
-    profile: Dict[str, Any],
-    onboarding: Optional[Dict[str, Any]],
+    profile: dict[str, Any],
+    onboarding: dict[str, Any] | None,
     interaction_count: int,
 ) -> None:
     """
@@ -853,8 +853,8 @@ def _enrich_with_onboarding(
 
 async def build_seed_profile(
     session: AsyncSession,
-    user: "User",
-) -> Optional[Dict[str, Any]]:
+    user: User,
+) -> dict[str, Any] | None:
     """
     Build a minimal taste profile for a user with zero local interactions,
     using Last.fm cache and/or onboarding preferences.
@@ -871,7 +871,7 @@ async def build_seed_profile(
         return None
 
     now = int(time.time())
-    profile: Dict[str, Any] = {
+    profile: dict[str, Any] = {
         "top_tracks": [],
         "behaviour": {
             "avg_session_tracks": None,

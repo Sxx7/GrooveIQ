@@ -15,10 +15,9 @@ transparently.
 from __future__ import annotations
 
 import logging
-import time
-from typing import Any, Dict, List, Optional
-
 import re
+import time
+from typing import Any
 
 import httpx
 
@@ -64,7 +63,7 @@ class SpotdlClient:
 
     # -- Search -------------------------------------------------------------
 
-    async def search(self, query: str, limit: int = 10) -> List[Dict[str, Any]]:
+    async def search(self, query: str, limit: int = 10) -> list[dict[str, Any]]:
         """Search spotdl-api for tracks matching a query string.
 
         Returns a list of track dicts shaped like Spotify search results
@@ -111,7 +110,7 @@ class SpotdlClient:
         self,
         artist: str,
         title: str,
-    ) -> Optional[str]:
+    ) -> str | None:
         """Look up an album cover URL for a track via Spotify (through spotdl-api)."""
         from app.services.spotizerr import _pick_best_match, _pick_image
 
@@ -125,7 +124,7 @@ class SpotdlClient:
         images = album.get("images") or []
         return _pick_image(images)
 
-    async def resolve_artist_image(self, artist: str) -> Optional[str]:
+    async def resolve_artist_image(self, artist: str) -> str | None:
         """Look up an artist image via a track search (spotdl-api has no artist search).
 
         Falls back to album art from the top track result, same as
@@ -143,7 +142,7 @@ class SpotdlClient:
 
     # -- Download -----------------------------------------------------------
 
-    async def download(self, spotify_track_id: str) -> Dict[str, Any]:
+    async def download(self, spotify_track_id: str) -> dict[str, Any]:
         """Trigger download of a track by Spotify ID.
 
         Returns dict with 'task_id' and 'status', shaped identically to
@@ -192,7 +191,7 @@ class SpotdlClient:
 
     # -- Status -------------------------------------------------------------
 
-    async def get_status(self, task_id: str) -> Dict[str, Any]:
+    async def get_status(self, task_id: str) -> dict[str, Any]:
         """Check the status of a download task.
 
         Returns the same shape as SpotizerrClient.get_status():

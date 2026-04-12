@@ -34,11 +34,9 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from typing import Optional, Set
 
 from sqlalchemy import select
 
-from app.core.config import settings
 from app.db.session import AsyncSessionLocal
 from app.models.db import DownloadRequest
 from app.services.spotdl import get_download_client
@@ -81,7 +79,7 @@ _REAPER_MAX_AGE_S = 2 * 3600
 # Active-watcher registry (process-local)
 # ---------------------------------------------------------------------------
 
-_active_watchers: Set[str] = set()
+_active_watchers: set[str] = set()
 _watchers_lock = asyncio.Lock()
 
 
@@ -127,7 +125,7 @@ async def _watch_loop(task_id: str, timeout_s: int) -> None:
             _active_watchers.discard(task_id)
         return
 
-    terminal_status: Optional[str] = None
+    terminal_status: str | None = None
     terminal_error: str = ""
 
     try:

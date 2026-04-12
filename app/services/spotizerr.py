@@ -15,11 +15,10 @@ from __future__ import annotations
 import logging
 import re
 import time
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 import httpx
 
-from app.core.config import settings
 from app.services.spotdl import _validate_id
 
 logger = logging.getLogger(__name__)
@@ -36,7 +35,7 @@ def _normalize(s: str) -> str:
     return " ".join(n.split())
 
 
-def _pick_image(images: List[Dict[str, Any]]) -> Optional[str]:
+def _pick_image(images: list[dict[str, Any]]) -> str | None:
     """Pick the best URL from a Spotify images array.
 
     Prefers 300px width/height, falls back to the first image (usually largest).
@@ -72,7 +71,7 @@ class SpotizerrClient:
         self._base_url = base_url.rstrip("/")
         self._username = username
         self._password = password
-        self._jwt_token: Optional[str] = None
+        self._jwt_token: str | None = None
         self._token_expires: float = 0.0
         self._last_request: float = 0.0
         self._client = httpx.AsyncClient(timeout=30.0, verify=True)
@@ -103,9 +102,9 @@ class SpotizerrClient:
             logger.error("Spotizerr auth failed: %s", exc)
             self._jwt_token = None
 
-    def _headers(self) -> Dict[str, str]:
+    def _headers(self) -> dict[str, str]:
         """Build request headers (with JWT if available)."""
-        h: Dict[str, str] = {"Accept": "application/json"}
+        h: dict[str, str] = {"Accept": "application/json"}
         if self._jwt_token:
             h["Authorization"] = f"Bearer {self._jwt_token}"
         return h
@@ -121,7 +120,7 @@ class SpotizerrClient:
 
     # -- Search -------------------------------------------------------------
 
-    async def search(self, query: str, limit: int = 10) -> List[Dict[str, Any]]:
+    async def search(self, query: str, limit: int = 10) -> list[dict[str, Any]]:
         """Search Spotizerr for tracks matching a query string.
 
         Returns a list of track dicts with keys: id, name, artists, etc.
@@ -147,7 +146,7 @@ class SpotizerrClient:
         self,
         artist: str,
         title: str,
-    ) -> Optional[str]:
+    ) -> str | None:
         """Look up an album cover URL for a track via Spotify (through Spotizerr).
 
         Used as a fallback when Last.fm returns no real image for a chart entry.
@@ -166,7 +165,7 @@ class SpotizerrClient:
         images = album.get("images") or []
         return _pick_image(images)
 
-    async def resolve_artist_image(self, artist: str) -> Optional[str]:
+    async def resolve_artist_image(self, artist: str) -> str | None:
         """Look up a portrait image URL for an artist via Spotify (through Spotizerr).
 
         Strategy:
@@ -221,7 +220,7 @@ class SpotizerrClient:
 
     # -- Download -----------------------------------------------------------
 
-    async def download(self, spotify_track_id: str) -> Dict[str, Any]:
+    async def download(self, spotify_track_id: str) -> dict[str, Any]:
         """Trigger download of a track by Spotify ID.
 
         Returns dict with 'task_id' and 'status'.
@@ -257,7 +256,7 @@ class SpotizerrClient:
         except Exception:
             data = {}
 
-        def _extract_task_id(payload: Dict[str, Any]) -> str:
+        def _extract_task_id(payload: dict[str, Any]) -> str:
             return (
                 payload.get("prg_file")
                 or payload.get("task_id")
@@ -290,7 +289,7 @@ class SpotizerrClient:
 
     # -- Status -------------------------------------------------------------
 
-    async def get_status(self, task_id: str) -> Dict[str, Any]:
+    async def get_status(self, task_id: str) -> dict[str, Any]:
         """Check the status of a download task.
 
         Spotizerr's ``/api/prgs/{task_id}`` endpoint returns:
@@ -365,10 +364,10 @@ class SpotizerrClient:
 # ---------------------------------------------------------------------------
 
 def _pick_best_match(
-    results: List[Dict[str, Any]],
+    results: list[dict[str, Any]],
     target_artist: str,
     target_title: str,
-) -> Optional[Dict[str, Any]]:
+) -> dict[str, Any] | None:
     """Pick the best search result matching artist + title.
 
     Prefers exact normalised match on both artist and title.
@@ -401,7 +400,7 @@ def _pick_best_match(
 async def search_and_download(
     artist: str,
     title: str,
-) -> Optional[Dict[str, Any]]:
+) -> dict[str, Any] | None:
     """Search for a track and trigger download via the configured backend.
 
     Returns dict with task_id, spotify_id, matched artist/title,

@@ -8,18 +8,15 @@ See docs/configuration.md for full reference.
 from __future__ import annotations
 
 import os
-import secrets
-from typing import List, Optional
 from urllib.parse import urlparse
 
 from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-
 _MIN_API_KEY_LENGTH = 32  # 32 chars ≈ 192 bits of entropy (token_urlsafe)
 
 
-def _split_csv(v: str) -> List[str]:
+def _split_csv(v: str) -> list[str]:
     """Split a comma-separated string into a list, stripping whitespace."""
     return [item.strip() for item in v.split(",") if item.strip()]
 
@@ -251,27 +248,27 @@ class Settings(BaseSettings):
     # Parsed list accessors (derived from the raw CSV strings above)
     # ------------------------------------------------------------------
     @property
-    def api_keys_list(self) -> List[str]:
+    def api_keys_list(self) -> list[str]:
         return _split_csv(self.API_KEYS)
 
     @property
-    def allowed_hosts_list(self) -> List[str]:
+    def allowed_hosts_list(self) -> list[str]:
         return _split_csv(self.ALLOWED_HOSTS)
 
     @property
-    def cors_origins_list(self) -> List[str]:
+    def cors_origins_list(self) -> list[str]:
         return _split_csv(self.CORS_ORIGINS)
 
     @property
-    def audio_extensions_list(self) -> List[str]:
+    def audio_extensions_list(self) -> list[str]:
         return _split_csv(self.AUDIO_EXTENSIONS)
 
     @property
-    def charts_tags_list(self) -> List[str]:
+    def charts_tags_list(self) -> list[str]:
         return _split_csv(self.CHARTS_TAGS)
 
     @property
-    def charts_countries_list(self) -> List[str]:
+    def charts_countries_list(self) -> list[str]:
         return _split_csv(self.CHARTS_COUNTRIES)
 
     @property
@@ -300,7 +297,7 @@ class Settings(BaseSettings):
         return bool(self.NEWS_ENABLED)
 
     @property
-    def news_subreddits_list(self) -> List[str]:
+    def news_subreddits_list(self) -> list[str]:
         return _split_csv(self.NEWS_DEFAULT_SUBREDDITS)
 
     @property
@@ -313,7 +310,7 @@ class Settings(BaseSettings):
         return bool(self.LASTFM_ENABLED and self.LASTFM_API_KEY and self.LASTFM_API_SECRET)
 
     @model_validator(mode="after")
-    def validate_security_settings(self) -> "Settings":
+    def validate_security_settings(self) -> Settings:
         """Enforce security requirements.
 
         Production: API_KEYS is mandatory and each key must be at least

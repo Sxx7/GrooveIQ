@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import time
-from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import JSONResponse
@@ -11,12 +10,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.security import require_admin, require_api_key
 from app.db.session import get_session
 from app.models.algorithm_config_schema import (
+    CONFIG_GROUPS,
     AlgorithmConfigData,
     AlgorithmConfigImport,
-    AlgorithmConfigResponse,
     AlgorithmConfigUpdate,
-    CONFIG_GROUPS,
-    get_defaults,
     get_defaults_dict,
 )
 from app.services import algorithm_config as config_service
@@ -187,6 +184,7 @@ async def get_version(
 ):
     require_admin(_key)
     from sqlalchemy import select
+
     from app.models.db import AlgorithmConfig
     result = await session.execute(
         select(AlgorithmConfig).where(AlgorithmConfig.version == version)

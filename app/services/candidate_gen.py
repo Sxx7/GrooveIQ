@@ -15,24 +15,20 @@ from __future__ import annotations
 
 import logging
 import time
-from typing import Any, Dict, List, Optional, Set
+from typing import Any
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.session import AsyncSessionLocal
 from app.models.db import TrackFeatures, TrackInteraction, User
-from app.services import faiss_index
-from app.services import collab_filter
-from app.services import session_embeddings
-from app.services import lastfm_candidates
-from app.services import sasrec
+from app.services import collab_filter, faiss_index, lastfm_candidates, sasrec, session_embeddings
 from app.services.algorithm_config import get_config
 
 logger = logging.getLogger(__name__)
 
 
-def _get_user_top_track_ids(taste_profile: dict, limit: int = 20) -> List[str]:
+def _get_user_top_track_ids(taste_profile: dict, limit: int = 20) -> list[str]:
     """Extract top track IDs from a user's taste profile."""
     top_tracks = taste_profile.get("top_tracks", [])
     return [t["track_id"] for t in top_tracks[:limit] if "track_id" in t]
@@ -41,8 +37,8 @@ def _get_user_top_track_ids(taste_profile: dict, limit: int = 20) -> List[str]:
 async def get_content_candidates(
     seed_track_id: str,
     k: int = 200,
-    exclude_ids: Optional[Set[str]] = None,
-) -> List[Dict[str, Any]]:
+    exclude_ids: set[str] | None = None,
+) -> list[dict[str, Any]]:
     """
     FAISS-based content candidates from a single seed track.
 
@@ -60,10 +56,10 @@ async def get_content_candidates(
 async def get_content_candidates_for_user(
     user_id: str,
     k: int = 200,
-    exclude_ids: Optional[Set[str]] = None,
+    exclude_ids: set[str] | None = None,
     *,
-    session: Optional[AsyncSession] = None,
-) -> List[Dict[str, Any]]:
+    session: AsyncSession | None = None,
+) -> list[dict[str, Any]]:
     """
     FAISS candidates from the user's taste profile centroid.
 
@@ -100,7 +96,7 @@ async def get_content_candidates_for_user(
     ]
 
 
-async def _get_disliked_track_ids(user_id: str, session: AsyncSession) -> Set[str]:
+async def _get_disliked_track_ids(user_id: str, session: AsyncSession) -> set[str]:
     """
     Tracks the user has disliked or early-skipped more than 2 times.
     These are filtered out of all candidate sources.
@@ -115,7 +111,7 @@ async def _get_disliked_track_ids(user_id: str, session: AsyncSession) -> Set[st
     return {row[0] for row in result.all()}
 
 
-async def _get_recently_skipped_ids(user_id: str, session: AsyncSession) -> Set[str]:
+async def _get_recently_skipped_ids(user_id: str, session: AsyncSession) -> set[str]:
     """Tracks the user skipped in the last 24h."""
     cutoff = int(time.time()) - 86_400
     result = await session.execute(
@@ -129,7 +125,7 @@ async def _get_recently_skipped_ids(user_id: str, session: AsyncSession) -> Set[
     return {row[0] for row in result.all()}
 
 
-async def _get_popular_tracks(session: AsyncSession, k: int = 50) -> List[Dict[str, Any]]:
+async def _get_popular_tracks(session: AsyncSession, k: int = 50) -> list[dict[str, Any]]:
     """
     Heuristic recall: tracks with the most interactions in the last 30 days.
     """
@@ -155,7 +151,7 @@ async def _get_popular_tracks(session: AsyncSession, k: int = 50) -> List[Dict[s
 
 async def _get_recently_played_artist_tracks(
     user_id: str, session: AsyncSession, k: int = 50
-) -> List[Dict[str, Any]]:
+) -> list[dict[str, Any]]:
     """
     Heuristic recall: tracks from artists the user listened to in the last 7 days.
     Uses file_path heuristic (parent directory = artist/album) since we don't
@@ -220,11 +216,11 @@ async def _get_recently_played_artist_tracks(
 
 async def get_candidates(
     user_id: str,
-    seed_track_id: Optional[str] = None,
+    seed_track_id: str | None = None,
     k: int = 200,
     *,
-    session: Optional[AsyncSession] = None,
-) -> List[Dict[str, Any]]:
+    session: AsyncSession | None = None,
+) -> list[dict[str, Any]]:
     """
     Merged candidate retrieval from all sources.
 
@@ -246,10 +242,10 @@ async def get_candidates(
 
 async def _get_candidates_impl(
     user_id: str,
-    seed_track_id: Optional[str],
+    seed_track_id: str | None,
     k: int,
     session: AsyncSession,
-) -> List[Dict[str, Any]]:
+) -> list[dict[str, Any]]:
     cfg = get_config().candidate_sources
 
     # Build exclusion set.
@@ -258,7 +254,7 @@ async def _get_candidates_impl(
     exclude = disliked | recently_skipped
 
     # Source 1: Content-based (FAISS).
-    content_candidates: List[Dict[str, Any]] = []
+    content_candidates: list[dict[str, Any]] = []
     if faiss_index.is_ready():
         if seed_track_id:
             raw = await get_content_candidates(
@@ -278,7 +274,7 @@ async def _get_candidates_impl(
             ]
 
     # Source 2: Collaborative filtering.
-    cf_candidates: List[Dict[str, Any]] = []
+    cf_candidates: list[dict[str, Any]] = []
     if collab_filter.is_ready():
         raw = collab_filter.get_cf_candidates(user_id, k=100)
         cf_candidates = [
@@ -288,7 +284,7 @@ async def _get_candidates_impl(
         ]
 
     # Source 3: Session skip-gram embeddings (behavioral co-occurrence).
-    session_emb_candidates: List[Dict[str, Any]] = []
+    session_emb_candidates: list[dict[str, Any]] = []
     if session_embeddings.is_ready():
         if seed_track_id:
             raw = session_embeddings.get_similar_tracks(
@@ -316,7 +312,7 @@ async def _get_candidates_impl(
                     ]
 
     # Source 4: Last.fm similar tracks (external CF from millions of users).
-    lastfm_sim_candidates: List[Dict[str, Any]] = []
+    lastfm_sim_candidates: list[dict[str, Any]] = []
     if lastfm_candidates.is_ready():
         if seed_track_id:
             raw = lastfm_candidates.get_similar_for_track(
@@ -340,7 +336,7 @@ async def _get_candidates_impl(
         ]
 
     # Source 5: SASRec sequential predictions (transformer next-track).
-    sasrec_candidates: List[Dict[str, Any]] = []
+    sasrec_candidates: list[dict[str, Any]] = []
     if sasrec.is_ready():
         raw = sasrec.get_top_predictions(user_id, k=100, exclude_ids=exclude)
         sasrec_candidates = [
@@ -354,8 +350,8 @@ async def _get_candidates_impl(
     artist_recall = await _get_recently_played_artist_tracks(user_id, session, k=50)
 
     # Merge and deduplicate (first occurrence wins — preserves source priority).
-    seen: Set[str] = set()
-    merged: List[Dict[str, Any]] = []
+    seen: set[str] = set()
+    merged: list[dict[str, Any]] = []
 
     for candidate_list in [content_candidates, cf_candidates, session_emb_candidates, sasrec_candidates, lastfm_sim_candidates, artist_recall, popular]:
         for c in candidate_list:

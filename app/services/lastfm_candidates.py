@@ -19,20 +19,19 @@ from __future__ import annotations
 import logging
 import threading
 import time
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any
 
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.db.session import AsyncSessionLocal
-from app.models.db import TrackFeatures, TrackInteraction, User
+from app.models.db import TrackFeatures, User
 
 logger = logging.getLogger(__name__)
 
 # Singleton cache: track_id → list of (similar_track_id, score).
 _lock = threading.Lock()
-_similar_cache: Dict[str, List[Tuple[str, float]]] = {}
+_similar_cache: dict[str, list[tuple[str, float]]] = {}
 _built_at: int = 0
 
 # How many top tracks per user to query Last.fm for.
@@ -46,7 +45,7 @@ def _normalize(s: str) -> str:
     return s.strip().lower()
 
 
-async def build_cache() -> Dict[str, Any]:
+async def build_cache() -> dict[str, Any]:
     """
     Rebuild the Last.fm similar-track cache for all users.
 
@@ -59,10 +58,10 @@ async def build_cache() -> Dict[str, Any]:
     if not settings.LASTFM_API_KEY:
         return {"built": False, "reason": "lastfm_not_configured"}
 
-    from app.services.lastfm_client import get_lastfm_client, LastFmError
+    from app.services.lastfm_client import LastFmError, get_lastfm_client
 
     client = get_lastfm_client()
-    new_cache: Dict[str, List[Tuple[str, float]]] = {}
+    new_cache: dict[str, list[tuple[str, float]]] = {}
     api_calls = 0
     matched = 0
     errors = 0
@@ -84,7 +83,7 @@ async def build_cache() -> Dict[str, Any]:
 
         # Build lookup: (norm_artist, norm_title) → track_id.
         # If multiple tracks match the same key, first one wins.
-        lib_lookup: Dict[Tuple[str, str], str] = {}
+        lib_lookup: dict[tuple[str, str], str] = {}
         for track_id, artist, title in lib_rows:
             key = (_normalize(artist), _normalize(title))
             if key not in lib_lookup:
@@ -100,7 +99,7 @@ async def build_cache() -> Dict[str, Any]:
             select(User).where(User.is_active.is_(True))
         )).scalars().all()
 
-        seed_tracks: Dict[str, Tuple[str, str]] = {}  # track_id → (artist, title)
+        seed_tracks: dict[str, tuple[str, str]] = {}  # track_id → (artist, title)
 
         for user in users:
             profile = user.taste_profile
@@ -147,7 +146,7 @@ async def build_cache() -> Dict[str, Any]:
                 errors += 1
                 continue
 
-            matches: List[Tuple[str, float]] = []
+            matches: list[tuple[str, float]] = []
             for sim_track in similar:
                 sim_artist = sim_track.get("artist", {})
                 if isinstance(sim_artist, dict):
@@ -170,8 +169,8 @@ async def build_cache() -> Dict[str, Any]:
 
             if matches:
                 # Sort by score descending and deduplicate.
-                seen: Set[str] = set()
-                deduped: List[Tuple[str, float]] = []
+                seen: set[str] = set()
+                deduped: list[tuple[str, float]] = []
                 for tid, score in sorted(matches, key=lambda x: x[1], reverse=True):
                     if tid not in seen:
                         seen.add(tid)
@@ -202,8 +201,8 @@ async def build_cache() -> Dict[str, Any]:
 def get_similar_for_track(
     track_id: str,
     k: int = 50,
-    exclude_ids: Optional[Set[str]] = None,
-) -> List[Tuple[str, float]]:
+    exclude_ids: set[str] | None = None,
+) -> list[tuple[str, float]]:
     """
     Get Last.fm similar tracks for a single seed track (from cache).
 
@@ -215,7 +214,7 @@ def get_similar_for_track(
     if not cached:
         return []
 
-    results: List[Tuple[str, float]] = []
+    results: list[tuple[str, float]] = []
     for tid, score in cached:
         if exclude_ids and tid in exclude_ids:
             continue
@@ -227,10 +226,10 @@ def get_similar_for_track(
 
 
 def get_similar_for_user(
-    top_track_ids: List[str],
+    top_track_ids: list[str],
     k: int = 100,
-    exclude_ids: Optional[Set[str]] = None,
-) -> List[Tuple[str, float]]:
+    exclude_ids: set[str] | None = None,
+) -> list[tuple[str, float]]:
     """
     Get Last.fm similar tracks across a user's top tracks (from cache).
 
@@ -245,7 +244,7 @@ def get_similar_for_user(
         return []
 
     # Merge: track_id → max score across all seeds.
-    score_map: Dict[str, float] = {}
+    score_map: dict[str, float] = {}
     input_set = set(top_track_ids)
 
     for seed_tid in top_track_ids:

@@ -27,7 +27,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.security import check_user_access, require_api_key
 from app.db.session import get_session
-from app.models.db import ListenEvent, Playlist, TrackFeatures, User  # noqa: F401 (Playlist used in validation)
+from app.models.db import ListenEvent, Playlist, TrackFeatures, User
 from app.models.schemas import (
     RadioNextResponse,
     RadioSessionResponse,

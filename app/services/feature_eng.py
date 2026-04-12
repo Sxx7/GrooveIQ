@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import math
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 import numpy as np
 from sqlalchemy import select
@@ -66,16 +66,16 @@ NUM_FEATURES = len(FEATURE_COLUMNS)
 
 async def build_features(
     user_id: str,
-    candidate_track_ids: List[str],
+    candidate_track_ids: list[str],
     session: AsyncSession,
-    hour_of_day: Optional[int] = None,
-    day_of_week: Optional[int] = None,
-    device_type: Optional[str] = None,
-    output_type: Optional[str] = None,
-    context_type: Optional[str] = None,
-    location_label: Optional[str] = None,
-    position_map: Optional[Dict[str, int]] = None,
-) -> Dict[str, np.ndarray]:
+    hour_of_day: int | None = None,
+    day_of_week: int | None = None,
+    device_type: str | None = None,
+    output_type: str | None = None,
+    context_type: str | None = None,
+    location_label: str | None = None,
+    position_map: dict[str, int] | None = None,
+) -> dict[str, np.ndarray]:
     """
     Build feature vectors for a list of candidate tracks.
 
@@ -115,7 +115,7 @@ async def build_features(
     feat_result = await session.execute(
         select(TrackFeatures).where(TrackFeatures.track_id.in_(candidate_track_ids))
     )
-    feat_map: Dict[str, TrackFeatures] = {
+    feat_map: dict[str, TrackFeatures] = {
         t.track_id: t for t in feat_result.scalars().all()
     }
 
@@ -126,7 +126,7 @@ async def build_features(
             TrackInteraction.track_id.in_(candidate_track_ids),
         )
     )
-    inter_map: Dict[str, TrackInteraction] = {
+    inter_map: dict[str, TrackInteraction] = {
         i.track_id: i for i in inter_result.scalars().all()
     }
 
@@ -165,7 +165,7 @@ async def build_features(
     is_headphones = 1.0 if output_type == "headphones" else 0.0
 
     # --- Sequential model scores (SASRec) ---
-    sasrec_scores: Dict[str, float] = {}
+    sasrec_scores: dict[str, float] = {}
     try:
         from app.services.sasrec import predict_next_scores
         sasrec_scores = predict_next_scores(user_id, set(candidate_track_ids))
@@ -173,7 +173,7 @@ async def build_features(
         pass  # model not trained yet
 
     # --- Session GRU taste drift scores ---
-    gru_scores: Dict[str, float] = {}
+    gru_scores: dict[str, float] = {}
     try:
         from app.services.session_gru import predict_drift_scores
         gru_scores = predict_drift_scores(user_id, set(candidate_track_ids))
@@ -181,8 +181,8 @@ async def build_features(
         pass  # model not trained yet
 
     # --- Build feature rows ---
-    rows: List[np.ndarray] = []
-    valid_ids: List[str] = []
+    rows: list[np.ndarray] = []
+    valid_ids: list[str] = []
 
     for tid in candidate_track_ids:
         tf = feat_map.get(tid)
@@ -283,13 +283,14 @@ async def build_features(
     return {"track_ids": valid_ids, "features": features}
 
 
-async def _load_impression_positions(session: AsyncSession) -> Dict[str, Dict[str, int]]:
+async def _load_impression_positions(session: AsyncSession) -> dict[str, dict[str, int]]:
     """
     Load position data from reco_impression events for position bias debiasing.
 
     Returns {user_id: {track_id: avg_position}}.
     """
     from sqlalchemy import func
+
     from app.models.db import ListenEvent
 
     result = await session.execute(
@@ -304,13 +305,13 @@ async def _load_impression_positions(session: AsyncSession) -> Dict[str, Dict[st
         )
         .group_by(ListenEvent.user_id, ListenEvent.track_id)
     )
-    positions: Dict[str, Dict[str, int]] = {}
+    positions: dict[str, dict[str, int]] = {}
     for row in result.all():
         positions.setdefault(row.user_id, {})[row.track_id] = int(row.avg_pos or 0)
     return positions
 
 
-async def _load_impression_negatives(session: AsyncSession) -> Dict[str, set]:
+async def _load_impression_negatives(session: AsyncSession) -> dict[str, set]:
     """
     Find tracks that were shown (reco_impression) but never played.
 
@@ -330,7 +331,7 @@ async def _load_impression_negatives(session: AsyncSession) -> Dict[str, set]:
         .where(ListenEvent.event_type == "reco_impression")
         .distinct()
     )
-    impressed: Dict[str, set] = {}
+    impressed: dict[str, set] = {}
     for row in imp_result.all():
         impressed.setdefault(row.user_id, set()).add(row.track_id)
 
@@ -343,12 +344,12 @@ async def _load_impression_negatives(session: AsyncSession) -> Dict[str, set]:
         .where(ListenEvent.event_type.in_(["play_start", "play_end"]))
         .distinct()
     )
-    played: Dict[str, set] = {}
+    played: dict[str, set] = {}
     for row in play_result.all():
         played.setdefault(row.user_id, set()).add(row.track_id)
 
     # Impression-only = shown but never played.
-    negatives: Dict[str, set] = {}
+    negatives: dict[str, set] = {}
     for uid, imp_tracks in impressed.items():
         played_tracks = played.get(uid, set())
         neg = imp_tracks - played_tracks
@@ -357,7 +358,7 @@ async def _load_impression_negatives(session: AsyncSession) -> Dict[str, set]:
     return negatives
 
 
-async def build_training_data(session: AsyncSession) -> Dict[str, Any]:
+async def build_training_data(session: AsyncSession) -> dict[str, Any]:
     """
     Build training data from all track_interactions + impression-based negatives.
 
@@ -388,14 +389,14 @@ async def build_training_data(session: AsyncSession) -> Dict[str, Any]:
 
     # Group by user.
     from collections import defaultdict
-    by_user: Dict[str, List] = defaultdict(list)
+    by_user: dict[str, list] = defaultdict(list)
     for inter in interactions:
         by_user[inter.user_id].append(inter)
 
-    all_features: List[np.ndarray] = []
-    all_labels: List[float] = []
-    all_weights: List[np.ndarray] = []
-    groups: List[int] = []
+    all_features: list[np.ndarray] = []
+    all_labels: list[float] = []
+    all_weights: list[np.ndarray] = []
+    groups: list[int] = []
 
     for user_id, user_inters in by_user.items():
         track_ids = [i.track_id for i in user_inters]

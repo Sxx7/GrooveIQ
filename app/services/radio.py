@@ -27,14 +27,13 @@ import threading
 import time
 import uuid
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any
 
 import numpy as np
-from sqlalchemy import func, or_, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.db import Playlist, PlaylistTrack, TrackFeatures, TrackInteraction
-
 from app.services.algorithm_config import get_config
 
 logger = logging.getLogger(__name__)
@@ -66,27 +65,27 @@ class RadioSession:
     user_id: str
     seed_type: str                             # "track", "artist", "playlist"
     seed_value: str                            # track_id, artist name, or playlist_id
-    seed_track_ids: List[str] = field(default_factory=list)  # resolved seed tracks
+    seed_track_ids: list[str] = field(default_factory=list)  # resolved seed tracks
 
     # Embeddings
-    seed_embedding: Optional[np.ndarray] = None   # anchor point (never changes)
-    drift_embedding: Optional[np.ndarray] = None  # shifts with feedback
+    seed_embedding: np.ndarray | None = None   # anchor point (never changes)
+    drift_embedding: np.ndarray | None = None  # shifts with feedback
 
     # Session state
-    played: List[str] = field(default_factory=list)       # ordered play history
-    played_set: Set[str] = field(default_factory=set)     # fast lookup
-    skipped: Set[str] = field(default_factory=set)
-    liked: Set[str] = field(default_factory=set)
-    disliked: Set[str] = field(default_factory=set)
-    feedback_log: List[RadioFeedback] = field(default_factory=list)
+    played: list[str] = field(default_factory=list)       # ordered play history
+    played_set: set[str] = field(default_factory=set)     # fast lookup
+    skipped: set[str] = field(default_factory=set)
+    liked: set[str] = field(default_factory=set)
+    disliked: set[str] = field(default_factory=set)
+    feedback_log: list[RadioFeedback] = field(default_factory=list)
 
     # Context (updatable on each /next call)
-    device_type: Optional[str] = None
-    output_type: Optional[str] = None
+    device_type: str | None = None
+    output_type: str | None = None
     context_type: str = "radio"
-    location_label: Optional[str] = None
-    hour_of_day: Optional[int] = None
-    day_of_week: Optional[int] = None
+    location_label: str | None = None
+    hour_of_day: int | None = None
+    day_of_week: int | None = None
 
     # Metadata
     created_at: float = field(default_factory=time.time)
@@ -94,7 +93,7 @@ class RadioSession:
     total_served: int = 0
 
     # Display info
-    seed_display_name: Optional[str] = None    # "Artist Name" or "Track Title" for UI
+    seed_display_name: str | None = None    # "Artist Name" or "Track Title" for UI
 
 
 # ---------------------------------------------------------------------------
@@ -102,7 +101,7 @@ class RadioSession:
 # ---------------------------------------------------------------------------
 
 _lock = threading.Lock()
-_sessions: Dict[str, RadioSession] = {}
+_sessions: dict[str, RadioSession] = {}
 
 
 def _evict_expired() -> None:
@@ -123,7 +122,7 @@ def _evict_oldest() -> None:
         del _sessions[oldest_sid]
 
 
-def get_session(session_id: str) -> Optional[RadioSession]:
+def get_session(session_id: str) -> RadioSession | None:
     """Retrieve a radio session by ID."""
     with _lock:
         _evict_expired()
@@ -147,7 +146,7 @@ def remove_session(session_id: str) -> bool:
         return _sessions.pop(session_id, None) is not None
 
 
-def list_sessions(user_id: Optional[str] = None) -> List[Dict[str, Any]]:
+def list_sessions(user_id: str | None = None) -> list[dict[str, Any]]:
     """List active radio sessions, optionally filtered by user."""
     with _lock:
         _evict_expired()
@@ -269,7 +268,6 @@ def record_feedback(session_id: str, track_id: str, action: str) -> bool:
     action: "skip" | "like" | "dislike"
     Returns True if the session exists and feedback was recorded.
     """
-    from app.services import faiss_index
 
     s = get_session(session_id)
     if s is None:
@@ -306,8 +304,8 @@ def _update_drift_embedding(s: RadioSession) -> None:
         return
 
     # Collect weighted feedback vectors
-    attract_vecs: List[Tuple[np.ndarray, float]] = []
-    repel_vecs: List[Tuple[np.ndarray, float]] = []
+    attract_vecs: list[tuple[np.ndarray, float]] = []
+    repel_vecs: list[tuple[np.ndarray, float]] = []
 
     n = len(s.feedback_log)
     for i, fb in enumerate(s.feedback_log):
@@ -355,15 +353,14 @@ async def get_next_tracks(
     session_id: str,
     count: int,
     db: AsyncSession,
-) -> Optional[List[Dict[str, Any]]]:
+) -> list[dict[str, Any]] | None:
     """
     Generate the next batch of tracks for a radio session.
 
     Returns None if session not found.
     Returns list of track dicts with metadata.
     """
-    from app.services import faiss_index, collab_filter, session_embeddings
-    from app.services import lastfm_candidates, sasrec
+    from app.services import collab_filter, faiss_index, lastfm_candidates, session_embeddings
     from app.services.ranker import score_candidates
     from app.services.reranker import rerank
 
@@ -385,10 +382,10 @@ async def get_next_tracks(
     exclude |= {row[0] for row in disliked_result.all()}
 
     overfetch = count * _BATCH_OVERFETCH
-    candidates: List[Dict[str, Any]] = []
-    seen: Set[str] = set(exclude)
+    candidates: list[dict[str, Any]] = []
+    seen: set[str] = set(exclude)
 
-    def _add(items: List[Dict[str, Any]]) -> None:
+    def _add(items: list[dict[str, Any]]) -> None:
         for c in items:
             tid = c["track_id"]
             if tid not in seen:
@@ -545,7 +542,7 @@ async def get_next_tracks(
 
 
 def _apply_session_feedback_boost(
-    candidates: List[Dict[str, Any]],
+    candidates: list[dict[str, Any]],
     s: RadioSession,
 ) -> None:
     """
@@ -582,10 +579,10 @@ def _apply_session_feedback_boost(
 
 
 def _enforce_no_consecutive_artist(
-    ranked: List[Tuple[str, float]],
+    ranked: list[tuple[str, float]],
     db: AsyncSession,
     s: RadioSession,
-) -> List[Tuple[str, float]]:
+) -> list[tuple[str, float]]:
     """
     Reorder to avoid more than _ARTIST_MAX_CONSECUTIVE tracks from the
     same artist in a row (includes the session's recent history).

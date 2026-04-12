@@ -19,12 +19,9 @@ from __future__ import annotations
 
 import logging
 import threading
-from typing import Dict, List, Optional, Tuple
 
 import numpy as np
-
 from sqlalchemy import func, select
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.session import AsyncSessionLocal
 from app.models.db import TrackInteraction
@@ -33,11 +30,11 @@ logger = logging.getLogger(__name__)
 
 # Singleton state.
 _lock = threading.Lock()
-_model: Optional[object] = None                     # implicit.als.AlternatingLeastSquares
-_user_to_idx: Dict[str, int] = {}
-_idx_to_user: List[str] = []
-_track_to_idx: Dict[str, int] = {}
-_idx_to_track: List[str] = []
+_model: object | None = None                     # implicit.als.AlternatingLeastSquares
+_user_to_idx: dict[str, int] = {}
+_idx_to_user: list[str] = []
+_track_to_idx: dict[str, int] = {}
+_idx_to_track: list[str] = []
 _interaction_matrix = None                           # scipy.sparse.csr_matrix (user × track)
 
 # Minimum interactions to bother training.
@@ -45,18 +42,18 @@ _MIN_INTERACTIONS = 10
 _MIN_USERS = 2
 
 
-def _train_als_sync(rows: list) -> Tuple[object, Dict[str, int], List[str], Dict[str, int], List[str], object]:
+def _train_als_sync(rows: list) -> tuple[object, dict[str, int], list[str], dict[str, int], list[str], object]:
     """CPU-bound ALS training.  Runs in a thread executor."""
     import scipy.sparse as sp
     from implicit.als import AlternatingLeastSquares
 
-    user_ids: List[str] = []
-    track_ids: List[str] = []
-    user_map: Dict[str, int] = {}
-    track_map: Dict[str, int] = {}
-    user_indices: List[int] = []
-    track_indices: List[int] = []
-    values: List[float] = []
+    user_ids: list[str] = []
+    track_ids: list[str] = []
+    user_map: dict[str, int] = {}
+    track_map: dict[str, int] = {}
+    user_indices: list[int] = []
+    track_indices: list[int] = []
+    values: list[float] = []
 
     for user_id, track_id, score in rows:
         if user_id not in user_map:
@@ -144,7 +141,7 @@ async def build_model() -> dict:
     return {"tracks": n_tracks, "users": n_users, "interactions": len(rows), "trained": True}
 
 
-def get_cf_candidates(user_id: str, k: int = 200) -> List[Tuple[str, float]]:
+def get_cf_candidates(user_id: str, k: int = 200) -> list[tuple[str, float]]:
     """
     Recommend tracks for a user via collaborative filtering.
 
@@ -170,7 +167,7 @@ def get_cf_candidates(user_id: str, k: int = 200) -> List[Tuple[str, float]]:
         filter_already_liked_items=False,
     )
 
-    results: List[Tuple[str, float]] = []
+    results: list[tuple[str, float]] = []
     for idx, score in zip(ids, scores):
         if 0 <= idx < len(idx_to_track):
             results.append((idx_to_track[idx], float(score)))
@@ -178,7 +175,7 @@ def get_cf_candidates(user_id: str, k: int = 200) -> List[Tuple[str, float]]:
     return results
 
 
-def get_similar_items(track_id: str, k: int = 50) -> List[Tuple[str, float]]:
+def get_similar_items(track_id: str, k: int = 50) -> list[tuple[str, float]]:
     """
     Item-item collaborative filtering: tracks that co-occur with the given track.
 
@@ -195,7 +192,7 @@ def get_similar_items(track_id: str, k: int = 50) -> List[Tuple[str, float]]:
     track_idx = track_map[track_id]
     ids, scores = model.similar_items(track_idx, N=k + 1)  # +1 because it includes itself
 
-    results: List[Tuple[str, float]] = []
+    results: list[tuple[str, float]] = []
     for idx, score in zip(ids, scores):
         if 0 <= idx < len(idx_to_track):
             tid = idx_to_track[idx]

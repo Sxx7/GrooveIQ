@@ -14,7 +14,7 @@ Every audit entry includes:
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, Optional
+from typing import Any
 
 from app.core.security import hash_key
 
@@ -24,8 +24,8 @@ logger = logging.getLogger("grooveiq.audit")
 def audit_log(
     action: str,
     *,
-    api_key: Optional[str] = None,
-    detail: Optional[Dict[str, Any]] = None,
+    api_key: str | None = None,
+    detail: dict[str, Any] | None = None,
 ) -> None:
     """Emit a structured audit log entry.
 

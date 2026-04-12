@@ -9,7 +9,6 @@ scheduler and stored in the chart_entries table.
 from __future__ import annotations
 
 import logging
-from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import func, select
@@ -25,7 +24,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
-def _media_server_auth_params() -> Optional[str]:
+def _media_server_auth_params() -> str | None:
     """Pre-compute media server auth query string (reusable across entries)."""
     server_type = (settings.MEDIA_SERVER_TYPE or "").lower()
     base = (settings.MEDIA_SERVER_URL or "").rstrip("/")
@@ -49,7 +48,7 @@ def _media_server_auth_params() -> Optional[str]:
     return None
 
 
-def _build_cover_url(tf: TrackFeatures, auth_qs: Optional[str]) -> Optional[str]:
+def _build_cover_url(tf: TrackFeatures, auth_qs: str | None) -> str | None:
     """Build a media-server cover art URL for a matched track.
 
     Navidrome (Subsonic API): /rest/getCoverArt.view?id=<external_id>&size=300

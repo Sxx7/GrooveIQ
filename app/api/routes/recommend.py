@@ -181,7 +181,7 @@ async def get_recommendations(
         device_type=device_type, output_type=output_type,
         context_type=context_type, location_label=location_label,
     )
-    score_map = {tid: score for tid, score in scored}
+    {tid: score for tid, score in scored}
     source_map = {c["track_id"]: c["source"] for c in candidates}
 
     if debug:
@@ -200,7 +200,7 @@ async def get_recommendations(
         from app.services.reranker import get_last_rerank_actions
         debug_data["reranker_actions"] = get_last_rerank_actions()
         # Build feature vectors for debug output
-        from app.services.feature_eng import build_features, FEATURE_COLUMNS
+        from app.services.feature_eng import FEATURE_COLUMNS, build_features
         feat_result_debug = await build_features(
             user_id, [tid for tid, _ in reranked], session,
             hour_of_day=hour_of_day, day_of_week=day_of_week,
@@ -407,10 +407,11 @@ async def get_recommended_artists(
         raise HTTPException(status_code=404, detail="User not found.")
 
     taste = user_row.taste_profile or {}
-    top_track_ids = [t["track_id"] for t in taste.get("top_tracks", [])]
+    [t["track_id"] for t in taste.get("top_tracks", [])]
 
     # --- Source 1: Local listening (artist aggregation from interactions) ---
-    from sqlalchemy import func as sa_func, desc
+    from sqlalchemy import desc
+    from sqlalchemy import func as sa_func
 
     # Join interactions with features to get artist + satisfaction data
     q = (
@@ -475,7 +476,6 @@ async def get_recommended_artists(
         }
 
     # --- Source 2: Last.fm similar artists ---
-    similar_artists = []
     if settings.LASTFM_API_KEY:
         from app.services.discovery import LastFmClient as DiscoveryLastFm
 

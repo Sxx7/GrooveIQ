@@ -9,17 +9,14 @@ GET  /v1/events       – query events (admin/debug)
 from __future__ import annotations
 
 import logging
-import time
-from typing import List, Optional  # noqa: UP035 – List needed for response_model
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, Query, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.config import settings
 from app.core.security import check_user_access, check_user_event_rate, require_admin, require_api_key
 from app.db.session import get_session
-from app.models.db import ListenEvent, User
+from app.models.db import ListenEvent
 from app.models.schemas import EventBatch, EventCreate, EventResponse, ListenEventRead
 from app.services.event_service import process_event
 
@@ -134,17 +131,17 @@ async def ingest_event_batch(
 
 @router.get(
     "/events",
-    response_model=List[ListenEventRead],
+    response_model=list[ListenEventRead],
     summary="Query stored events (admin)",
     description="Returns raw events for a user/track. Useful for debugging.",
 )
 async def query_events(
-    user_id:      Optional[str] = Query(None, max_length=128),
-    track_id:     Optional[str] = Query(None, max_length=128),
-    event_type:   Optional[str] = Query(None, max_length=32),
-    device_id:    Optional[str] = Query(None, max_length=128),
-    context_type: Optional[str] = Query(None, max_length=32),
-    request_id:   Optional[str] = Query(None, max_length=128),
+    user_id:      str | None = Query(None, max_length=128),
+    track_id:     str | None = Query(None, max_length=128),
+    event_type:   str | None = Query(None, max_length=32),
+    device_id:    str | None = Query(None, max_length=128),
+    context_type: str | None = Query(None, max_length=32),
+    request_id:   str | None = Query(None, max_length=128),
     limit:        int = Query(50, ge=1, le=500),
     offset:       int = Query(0, ge=0),
     session:      AsyncSession = Depends(get_session),

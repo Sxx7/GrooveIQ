@@ -10,7 +10,6 @@ import base64
 import time
 
 import numpy as np
-import pytest
 import pytest_asyncio
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
@@ -130,7 +129,7 @@ class TestFeatureEngineering:
 
     async def test_build_features_shape(self):
         """Feature vectors have the correct number of columns."""
-        from app.services.feature_eng import build_features, NUM_FEATURES
+        from app.services.feature_eng import NUM_FEATURES, build_features
 
         await _seed_data()
         async with _TestSession() as session:
@@ -152,7 +151,7 @@ class TestFeatureEngineering:
 
     async def test_build_features_cold_start_interaction(self):
         """Tracks the user has never interacted with get zero interaction features."""
-        from app.services.feature_eng import build_features, FEATURE_COLUMNS
+        from app.services.feature_eng import FEATURE_COLUMNS, build_features
 
         await _seed_data(n_tracks=20, interactions_per_user=5)
         async with _TestSession() as session:
@@ -182,7 +181,7 @@ class TestFeatureEngineering:
 
     async def test_build_training_data(self):
         """Training data builds from all interactions."""
-        from app.services.feature_eng import build_training_data, NUM_FEATURES
+        from app.services.feature_eng import NUM_FEATURES, build_training_data
 
         await _seed_data(n_users=2, n_tracks=10, interactions_per_user=8)
         async with _TestSession() as session:
@@ -198,7 +197,7 @@ class TestRanker:
 
     async def test_train_model(self):
         """Model trains successfully on synthetic data."""
-        from app.services.ranker import train_model, is_ready, get_model_version
+        from app.services.ranker import get_model_version, is_ready, train_model
 
         await _seed_data(n_users=4, n_tracks=20, interactions_per_user=20)
         result = await train_model()
@@ -210,7 +209,7 @@ class TestRanker:
 
     async def test_score_candidates(self):
         """Scoring produces valid results after training."""
-        from app.services.ranker import train_model, score_candidates
+        from app.services.ranker import score_candidates, train_model
 
         await _seed_data(n_users=4, n_tracks=20, interactions_per_user=20)
         await train_model()
@@ -229,7 +228,7 @@ class TestRanker:
 
     async def test_fallback_without_model(self):
         """Without a trained model, falls back to satisfaction_score."""
-        from app.services.ranker import score_candidates, is_ready
+        from app.services.ranker import is_ready, score_candidates
 
         await _seed_data()
         assert not is_ready()
@@ -244,7 +243,7 @@ class TestRanker:
 
     async def test_too_few_samples_skips_training(self):
         """Training is skipped when there are too few samples."""
-        from app.services.ranker import train_model, is_ready
+        from app.services.ranker import is_ready, train_model
 
         # Only seed minimal data (< 50 samples).
         await _seed_data(n_users=1, n_tracks=5, interactions_per_user=3)
@@ -255,7 +254,7 @@ class TestRanker:
 
     async def test_get_model_stats(self):
         """Model stats reflect training status."""
-        from app.services.ranker import train_model, get_model_stats
+        from app.services.ranker import get_model_stats, train_model
 
         # Before training.
         stats = get_model_stats()
@@ -271,7 +270,7 @@ class TestRanker:
 
     async def test_score_with_context(self):
         """Scoring works when context params are provided."""
-        from app.services.ranker import train_model, score_candidates
+        from app.services.ranker import score_candidates, train_model
 
         await _seed_data(n_users=4, n_tracks=20, interactions_per_user=20)
         await train_model()
@@ -292,7 +291,7 @@ class TestRanker:
 
     async def test_fallback_with_context(self):
         """Fallback ranking works with context params (no trained model)."""
-        from app.services.ranker import score_candidates, is_ready
+        from app.services.ranker import is_ready, score_candidates
 
         await _seed_data()
         assert not is_ready()
@@ -310,7 +309,7 @@ class TestFeatureEngineeringContext:
 
     async def test_context_features_in_output(self):
         """Context features appear in the feature vector at the correct positions."""
-        from app.services.feature_eng import build_features, FEATURE_COLUMNS, NUM_FEATURES
+        from app.services.feature_eng import FEATURE_COLUMNS, NUM_FEATURES, build_features
 
         await _seed_data()
         async with _TestSession() as session:
@@ -331,7 +330,7 @@ class TestFeatureEngineeringContext:
 
     async def test_context_features_default_zero(self):
         """Context features default to 0.0 when not provided."""
-        from app.services.feature_eng import build_features, FEATURE_COLUMNS
+        from app.services.feature_eng import FEATURE_COLUMNS, build_features
 
         await _seed_data()
         async with _TestSession() as session:
@@ -344,13 +343,14 @@ class TestFeatureEngineeringContext:
 
     async def test_device_affinity_from_profile(self):
         """device_affinity pulls from taste_profile.device_patterns."""
-        from app.services.feature_eng import build_features, FEATURE_COLUMNS
+        from app.services.feature_eng import FEATURE_COLUMNS, build_features
 
         await _seed_data()
 
         # Add device_patterns to user's taste profile.
         async with _TestSession() as session:
             from sqlalchemy import update
+
             from app.models.db import User
             user_result = await session.execute(
                 select(User.taste_profile).where(User.user_id == "user0")

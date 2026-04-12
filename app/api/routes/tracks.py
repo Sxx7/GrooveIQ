@@ -10,10 +10,9 @@ GET  /v1/tracks/{track_id}/similar – get acoustically similar tracks
 from __future__ import annotations
 
 import logging
-from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import select, func, asc, desc
+from sqlalchemy import asc, desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.security import require_admin, require_api_key
@@ -64,7 +63,7 @@ async def trigger_sync(
 
     try:
         result = await sync_track_ids(session)
-    except Exception as e:
+    except Exception:
         logger.exception("Media server sync failed")
         raise HTTPException(status_code=502, detail="Media server sync failed. Check logs for details.")
 
@@ -188,14 +187,14 @@ async def list_tracks(
     offset: int = Query(0, ge=0),
     sort_by: str = Query("bpm"),
     sort_dir: str = Query("asc"),
-    search: Optional[str] = Query(None, description="Search by title, artist, or track ID"),
-    min_bpm: Optional[float] = Query(None),
-    max_bpm: Optional[float] = Query(None),
-    min_energy: Optional[float] = Query(None),
-    max_energy: Optional[float] = Query(None),
-    key: Optional[str] = Query(None),
-    mode: Optional[str] = Query(None),
-    mood: Optional[str] = Query(None),
+    search: str | None = Query(None, description="Search by title, artist, or track ID"),
+    min_bpm: float | None = Query(None),
+    max_bpm: float | None = Query(None),
+    min_energy: float | None = Query(None),
+    max_energy: float | None = Query(None),
+    key: str | None = Query(None),
+    mode: str | None = Query(None),
+    mood: str | None = Query(None),
     session: AsyncSession = Depends(get_session),
     _key: str = Depends(require_api_key),
 ):
@@ -392,6 +391,7 @@ async def get_similar_tracks(
 
     if seed.embedding and candidates:
         import base64
+
         import numpy as np
 
         def decode_vec(b64: str):

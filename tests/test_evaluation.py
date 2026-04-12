@@ -11,9 +11,8 @@ import base64
 import time
 
 import numpy as np
-import pytest
 import pytest_asyncio
-from sqlalchemy import select, func
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.models.db import Base, ListenEvent, TrackFeatures, TrackInteraction, User

@@ -12,7 +12,7 @@ import time
 import pytest
 import pytest_asyncio
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.models.db import (
     Base,
@@ -313,8 +313,8 @@ class TestTasteProfile:
     async def test_basic_profile_build(self):
         """User with interactions and track features gets a complete profile."""
         from app.services.sessionizer import run_sessionizer
-        from app.services.track_scoring import run_track_scoring
         from app.services.taste_profile import run_taste_profile_builder
+        from app.services.track_scoring import run_track_scoring
 
         now = _now()
         await _insert_user("u1")
@@ -364,8 +364,8 @@ class TestTasteProfile:
 
     async def test_profile_without_track_features(self):
         """User with interactions but no analysed tracks still gets a partial profile."""
-        from app.services.track_scoring import run_track_scoring
         from app.services.taste_profile import run_taste_profile_builder
+        from app.services.track_scoring import run_track_scoring
 
         now = _now()
         await _insert_user("u1")

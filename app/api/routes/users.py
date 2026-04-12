@@ -2,10 +2,9 @@
 from __future__ import annotations
 
 import logging
-from typing import List
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import select, func, update
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.security import check_user_access, require_api_key
@@ -94,6 +93,7 @@ async def submit_onboarding(
     user = await _resolve_user(session, user_id, _key)
 
     import time as _time
+
     from sqlalchemy import or_
 
     prefs: dict = {}
@@ -117,7 +117,6 @@ async def submit_onboarding(
     # --- Match favourite artists against library ---
     if body.favourite_artists:
         # Case-insensitive substring match against artist column
-        artist_ids: list[str] = []
         for artist_name in body.favourite_artists:
             result = await session.execute(
                 select(TrackFeatures.track_id, TrackFeatures.artist)
@@ -223,7 +222,8 @@ async def get_user_interactions(
         "last_played_at": TrackInteraction.last_played_at,
         "skip_count": TrackInteraction.skip_count,
     }[sort_by]
-    from sqlalchemy import asc, desc as sa_desc
+    from sqlalchemy import asc
+    from sqlalchemy import desc as sa_desc
     order = sa_desc(sort_col) if sort_dir == "desc" else asc(sort_col)
 
     count_q = select(func.count()).select_from(

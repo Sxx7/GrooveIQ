@@ -12,7 +12,7 @@ import asyncio
 import logging
 import re
 import time
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any
 
 import httpx
 from sqlalchemy import func, select
@@ -72,7 +72,7 @@ class LastFmClient:
 
     async def get_similar_artists(
         self, artist: str, limit: int = 20
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         """Return similar artists from Last.fm."""
         try:
             data = await self._get({
@@ -100,7 +100,7 @@ class LastFmClient:
 
     async def get_top_artists_for_tag(
         self, tag: str, limit: int = 50
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         """Return top artists for a genre/tag from Last.fm."""
         try:
             data = await self._get({
@@ -141,7 +141,7 @@ class LidarrClient:
     async def close(self):
         await self._client.aclose()
 
-    async def get_existing_artist_mbids(self) -> Set[str]:
+    async def get_existing_artist_mbids(self) -> set[str]:
         """Return the set of MusicBrainz IDs already in Lidarr."""
         resp = await self._client.get(f"{self._base_url}/api/v1/artist")
         resp.raise_for_status()
@@ -152,8 +152,8 @@ class LidarrClient:
         }
 
     async def lookup_artist(
-        self, *, name: Optional[str] = None, mbid: Optional[str] = None
-    ) -> Optional[Dict[str, Any]]:
+        self, *, name: str | None = None, mbid: str | None = None
+    ) -> dict[str, Any] | None:
         """Search Lidarr for an artist by mbid (preferred) or name."""
         if mbid:
             term = f"lidarr:{mbid}"
@@ -170,7 +170,7 @@ class LidarrClient:
         results = resp.json()
         return results[0] if results else None
 
-    async def add_artist(self, foreign_artist_id: str, artist_name: str) -> Dict[str, Any]:
+    async def add_artist(self, foreign_artist_id: str, artist_name: str) -> dict[str, Any]:
         """Add an artist to Lidarr."""
         body = {
             "artistName": artist_name,
@@ -196,11 +196,11 @@ class LidarrClient:
 # Discovery pipeline
 # ---------------------------------------------------------------------------
 
-def _extract_seed_artists(taste_profile: dict, limit: int = 10) -> List[str]:
+def _extract_seed_artists(taste_profile: dict, limit: int = 10) -> list[str]:
     """Get the most-listened artist names from a taste profile."""
     top_tracks = taste_profile.get("top_tracks", [])
     # Count artist frequency (weighted by position — earlier = higher score)
-    artist_scores: Dict[str, float] = {}
+    artist_scores: dict[str, float] = {}
     for i, t in enumerate(top_tracks):
         artist = t.get("artist")
         if artist:
@@ -209,9 +209,9 @@ def _extract_seed_artists(taste_profile: dict, limit: int = 10) -> List[str]:
     return sorted_artists[:limit]
 
 
-def _extract_seed_genres(taste_profile: dict, track_genres: List[str], limit: int = 5) -> List[str]:
+def _extract_seed_genres(taste_profile: dict, track_genres: list[str], limit: int = 5) -> list[str]:
     """Get the most common genres from the user's library tracks."""
-    genre_counts: Dict[str, int] = {}
+    genre_counts: dict[str, int] = {}
     for genre_str in track_genres:
         for g in genre_str.split(","):
             g = g.strip().lower()
@@ -221,7 +221,7 @@ def _extract_seed_genres(taste_profile: dict, track_genres: List[str], limit: in
     return sorted_genres[:limit]
 
 
-async def _get_user_track_genres(user_id: str, session: AsyncSession) -> List[str]:
+async def _get_user_track_genres(user_id: str, session: AsyncSession) -> list[str]:
     """Get genre strings for tracks the user has interacted with."""
     result = await session.execute(
         select(TrackFeatures.genre)
@@ -236,7 +236,7 @@ async def _get_user_track_genres(user_id: str, session: AsyncSession) -> List[st
     return [row[0] for row in result.all()]
 
 
-async def run_discovery_pipeline() -> Dict[str, Any]:
+async def run_discovery_pipeline() -> dict[str, Any]:
     """
     Main entry point.  For each user with a taste profile:
     1. Extract seed artists + genres
@@ -310,8 +310,8 @@ async def run_discovery_pipeline() -> Dict[str, Any]:
 
                 try:
                     profile = user.taste_profile
-                    seed_artists: List[str] = []
-                    seed_genres: List[str] = []
+                    seed_artists: list[str] = []
+                    seed_genres: list[str] = []
 
                     if profile and profile.get("top_tracks"):
                         # User has a taste profile — extract seeds from it.
@@ -337,7 +337,7 @@ async def run_discovery_pipeline() -> Dict[str, Any]:
                             .order_by(func.count().desc())
                             .limit(20)
                         )).all()
-                        all_genres: List[str] = []
+                        all_genres: list[str] = []
                         for r in lib_genres:
                             for g in r[0].split(","):
                                 g = g.strip().lower()
@@ -356,7 +356,7 @@ async def run_discovery_pipeline() -> Dict[str, Any]:
                     )
 
                     # Collect candidates from Last.fm.
-                    candidates: List[Tuple[Dict[str, Any], str, Optional[str], Optional[str]]] = []
+                    candidates: list[tuple[dict[str, Any], str, str | None, str | None]] = []
                     # (artist_info, source, seed_artist, seed_genre)
 
                     for artist_name in seed_artists:
@@ -372,7 +372,7 @@ async def run_discovery_pipeline() -> Dict[str, Any]:
                             candidates.append((a, "lastfm_genre", None, genre))
 
                     # Deduplicate and filter.
-                    seen_in_batch: Set[str] = set()
+                    seen_in_batch: set[str] = set()
                     for artist_info, source, seed_a, seed_g in candidates:
                         if remaining_budget <= 0:
                             break
@@ -493,14 +493,14 @@ async def run_discovery_pipeline() -> Dict[str, Any]:
     return summary
 
 
-async def _run_ab_discovery(session: Optional[AsyncSession] = None) -> Dict[str, Any]:
+async def _run_ab_discovery(session: AsyncSession | None = None) -> dict[str, Any]:
     """Discover tracks via the AcousticBrainz Lookup container.
 
     For each user with a taste profile, query AB Lookup for matching tracks
     not in the local library, then send new artists to Lidarr or tracks
     to spotdl-api for download.
     """
-    summary: Dict[str, Any] = {
+    summary: dict[str, Any] = {
         "users_processed": 0,
         "tracks_discovered": 0,
         "artists_sent_to_lidarr": 0,
@@ -508,7 +508,7 @@ async def _run_ab_discovery(session: Optional[AsyncSession] = None) -> Dict[str,
     }
 
     ab_client = AcousticBrainzClient(settings.AB_LOOKUP_URL)
-    lidarr: Optional[LidarrClient] = None
+    lidarr: LidarrClient | None = None
     if settings.LIDARR_URL and settings.LIDARR_API_KEY:
         lidarr = LidarrClient(settings.LIDARR_URL, settings.LIDARR_API_KEY)
 
@@ -526,7 +526,7 @@ async def _run_ab_discovery(session: Optional[AsyncSession] = None) -> Dict[str,
             )).all()
             library_artists_norm = {_normalize_artist(r[0]) for r in library_artists_raw}
 
-            lidarr_mbids: Set[str] = set()
+            lidarr_mbids: set[str] = set()
             if lidarr:
                 try:
                     lidarr_mbids = await lidarr.get_existing_artist_mbids()
@@ -548,7 +548,7 @@ async def _run_ab_discovery(session: Optional[AsyncSession] = None) -> Dict[str,
                         continue
 
                     # Filter out artists already in library
-                    new_artists: Dict[str, Dict[str, Any]] = {}
+                    new_artists: dict[str, dict[str, Any]] = {}
                     for track in results:
                         artist = track.get("artist")
                         if not artist:

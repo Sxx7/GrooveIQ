@@ -5,9 +5,8 @@ GrooveIQ – Tests for user profile, interactions, sessions, recommendation, and
 from __future__ import annotations
 
 import time
-from typing import AsyncGenerator
+from collections.abc import AsyncGenerator
 
-import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine

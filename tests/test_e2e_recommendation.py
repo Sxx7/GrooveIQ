@@ -15,10 +15,9 @@ from __future__ import annotations
 
 import base64
 import time
-from typing import AsyncGenerator
+from collections.abc import AsyncGenerator
 
 import numpy as np
-import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
@@ -29,7 +28,6 @@ from app.main import app
 from app.models.db import (
     Base,
     ListenEvent,
-    ListenSession,
     TrackFeatures,
     TrackInteraction,
     User,
@@ -228,14 +226,14 @@ async def _create_users_and_events():
 
 async def _run_pipeline():
     """Run the full recommendation pipeline."""
-    from app.services.sessionizer import run_sessionizer
-    from app.services.track_scoring import run_track_scoring
-    from app.services.taste_profile import run_taste_profile_builder
     from app.services.ranker import train_model
+    from app.services.sessionizer import run_sessionizer
+    from app.services.taste_profile import run_taste_profile_builder
+    from app.services.track_scoring import run_track_scoring
 
-    sess_result = await run_sessionizer()
-    score_result = await run_track_scoring()
-    taste_result = await run_taste_profile_builder()
+    await run_sessionizer()
+    await run_track_scoring()
+    await run_taste_profile_builder()
 
     # Try CF but don't fail if it can't train (needs enough data).
     try:
@@ -355,7 +353,7 @@ class TestEndToEndRecommendation:
 
         # Check that impression events were logged.
         async with _TestSession() as session:
-            from sqlalchemy import select, func
+            from sqlalchemy import func, select
             count = (await session.execute(
                 select(func.count(ListenEvent.id))
                 .where(

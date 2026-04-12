@@ -10,11 +10,9 @@ from __future__ import annotations
 
 import logging
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 import httpx
-
-from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -40,7 +38,7 @@ class AcousticBrainzClient:
             await asyncio.sleep(self._MIN_REQUEST_GAP - elapsed)
         self._last_request = time.monotonic()
 
-    async def health_check(self) -> Dict[str, Any]:
+    async def health_check(self) -> dict[str, Any]:
         """Check if the service is ready."""
         try:
             await self._throttle()
@@ -53,10 +51,10 @@ class AcousticBrainzClient:
 
     async def search(
         self,
-        taste_profile: Dict[str, Any],
+        taste_profile: dict[str, Any],
         limit: int = 50,
-        exclude_mbids: Optional[List[str]] = None,
-    ) -> List[Dict[str, Any]]:
+        exclude_mbids: list[str] | None = None,
+    ) -> list[dict[str, Any]]:
         """Search for tracks matching a user's taste profile.
 
         Converts GrooveIQ taste profile format to AB Lookup search request.
@@ -66,7 +64,7 @@ class AcousticBrainzClient:
         moods = taste_profile.get("mood_preferences") or {}
 
         # Build search body from taste profile audio preferences
-        body: Dict[str, Any] = {"limit": limit, "strategy": "closest"}
+        body: dict[str, Any] = {"limit": limit, "strategy": "closest"}
 
         # BPM range (±15 around preference)
         pref_bpm = audio.get("bpm")
@@ -92,7 +90,7 @@ class AcousticBrainzClient:
                 }
 
         # Mood preferences
-        mood_filters: Dict[str, Any] = {}
+        mood_filters: dict[str, Any] = {}
         mood_map = {
             "happy": "happy",
             "sad": "sad",
@@ -134,7 +132,7 @@ class AcousticBrainzClient:
             logger.warning("AcousticBrainz search failed: %s", exc)
             return []
 
-    async def get_track(self, mbid: str) -> Optional[Dict[str, Any]]:
+    async def get_track(self, mbid: str) -> dict[str, Any] | None:
         """Look up a single track by MusicBrainz Recording ID."""
         try:
             await self._throttle()

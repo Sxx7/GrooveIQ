@@ -14,18 +14,17 @@ from __future__ import annotations
 import logging
 import threading
 import time
-from typing import Any, Dict, List, Optional
 
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.session import AsyncSessionLocal
-from app.models.db import AlgorithmConfig
 from app.models.algorithm_config_schema import (
     AlgorithmConfigData,
     get_defaults,
     get_defaults_dict,
 )
+from app.models.db import AlgorithmConfig
 
 logger = logging.getLogger(__name__)
 
@@ -36,7 +35,7 @@ logger = logging.getLogger(__name__)
 _lock = threading.Lock()
 _active_config: AlgorithmConfigData = get_defaults()
 _active_version: int = 0
-_active_id: Optional[int] = None
+_active_id: int | None = None
 
 
 def get_config() -> AlgorithmConfigData:
@@ -97,7 +96,7 @@ def _apply_to_cache(row: AlgorithmConfig) -> None:
         _active_id = row.id
 
 
-async def get_active(session: AsyncSession) -> Optional[AlgorithmConfig]:
+async def get_active(session: AsyncSession) -> AlgorithmConfig | None:
     """Fetch the active config row."""
     result = await session.execute(
         select(AlgorithmConfig)
@@ -111,8 +110,8 @@ async def get_active(session: AsyncSession) -> Optional[AlgorithmConfig]:
 async def save_config(
     session: AsyncSession,
     config_data: AlgorithmConfigData,
-    name: Optional[str] = None,
-    created_by: Optional[str] = None,
+    name: str | None = None,
+    created_by: str | None = None,
 ) -> AlgorithmConfig:
     """
     Save a new config version and mark it active.
@@ -152,7 +151,7 @@ async def save_config(
     return row
 
 
-async def activate_version(session: AsyncSession, version: int) -> Optional[AlgorithmConfig]:
+async def activate_version(session: AsyncSession, version: int) -> AlgorithmConfig | None:
     """Activate a specific historical version (rollback)."""
     result = await session.execute(
         select(AlgorithmConfig).where(AlgorithmConfig.version == version)
@@ -178,7 +177,7 @@ async def get_history(
     session: AsyncSession,
     limit: int = 20,
     offset: int = 0,
-) -> List[AlgorithmConfig]:
+) -> list[AlgorithmConfig]:
     """Fetch config version history, newest first."""
     result = await session.execute(
         select(AlgorithmConfig)
@@ -191,7 +190,7 @@ async def get_history(
 
 async def reset_to_defaults(
     session: AsyncSession,
-    created_by: Optional[str] = None,
+    created_by: str | None = None,
 ) -> AlgorithmConfig:
     """Create a new version with default values and mark it active."""
     return await save_config(

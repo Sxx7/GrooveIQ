@@ -4,8 +4,6 @@ from __future__ import annotations
 
 import logging
 
-from typing import Optional
-
 from fastapi import APIRouter, Depends, HTTPException, Path, Query
 
 from app.core.config import settings
@@ -49,8 +47,8 @@ async def refresh_news(
 async def get_news(
     user_id: str = Path(..., min_length=1, max_length=128),
     limit: int = Query(25, ge=1, le=100),
-    tag: Optional[str] = Query(None, max_length=50, description="Filter by tag: FRESH, NEWS, DISCUSSION"),
-    subreddit: Optional[str] = Query(None, max_length=100, description="Filter to a specific subreddit"),
+    tag: str | None = Query(None, max_length=50, description="Filter by tag: FRESH, NEWS, DISCUSSION"),
+    subreddit: str | None = Query(None, max_length=100, description="Filter to a specific subreddit"),
     _key: str = Depends(require_api_key),
 ):
     check_user_access(_key, user_id)
@@ -60,10 +58,11 @@ async def get_news(
             detail="News feed is not enabled. Set NEWS_ENABLED=true in your .env file.",
         )
 
+    from sqlalchemy import select
+
     from app.db.session import AsyncSessionLocal
     from app.models.db import TrackFeatures, TrackInteraction, User
     from app.services.reddit_news import get_cache_age_minutes, get_personalized_feed
-    from sqlalchemy import select
 
     # Load user's taste profile + top artists/genres from library
     taste_profile = None

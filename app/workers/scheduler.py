@@ -21,7 +21,7 @@ from sqlalchemy import delete
 from app.core.config import settings
 from app.db.session import AsyncSessionLocal
 from app.models.db import ListenEvent
-from app.workers.library_scanner import trigger_scan, resume_interrupted_scans
+from app.workers.library_scanner import resume_interrupted_scans, trigger_scan
 
 logger = logging.getLogger(__name__)
 
@@ -153,6 +153,7 @@ async def _delayed_startup_pipeline() -> None:
     Now we poll until no scan is running before kicking off the pipeline.
     """
     import asyncio
+
     from app.workers.library_scanner import is_scan_running
 
     # Short grace period for the scan to start.
@@ -228,8 +229,13 @@ async def _periodic_recommendation_pipeline(trigger: str = "scheduled") -> None:
     ``"scheduled"`` (APScheduler), ``"manual"`` (API call), ``"startup"``.
     """
     import asyncio
+
     from app.services.pipeline_state import (
-        start_run, finish_run, step_start, step_complete, step_failed,
+        finish_run,
+        start_run,
+        step_complete,
+        step_failed,
+        step_start,
     )
 
     run = start_run(trigger=trigger)

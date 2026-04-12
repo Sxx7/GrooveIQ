@@ -16,11 +16,9 @@ from __future__ import annotations
 
 import logging
 import math
-import os
 import random
 import time
 from collections import Counter
-from typing import Dict, List, Optional, Set, Tuple
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -31,7 +29,7 @@ from app.services.algorithm_config import get_config
 logger = logging.getLogger(__name__)
 
 
-def _extract_artist(file_path: Optional[str]) -> str:
+def _extract_artist(file_path: str | None) -> str:
     """
     Heuristic: extract artist from file path.
     Assumes /library/Artist/Album/Track.mp3 layout.
@@ -49,13 +47,13 @@ def _extract_artist(file_path: Optional[str]) -> str:
 
 
 async def rerank(
-    ranked: List[Tuple[str, float]],
+    ranked: list[tuple[str, float]],
     user_id: str,
     session: AsyncSession,
-    device_type: Optional[str] = None,
-    output_type: Optional[str] = None,
+    device_type: str | None = None,
+    output_type: str | None = None,
     collect_actions: bool = False,
-) -> List[Tuple[str, float]]:
+) -> list[tuple[str, float]]:
     """
     Apply diversity and business-rule filters to ranked candidates.
 
@@ -77,7 +75,7 @@ async def rerank(
 
     # --- Load data needed for all rules ---
     now = int(time.time())
-    actions: List[Dict] = [] if collect_actions else None
+    actions: list[dict] = [] if collect_actions else None
 
     # Track features (for artist extraction and context-aware rules).
     feat_result = await session.execute(
@@ -96,7 +94,7 @@ async def rerank(
             TrackInteraction.track_id.in_(track_ids),
         )
     )
-    inter_map: Dict[str, TrackInteraction] = {
+    inter_map: dict[str, TrackInteraction] = {
         i.track_id: i for i in inter_result.scalars().all()
     }
 
@@ -122,7 +120,7 @@ async def rerank(
                     actions.append({"track_id": tid, "action": "skip_suppression", "score_before": round(old, 4), "score_after": round(score_map[tid], 4)})
 
     # --- Rule 3: Anti-repetition (suppress tracks played recently) ---
-    recently_played: Set[str] = set()
+    recently_played: set[str] = set()
     cutoff_repeat = now - int(cfg.repeat_window_hours * 3600)
     for tid in track_ids:
         inter = inter_map.get(tid)
@@ -132,7 +130,7 @@ async def rerank(
                 actions.append({"track_id": tid, "action": "anti_repetition_exclude", "reason": f"played_within_{cfg.repeat_window_hours}h"})
 
     # --- Rule 5: Context-aware — suppress short tracks in car/speaker mode ---
-    short_tracks: Set[str] = set()
+    short_tracks: set[str] = set()
     is_car_or_speaker = (
         device_type in ("car", "speaker")
         or output_type in ("car_audio", "bluetooth_speaker", "speaker")
@@ -168,19 +166,19 @@ async def rerank(
 
 
 # Module-level cache for last rerank actions (for debug mode).
-_last_rerank_actions: List[Dict] = []
+_last_rerank_actions: list[dict] = []
 
 
-def get_last_rerank_actions() -> List[Dict]:
+def get_last_rerank_actions() -> list[dict]:
     """Return the actions from the most recent rerank call (debug mode)."""
     return list(_last_rerank_actions)
 
 
 def _enforce_artist_diversity(
-    ranked: List[Tuple[str, float]],
-    artist_map: Dict[str, str],
-    actions: Optional[List[Dict]] = None,
-) -> List[Tuple[str, float]]:
+    ranked: list[tuple[str, float]],
+    artist_map: dict[str, str],
+    actions: list[dict] | None = None,
+) -> list[tuple[str, float]]:
     """
     Ensure no more than _ARTIST_MAX_PER_TOP tracks from the same artist
     appear in the first _ARTIST_DIVERSITY_TOP_N positions of the output.
@@ -189,8 +187,8 @@ def _enforce_artist_diversity(
     """
     cfg = get_config().reranker
     # Two-pass: first fill the top N slots respecting diversity, then append the rest.
-    accepted: List[Tuple[str, float]] = []
-    deferred: List[Tuple[str, float]] = []
+    accepted: list[tuple[str, float]] = []
+    deferred: list[tuple[str, float]] = []
     artist_count: Counter = Counter()
 
     for tid, score in ranked:
@@ -210,10 +208,10 @@ def _enforce_artist_diversity(
 
 
 def _inject_exploration_slots(
-    ranked: List[Tuple[str, float]],
-    inter_map: Dict[str, TrackInteraction],
-    actions: Optional[List[Dict]] = None,
-) -> List[Tuple[str, float]]:
+    ranked: list[tuple[str, float]],
+    inter_map: dict[str, TrackInteraction],
+    actions: list[dict] | None = None,
+) -> list[tuple[str, float]]:
     """
     Reserve ~15% of recommendation slots for under-explored tracks.
 
@@ -239,7 +237,7 @@ def _inject_exploration_slots(
     explore_pool = list(ranked[split:])
 
     # Score exploration candidates with uncertainty noise.
-    scored_explore: List[Tuple[str, float, float]] = []  # (tid, original, noisy)
+    scored_explore: list[tuple[str, float, float]] = []  # (tid, original, noisy)
     for tid, score in explore_pool:
         plays = inter_map[tid].play_count if tid in inter_map else 0
         # More noise for tracks with fewer plays.
@@ -256,7 +254,7 @@ def _inject_exploration_slots(
 
     # Interleave: place exploration tracks at evenly-spaced positions.
     # E.g. for 25 results and 4 explore slots → positions ~6, 12, 18, 24.
-    result: List[Tuple[str, float]] = []
+    result: list[tuple[str, float]] = []
     explore_ids = {tid for tid, _ in explore_picks}
     # Remove explore picks from exploit pool if they somehow overlap.
     exploit_pool = [(tid, s) for tid, s in exploit_pool if tid not in explore_ids]

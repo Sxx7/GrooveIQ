@@ -15,7 +15,7 @@ import logging
 import re
 import threading
 import time
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -48,10 +48,10 @@ def _normalize(s: str) -> str:
 # ---------------------------------------------------------------------------
 
 _lock = threading.Lock()
-_cache: Dict[str, Tuple[float, Dict[str, Any]]] = {}
+_cache: dict[str, tuple[float, dict[str, Any]]] = {}
 
 
-def _cache_get(key: str) -> Optional[Dict[str, Any]]:
+def _cache_get(key: str) -> dict[str, Any] | None:
     with _lock:
         entry = _cache.get(key)
         if entry and (time.monotonic() - entry[0]) < _CACHE_TTL:
@@ -59,7 +59,7 @@ def _cache_get(key: str) -> Optional[Dict[str, Any]]:
     return None
 
 
-def _cache_set(key: str, value: Dict[str, Any]) -> None:
+def _cache_set(key: str, value: dict[str, Any]) -> None:
     with _lock:
         _cache[key] = (time.monotonic(), value)
 
@@ -70,13 +70,13 @@ def _cache_set(key: str, value: Dict[str, Any]) -> None:
 
 async def _build_track_lookup(
     session: AsyncSession,
-) -> Dict[Tuple[str, str], str]:
+) -> dict[tuple[str, str], str]:
     """Build (normalized_artist, normalized_title) -> track_id lookup."""
     rows = (await session.execute(
         select(TrackFeatures.track_id, TrackFeatures.artist, TrackFeatures.title)
         .where(TrackFeatures.artist.isnot(None), TrackFeatures.title.isnot(None))
     )).all()
-    lookup: Dict[Tuple[str, str], str] = {}
+    lookup: dict[tuple[str, str], str] = {}
     for track_id, artist, title in rows:
         key = (_normalize(artist), _normalize(title))
         if key not in lookup:
@@ -86,13 +86,13 @@ async def _build_track_lookup(
 
 async def _build_artist_lookup(
     session: AsyncSession,
-) -> Dict[str, List[str]]:
+) -> dict[str, list[str]]:
     """Build normalized_artist -> [track_id, ...] lookup."""
     rows = (await session.execute(
         select(TrackFeatures.track_id, TrackFeatures.artist)
         .where(TrackFeatures.artist.isnot(None))
     )).all()
-    lookup: Dict[str, List[str]] = {}
+    lookup: dict[str, list[str]] = {}
     for track_id, artist in rows:
         norm = _normalize(artist)
         lookup.setdefault(norm, []).append(track_id)
@@ -103,7 +103,7 @@ async def _build_artist_lookup(
 # Image extraction
 # ---------------------------------------------------------------------------
 
-def _pick_image_url(images: list) -> Optional[str]:
+def _pick_image_url(images: list) -> str | None:
     """Pick the best image URL from Last.fm's image array.
 
     Prefers extralarge (300x300). Falls back to large, then any non-empty.
@@ -127,7 +127,7 @@ def _pick_image_url(images: list) -> Optional[str]:
 # Main fetch
 # ---------------------------------------------------------------------------
 
-async def get_artist_meta(name: str) -> Optional[Dict[str, Any]]:
+async def get_artist_meta(name: str) -> dict[str, Any] | None:
     """
     Fetch rich artist metadata combining Last.fm data with local library info.
 
@@ -142,7 +142,7 @@ async def get_artist_meta(name: str) -> Optional[Dict[str, Any]]:
     if cached is not None:
         return cached
 
-    from app.services.lastfm_client import get_lastfm_client, LastFmError
+    from app.services.lastfm_client import LastFmError, get_lastfm_client
 
     client = get_lastfm_client()
 
@@ -261,7 +261,7 @@ async def get_artist_meta(name: str) -> Optional[Dict[str, Any]]:
         except Exception as exc:
             logger.debug("Artist image fallback failed for %r: %s", name, exc)
 
-    result: Dict[str, Any] = {
+    result: dict[str, Any] = {
         "name": info.get("name", name),
         "mbid": info.get("mbid") or None,
         "bio": bio_summary or None,

@@ -16,24 +16,23 @@ from __future__ import annotations
 import logging
 import math
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 import numpy as np
 from sqlalchemy import func, select
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.session import AsyncSessionLocal
 from app.models.db import ListenEvent, TrackInteraction
-from app.services.feature_eng import build_features, NUM_FEATURES
+from app.services.feature_eng import build_features
 from app.services.ranker import get_model_stats as _ranker_stats
 
 logger = logging.getLogger(__name__)
 
 # Cached latest evaluation results.
-_last_eval: Dict[str, Any] = {}
+_last_eval: dict[str, Any] = {}
 
 
-def _ndcg_at_k(relevances: List[float], k: int) -> float:
+def _ndcg_at_k(relevances: list[float], k: int) -> float:
     """Compute NDCG@k from a list of relevance scores (in rank order)."""
     relevances = relevances[:k]
     if not relevances:
@@ -48,7 +47,7 @@ def _ndcg_at_k(relevances: List[float], k: int) -> float:
     return dcg / idcg
 
 
-async def evaluate_holdout(train_cutoff_ts: Optional[int] = None) -> Dict[str, Any]:
+async def evaluate_holdout(train_cutoff_ts: int | None = None) -> dict[str, Any]:
     """
     Split interactions into train/test by timestamp, train a fresh model
     on the train set, predict on test users, compute offline metrics.
@@ -115,15 +114,15 @@ async def evaluate_holdout(train_cutoff_ts: Optional[int] = None) -> Dict[str, A
     #   - random: shuffled order (expected NDCG depends on score distribution)
     #   - popularity: ranked by global play_count descending
     from collections import defaultdict
-    test_by_user: Dict[str, List] = defaultdict(list)
+    test_by_user: dict[str, list] = defaultdict(list)
     for inter in test_interactions:
         test_by_user[inter.user_id].append(inter)
 
-    ndcg10_scores: List[float] = []
-    ndcg50_scores: List[float] = []
+    ndcg10_scores: list[float] = []
+    ndcg50_scores: list[float] = []
     # Baselines
-    random_ndcg10: List[float] = []
-    popularity_ndcg10: List[float] = []
+    random_ndcg10: list[float] = []
+    popularity_ndcg10: list[float] = []
 
     async with AsyncSessionLocal() as session:
         # Pre-load global popularity (total play_count across all users).
@@ -208,7 +207,7 @@ async def evaluate_holdout(train_cutoff_ts: Optional[int] = None) -> Dict[str, A
     return {"metrics": metrics}
 
 
-async def get_impression_stats() -> Dict[str, Any]:
+async def get_impression_stats() -> dict[str, Any]:
     """
     Compute impression-to-stream metrics from reco_impression events.
     """
@@ -257,7 +256,7 @@ async def get_impression_stats() -> Dict[str, Any]:
         }
 
 
-async def get_model_report() -> Dict[str, Any]:
+async def get_model_report() -> dict[str, Any]:
     """Full model report: ranker stats + latest eval + impression metrics."""
     ranker = _ranker_stats()
     impressions = await get_impression_stats()

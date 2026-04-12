@@ -16,10 +16,10 @@ from __future__ import annotations
 import base64
 import logging
 import time
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 import numpy as np
-from sqlalchemy import select, delete, func
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.db import Playlist, PlaylistTrack, TrackFeatures
@@ -42,7 +42,7 @@ def _cosine_sim(a: np.ndarray, b: np.ndarray) -> float:
     return float(np.dot(a, b) / denom)
 
 
-async def _load_tracks(session: AsyncSession) -> List[TrackFeatures]:
+async def _load_tracks(session: AsyncSession) -> list[TrackFeatures]:
     """Load all analyzed tracks with non-null embeddings."""
     result = await session.execute(
         select(TrackFeatures)
@@ -73,7 +73,7 @@ _CAMELOT = {
 }
 
 
-def _camelot_compatible(code1: Tuple[int, str], code2: Tuple[int, str], max_distance: int = 1) -> bool:
+def _camelot_compatible(code1: tuple[int, str], code2: tuple[int, str], max_distance: int = 1) -> bool:
     """Check if two Camelot codes are harmonically compatible."""
     n1, l1 = code1
     n2, l2 = code2
@@ -94,7 +94,7 @@ def _camelot_compatible(code1: Tuple[int, str], code2: Tuple[int, str], max_dist
 # Strategy: Flow
 # ---------------------------------------------------------------------------
 
-def _generate_flow(tracks: List[TrackFeatures], seed_id: str, max_tracks: int) -> List[str]:
+def _generate_flow(tracks: list[TrackFeatures], seed_id: str, max_tracks: int) -> list[str]:
     """Greedy chain from seed, preferring smooth BPM/energy transitions."""
     seed = next((t for t in tracks if t.track_id == seed_id), None)
     if not seed:
@@ -160,7 +160,7 @@ def _generate_flow(tracks: List[TrackFeatures], seed_id: str, max_tracks: int) -
 # Strategy: Mood
 # ---------------------------------------------------------------------------
 
-def _generate_mood(tracks: List[TrackFeatures], mood: str, max_tracks: int) -> List[str]:
+def _generate_mood(tracks: list[TrackFeatures], mood: str, max_tracks: int) -> list[str]:
     """Filter tracks by mood tag confidence, order by energy arc."""
     scored = []
     for t in tracks:
@@ -194,7 +194,7 @@ def _generate_mood(tracks: List[TrackFeatures], mood: str, max_tracks: int) -> L
 # Strategy: Energy Curve
 # ---------------------------------------------------------------------------
 
-def _generate_energy_curve(tracks: List[TrackFeatures], curve: str, max_tracks: int) -> List[str]:
+def _generate_energy_curve(tracks: list[TrackFeatures], curve: str, max_tracks: int) -> list[str]:
     """Match tracks to a target energy profile."""
     n = min(max_tracks, len(tracks))
 
@@ -260,7 +260,7 @@ def _generate_energy_curve(tracks: List[TrackFeatures], curve: str, max_tracks: 
 # Strategy: Key-Compatible (Camelot)
 # ---------------------------------------------------------------------------
 
-def _generate_key_compatible(tracks: List[TrackFeatures], seed_id: str, max_tracks: int) -> List[str]:
+def _generate_key_compatible(tracks: list[TrackFeatures], seed_id: str, max_tracks: int) -> list[str]:
     """Chain tracks using Camelot wheel harmonic compatibility."""
     seed = next((t for t in tracks if t.track_id == seed_id), None)
     if not seed:
@@ -331,8 +331,8 @@ async def generate_playlist(
     session: AsyncSession,
     name: str,
     strategy: str,
-    seed_track_id: Optional[str],
-    params: Optional[Dict[str, Any]],
+    seed_track_id: str | None,
+    params: dict[str, Any] | None,
     max_tracks: int,
 ) -> Playlist:
     """
@@ -393,7 +393,7 @@ async def generate_playlist(
 
 async def get_playlist_with_tracks(
     session: AsyncSession, playlist_id: int
-) -> Optional[Dict[str, Any]]:
+) -> dict[str, Any] | None:
     """Load a playlist with its tracks joined to track_features."""
     # Get playlist
     result = await session.execute(

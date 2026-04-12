@@ -24,7 +24,6 @@ import logging
 import os
 import time
 from pathlib import Path
-from typing import Optional
 
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -32,12 +31,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import settings
 from app.db.session import AsyncSessionLocal
 from app.models.db import LibraryScanState, ScanLog, TrackFeatures
-from app.services.audio_analysis import compute_file_hash, generate_track_id, ANALYSIS_VERSION
+from app.services.audio_analysis import generate_track_id
 
 logger = logging.getLogger(__name__)
 
 # Active scan tracking
-_running_scan_id: Optional[int] = None
+_running_scan_id: int | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -74,7 +73,7 @@ async def trigger_scan() -> int:
     return scan_id
 
 
-async def resume_interrupted_scans() -> Optional[int]:
+async def resume_interrupted_scans() -> int | None:
     """
     Called on startup.  If a previous scan was interrupted (status='running'),
     mark it as 'interrupted' and start a fresh scan that skips already-analyzed
@@ -111,7 +110,7 @@ async def resume_interrupted_scans() -> Optional[int]:
     return await trigger_scan()
 
 
-async def get_scan_status(scan_id: int) -> Optional[dict]:
+async def get_scan_status(scan_id: int) -> dict | None:
     async with AsyncSessionLocal() as session:
         result = await session.execute(
             select(LibraryScanState).where(LibraryScanState.id == scan_id)

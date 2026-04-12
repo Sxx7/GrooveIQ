@@ -7,12 +7,21 @@ import time
 
 from fastapi import APIRouter, Depends, Query
 from fastapi.responses import StreamingResponse
-from sqlalchemy import select, func, case
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.security import require_admin, require_api_key
 from app.db.session import get_session
-from app.models.db import ListenEvent, ListenSession, Playlist, TrackFeatures, TrackInteraction, User, LibraryScanState, ScanLog
+from app.models.db import (
+    LibraryScanState,
+    ListenEvent,
+    ListenSession,
+    Playlist,
+    ScanLog,
+    TrackFeatures,
+    TrackInteraction,
+    User,
+)
 from app.services.audio_analysis import ANALYSIS_VERSION
 
 router = APIRouter()
@@ -159,6 +168,7 @@ async def trigger_pipeline(
     if get_current_run():
         return {"message": "Pipeline already running", "status": "running"}
     import asyncio
+
     from app.workers.scheduler import run_recommendation_pipeline_now
     audit_log("pipeline_run", api_key=_key)
     asyncio.create_task(run_recommendation_pipeline_now(trigger="manual"))
@@ -175,8 +185,10 @@ async def reset_pipeline(
     _key: str = Depends(require_api_key),
 ):
     require_admin(_key)
-    from sqlalchemy import delete, update
     import asyncio
+
+    from sqlalchemy import delete, update
+
     from app.core.audit import audit_log
     from app.workers.scheduler import run_recommendation_pipeline_now
 
@@ -230,6 +242,7 @@ async def pipeline_stream(
 ):
     require_admin(_key)
     from fastapi import HTTPException as _HTTPException
+
     from app.services.pipeline_state import subscribe, unsubscribe
 
     try:
@@ -246,7 +259,7 @@ async def pipeline_stream(
                     event = await asyncio.wait_for(queue.get(), timeout=30.0)
                     event_type = event.pop("event", "message")
                     yield f"event: {event_type}\ndata: {json.dumps(event)}\n\n"
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     # Send keepalive comment every 30s to prevent proxy/browser timeouts.
                     yield ": keepalive\n\n"
         except asyncio.CancelledError:
@@ -589,12 +602,13 @@ async def pipeline_models(
     _key: str = Depends(require_api_key),
 ):
     require_admin(_key)
-    from app.services.ranker import get_model_stats
     from app.services.collab_filter import model_stats as cf_stats
-    from app.services.session_embeddings import vocab_size as emb_vocab_size
+    from app.services.lastfm_candidates import cache_age as lastfm_cache_age
+    from app.services.lastfm_candidates import cache_size as lastfm_cache_size
+    from app.services.ranker import get_model_stats
     from app.services.sasrec import vocab_size as sasrec_vocab_size
+    from app.services.session_embeddings import vocab_size as emb_vocab_size
     from app.services.session_gru import is_ready as gru_is_ready
-    from app.services.lastfm_candidates import cache_size as lastfm_cache_size, cache_age as lastfm_cache_age
 
     return {
         "ranker": get_model_stats(),

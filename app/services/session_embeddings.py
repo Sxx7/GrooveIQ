@@ -14,11 +14,9 @@ from __future__ import annotations
 
 import logging
 import threading
-from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.session import AsyncSessionLocal
 from app.models.db import ListenEvent, ListenSession
@@ -28,11 +26,11 @@ logger = logging.getLogger(__name__)
 
 # Singleton state.
 _lock = threading.Lock()
-_model: Optional[object] = None  # gensim Word2Vec
-_track_ids: List[str] = []       # tracks in the model vocabulary
+_model: object | None = None  # gensim Word2Vec
+_track_ids: list[str] = []       # tracks in the model vocabulary
 
 
-async def _load_session_sequences() -> List[List[str]]:
+async def _load_session_sequences() -> list[list[str]]:
     """
     Load track sequences from sessions.
 
@@ -52,7 +50,7 @@ async def _load_session_sequences() -> List[List[str]]:
         if not sessions:
             return []
 
-        sequences: List[List[str]] = []
+        sequences: list[list[str]] = []
 
         for sess_key, user_id, eid_min, eid_max in sessions:
             # Fetch ordered play events within this session's event range.
@@ -69,7 +67,7 @@ async def _load_session_sequences() -> List[List[str]]:
             track_ids = [row[0] for row in ev_result.all()]
 
             # Deduplicate consecutive duplicates (play_start + play_end for same track).
-            deduped: List[str] = []
+            deduped: list[str] = []
             for tid in track_ids:
                 if not deduped or deduped[-1] != tid:
                     deduped.append(tid)
@@ -80,7 +78,7 @@ async def _load_session_sequences() -> List[List[str]]:
     return sequences
 
 
-def _train_model_sync(sequences: List[List[str]]) -> Optional[object]:
+def _train_model_sync(sequences: list[list[str]]) -> object | None:
     """CPU-bound Word2Vec training. Runs in a thread executor."""
     from gensim.models import Word2Vec
 
@@ -98,7 +96,7 @@ def _train_model_sync(sequences: List[List[str]]) -> Optional[object]:
     return model
 
 
-async def train() -> Dict:
+async def train() -> dict:
     """
     Train session skip-gram embeddings from all listening sessions.
 
@@ -166,8 +164,8 @@ async def train() -> Dict:
 def get_similar_tracks(
     track_id: str,
     k: int = 50,
-    exclude_ids: Optional[set] = None,
-) -> List[Tuple[str, float]]:
+    exclude_ids: set | None = None,
+) -> list[tuple[str, float]]:
     """
     Find tracks that co-occur in sessions with the given track.
 
@@ -186,7 +184,7 @@ def get_similar_tracks(
     except KeyError:
         return []
 
-    results: List[Tuple[str, float]] = []
+    results: list[tuple[str, float]] = []
     for tid, score in similar:
         if exclude_ids and tid in exclude_ids:
             continue
@@ -198,10 +196,10 @@ def get_similar_tracks(
 
 
 def get_similar_to_tracks(
-    track_ids: List[str],
+    track_ids: list[str],
     k: int = 50,
-    exclude_ids: Optional[set] = None,
-) -> List[Tuple[str, float]]:
+    exclude_ids: set | None = None,
+) -> list[tuple[str, float]]:
     """
     Find tracks similar to the centroid of multiple tracks.
 
@@ -232,7 +230,7 @@ def get_similar_to_tracks(
         return []
 
     input_set = set(track_ids)
-    results: List[Tuple[str, float]] = []
+    results: list[tuple[str, float]] = []
     for tid, score in similar:
         if tid in input_set:
             continue

@@ -11,14 +11,13 @@ so it must be importable without app-level dependencies.
 from __future__ import annotations
 
 import logging
-from typing import Optional
 
 logger = logging.getLogger(__name__)
 
 try:
     import mutagen
-    from mutagen.easyid3 import EasyID3
-    from mutagen.easymp4 import EasyMP4Tags
+    from mutagen.easyid3 import EasyID3  # noqa: F401
+    from mutagen.easymp4 import EasyMP4Tags  # noqa: F401
     MUTAGEN_AVAILABLE = True
 except ImportError:
     MUTAGEN_AVAILABLE = False
@@ -88,7 +87,7 @@ def read_metadata(file_path: str) -> dict:
         return empty
 
 
-def _parse_track_number(val: str) -> Optional[int]:
+def _parse_track_number(val: str) -> int | None:
     """Parse track number from formats like '3', '3/12', '03'."""
     try:
         return int(val.split("/")[0])

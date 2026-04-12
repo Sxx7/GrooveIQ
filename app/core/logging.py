@@ -1,5 +1,7 @@
 """GrooveIQ – Logging configuration."""
-import logging, sys
+import logging
+import sys
+
 
 def setup_logging():
     from app.core.config import settings

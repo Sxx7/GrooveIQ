@@ -32,16 +32,15 @@ Edge cases:
 from __future__ import annotations
 
 import logging
-import math
 import time
 from collections import defaultdict
-from typing import Dict, List, Optional, Sequence, Tuple
+from collections.abc import Sequence
 
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.session import AsyncSessionLocal
-from app.models.db import ListenEvent, TrackInteraction, TrackFeatures
+from app.models.db import ListenEvent, TrackInteraction
 from app.services.algorithm_config import get_config
 
 logger = logging.getLogger(__name__)
@@ -56,7 +55,7 @@ def _get_scoring_weights():
     return cfg
 
 
-def _get_context_skip_weights() -> Dict[str, float]:
+def _get_context_skip_weights() -> dict[str, float]:
     """Build context_type → early-skip weight map from config."""
     cfg = get_config().track_scoring
     return {
@@ -157,14 +156,14 @@ async def _fetch_events_after(
 
 async def _process_events(
     session: AsyncSession, events: Sequence
-) -> Tuple[int, int]:
+) -> tuple[int, int]:
     """
     Aggregate events into TrackInteraction rows.
 
     Returns (created, updated).
     """
     # Group events by (user_id, track_id).
-    by_pair: Dict[Tuple[str, str], List] = defaultdict(list)
+    by_pair: dict[tuple[str, str], list] = defaultdict(list)
     for ev in events:
         by_pair[(ev.user_id, ev.track_id)].append(ev)
 
@@ -248,15 +247,15 @@ async def _process_events(
 
 
 async def _fetch_existing_interactions(
-    session: AsyncSession, pairs: List[Tuple[str, str]]
-) -> Dict[Tuple[str, str], TrackInteraction]:
+    session: AsyncSession, pairs: list[tuple[str, str]]
+) -> dict[tuple[str, str], TrackInteraction]:
     """Bulk-fetch existing TrackInteraction rows for a list of (user, track) pairs."""
     if not pairs:
         return {}
 
     # Build OR conditions for each pair.  For large pair sets this could be
     # slow, but _EVENT_CHUNK_SIZE bounds the number of unique pairs per chunk.
-    from sqlalchemy import or_, and_
+    from sqlalchemy import and_, or_
 
     conditions = [
         and_(TrackInteraction.user_id == uid, TrackInteraction.track_id == tid)
@@ -269,7 +268,7 @@ async def _fetch_existing_interactions(
     return {(r.user_id, r.track_id): r for r in rows}
 
 
-def _compute_delta(events: List) -> dict:
+def _compute_delta(events: list) -> dict:
     """
     Compute aggregate counts from a batch of events for one (user, track) pair.
     """
@@ -290,8 +289,8 @@ def _compute_delta(events: List) -> dict:
     total_seekbk = 0
     # Context-modulated skip penalty: sum of per-skip weights (replaces flat count * weight).
     context_skip_penalty = 0.0
-    first_ts: Optional[int] = None
-    last_ts: Optional[int] = None
+    first_ts: int | None = None
+    last_ts: int | None = None
     max_event_id = 0
 
     for ev in events:
@@ -342,7 +341,7 @@ def _compute_delta(events: List) -> dict:
                     context_skip_penalty += skip_w
 
             # Check for heavy seeking on this play.
-            seek_total = (ev.num_seekfwd or 0) + (ev.num_seekbk or 0)
+            (ev.num_seekfwd or 0) + (ev.num_seekbk or 0)
             total_seekfwd += ev.num_seekfwd or 0
             total_seekbk += ev.num_seekbk or 0
 

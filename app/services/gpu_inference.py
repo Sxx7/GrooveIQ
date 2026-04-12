@@ -21,8 +21,6 @@ from __future__ import annotations
 import logging
 import os
 import time
-from pathlib import Path
-from typing import Optional
 
 import numpy as np
 
@@ -75,7 +73,7 @@ _PATCH_HOP = 187           # non-overlapping patches (fastest)
 # ---------------------------------------------------------------------------
 
 _sessions: dict[str, object] = {}
-_onnx_available: Optional[bool] = None
+_onnx_available: bool | None = None
 _models_dir: str = ""
 
 
@@ -180,7 +178,6 @@ def _get_session(model_file: str):
             "gpu_mem_limit": 512 * 1024 * 1024,  # 512 MB cap
         }))
     elif backend == "openvino":
-        import json
         providers.append(("OpenVINOExecutionProvider", {
             "device_type": "GPU",
             "precision": "FP16",
@@ -288,7 +285,7 @@ def extract_melspecs_batch(file_paths: list[str], max_seconds: float = 15.0) -> 
     """
     per_file_patches: list[np.ndarray] = []
     file_patch_counts: list[int] = []
-    errors: list[Optional[str]] = [None] * len(file_paths)
+    errors: list[str | None] = [None] * len(file_paths)
 
     for i, fp in enumerate(file_paths):
         try:
@@ -318,7 +315,7 @@ def extract_melspecs_batch(file_paths: list[str], max_seconds: float = 15.0) -> 
 def infer_from_patches(
     all_patches: np.ndarray,
     file_patch_counts: list[int],
-    errors: list[Optional[str]],
+    errors: list[str | None],
     file_paths: list[str],
 ) -> list[dict]:
     """

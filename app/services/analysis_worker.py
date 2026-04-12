@@ -34,7 +34,6 @@ import os
 import time
 from pathlib import Path
 from queue import Empty
-from typing import Optional
 from uuid import uuid4
 
 import numpy as np
@@ -97,11 +96,11 @@ _PROJ_MATRIX = (_RNG.randn(_EFFNET_DIM, _EMBEDDING_DIM) / np.sqrt(_EMBEDDING_DIM
 # Worker pool management (runs in main/FastAPI process)
 # ═══════════════════════════════════════════════════════════════════════════
 
-_pool: Optional["AnalysisWorkerPool"] = None
-_pool_lock: Optional[asyncio.Lock] = None
+_pool: AnalysisWorkerPool | None = None
+_pool_lock: asyncio.Lock | None = None
 
 
-async def get_worker_pool() -> "AnalysisWorkerPool":
+async def get_worker_pool() -> AnalysisWorkerPool:
     """Get or lazily create the singleton analysis worker pool."""
     global _pool, _pool_lock
     if _pool is not None and _pool._running:
@@ -138,10 +137,10 @@ class AnalysisWorkerPool:
     def __init__(self, num_workers: int):
         self._num_workers = max(1, num_workers)
         self._workers: list[mp.Process] = []
-        self._input_queue: Optional[mp.Queue] = None
-        self._output_queue: Optional[mp.Queue] = None
+        self._input_queue: mp.Queue | None = None
+        self._output_queue: mp.Queue | None = None
         self._pending: dict[str, asyncio.Future] = {}
-        self._collector_task: Optional[asyncio.Task] = None
+        self._collector_task: asyncio.Task | None = None
         self._running = False
 
     async def start(self) -> None:
@@ -167,8 +166,8 @@ class AnalysisWorkerPool:
     async def analyze(
         self,
         file_path: str,
-        cached: Optional[tuple] = None,
-    ) -> Optional[dict]:
+        cached: tuple | None = None,
+    ) -> dict | None:
         """
         Submit a file for analysis.
 
@@ -190,7 +189,7 @@ class AnalysisWorkerPool:
 
         try:
             return await asyncio.wait_for(future, timeout=settings.ANALYSIS_TIMEOUT)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             self._pending.pop(request_id, None)
             return {
                 "file_path": file_path,
@@ -526,11 +525,11 @@ def _init_onnx_sessions() -> dict:
 
 def _analyze_file(
     file_path: str,
-    cached: Optional[tuple],
+    cached: tuple | None,
     es,
     onnx_sessions: dict,
     proj_matrix: np.ndarray,
-) -> Optional[dict]:
+) -> dict | None:
     """
     Full single-pass analysis for one audio file.
 
@@ -806,7 +805,7 @@ def _extract_ml(
     result: dict,
     es,
     onnx_sessions: dict,
-) -> Optional[np.ndarray]:
+) -> np.ndarray | None:
     """
     Extract ML features via ONNX: danceability, mood, valence, instrumentalness.
 
@@ -916,10 +915,10 @@ def _extract_ml(
 
 def _build_embedding(
     result: dict,
-    effnet_embedding: Optional[np.ndarray],
+    effnet_embedding: np.ndarray | None,
     hpcp_frames: list,
     proj_matrix: np.ndarray,
-) -> Optional[str]:
+) -> str | None:
     """
     Build a 64-dim float32 embedding vector and return as base64 string.
 

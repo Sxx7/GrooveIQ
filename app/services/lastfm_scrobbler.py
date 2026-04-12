@@ -18,9 +18,8 @@ from __future__ import annotations
 import logging
 import time
 from dataclasses import dataclass
-from typing import Optional
 
-from sqlalchemy import select, update, delete, func
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
@@ -42,14 +41,14 @@ class _TrackMeta:
     """Minimal track metadata needed for scrobbling."""
     artist: str
     title: str
-    album: Optional[str] = None
-    duration_s: Optional[float] = None
+    album: str | None = None
+    duration_s: float | None = None
 
 
 async def _resolve_track_meta(
     session: AsyncSession,
     track_id: str,
-) -> Optional[_TrackMeta]:
+) -> _TrackMeta | None:
     """
     Resolve artist/title for a track_id using multiple strategies:
       1. TrackFeatures.track_id (direct match after media server sync)
@@ -204,7 +203,7 @@ async def process_scrobble_queue() -> dict:
     Process pending scrobbles.  Groups by user, batches up to 50 per API call.
     Returns summary dict.
     """
-    from app.services.lastfm_client import decrypt_session_key, get_lastfm_client, LastFmError
+    from app.services.lastfm_client import LastFmError, decrypt_session_key, get_lastfm_client
 
     processed = 0
     failed = 0
@@ -379,7 +378,7 @@ async def backfill_scrobbles(user_id: str) -> dict:
                     "already_queued": 0, "total_play_ends": 0}
 
         # Get all track_ids already in the scrobble queue for this user
-        existing = set(
+        set(
             row[0] for row in (await session.execute(
                 select(ScrobbleQueue.track_id, ScrobbleQueue.timestamp)
                 .where(ScrobbleQueue.user_id == user_id)

@@ -16,7 +16,7 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 
 class StepStatus(str, Enum):
@@ -54,13 +54,13 @@ PIPELINE_STEPS = [
 class StepResult:
     name: str
     status: StepStatus = StepStatus.PENDING
-    started_at: Optional[float] = None
-    ended_at: Optional[float] = None
-    duration_ms: Optional[int] = None
-    error: Optional[str] = None
-    metrics: Dict[str, Any] = field(default_factory=dict)
+    started_at: float | None = None
+    ended_at: float | None = None
+    duration_ms: int | None = None
+    error: str | None = None
+    metrics: dict[str, Any] = field(default_factory=dict)
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "name": self.name,
             "status": self.status.value,
@@ -76,13 +76,13 @@ class StepResult:
 class PipelineRun:
     run_id: str
     started_at: float
-    ended_at: Optional[float] = None
+    ended_at: float | None = None
     status: RunStatus = RunStatus.RUNNING
-    steps: Dict[str, StepResult] = field(default_factory=dict)
+    steps: dict[str, StepResult] = field(default_factory=dict)
     trigger: str = "scheduled"  # "scheduled" | "manual" | "startup"
-    config_version: Optional[int] = None
+    config_version: int | None = None
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "run_id": self.run_id,
             "started_at": self.started_at,
@@ -101,9 +101,9 @@ class PipelineRun:
 
 # ── Singleton state ──────────────────────────────────────────────────
 
-_runs: List[PipelineRun] = []
-_current_run: Optional[PipelineRun] = None
-_sse_queues: List[asyncio.Queue] = []
+_runs: list[PipelineRun] = []
+_current_run: PipelineRun | None = None
+_sse_queues: list[asyncio.Queue] = []
 MAX_HISTORY = 20
 MAX_SSE_SUBSCRIBERS = 20  # prevent connection exhaustion
 
@@ -123,9 +123,9 @@ def _redact_error(error: str, max_length: int = 500) -> str:
     return msg
 
 
-def _broadcast(event: Dict[str, Any]) -> None:
+def _broadcast(event: dict[str, Any]) -> None:
     """Push an SSE event to all connected subscribers."""
-    dead: List[asyncio.Queue] = []
+    dead: list[asyncio.Queue] = []
     for q in _sse_queues:
         try:
             q.put_nowait(event)
@@ -226,7 +226,7 @@ def step_start(run: PipelineRun, step_name: str) -> None:
 def step_complete(
     run: PipelineRun,
     step_name: str,
-    metrics: Optional[Dict[str, Any]] = None,
+    metrics: dict[str, Any] | None = None,
 ) -> None:
     """Mark a step as successfully completed."""
     step = run.steps[step_name]
@@ -272,19 +272,19 @@ def step_failed(
 
 # ── Queries ──────────────────────────────────────────────────────────
 
-def get_current_run() -> Optional[Dict[str, Any]]:
+def get_current_run() -> dict[str, Any] | None:
     """Return the currently running pipeline, if any."""
     if _current_run:
         return _current_run.to_dict()
     return None
 
 
-def get_run_history(limit: int = 10) -> List[Dict[str, Any]]:
+def get_run_history(limit: int = 10) -> list[dict[str, Any]]:
     """Return the last N pipeline runs, most recent first."""
     return [r.to_dict() for r in reversed(_runs[-limit:])]
 
 
-def get_last_run() -> Optional[Dict[str, Any]]:
+def get_last_run() -> dict[str, Any] | None:
     """Return the most recently completed run."""
     for run in reversed(_runs):
         if run.status != RunStatus.RUNNING:

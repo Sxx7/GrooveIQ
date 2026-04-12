@@ -25,9 +25,30 @@ ignore = [
     "E501",   # line length — handled by formatter
     "S104",   # binding to 0.0.0.0 — intentional in container
     "S108",   # /tmp usage — fine in container with tmpfs
+    "S105",   # hardcoded password strings — false positives on config var names
+    "S110",   # try-except-pass — intentional for optional/graceful fallbacks
+    "S112",   # try-except-continue — intentional in batch processing loops
+    "S310",   # suspicious URL open — httpx usage is safe
+    "S324",   # hashlib insecure hash — SHA-256 used, MD5/SHA1 only for non-security
+    "B007",   # unused loop variable — intentional in range() loops
     "B008",   # function call in default arg — FastAPI Depends() pattern
+    "B904",   # raise without from — acceptable in service error handling
+    "B905",   # zip without strict — length-matched iterables
+    "N803",   # invalid argument name — matching external API conventions
+    "N806",   # non-lowercase variable — matching domain conventions (e.g. BPM, FAISS)
     "UP007",  # X | Y union syntax — keep Optional[] for pydantic compat
+    "UP042",  # replace StrEnum — keep str,Enum for 3.10 compat
+    "RUF001", # ambiguous unicode in strings — intentional (e.g. music symbols)
+    "RUF002", # ambiguous unicode in docstrings — en dashes in prose are fine
+    "RUF003", # ambiguous unicode in comments — en dashes in comments are fine
+    "RUF006", # asyncio dangling task — fire-and-forget tasks are intentional
     "RUF012", # mutable class var annotations — SQLAlchemy models use these
+    "SIM102", # collapsible if — readability preference
+    "SIM105", # suppressible exception — explicit try/except preferred
+    "SIM108", # ternary instead of if/else — readability preference
+    "SIM110", # reimplemented builtin — readability preference
+    "ASYNC240", # blocking path in async — acceptable for config file reads
+    "TC001", "TC002", "TC003",  # type-checking imports — not worth the churn
 ]
 
 [lint.per-file-ignores]
@@ -37,6 +58,12 @@ ignore = [
 ]
 "app/services/analysis_worker.py" = [
     "T20",    # print() used for subprocess IPC
+]
+"app/core/config.py" = [
+    "T20",    # print() for startup validation messages
+]
+"app/core/keygen.py" = [
+    "T20",    # print() for CLI output
 ]
 
 [lint.isort]

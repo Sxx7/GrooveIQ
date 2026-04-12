@@ -17,12 +17,9 @@ from __future__ import annotations
 import base64
 import logging
 import threading
-from typing import Dict, List, Optional, Tuple
 
 import numpy as np
-
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.session import AsyncSessionLocal
 from app.models.db import TrackFeatures
@@ -31,17 +28,17 @@ logger = logging.getLogger(__name__)
 
 # Singleton state — protected by a lock for atomic swap.
 _lock = threading.Lock()
-_index: Optional[object] = None          # faiss.Index
-_id_to_track: List[str] = []             # FAISS int id → track_id
-_track_to_id: Dict[str, int] = {}        # track_id → FAISS int id
-_embeddings: Optional[np.ndarray] = None # raw normalised matrix (for centroid queries)
+_index: object | None = None          # faiss.Index
+_id_to_track: list[str] = []             # FAISS int id → track_id
+_track_to_id: dict[str, int] = {}        # track_id → FAISS int id
+_embeddings: np.ndarray | None = None # raw normalised matrix (for centroid queries)
 
 # Threshold for switching from flat to IVF.
 _IVF_THRESHOLD = 50_000
 _EMBEDDING_DIM = 64
 
 
-def _decode_embedding(b64: str) -> Optional[np.ndarray]:
+def _decode_embedding(b64: str) -> np.ndarray | None:
     """Decode a base64-encoded float32 embedding, return None on failure."""
     try:
         vec = np.frombuffer(base64.b64decode(b64), dtype=np.float32).copy()
@@ -56,15 +53,15 @@ def _decode_embedding(b64: str) -> Optional[np.ndarray]:
         return None
 
 
-def _build_index_sync(rows: List[Tuple[str, str]]) -> Tuple[Optional[object], List[str], Dict[str, int], Optional[np.ndarray], int]:
+def _build_index_sync(rows: list[tuple[str, str]]) -> tuple[object | None, list[str], dict[str, int], np.ndarray | None, int]:
     """
     CPU-bound FAISS index construction.  Runs in a thread executor so it
     doesn't block the async event loop.
     """
     import faiss
 
-    track_ids: List[str] = []
-    vectors: List[np.ndarray] = []
+    track_ids: list[str] = []
+    vectors: list[np.ndarray] = []
     for track_id, emb_b64 in rows:
         vec = _decode_embedding(emb_b64)
         if vec is not None:
@@ -132,7 +129,7 @@ async def rebuild() -> int:
     return await build_index()
 
 
-def search(embedding: np.ndarray, k: int = 50, exclude_ids: Optional[set] = None) -> List[Tuple[str, float]]:
+def search(embedding: np.ndarray, k: int = 50, exclude_ids: set | None = None) -> list[tuple[str, float]]:
     """
     Search the index for the k nearest neighbours of `embedding`.
 
@@ -162,7 +159,7 @@ def search(embedding: np.ndarray, k: int = 50, exclude_ids: Optional[set] = None
     fetch_k = min(k + (len(exclude_ids) if exclude_ids else 0) + 10, len(id_to_track))
     scores, ids = index.search(vec, fetch_k)
 
-    results: List[Tuple[str, float]] = []
+    results: list[tuple[str, float]] = []
     for score, idx in zip(scores[0], ids[0]):
         if idx < 0:
             continue
@@ -176,7 +173,7 @@ def search(embedding: np.ndarray, k: int = 50, exclude_ids: Optional[set] = None
     return results
 
 
-def search_by_track_id(track_id: str, k: int = 50, exclude_ids: Optional[set] = None) -> List[Tuple[str, float]]:
+def search_by_track_id(track_id: str, k: int = 50, exclude_ids: set | None = None) -> list[tuple[str, float]]:
     """Search for neighbours of a track already in the index."""
     with _lock:
         track_map = _track_to_id
@@ -194,7 +191,7 @@ def search_by_track_id(track_id: str, k: int = 50, exclude_ids: Optional[set] = 
     return search(vec, k=k, exclude_ids=excl)
 
 
-def get_embedding(track_id: str) -> Optional[np.ndarray]:
+def get_embedding(track_id: str) -> np.ndarray | None:
     """Return the normalised embedding for a track, or None."""
     with _lock:
         track_map = _track_to_id
@@ -205,7 +202,7 @@ def get_embedding(track_id: str) -> Optional[np.ndarray]:
     return embs[track_map[track_id]].copy()
 
 
-def get_centroid(track_ids: List[str]) -> Optional[np.ndarray]:
+def get_centroid(track_ids: list[str]) -> np.ndarray | None:
     """
     Compute the mean embedding (centroid) of a list of tracks.
     Returns None if none of the tracks are in the index.

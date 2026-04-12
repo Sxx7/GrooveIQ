@@ -9,10 +9,9 @@ from __future__ import annotations
 
 import time
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from pydantic import BaseModel, Field, field_validator, model_validator
-
 
 # ---------------------------------------------------------------------------
 # Event types
@@ -57,150 +56,150 @@ class EventCreate(BaseModel):
     track_id:   str = Field(..., min_length=1, max_length=128,
                             description="Your media server's track identifier.")
     event_type: EventType
-    value:      Optional[float] = Field(
+    value:      float | None = Field(
         None,
         description="Event-specific numeric payload. "
                     "play_end → completion ratio (0–1). "
                     "skip / pause / resume → elapsed seconds. "
                     "rating → 1–5. volume_* → 0–100."
     )
-    context:    Optional[str] = Field(
+    context:    str | None = Field(
         None, max_length=64,
         description="Optional context label. E.g. 'workout', 'sleep', 'commute'."
     )
-    client_id:  Optional[str] = Field(None, max_length=64)
-    session_id: Optional[str] = Field(None, max_length=64)
+    client_id:  str | None = Field(None, max_length=64)
+    session_id: str | None = Field(None, max_length=64)
 
     # --- Rich behavioral / session / context signals -------------------------
     # Impression & exposure
-    surface:    Optional[str] = Field(
+    surface:    str | None = Field(
         None, max_length=64,
         description="UI surface where the track was shown. E.g. 'home', 'search', 'now_playing', 'playlist_view'."
     )
-    position:   Optional[int] = Field(
+    position:   int | None = Field(
         None, ge=0,
         description="Rank position if the track was part of a recommendation list."
     )
-    request_id: Optional[str] = Field(
+    request_id: str | None = Field(
         None, max_length=128,
         description="Ties an impression to downstream streams/actions. Shared across events from one reco request."
     )
-    model_version: Optional[str] = Field(
+    model_version: str | None = Field(
         None, max_length=64,
         description="Which recommendation model version produced this impression."
     )
 
     # Sessionization
-    session_position: Optional[int] = Field(
+    session_position: int | None = Field(
         None, ge=0,
         description="Track's ordinal position within the session (0-based)."
     )
 
     # Satisfaction / dwell
-    dwell_ms:   Optional[int] = Field(
+    dwell_ms:   int | None = Field(
         None, ge=0,
         description="Milliseconds the user actually listened to this track. Used to derive skip thresholds."
     )
 
     # Pause buckets
-    pause_duration_ms: Optional[int] = Field(
+    pause_duration_ms: int | None = Field(
         None, ge=0,
         description="Inter-track pause duration in ms before this track started."
     )
 
     # Seek intensity
-    num_seekfwd: Optional[int] = Field(
+    num_seekfwd: int | None = Field(
         None, ge=0,
         description="Number of forward seeks during this track."
     )
-    num_seekbk:  Optional[int] = Field(
+    num_seekbk:  int | None = Field(
         None, ge=0,
         description="Number of backward seeks during this track."
     )
 
     # Shuffle state
-    shuffle:    Optional[bool] = Field(
+    shuffle:    bool | None = Field(
         None,
         description="Whether shuffle was active when this track played."
     )
 
     # Context / source
-    context_type: Optional[str] = Field(
+    context_type: str | None = Field(
         None, max_length=32,
         description="Source context: 'playlist', 'album', 'radio', 'search', 'home_shelf', etc."
     )
-    context_id: Optional[str] = Field(
+    context_id: str | None = Field(
         None, max_length=128,
         description="ID of the source context (playlist ID, album ID, radio station ID)."
     )
-    context_switch: Optional[bool] = Field(
+    context_switch: bool | None = Field(
         None,
         description="True if the user just switched to a new context before this track."
     )
 
     # Start / end reason codes
-    reason_start: Optional[str] = Field(
+    reason_start: str | None = Field(
         None, max_length=32,
         description="Why playback started: 'autoplay', 'user_tap', 'forward_button', 'external', etc."
     )
-    reason_end:   Optional[str] = Field(
+    reason_end:   str | None = Field(
         None, max_length=32,
         description="Why playback ended: 'track_done', 'user_skip', 'error', 'new_track', etc."
     )
 
     # Cross-device identity
-    device_id:   Optional[str] = Field(
+    device_id:   str | None = Field(
         None, max_length=128,
         description="Stable device identifier."
     )
-    device_type: Optional[str] = Field(
+    device_type: str | None = Field(
         None, max_length=32,
         description="Device class: 'mobile', 'desktop', 'speaker', 'car', 'web', etc."
     )
 
     # Local time context (client-side — server only has UTC timestamp)
-    hour_of_day: Optional[int] = Field(
+    hour_of_day: int | None = Field(
         None, ge=0, le=23,
         description="Client's local hour (0–23)."
     )
-    day_of_week: Optional[int] = Field(
+    day_of_week: int | None = Field(
         None, ge=1, le=7,
         description="Client's local day of week (1=Monday … 7=Sunday, ISO 8601)."
     )
-    timezone: Optional[str] = Field(
+    timezone: str | None = Field(
         None, max_length=64,
         description="IANA timezone of the client, e.g. 'Europe/Zurich'."
     )
 
     # Audio output
-    output_type: Optional[str] = Field(
+    output_type: str | None = Field(
         None, max_length=32,
         description="Audio output type: 'headphones', 'speaker', 'bluetooth_speaker', 'car_audio', 'built_in', 'airplay', etc."
     )
-    output_device_name: Optional[str] = Field(
+    output_device_name: str | None = Field(
         None, max_length=128,
         description="Friendly name of the audio output device, e.g. 'AirPods Pro', 'Sonos Living Room'."
     )
-    bluetooth_connected: Optional[bool] = Field(
+    bluetooth_connected: bool | None = Field(
         None,
         description="Whether audio is routed over Bluetooth."
     )
 
     # Location
-    latitude:  Optional[float] = Field(
+    latitude:  float | None = Field(
         None, ge=-90, le=90,
         description="GPS latitude of the client."
     )
-    longitude: Optional[float] = Field(
+    longitude: float | None = Field(
         None, ge=-180, le=180,
         description="GPS longitude of the client."
     )
-    location_label: Optional[str] = Field(
+    location_label: str | None = Field(
         None, max_length=32,
         description="Semantic location label: 'home', 'work', 'gym', 'commute', etc."
     )
 
-    timestamp:  Optional[int] = Field(
+    timestamp:  int | None = Field(
         None,
         description="Unix timestamp (UTC). Defaults to server time if omitted. "
                     "Rejected if more than 24 hours in the past or in the future."
@@ -238,7 +237,7 @@ class EventCreate(BaseModel):
 class EventBatch(BaseModel):
     """Up to 50 events in a single request (reduces client-side HTTP overhead)."""
 
-    events: List[EventCreate] = Field(..., min_length=1)
+    events: list[EventCreate] = Field(..., min_length=1)
 
     @field_validator("events")
     @classmethod
@@ -258,7 +257,7 @@ class EventBatch(BaseModel):
 class EventResponse(BaseModel):
     accepted:  int = Field(..., description="Number of events accepted.")
     rejected:  int = Field(..., description="Number of events rejected (see errors).")
-    errors:    List[str] = Field(default_factory=list)
+    errors:    list[str] = Field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -271,18 +270,18 @@ class MoodTag(BaseModel):
 
 class TrackFeaturesResponse(BaseModel):
     track_id:         str
-    duration:         Optional[float]
-    bpm:              Optional[float]
-    key:              Optional[str]
-    mode:             Optional[str]
-    energy:           Optional[float]
-    danceability:     Optional[float]
-    valence:          Optional[float]
-    acousticness:     Optional[float]
-    instrumentalness: Optional[float]
-    mood_tags:        Optional[List[MoodTag]]
-    analyzed_at:      Optional[int]
-    analysis_version: Optional[str]
+    duration:         float | None
+    bpm:              float | None
+    key:              str | None
+    mode:             str | None
+    energy:           float | None
+    danceability:     float | None
+    valence:          float | None
+    acousticness:     float | None
+    instrumentalness: float | None
+    mood_tags:        list[MoodTag] | None
+    analyzed_at:      int | None
+    analysis_version: str | None
 
     model_config = {"from_attributes": True}
 
@@ -303,8 +302,8 @@ class ScanStatusResponse(BaseModel):
     files_analyzed:  int
     files_failed:    int
     started_at:      int
-    ended_at:        Optional[int]
-    last_error:      Optional[str]
+    ended_at:        int | None
+    last_error:      str | None
 
 
 # ---------------------------------------------------------------------------
@@ -322,45 +321,45 @@ class ListenEventRead(BaseModel):
     user_id:      str
     track_id:     str
     event_type:   str
-    value:        Optional[float] = None
-    context:      Optional[str] = None
-    client_id:    Optional[str] = None
-    session_id:   Optional[str] = None
+    value:        float | None = None
+    context:      str | None = None
+    client_id:    str | None = None
+    session_id:   str | None = None
     timestamp:    int
 
     # Rich signals
-    surface:          Optional[str] = None
-    position:         Optional[int] = None
-    request_id:       Optional[str] = None
-    model_version:    Optional[str] = None
-    session_position: Optional[int] = None
-    dwell_ms:         Optional[int] = None
-    pause_duration_ms: Optional[int] = None
-    num_seekfwd:      Optional[int] = None
-    num_seekbk:       Optional[int] = None
-    shuffle:          Optional[bool] = None
-    context_type:     Optional[str] = None
-    context_id:       Optional[str] = None
-    context_switch:   Optional[bool] = None
-    reason_start:     Optional[str] = None
-    reason_end:       Optional[str] = None
-    device_id:        Optional[str] = None
-    device_type:      Optional[str] = None
+    surface:          str | None = None
+    position:         int | None = None
+    request_id:       str | None = None
+    model_version:    str | None = None
+    session_position: int | None = None
+    dwell_ms:         int | None = None
+    pause_duration_ms: int | None = None
+    num_seekfwd:      int | None = None
+    num_seekbk:       int | None = None
+    shuffle:          bool | None = None
+    context_type:     str | None = None
+    context_id:       str | None = None
+    context_switch:   bool | None = None
+    reason_start:     str | None = None
+    reason_end:       str | None = None
+    device_id:        str | None = None
+    device_type:      str | None = None
 
     # Local time context
-    hour_of_day:      Optional[int] = None
-    day_of_week:      Optional[int] = None
-    timezone:         Optional[str] = None
+    hour_of_day:      int | None = None
+    day_of_week:      int | None = None
+    timezone:         str | None = None
 
     # Audio output
-    output_type:         Optional[str] = None
-    output_device_name:  Optional[str] = None
-    bluetooth_connected: Optional[bool] = None
+    output_type:         str | None = None
+    output_device_name:  str | None = None
+    bluetooth_connected: bool | None = None
 
     # Location
-    latitude:         Optional[float] = None
-    longitude:        Optional[float] = None
-    location_label:   Optional[str] = None
+    latitude:         float | None = None
+    longitude:        float | None = None
+    location_label:   str | None = None
 
     model_config = {"from_attributes": True}
 
@@ -383,8 +382,8 @@ class PlaylistStrategy(str, Enum):
 class PlaylistCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=255)
     strategy: PlaylistStrategy
-    seed_track_id: Optional[str] = Field(None, max_length=128)
-    params: Optional[Dict[str, Any]] = None
+    seed_track_id: str | None = Field(None, max_length=128)
+    params: dict[str, Any] | None = None
     max_tracks: int = Field(25, ge=5, le=100)
 
     @model_validator(mode="after")
@@ -409,34 +408,34 @@ class PlaylistCreate(BaseModel):
 class PlaylistTrackItem(BaseModel):
     position: int
     track_id: str
-    title: Optional[str] = None
-    artist: Optional[str] = None
-    album: Optional[str] = None
-    bpm: Optional[float] = None
-    key: Optional[str] = None
-    mode: Optional[str] = None
-    energy: Optional[float] = None
-    danceability: Optional[float] = None
-    valence: Optional[float] = None
-    mood_tags: Optional[List[MoodTag]] = None
-    duration: Optional[float] = None
+    title: str | None = None
+    artist: str | None = None
+    album: str | None = None
+    bpm: float | None = None
+    key: str | None = None
+    mode: str | None = None
+    energy: float | None = None
+    danceability: float | None = None
+    valence: float | None = None
+    mood_tags: list[MoodTag] | None = None
+    duration: float | None = None
 
 
 class PlaylistResponse(BaseModel):
     id: int
     name: str
     strategy: str
-    seed_track_id: Optional[str] = None
-    params: Optional[Dict[str, Any]] = None
+    seed_track_id: str | None = None
+    params: dict[str, Any] | None = None
     track_count: int
-    total_duration: Optional[float] = None
+    total_duration: float | None = None
     created_at: int
 
     model_config = {"from_attributes": True}
 
 
 class PlaylistDetailResponse(PlaylistResponse):
-    tracks: List[PlaylistTrackItem]
+    tracks: list[PlaylistTrackItem]
 
 
 # ---------------------------------------------------------------------------
@@ -463,53 +462,53 @@ class LastfmConnectResponse(BaseModel):
 
 
 class LastfmProfileResponse(BaseModel):
-    username: Optional[str] = None
+    username: str | None = None
     scrobbling_enabled: bool = False
-    synced_at: Optional[int] = None
-    profile: Optional[Dict[str, Any]] = None
+    synced_at: int | None = None
+    profile: dict[str, Any] | None = None
 
 
 class RecommendationContext(BaseModel):
     """Real-time context sent by the client app with recommendation requests."""
-    hour_of_day:    Optional[int] = Field(None, ge=0, le=23)
-    day_of_week:    Optional[int] = Field(None, ge=1, le=7)
-    device_type:    Optional[str] = Field(None, max_length=32)
-    output_type:    Optional[str] = Field(None, max_length=32)
-    context_type:   Optional[str] = Field(None, max_length=32)
-    location_label: Optional[str] = Field(None, max_length=32)
+    hour_of_day:    int | None = Field(None, ge=0, le=23)
+    day_of_week:    int | None = Field(None, ge=1, le=7)
+    device_type:    str | None = Field(None, max_length=32)
+    output_type:    str | None = Field(None, max_length=32)
+    context_type:   str | None = Field(None, max_length=32)
+    location_label: str | None = Field(None, max_length=32)
 
 
 class OnboardingRequest(BaseModel):
     """User onboarding preferences for cold-start recommendation seeding."""
-    favourite_artists: Optional[List[str]] = Field(
+    favourite_artists: list[str] | None = Field(
         None, max_length=50,
         description="List of favourite artist names (matched against local library).",
     )
-    favourite_genres: Optional[List[str]] = Field(
+    favourite_genres: list[str] | None = Field(
         None, max_length=30,
         description="Preferred genres, e.g. ['rock', 'electronic', 'jazz'].",
     )
-    favourite_tracks: Optional[List[str]] = Field(
+    favourite_tracks: list[str] | None = Field(
         None, max_length=50,
         description="List of track_ids from the local library.",
     )
-    mood_preferences: Optional[List[str]] = Field(
+    mood_preferences: list[str] | None = Field(
         None, max_length=10,
         description="Preferred moods, e.g. ['happy', 'relaxed', 'energetic'].",
     )
-    listening_contexts: Optional[List[str]] = Field(
+    listening_contexts: list[str] | None = Field(
         None, max_length=10,
         description="Typical listening contexts, e.g. ['home', 'gym', 'commute'].",
     )
-    device_types: Optional[List[str]] = Field(
+    device_types: list[str] | None = Field(
         None, max_length=10,
         description="Typical devices, e.g. ['mobile', 'desktop', 'speaker'].",
     )
-    energy_preference: Optional[float] = Field(
+    energy_preference: float | None = Field(
         None, ge=0.0, le=1.0,
         description="Preferred energy level (0=calm, 1=intense).",
     )
-    danceability_preference: Optional[float] = Field(
+    danceability_preference: float | None = Field(
         None, ge=0.0, le=1.0,
         description="Preferred danceability (0=not danceable, 1=very danceable).",
     )
@@ -536,14 +535,14 @@ class OnboardingResponse(BaseModel):
 
 class UserCreate(BaseModel):
     user_id:      str = Field(..., min_length=1, max_length=128)
-    display_name: Optional[str] = Field(None, max_length=255)
+    display_name: str | None = Field(None, max_length=255)
 
 
 class UserUpdate(BaseModel):
     """Update a user's mutable fields. At least one field must be provided."""
-    user_id:      Optional[str] = Field(None, min_length=1, max_length=128,
+    user_id:      str | None = Field(None, min_length=1, max_length=128,
                                         description="New username. Must be unique. Cascades to all event/session/interaction tables.")
-    display_name: Optional[str] = Field(None, max_length=255)
+    display_name: str | None = Field(None, max_length=255)
 
     @model_validator(mode="after")
     def at_least_one_field(self):
@@ -555,9 +554,9 @@ class UserUpdate(BaseModel):
 class UserResponse(BaseModel):
     uid:          int = Field(..., description="Stable numeric user identifier (never changes).")
     user_id:      str = Field(..., description="Username / media server identifier (can be updated).")
-    display_name: Optional[str] = None
+    display_name: str | None = None
     created_at:   int
-    last_seen:    Optional[int] = None
+    last_seen:    int | None = None
 
     model_config = {"from_attributes": True}
 
@@ -585,11 +584,11 @@ class RadioStartRequest(BaseModel):
     count: int = Field(10, ge=1, le=50,
                        description="Number of tracks in the first batch")
     # Optional context (updatable on each /next call)
-    device_type: Optional[str] = Field(None, max_length=32)
-    output_type: Optional[str] = Field(None, max_length=32)
-    location_label: Optional[str] = Field(None, max_length=32)
-    hour_of_day: Optional[int] = Field(None, ge=0, le=23)
-    day_of_week: Optional[int] = Field(None, ge=1, le=7)
+    device_type: str | None = Field(None, max_length=32)
+    output_type: str | None = Field(None, max_length=32)
+    location_label: str | None = Field(None, max_length=32)
+    hour_of_day: int | None = Field(None, ge=0, le=23)
+    day_of_week: int | None = Field(None, ge=1, le=7)
 
     model_config = {"use_enum_values": True}
 
@@ -606,18 +605,18 @@ class RadioTrackItem(BaseModel):
     track_id: str
     source: str
     score: float
-    title: Optional[str] = None
-    artist: Optional[str] = None
-    album: Optional[str] = None
-    genre: Optional[str] = None
-    bpm: Optional[float] = None
-    key: Optional[str] = None
-    mode: Optional[str] = None
-    energy: Optional[float] = None
-    danceability: Optional[float] = None
-    valence: Optional[float] = None
-    mood_tags: Optional[List[MoodTag]] = None
-    duration: Optional[float] = None
+    title: str | None = None
+    artist: str | None = None
+    album: str | None = None
+    genre: str | None = None
+    bpm: float | None = None
+    key: str | None = None
+    mode: str | None = None
+    energy: float | None = None
+    danceability: float | None = None
+    valence: float | None = None
+    mood_tags: list[MoodTag] | None = None
+    duration: float | None = None
 
 
 class RadioSessionResponse(BaseModel):
@@ -625,7 +624,7 @@ class RadioSessionResponse(BaseModel):
     user_id: str
     seed_type: str
     seed_value: str
-    seed_display_name: Optional[str] = None
+    seed_display_name: str | None = None
     total_served: int
     tracks_played: int
     tracks_skipped: int
@@ -638,14 +637,14 @@ class RadioStartResponse(BaseModel):
     session_id: str
     seed_type: str
     seed_value: str
-    seed_display_name: Optional[str] = None
-    tracks: List[RadioTrackItem]
+    seed_display_name: str | None = None
+    tracks: list[RadioTrackItem]
 
 
 class RadioNextResponse(BaseModel):
     session_id: str
     total_served: int
-    tracks: List[RadioTrackItem]
+    tracks: list[RadioTrackItem]
 
 
 # ---------------------------------------------------------------------------
@@ -660,12 +659,12 @@ class ChartDownloadRequest(BaseModel):
     """
     chart_type:  str = Field("top_tracks", max_length=32, description="Chart type: top_tracks")
     scope:       str = Field("global", max_length=128, description="Chart scope: global, tag:<name>, geo:<country>")
-    position:    Optional[int] = Field(None, ge=0, description="Chart position (0-based)")
-    artist_name: Optional[str] = Field(None, max_length=512, description="Artist name (alternative to position)")
-    track_title: Optional[str] = Field(None, max_length=512, description="Track title (required with artist_name)")
+    position:    int | None = Field(None, ge=0, description="Chart position (0-based)")
+    artist_name: str | None = Field(None, max_length=512, description="Artist name (alternative to position)")
+    track_title: str | None = Field(None, max_length=512, description="Track title (required with artist_name)")
 
     @model_validator(mode="after")
-    def require_position_or_track(self) -> "ChartDownloadRequest":
+    def require_position_or_track(self) -> ChartDownloadRequest:
         if self.position is None and not (self.artist_name and self.track_title):
             raise ValueError(
                 "Provide either 'position' or both 'artist_name' and 'track_title'."
@@ -681,25 +680,25 @@ class DownloadCreateRequest(BaseModel):
     """Request body for POST /v1/downloads — download a specific track."""
     spotify_id:  str = Field(..., min_length=1, max_length=64,
                              description="Spotify track ID to download.")
-    track_title: Optional[str] = Field(None, max_length=512)
-    artist_name: Optional[str] = Field(None, max_length=512)
-    album_name:  Optional[str] = Field(None, max_length=512)
-    cover_url:   Optional[str] = Field(None, max_length=1024)
+    track_title: str | None = Field(None, max_length=512)
+    artist_name: str | None = Field(None, max_length=512)
+    album_name:  str | None = Field(None, max_length=512)
+    cover_url:   str | None = Field(None, max_length=1024)
 
 
 class DownloadResponse(BaseModel):
     """A persisted download request."""
     id:            int
     spotify_id:    str
-    task_id:       Optional[str] = None
+    task_id:       str | None = None
     status:        str
-    track_title:   Optional[str] = None
-    artist_name:   Optional[str] = None
-    album_name:    Optional[str] = None
-    cover_url:     Optional[str] = None
-    error_message: Optional[str] = None
+    track_title:   str | None = None
+    artist_name:   str | None = None
+    album_name:    str | None = None
+    cover_url:     str | None = None
+    error_message: str | None = None
     created_at:    int
-    updated_at:    Optional[int] = None
+    updated_at:    int | None = None
 
     model_config = {"from_attributes": True}
 
@@ -708,5 +707,5 @@ class DownloadStatusResponse(BaseModel):
     """Proxied Spotizerr task status."""
     task_id:  str
     status:   str
-    progress: Optional[float] = None
-    details:  Optional[Dict[str, Any]] = None
+    progress: float | None = None
+    details:  dict[str, Any] | None = None

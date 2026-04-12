@@ -10,7 +10,6 @@ import base64
 import time
 
 import numpy as np
-import pytest
 import pytest_asyncio
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
@@ -73,7 +72,7 @@ class TestFaissIndex:
 
     async def test_build_index(self):
         """Index builds successfully with valid embeddings."""
-        from app.services.faiss_index import build_index, is_ready, index_size
+        from app.services.faiss_index import build_index, index_size, is_ready
 
         await _insert_tracks(10)
         count = await build_index()
@@ -110,7 +109,7 @@ class TestFaissIndex:
 
     async def test_rebuild_swaps_atomically(self):
         """Rebuild replaces the index without breaking concurrent reads."""
-        from app.services.faiss_index import build_index, search_by_track_id, index_size
+        from app.services.faiss_index import build_index, index_size, search_by_track_id
 
         await _insert_tracks(5)
         await build_index()
@@ -127,7 +126,7 @@ class TestFaissIndex:
 
     async def test_empty_library(self):
         """Empty library produces no errors, index is not ready."""
-        from app.services.faiss_index import build_index, is_ready, index_size
+        from app.services.faiss_index import build_index, index_size, is_ready
 
         count = await build_index()
         assert count == 0
@@ -136,7 +135,7 @@ class TestFaissIndex:
 
     async def test_missing_embeddings_skipped(self):
         """Tracks without embeddings are skipped during build."""
-        from app.services.faiss_index import build_index, index_size
+        from app.services.faiss_index import build_index
 
         await _insert_tracks(3)
         # Add a track with no embedding.

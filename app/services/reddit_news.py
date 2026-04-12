@@ -18,7 +18,7 @@ import re
 import threading
 import time
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any
 
 import httpx
 
@@ -30,7 +30,7 @@ logger = logging.getLogger(__name__)
 # Genre-to-subreddit mapping
 # ---------------------------------------------------------------------------
 
-GENRE_TO_SUBS: Dict[str, List[str]] = {
+GENRE_TO_SUBS: dict[str, list[str]] = {
     "hip-hop":      ["hiphopheads", "rap"],
     "hip hop":      ["hiphopheads", "rap"],
     "rap":          ["hiphopheads", "rap"],
@@ -66,7 +66,7 @@ GENRE_TO_SUBS: Dict[str, List[str]] = {
     "blues":        ["blues"],
 }
 
-SUB_TO_GENRES: Dict[str, List[str]] = {}
+SUB_TO_GENRES: dict[str, list[str]] = {}
 for _genre, _subs in GENRE_TO_SUBS.items():
     for _sub in _subs:
         SUB_TO_GENRES.setdefault(_sub.lower(), []).append(_genre)
@@ -86,13 +86,13 @@ class RedditPost:
     score: int
     num_comments: int
     created_utc: int
-    flair: Optional[str]
+    flair: str | None
     selftext_snippet: str
-    thumbnail: Optional[str]
+    thumbnail: str | None
     domain: str
     is_self: bool
-    parsed_artists: List[str] = field(default_factory=list)
-    parsed_tag: Optional[str] = None
+    parsed_artists: list[str] = field(default_factory=list)
+    parsed_tag: str | None = None
     is_fresh: bool = False
 
 
@@ -112,7 +112,7 @@ _KNOWN_TAGS = _FRESH_TAGS | {"news", "discussion", "article", "ama", "hype",
                               "album of the year", "aoty"}
 
 
-def _parse_title(title: str) -> Tuple[List[str], Optional[str], bool]:
+def _parse_title(title: str) -> tuple[list[str], str | None, bool]:
     """Extract artist names, primary tag, and is_fresh from a post title.
 
     Returns (artists, tag, is_fresh).
@@ -131,7 +131,7 @@ def _parse_title(title: str) -> Tuple[List[str], Optional[str], bool]:
     # Strip all bracket tags for artist parsing
     cleaned = _TAG_RE.sub("", title).strip()
 
-    artists: List[str] = []
+    artists: list[str] = []
     m = _ARTIST_TITLE_RE.match(cleaned)
     if m:
         raw_artist = m.group(1).strip()
@@ -157,9 +157,9 @@ def _normalize_artist(name: str) -> str:
 # ---------------------------------------------------------------------------
 
 _lock = threading.Lock()
-_news_cache: Dict[str, List[RedditPost]] = {}  # subreddit_lower -> posts
+_news_cache: dict[str, list[RedditPost]] = {}  # subreddit_lower -> posts
 _cache_built_at: int = 0
-_artist_index: Dict[str, List[str]] = {}  # normalized_artist -> list of post IDs
+_artist_index: dict[str, list[str]] = {}  # normalized_artist -> list of post IDs
 
 
 def get_cache_age_minutes() -> float:
@@ -171,7 +171,7 @@ def get_cache_age_minutes() -> float:
 def _rebuild_artist_index() -> None:
     """Rebuild the artist -> post_id lookup from current cache."""
     global _artist_index
-    idx: Dict[str, List[str]] = {}
+    idx: dict[str, list[str]] = {}
     for posts in _news_cache.values():
         for p in posts:
             for a in p.parsed_artists:
@@ -202,7 +202,7 @@ _FETCH_TIMEOUT = 15.0
 _THROTTLE_SECONDS = 2.0
 
 
-async def _fetch_subreddit(client: httpx.AsyncClient, subreddit: str) -> List[RedditPost]:
+async def _fetch_subreddit(client: httpx.AsyncClient, subreddit: str) -> list[RedditPost]:
     """Fetch posts from a single subreddit via Reddit's public JSON API."""
     url = f"https://old.reddit.com/r/{subreddit}/.json"
     params = {"limit": settings.NEWS_MAX_POSTS_PER_SUB, "raw_json": 1}
@@ -221,7 +221,7 @@ async def _fetch_subreddit(client: httpx.AsyncClient, subreddit: str) -> List[Re
     children = data.get("data", {}).get("children", [])
     logger.info("r/%s: got %d children from Reddit", subreddit, len(children))
 
-    posts: List[RedditPost] = []
+    posts: list[RedditPost] = []
     for child in children:
         d = child.get("data", {})
         if not d or d.get("stickied") or d.get("over_18"):
@@ -259,7 +259,7 @@ async def _fetch_subreddit(client: httpx.AsyncClient, subreddit: str) -> List[Re
 _refresh_in_progress = False
 
 
-async def refresh_cache() -> Dict[str, Any]:
+async def refresh_cache() -> dict[str, Any]:
     """Fetch all configured subreddits and rebuild the in-memory cache.
 
     Called by the scheduler. Returns summary dict.
@@ -275,18 +275,19 @@ async def refresh_cache() -> Dict[str, Any]:
         _refresh_in_progress = False
 
 
-async def _do_refresh_cache() -> Dict[str, Any]:
+async def _do_refresh_cache() -> dict[str, Any]:
     import asyncio
 
     logger.info("_do_refresh_cache starting")
-    subs_to_fetch: Set[str] = set(settings.news_subreddits_list)
+    subs_to_fetch: set[str] = set(settings.news_subreddits_list)
     logger.info("Default subreddits from config: %s", subs_to_fetch)
 
     # Also add genre-specific subreddits for active users' taste profiles.
     try:
+        from sqlalchemy import select
+
         from app.db.session import AsyncSessionLocal
         from app.models.db import User
-        from sqlalchemy import select
 
         async with AsyncSessionLocal() as session:
             rows = (await session.execute(
@@ -313,7 +314,7 @@ async def _do_refresh_cache() -> Dict[str, Any]:
 
     logger.info("Refreshing news cache from %d subreddits", len(subs_to_fetch))
 
-    new_cache: Dict[str, List[RedditPost]] = {}
+    new_cache: dict[str, list[RedditPost]] = {}
     total_posts = 0
 
     async with httpx.AsyncClient(
@@ -343,9 +344,9 @@ async def _do_refresh_cache() -> Dict[str, Any]:
 # Personalization scoring
 # ---------------------------------------------------------------------------
 
-def _build_user_artist_set(taste_profile: Optional[Dict]) -> Set[str]:
+def _build_user_artist_set(taste_profile: dict | None) -> set[str]:
     """Build a normalized set of artist names the user likes."""
-    artists: Set[str] = set()
+    artists: set[str] = set()
     if not taste_profile:
         return artists
 
@@ -363,9 +364,9 @@ def _build_user_artist_set(taste_profile: Optional[Dict]) -> Set[str]:
     return artists
 
 
-def _build_user_genre_set(taste_profile: Optional[Dict]) -> Set[str]:
+def _build_user_genre_set(taste_profile: dict | None) -> set[str]:
     """Build a normalized set of genres the user prefers."""
-    genres: Set[str] = set()
+    genres: set[str] = set()
     if not taste_profile:
         return genres
 
@@ -378,10 +379,10 @@ def _build_user_genre_set(taste_profile: Optional[Dict]) -> Set[str]:
 def _score_post(
     post: RedditPost,
     now: float,
-    user_artists: Set[str],
-    user_genres: Set[str],
+    user_artists: set[str],
+    user_genres: set[str],
     max_age_hours: float,
-) -> Optional[float]:
+) -> float | None:
     """Score a single post for a user. Returns None if too old."""
     age_hours = (now - post.created_utc) / 3600.0
     if age_hours > max_age_hours or age_hours < 0:
@@ -430,11 +431,11 @@ def _score_post(
 
 def _relevance_reasons(
     post: RedditPost,
-    user_artists: Set[str],
-    user_genres: Set[str],
-) -> List[str]:
+    user_artists: set[str],
+    user_genres: set[str],
+) -> list[str]:
     """Generate human-readable relevance reasons for a post."""
-    reasons: List[str] = []
+    reasons: list[str] = []
     for a in post.parsed_artists:
         if _normalize_artist(a) in user_artists:
             reasons.append("artist_match")
@@ -450,13 +451,13 @@ def _relevance_reasons(
 
 
 def get_personalized_feed(
-    taste_profile: Optional[Dict],
+    taste_profile: dict | None,
     limit: int = 25,
-    tag_filter: Optional[str] = None,
-    subreddit_filter: Optional[str] = None,
-    extra_artists: Optional[Set[str]] = None,
-    extra_genres: Optional[Set[str]] = None,
-) -> List[Dict[str, Any]]:
+    tag_filter: str | None = None,
+    subreddit_filter: str | None = None,
+    extra_artists: set[str] | None = None,
+    extra_genres: set[str] | None = None,
+) -> list[dict[str, Any]]:
     """Score and rank all cached posts for a user.
 
     Returns a list of dicts ready for JSON serialization.
@@ -471,7 +472,7 @@ def get_personalized_feed(
     if extra_genres:
         user_genres |= extra_genres
 
-    scored: List[Tuple[float, RedditPost]] = []
+    scored: list[tuple[float, RedditPost]] = []
 
     with _lock:
         for sub_key, posts in _news_cache.items():
@@ -487,8 +488,8 @@ def get_personalized_feed(
     # Sort descending by score
     scored.sort(key=lambda x: x[0], reverse=True)
 
-    results: List[Dict[str, Any]] = []
-    seen_ids: Set[str] = set()
+    results: list[dict[str, Any]] = []
+    seen_ids: set[str] = set()
     for score, post in scored:
         if post.id in seen_ids:
             continue

@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import time
-from typing import Any, Dict
+from typing import Any
 
 import httpx
 from fastapi import APIRouter, Depends
@@ -16,7 +16,7 @@ router = APIRouter()
 _TIMEOUT = 5.0  # seconds per probe
 
 
-async def _probe(url: str, headers: dict | None = None) -> Dict[str, Any]:
+async def _probe(url: str, headers: dict | None = None) -> dict[str, Any]:
     """HTTP GET with timeout; return parsed JSON or error dict."""
     try:
         async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
@@ -31,12 +31,12 @@ async def _probe(url: str, headers: dict | None = None) -> Dict[str, Any]:
         return {"ok": False, "error": str(exc)}
 
 
-async def _check_spotdl() -> Dict[str, Any]:
+async def _check_spotdl() -> dict[str, Any]:
     url = settings.SPOTDL_API_URL
     if not url:
         return {"configured": False}
     result = await _probe(f"{url.rstrip('/')}/health")
-    entry: Dict[str, Any] = {
+    entry: dict[str, Any] = {
         "configured": True,
         "url": url,
         "connected": result["ok"],
@@ -53,7 +53,7 @@ async def _check_spotdl() -> Dict[str, Any]:
     return entry
 
 
-async def _check_lidarr() -> Dict[str, Any]:
+async def _check_lidarr() -> dict[str, Any]:
     url = settings.LIDARR_URL
     api_key = settings.LIDARR_API_KEY
     if not url or not api_key:
@@ -62,7 +62,7 @@ async def _check_lidarr() -> Dict[str, Any]:
         f"{url.rstrip('/')}/api/v1/system/status",
         headers={"X-Api-Key": api_key},
     )
-    entry: Dict[str, Any] = {
+    entry: dict[str, Any] = {
         "configured": True,
         "url": url,
         "connected": result["ok"],
@@ -79,13 +79,13 @@ async def _check_lidarr() -> Dict[str, Any]:
     return entry
 
 
-async def _check_acousticbrainz() -> Dict[str, Any]:
+async def _check_acousticbrainz() -> dict[str, Any]:
     url = settings.AB_LOOKUP_URL
     enabled = settings.AB_LOOKUP_ENABLED
     if not url or not enabled:
         return {"configured": False}
     result = await _probe(f"{url.rstrip('/')}/health")
-    entry: Dict[str, Any] = {
+    entry: dict[str, Any] = {
         "configured": True,
         "url": url,
         "connected": result["ok"],
@@ -102,7 +102,7 @@ async def _check_acousticbrainz() -> Dict[str, Any]:
     return entry
 
 
-async def _check_lastfm() -> Dict[str, Any]:
+async def _check_lastfm() -> dict[str, Any]:
     api_key = settings.LASTFM_API_KEY
     if not api_key:
         return {"configured": False}
@@ -111,7 +111,7 @@ async def _check_lastfm() -> Dict[str, Any]:
         f"https://ws.audioscrobbler.com/2.0/?method=artist.getinfo"
         f"&artist=Radiohead&api_key={api_key}&format=json"
     )
-    entry: Dict[str, Any] = {
+    entry: dict[str, Any] = {
         "configured": True,
         "scrobbling": bool(settings.LASTFM_SCROBBLE_ENABLED),
         "connected": result["ok"] and "error" not in result.get("data", {}),
@@ -124,13 +124,13 @@ async def _check_lastfm() -> Dict[str, Any]:
     return entry
 
 
-async def _check_media_server() -> Dict[str, Any]:
+async def _check_media_server() -> dict[str, Any]:
     ms_type = settings.MEDIA_SERVER_TYPE
     ms_url = settings.MEDIA_SERVER_URL
     if not ms_type or not ms_url:
         return {"configured": False}
 
-    entry: Dict[str, Any] = {
+    entry: dict[str, Any] = {
         "configured": True,
         "type": ms_type,
         "url": ms_url,

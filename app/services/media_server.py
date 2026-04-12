@@ -19,17 +19,15 @@ from __future__ import annotations
 
 import hashlib
 import logging
-import os
 import time
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional
 
 import httpx
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
-from app.models.db import ListenEvent, ListenSession, TrackFeatures, TrackInteraction
+from app.models.db import ListenEvent, TrackFeatures, TrackInteraction
 
 logger = logging.getLogger(__name__)
 
@@ -50,7 +48,7 @@ class MediaServerTrack:
     album: str = ""
     genre: str = ""           # comma-separated genre tags
     file_path: str = ""       # absolute or relative path as reported by the server
-    duration: Optional[float] = None
+    duration: float | None = None
 
 
 @dataclass
@@ -62,7 +60,7 @@ class SyncResult:
     tracks_updated: int = 0   # track_id actually changed
     tracks_metadata: int = 0  # metadata (title/artist/album) updated
     tracks_unmatched: int = 0
-    errors: List[str] = field(default_factory=list)
+    errors: list[str] = field(default_factory=list)
     elapsed_s: float = 0.0
 
 
@@ -102,7 +100,7 @@ def _normalise_path(file_path: str, music_root: str) -> str:
 
 async def _fetch_navidrome_tracks(
     base_url: str, username: str, password: str
-) -> List[MediaServerTrack]:
+) -> list[MediaServerTrack]:
     """Fetch all tracks from a Navidrome server via the Subsonic API."""
     # Subsonic token-based auth: token = md5(password + salt)
     import secrets as _secrets
@@ -119,7 +117,7 @@ async def _fetch_navidrome_tracks(
         "f": "json",
     }
 
-    tracks: List[MediaServerTrack] = []
+    tracks: list[MediaServerTrack] = []
     page_size = 500
     offset = 0
 
@@ -171,7 +169,7 @@ async def _fetch_navidrome_tracks(
 
 async def _fetch_plex_tracks(
     base_url: str, token: str, library_id: str
-) -> List[MediaServerTrack]:
+) -> list[MediaServerTrack]:
     """Fetch all tracks from a Plex server."""
     base = base_url.rstrip("/")
     headers = {
@@ -179,7 +177,7 @@ async def _fetch_plex_tracks(
         "Accept": "application/json",
     }
 
-    tracks: List[MediaServerTrack] = []
+    tracks: list[MediaServerTrack] = []
 
     async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT, verify=True) as client:
         # Fetch all tracks from the specified library section.
@@ -240,7 +238,7 @@ async def _fetch_plex_tracks(
 # Public API
 # ---------------------------------------------------------------------------
 
-async def fetch_tracks() -> List[MediaServerTrack]:
+async def fetch_tracks() -> list[MediaServerTrack]:
     """
     Fetch all tracks from the configured media server.
 
@@ -282,7 +280,7 @@ def is_configured() -> bool:
 # Library refresh (API-triggered scan)
 # ---------------------------------------------------------------------------
 
-async def refresh_library(path: Optional[str] = None) -> bool:
+async def refresh_library(path: str | None = None) -> bool:
     """Trigger an immediate library rescan on the configured media server.
 
     Used after a Spotizerr download completes so the new file becomes
@@ -318,8 +316,9 @@ async def _refresh_navidrome() -> bool:
         logger.warning("Navidrome refresh skipped: URL or user not configured")
         return False
 
-    from app.core.credentials import get_media_server_password
     import secrets as _secrets
+
+    from app.core.credentials import get_media_server_password
 
     base = settings.MEDIA_SERVER_URL.rstrip("/")
     username = settings.MEDIA_SERVER_USER
@@ -356,7 +355,7 @@ async def _refresh_navidrome() -> bool:
         return False
 
 
-async def _refresh_plex(path: Optional[str] = None) -> bool:
+async def _refresh_plex(path: str | None = None) -> bool:
     """Fire Plex's ``/library/sections/{id}/refresh`` endpoint.
 
     When ``path`` is supplied, Plex does a partial scan of that
@@ -380,7 +379,7 @@ async def _refresh_plex(path: Optional[str] = None) -> bool:
         return False
 
     url = f"{base}/library/sections/{settings.MEDIA_SERVER_LIBRARY_ID}/refresh"
-    params: Dict[str, str] = {"X-Plex-Token": token}
+    params: dict[str, str] = {"X-Plex-Token": token}
     if path:
         params["path"] = path
 
@@ -431,7 +430,7 @@ async def sync_track_ids(session: AsyncSession) -> SyncResult:
 
     # 2. Build a normalised-path → MediaServerTrack lookup from the server.
     server_music_root = settings.MEDIA_SERVER_MUSIC_PATH or settings.MUSIC_LIBRARY_PATH
-    server_map: Dict[str, MediaServerTrack] = {}
+    server_map: dict[str, MediaServerTrack] = {}
     for st in server_tracks:
         norm = _normalise_path(st.file_path, server_music_root)
         if norm:

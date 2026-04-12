@@ -17,7 +17,7 @@ import asyncio
 import hashlib
 import logging
 import time
-from typing import Any, Optional
+from typing import Any
 
 import httpx
 
@@ -100,7 +100,7 @@ class LastFmClient:
 
     # -- Read-only API calls (no auth needed) --------------------------------
 
-    async def _get(self, method: str, params: Optional[dict] = None) -> dict:
+    async def _get(self, method: str, params: dict | None = None) -> dict:
         """Execute a read-only Last.fm API call."""
         await self._throttle()
         req_params = {
@@ -255,8 +255,8 @@ class LastFmClient:
         session_key: str,
         artist: str,
         track: str,
-        album: Optional[str] = None,
-        duration: Optional[int] = None,
+        album: str | None = None,
+        duration: int | None = None,
     ) -> dict:
         """Set the currently-playing track. Best-effort, no retry."""
         params: dict[str, str] = {
@@ -316,7 +316,7 @@ class LastFmError(Exception):
 # Singleton
 # ---------------------------------------------------------------------------
 
-_client: Optional[LastFmClient] = None
+_client: LastFmClient | None = None
 
 
 def get_lastfm_client() -> LastFmClient:

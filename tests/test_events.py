@@ -7,7 +7,7 @@ Run with:  pytest tests/ -v
 from __future__ import annotations
 
 import time
-from typing import AsyncGenerator
+from collections.abc import AsyncGenerator
 
 import pytest
 import pytest_asyncio
@@ -15,7 +15,7 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.core.config import settings
-from app.db.session import get_session, init_db
+from app.db.session import get_session
 from app.main import app
 from app.models.db import Base
 

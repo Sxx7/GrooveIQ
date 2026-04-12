@@ -22,13 +22,10 @@ from __future__ import annotations
 import logging
 import math
 import threading
-import time
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any
 
 import numpy as np
-
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.session import AsyncSessionLocal
 from app.models.db import ListenEvent, ListenSession, TrackFeatures
@@ -37,9 +34,9 @@ logger = logging.getLogger(__name__)
 
 # Singleton state.
 _lock = threading.Lock()
-_model: Optional["GRUModel"] = None
-_user_predicted_vectors: Dict[str, np.ndarray] = {}  # user_id -> predicted next-session embedding
-_track_embeddings: Dict[str, np.ndarray] = {}  # track_id -> audio embedding (for scoring)
+_model: GRUModel | None = None
+_user_predicted_vectors: dict[str, np.ndarray] = {}  # user_id -> predicted next-session embedding
+_track_embeddings: dict[str, np.ndarray] = {}  # track_id -> audio embedding (for scoring)
 
 # Config.
 _EMBED_DIM = 64       # matches FAISS/audio embedding dimension
@@ -84,7 +81,7 @@ class GRUModel:
     def _sigmoid(self, x: np.ndarray) -> np.ndarray:
         return 1.0 / (1.0 + np.exp(-np.clip(x, -15, 15)))
 
-    def forward(self, session_sequence: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+    def forward(self, session_sequence: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         """
         Process a sequence of session embeddings.
 
@@ -146,7 +143,7 @@ class GRUModel:
         return loss
 
 
-async def _load_session_embeddings() -> Dict[str, List[Tuple[int, np.ndarray]]]:
+async def _load_session_embeddings() -> dict[str, list[tuple[int, np.ndarray]]]:
     """
     Load session-level mean audio embeddings per user.
 
@@ -172,7 +169,7 @@ async def _load_session_embeddings() -> Dict[str, List[Tuple[int, np.ndarray]]]:
             select(TrackFeatures.track_id, TrackFeatures.embedding)
             .where(TrackFeatures.embedding.isnot(None))
         )
-        track_embeddings: Dict[str, np.ndarray] = {}
+        track_embeddings: dict[str, np.ndarray] = {}
         for row in emb_result.all():
             try:
                 raw = base64.b64decode(row.embedding)
@@ -188,7 +185,7 @@ async def _load_session_embeddings() -> Dict[str, List[Tuple[int, np.ndarray]]]:
             _track_embeddings = track_embeddings
 
         # For each session, get track IDs and compute mean embedding.
-        user_session_embs: Dict[str, List[Tuple[int, np.ndarray]]] = {}
+        user_session_embs: dict[str, list[tuple[int, np.ndarray]]] = {}
 
         for uid, started_at, eid_min, eid_max in all_sessions:
             ev_result = await session.execute(
@@ -215,8 +212,8 @@ async def _load_session_embeddings() -> Dict[str, List[Tuple[int, np.ndarray]]]:
 
 
 def _train_model_sync(
-    user_data: Dict[str, List[Tuple[int, np.ndarray]]],
-) -> Tuple[Optional[GRUModel], Dict[str, np.ndarray]]:
+    user_data: dict[str, list[tuple[int, np.ndarray]]],
+) -> tuple[GRUModel | None, dict[str, np.ndarray]]:
     """CPU-bound GRU training. Runs in a thread executor."""
     # Filter users with enough sessions.
     eligible = {
@@ -234,7 +231,7 @@ def _train_model_sync(
     model = GRUModel(input_dim=embed_dim, hidden_dim=_HIDDEN_DIM)
 
     # Training: for each user, use sessions[:-1] as input, sessions[-1] as target.
-    training_data: List[Tuple[np.ndarray, np.ndarray]] = []
+    training_data: list[tuple[np.ndarray, np.ndarray]] = []
     for uid, sessions in eligible.items():
         sessions.sort(key=lambda x: x[0])
         embs = np.array([s[1] for s in sessions], dtype=np.float32)
@@ -258,7 +255,7 @@ def _train_model_sync(
             logger.debug(f"Session GRU epoch {epoch}: loss={avg_loss:.6f}")
 
     # Predict next-session vectors for all eligible users.
-    user_predictions: Dict[str, np.ndarray] = {}
+    user_predictions: dict[str, np.ndarray] = {}
     for uid, sessions in eligible.items():
         sessions.sort(key=lambda x: x[0])
         embs = np.array([s[1] for s in sessions], dtype=np.float32)
@@ -272,7 +269,7 @@ def _train_model_sync(
     return model, user_predictions
 
 
-async def train() -> Dict[str, Any]:
+async def train() -> dict[str, Any]:
     """
     Train the session-level GRU model.
 
@@ -326,8 +323,8 @@ async def train() -> Dict[str, Any]:
 
 def predict_drift_scores(
     user_id: str,
-    candidate_ids: Set[str],
-) -> Dict[str, float]:
+    candidate_ids: set[str],
+) -> dict[str, float]:
     """
     Score candidates by cosine similarity to the GRU's predicted
     next-session taste vector.
@@ -341,7 +338,7 @@ def predict_drift_scores(
     if predicted is None or not track_embs:
         return {}
 
-    scores: Dict[str, float] = {}
+    scores: dict[str, float] = {}
     for tid in candidate_ids:
         emb = track_embs.get(tid)
         if emb is None:

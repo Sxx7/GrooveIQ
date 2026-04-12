@@ -33,7 +33,7 @@ async def refresh_lastfm_profiles() -> dict:
     Only refreshes users whose lastfm_synced_at is older than
     LASTFM_REFRESH_HOURS or null.
     """
-    from app.services.lastfm_client import get_lastfm_client, LastFmError
+    from app.services.lastfm_client import LastFmError, get_lastfm_client
 
     refreshed = 0
     errors = 0

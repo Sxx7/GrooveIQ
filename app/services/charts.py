@@ -13,10 +13,10 @@ from __future__ import annotations
 import logging
 import re
 import time
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any
 
 import httpx
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
@@ -32,7 +32,7 @@ _STRIP_RE = re.compile(r"[^\w\s]", re.UNICODE)
 _LASTFM_PLACEHOLDER_HASH = "2a96cbd8b46e442fc41c2b86b821562f"
 
 
-def _pick_image_url(images: list) -> Optional[str]:
+def _pick_image_url(images: list) -> str | None:
     """Pick the best image URL from Last.fm's image array.
 
     Prefers extralarge (300x300). Falls back through smaller sizes.
@@ -91,7 +91,7 @@ class _ChartClient:
         resp.raise_for_status()
         return resp.json()
 
-    async def get_top_tracks(self, limit: int = 100, page: int = 1) -> List[Dict[str, Any]]:
+    async def get_top_tracks(self, limit: int = 100, page: int = 1) -> list[dict[str, Any]]:
         """Global top tracks (chart.getTopTracks)."""
         try:
             data = await self._get({
@@ -105,7 +105,7 @@ class _ChartClient:
         tracks = data.get("tracks", {}).get("track", [])
         return tracks if isinstance(tracks, list) else [tracks]
 
-    async def get_top_artists(self, limit: int = 100, page: int = 1) -> List[Dict[str, Any]]:
+    async def get_top_artists(self, limit: int = 100, page: int = 1) -> list[dict[str, Any]]:
         """Global top artists (chart.getTopArtists)."""
         try:
             data = await self._get({
@@ -119,7 +119,7 @@ class _ChartClient:
         artists = data.get("artists", {}).get("artist", [])
         return artists if isinstance(artists, list) else [artists]
 
-    async def get_geo_top_tracks(self, country: str, limit: int = 100, page: int = 1) -> List[Dict[str, Any]]:
+    async def get_geo_top_tracks(self, country: str, limit: int = 100, page: int = 1) -> list[dict[str, Any]]:
         """Top tracks by country (geo.getTopTracks)."""
         try:
             data = await self._get({
@@ -134,7 +134,7 @@ class _ChartClient:
         tracks = data.get("tracks", {}).get("track", [])
         return tracks if isinstance(tracks, list) else [tracks]
 
-    async def get_tag_top_tracks(self, tag: str, limit: int = 100, page: int = 1) -> List[Dict[str, Any]]:
+    async def get_tag_top_tracks(self, tag: str, limit: int = 100, page: int = 1) -> list[dict[str, Any]]:
         """Top tracks by genre tag (tag.getTopTracks)."""
         try:
             data = await self._get({
@@ -149,7 +149,7 @@ class _ChartClient:
         tracks = data.get("toptracks", {}).get("track", [])
         return tracks if isinstance(tracks, list) else [tracks]
 
-    async def get_tag_top_artists(self, tag: str, limit: int = 100) -> List[Dict[str, Any]]:
+    async def get_tag_top_artists(self, tag: str, limit: int = 100) -> list[dict[str, Any]]:
         """Top artists by genre tag (tag.getTopArtists)."""
         try:
             data = await self._get({
@@ -168,26 +168,26 @@ class _ChartClient:
 # Library matching
 # ---------------------------------------------------------------------------
 
-async def _build_library_lookup(session: AsyncSession) -> Dict[Tuple[str, str], str]:
+async def _build_library_lookup(session: AsyncSession) -> dict[tuple[str, str], str]:
     """Build (normalized_artist, normalized_title) -> track_id lookup."""
     rows = (await session.execute(
         select(TrackFeatures.track_id, TrackFeatures.artist, TrackFeatures.title)
         .where(TrackFeatures.artist.isnot(None), TrackFeatures.title.isnot(None))
     )).all()
-    lookup: Dict[Tuple[str, str], str] = {}
+    lookup: dict[tuple[str, str], str] = {}
     for track_id, artist, title in rows:
         key = (_normalize(artist), _normalize(title))
         lookup[key] = track_id
     return lookup
 
 
-async def _build_artist_lookup(session: AsyncSession) -> Dict[str, List[str]]:
+async def _build_artist_lookup(session: AsyncSession) -> dict[str, list[str]]:
     """Build normalized_artist -> [track_id, ...] lookup."""
     rows = (await session.execute(
         select(TrackFeatures.track_id, TrackFeatures.artist)
         .where(TrackFeatures.artist.isnot(None))
     )).all()
-    lookup: Dict[str, List[str]] = {}
+    lookup: dict[str, list[str]] = {}
     for track_id, artist in rows:
         norm = _normalize(artist)
         lookup.setdefault(norm, []).append(track_id)
@@ -199,9 +199,9 @@ async def _build_artist_lookup(session: AsyncSession) -> Dict[str, List[str]]:
 # ---------------------------------------------------------------------------
 
 async def _send_artists_to_lidarr(
-    artist_names_mbids: List[Tuple[str, Optional[str]]],
+    artist_names_mbids: list[tuple[str, str | None]],
     max_adds: int = 50,
-) -> Dict[str, int]:
+) -> dict[str, int]:
     """Send chart artists not in library to Lidarr for download."""
     if not settings.discovery_enabled:
         return {"skipped": len(artist_names_mbids), "reason": "lidarr_not_configured"}
@@ -279,9 +279,9 @@ async def _send_artists_to_lidarr(
 # ---------------------------------------------------------------------------
 
 async def _send_tracks_to_spotizerr(
-    tracks: List[Tuple[str, str]],
+    tracks: list[tuple[str, str]],
     max_adds: int = 50,
-) -> Dict[str, int]:
+) -> dict[str, int]:
     """Send unmatched chart tracks to Spotizerr for individual download.
 
     For each successfully-queued download:
@@ -291,10 +291,10 @@ async def _send_tracks_to_spotizerr(
          the media server refresh + GrooveIQ library scan fire
          automatically (same chain as user-initiated downloads).
     """
-    from app.services.spotizerr import _pick_best_match
-    from app.services.spotdl import get_download_client
-    from app.services.download_watcher import start_watcher
     from app.models.db import DownloadRequest
+    from app.services.download_watcher import start_watcher
+    from app.services.spotdl import get_download_client
+    from app.services.spotizerr import _pick_best_match
 
     client = get_download_client()
     if client is None:
@@ -303,8 +303,8 @@ async def _send_tracks_to_spotizerr(
     stats = {"sent": 0, "not_found": 0, "duplicate": 0, "errors": 0}
 
     # Deduplicate by normalised artist+title.
-    seen: Set[Tuple[str, str]] = set()
-    unique: List[Tuple[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    unique: list[tuple[str, str]] = []
     for artist, title in tracks:
         key = (_normalize(artist), _normalize(title))
         if key not in seen and key[0] and key[1]:
@@ -388,7 +388,7 @@ async def _send_tracks_to_spotizerr(
 # Chart build pipeline
 # ---------------------------------------------------------------------------
 
-async def build_charts() -> Dict[str, Any]:
+async def build_charts() -> dict[str, Any]:
     """
     Main entry point. Fetches charts from Last.fm, matches to library,
     optionally sends missing artists to Lidarr, and stores chart entries.
@@ -398,7 +398,7 @@ async def build_charts() -> Dict[str, Any]:
         return {"status": "skipped", "reason": "no_lastfm_api_key"}
 
     client = _ChartClient(settings.LASTFM_API_KEY)
-    summary: Dict[str, Any] = {
+    summary: dict[str, Any] = {
         "status": "completed",
         "charts_built": 0,
         "total_entries": 0,
@@ -426,8 +426,8 @@ async def build_charts() -> Dict[str, Any]:
             artist_lookup = await _build_artist_lookup(session)
 
             # Collect candidates for external download services.
-            lidarr_candidates: List[Tuple[str, Optional[str]]] = []
-            spotizerr_candidates: List[Tuple[str, str]] = []  # (artist, title)
+            lidarr_candidates: list[tuple[str, str | None]] = []
+            spotizerr_candidates: list[tuple[str, str]] = []  # (artist, title)
 
             # --- 1. Global top tracks ---
             await _build_track_chart(
@@ -494,8 +494,8 @@ async def build_charts() -> Dict[str, Any]:
 
         # Send missing artists to Lidarr (deduplicated).
         if lidarr_candidates and settings.CHARTS_LIDARR_AUTO_ADD:
-            seen: Set[str] = set()
-            unique: List[Tuple[str, Optional[str]]] = []
+            seen: set[str] = set()
+            unique: list[tuple[str, str | None]] = []
             for name, mbid in lidarr_candidates:
                 norm = _normalize(name)
                 if norm not in seen:
@@ -530,17 +530,17 @@ async def build_charts() -> Dict[str, Any]:
 async def _build_track_chart(
     client: _ChartClient,
     session: AsyncSession,
-    track_lookup: Dict[Tuple[str, str], str],
-    artist_lookup: Dict[str, List[str]],
-    lidarr_candidates: List[Tuple[str, Optional[str]]],
-    spotizerr_candidates: List[Tuple[str, str]],
+    track_lookup: dict[tuple[str, str], str],
+    artist_lookup: dict[str, list[str]],
+    lidarr_candidates: list[tuple[str, str | None]],
+    spotizerr_candidates: list[tuple[str, str]],
     *,
     chart_type: str,
     scope: str,
     fetch_fn,
     limit: int,
     now: int,
-    summary: Dict[str, Any],
+    summary: dict[str, Any],
     cover_client=None,
 ) -> None:
     """Fetch a track chart, match to library, persist entries."""
@@ -631,15 +631,15 @@ async def _build_track_chart(
 async def _build_artist_chart(
     client: _ChartClient,
     session: AsyncSession,
-    artist_lookup: Dict[str, List[str]],
-    lidarr_candidates: List[Tuple[str, Optional[str]]],
+    artist_lookup: dict[str, list[str]],
+    lidarr_candidates: list[tuple[str, str | None]],
     *,
     chart_type: str,
     scope: str,
     fetch_fn,
     limit: int,
     now: int,
-    summary: Dict[str, Any],
+    summary: dict[str, Any],
 ) -> None:
     """Fetch an artist chart, match to library, persist entries."""
     try:

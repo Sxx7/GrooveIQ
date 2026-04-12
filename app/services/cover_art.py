@@ -26,7 +26,6 @@ from __future__ import annotations
 import logging
 import re
 import time
-from typing import Optional
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -59,7 +58,7 @@ async def resolve_cover_art(
     artist: str,
     title: str,
     client=None,
-) -> Optional[str]:
+) -> str | None:
     """Resolve an album cover URL for (artist, title), with persistent cache.
 
     Cache hit -> return immediately (positive *or* negative, with TTL).
@@ -104,7 +103,7 @@ async def resolve_cover_art(
         if client is None:
             return None
 
-    url: Optional[str] = None
+    url: str | None = None
     try:
         url = await client.resolve_cover_art(artist, title)
     except Exception as exc:
@@ -137,7 +136,7 @@ async def resolve_artist_image(
     session: AsyncSession,
     artist: str,
     client=None,
-) -> Optional[str]:
+) -> str | None:
     """Resolve a portrait image URL for an artist, with persistent cache.
 
     Shares the cover_art_cache table with track cover art — artist entries
@@ -174,7 +173,7 @@ async def resolve_artist_image(
         if client is None:
             return None
 
-    url: Optional[str] = None
+    url: str | None = None
     try:
         url = await client.resolve_artist_image(artist)
     except Exception as exc:

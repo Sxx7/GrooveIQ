@@ -21,7 +21,6 @@ import logging
 import time
 from abc import ABC, abstractmethod
 from collections import defaultdict, deque
-from typing import Optional
 
 from fastapi import HTTPException, Request, Security, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -140,7 +139,6 @@ class RedisLimiter(RateLimiter):
             return self._fallback.is_allowed(key, limit, window_seconds)
 
     def _check_redis(self, key: str, limit: int, window_seconds: int) -> bool:
-        import redis as _redis
 
         now = time.time()
         cutoff = now - window_seconds
@@ -250,7 +248,7 @@ def check_user_access(api_key: str, user_id: str) -> None:
 
 async def require_api_key(
     request: Request,
-    credentials: Optional[HTTPAuthorizationCredentials] = Security(_bearer),
+    credentials: HTTPAuthorizationCredentials | None = Security(_bearer),
 ) -> str:
     """
     FastAPI dependency.  Raises 401/429 on auth or rate-limit failure.
