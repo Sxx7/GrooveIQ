@@ -544,7 +544,26 @@ Returns a ranked list of recommended artists derived from listening behavior, La
         "danceability": 0.423,
         "valence": 0.385,
         "bpm": 128.3
-      }
+      },
+      "image_url": "https://i.scdn.co/image/ab67616100005174...",
+      "top_tracks": [
+        {
+          "track_id": "abc123",
+          "title": "Everything In Its Right Place",
+          "album": "Kid A",
+          "duration": 250,
+          "satisfaction_score": 0.9512,
+          "play_count": 23
+        },
+        {
+          "track_id": "def456",
+          "title": "Idioteque",
+          "album": "Kid A",
+          "duration": 309,
+          "satisfaction_score": 0.8901,
+          "play_count": 18
+        }
+      ]
     },
     {
       "name": "Portishead",
@@ -555,7 +574,9 @@ Returns a ranked list of recommended artists derived from listening behavior, La
       "in_library": false,
       "plays": 0,
       "likes": 0,
-      "track_count": 0
+      "track_count": 0,
+      "image_url": null,
+      "top_tracks": []
     }
   ]
 }

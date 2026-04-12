@@ -18,7 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import settings
 from app.core.security import check_user_access, require_admin, require_api_key
 from app.db.session import get_session
-from app.models.db import ListenEvent, TrackFeatures, TrackInteraction, User
+from app.models.db import CoverArtCache, ListenEvent, TrackFeatures, TrackInteraction, User
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -562,6 +562,68 @@ async def get_recommended_artists(
 
     # --- Rank and return ---
     ranked = sorted(artist_map.values(), key=lambda a: a["score"], reverse=True)[:limit]
+
+    # --- Batch-fetch artist images from cover_art_cache ---
+    import re
+    _STRIP_RE = re.compile(r"[^\w\s]", re.UNICODE)
+
+    def _cover_norm(s: str) -> str:
+        n = s.strip().lower()
+        if n.startswith("the "):
+            n = n[4:]
+        n = _STRIP_RE.sub("", n)
+        return " ".join(n.split())
+
+    artist_norms = {_cover_norm(a["name"]): a["name"] for a in ranked}
+    if artist_norms:
+        img_q = await session.execute(
+            select(CoverArtCache.artist_norm, CoverArtCache.url)
+            .where(
+                CoverArtCache.artist_norm.in_(list(artist_norms.keys())),
+                CoverArtCache.title_norm == "",
+            )
+        )
+        img_map = {r.artist_norm: r.url for r in img_q.all() if r.url}
+        for a in ranked:
+            a["image_url"] = img_map.get(_cover_norm(a["name"]))
+
+    # --- Fetch per-user top tracks for each artist ---
+    artist_names = [a["name"] for a in ranked]
+    top_tracks_q = (
+        select(
+            TrackFeatures.artist,
+            TrackFeatures.track_id,
+            TrackFeatures.title,
+            TrackFeatures.album,
+            TrackFeatures.duration,
+            TrackInteraction.satisfaction_score,
+            TrackInteraction.play_count,
+        )
+        .join(TrackInteraction, TrackInteraction.track_id == TrackFeatures.track_id)
+        .where(
+            TrackInteraction.user_id == user_id,
+            TrackFeatures.artist.in_(artist_names),
+        )
+        .order_by(TrackInteraction.satisfaction_score.desc())
+    )
+    top_rows = (await session.execute(top_tracks_q)).all()
+
+    # Group by artist, take top 5 per artist
+    from collections import defaultdict
+    tracks_by_artist: dict[str, list] = defaultdict(list)
+    for r in top_rows:
+        if len(tracks_by_artist[r.artist]) < 5:
+            tracks_by_artist[r.artist].append({
+                "track_id": r.track_id,
+                "title": r.title,
+                "album": r.album,
+                "duration": r.duration,
+                "satisfaction_score": round(r.satisfaction_score, 4) if r.satisfaction_score else 0,
+                "play_count": r.play_count or 0,
+            })
+
+    for a in ranked:
+        a["top_tracks"] = tracks_by_artist.get(a["name"], [])
 
     return {
         "user_id": user_id,
