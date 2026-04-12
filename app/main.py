@@ -109,17 +109,14 @@ async def add_security_headers(request: Request, call_next):
     response.headers["Strict-Transport-Security"] = (
         "max-age=63072000; includeSubDomains"
     )
-    # CSP: all JS is loaded from /static/js/app.js (same-origin).
-    # script-src 'self' blocks injected <script> tags (primary XSS vector).
-    # script-src-attr 'unsafe-inline' allows onclick/onchange handlers in
-    # JS-generated HTML (all user data is escaped via esc()).
-    # style-src keeps 'unsafe-inline' for inline styles in generated HTML.
+    # CSP: dashboard uses both /static/js/app.js and an inline <script>
+    # block in dashboard.html, so script-src needs 'unsafe-inline'.
+    # All user data is escaped via esc() before insertion into HTML.
     response.headers["Content-Security-Policy"] = (
         "default-src 'self'; "
-        "script-src 'self'; "
-        "script-src-attr 'unsafe-inline'; "
+        "script-src 'self' 'unsafe-inline'; "
         "style-src 'self' 'unsafe-inline'; "
-        "img-src 'self' data:; "
+        "img-src 'self' data: https:; "
         "connect-src 'self'; "
         "frame-ancestors 'none'"
     )
