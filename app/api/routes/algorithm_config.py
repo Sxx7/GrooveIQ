@@ -75,24 +75,6 @@ async def get_history(
     return [_row_to_response(r) for r in rows]
 
 
-@router.get("/algorithm/config/{version}", summary="Get a specific config version")
-async def get_version(
-    version: int,
-    session: AsyncSession = Depends(get_session),
-    _key: str = Depends(require_api_key),
-):
-    require_admin(_key)
-    from sqlalchemy import select
-    from app.models.db import AlgorithmConfig
-    result = await session.execute(
-        select(AlgorithmConfig).where(AlgorithmConfig.version == version)
-    )
-    row = result.scalar_one_or_none()
-    if row is None:
-        raise HTTPException(404, f"Config version {version} not found")
-    return _row_to_response(row)
-
-
 # ---------------------------------------------------------------------------
 # Write
 # ---------------------------------------------------------------------------
@@ -190,4 +172,26 @@ async def import_config(
         created_by=_key,
     )
     await session.commit()
+    return _row_to_response(row)
+
+
+# ---------------------------------------------------------------------------
+# Version lookup (must be LAST to avoid shadowing fixed paths like /export)
+# ---------------------------------------------------------------------------
+
+@router.get("/algorithm/config/{version}", summary="Get a specific config version")
+async def get_version(
+    version: int,
+    session: AsyncSession = Depends(get_session),
+    _key: str = Depends(require_api_key),
+):
+    require_admin(_key)
+    from sqlalchemy import select
+    from app.models.db import AlgorithmConfig
+    result = await session.execute(
+        select(AlgorithmConfig).where(AlgorithmConfig.version == version)
+    )
+    row = result.scalar_one_or_none()
+    if row is None:
+        raise HTTPException(404, f"Config version {version} not found")
     return _row_to_response(row)
