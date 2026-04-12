@@ -90,6 +90,31 @@ services:
       CHARTS_SPOTIZERR_AUTO_ADD:   ${CHARTS_SPOTIZERR_AUTO_ADD:-false}
       CHARTS_SPOTIZERR_MAX_ADDS:   ${CHARTS_SPOTIZERR_MAX_ADDS:-50}
 
+      # Spotify credentials (for spotdl-api)
+      SPOTIFY_CLIENT_ID:           ${SPOTIFY_CLIENT_ID:-}
+      SPOTIFY_CLIENT_SECRET:       ${SPOTIFY_CLIENT_SECRET:-}
+
+      # Charts
+      CHARTS_ENABLED:              ${CHARTS_ENABLED:-false}
+      CHARTS_INTERVAL_HOURS:       ${CHARTS_INTERVAL_HOURS:-24}
+      CHARTS_TOP_LIMIT:            ${CHARTS_TOP_LIMIT:-100}
+      CHARTS_TAGS:                 ${CHARTS_TAGS:-}
+      CHARTS_COUNTRIES:            ${CHARTS_COUNTRIES:-}
+      CHARTS_LIDARR_AUTO_ADD:      ${CHARTS_LIDARR_AUTO_ADD:-false}
+      CHARTS_LIDARR_MAX_ADDS:      ${CHARTS_LIDARR_MAX_ADDS:-50}
+
+      # AcousticBrainz Lookup
+      AB_LOOKUP_URL:               ${AB_LOOKUP_URL:-}
+      AB_LOOKUP_ENABLED:           ${AB_LOOKUP_ENABLED:-false}
+      AB_DISCOVERY_LIMIT:          ${AB_DISCOVERY_LIMIT:-50}
+
+      # News feed (Reddit)
+      NEWS_ENABLED:                ${NEWS_ENABLED:-false}
+      NEWS_INTERVAL_MINUTES:       ${NEWS_INTERVAL_MINUTES:-30}
+      NEWS_MAX_AGE_HOURS:          ${NEWS_MAX_AGE_HOURS:-48}
+      NEWS_DEFAULT_SUBREDDITS:     ${NEWS_DEFAULT_SUBREDDITS:-Music,hiphopheads,indieheads,electronicmusic,popheads,metal,rnb}
+      NEWS_MAX_POSTS_PER_SUB:      ${NEWS_MAX_POSTS_PER_SUB:-50}
+
     volumes:
       # Persistent database & state
       - grooveiq_data:/data
