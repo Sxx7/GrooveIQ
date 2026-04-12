@@ -13,12 +13,18 @@ No cloud. No tracking. Runs on your hardware.
 - **9-step recommendation pipeline** — sessionization, scoring, taste profiles, collaborative filtering, LightGBM ranking, transformer sequential model, diversity reranking
 - **8 candidate sources** — content similarity (FAISS), collaborative filtering, session skip-gram, SASRec, Last.fm external CF, artist recall, popularity
 - **Context-aware ranking** — device, output, location, time-of-day features
+- **Adaptive radio** — stateful sessions seeded from track/artist/playlist with real-time feedback adaptation
 - **Playlist generation** — flow, mood, energy curve, and key-compatible (Camelot wheel) strategies
-- **Last.fm integration** — scrobbling, profile sync, similar-artist discovery, chart fetching
-- **Download proxy** — search and download tracks via spotdl-api (YouTube Music) or Spotizerr
+- **Artist recommendations** — multi-source artist discovery from listening history, Last.fm similar, and Last.fm top artists
+- **User onboarding** — explicit preference collection for cold-start taste profile seeding
+- **Last.fm integration** — scrobbling, profile sync, similar-artist discovery, chart fetching, backfill
+- **Personalized news feed** — Reddit-sourced music news scored per user's taste profile
+- **Download proxy** — search and download tracks via spotdl-api (YouTube Music) or Spotizerr (legacy fallback)
 - **Media server sync** — Navidrome/Plex track ID mapping with cascading updates
-- **Web dashboard** — real-time pipeline visualization, recommendation debugger, system health panels
-- **Music discovery** — Last.fm similar artists auto-added to Lidarr
+- **Algorithm tuning** — 78 pipeline weights/thresholds configurable via REST API with versioning, rollback, and export/import
+- **Web dashboard** — real-time pipeline visualization, recommendation debugger, algorithm tuning GUI, system health panels
+- **Music discovery** — Last.fm similar artists auto-added to Lidarr, optional AcousticBrainz lookup (29.5M tracks)
+- **Integration health** — live connectivity probes for all external services
 
 ## Quick start
 
@@ -161,7 +167,10 @@ All settings via environment variables or `.env` file. See [`.env.example`](.env
 | Last.fm | `LASTFM_API_KEY`, `LASTFM_API_SECRET` |
 | Lidarr discovery | `LIDARR_URL`, `LIDARR_API_KEY` |
 | spotdl-api downloads | `SPOTDL_API_URL`, `SPOTIFY_CLIENT_ID`, `SPOTIFY_CLIENT_SECRET` |
+| Spotizerr (legacy) | `SPOTIZERR_URL` (optional auth: `SPOTIZERR_USERNAME`, `SPOTIZERR_PASSWORD`) |
 | Charts | `CHARTS_ENABLED=true`, `LASTFM_API_KEY` |
+| News feed | `NEWS_ENABLED=true` (optional: `NEWS_INTERVAL_MINUTES`, `NEWS_DEFAULT_SUBREDDITS`) |
+| AcousticBrainz lookup | `AB_LOOKUP_URL`, `AB_LOOKUP_ENABLED=true` (separate container) |
 
 ## Connecting your music app
 
@@ -222,7 +231,7 @@ docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d
 
 ## API reference
 
-See [API.md](API.md) for the full endpoint reference with request/response examples.
+See [docs/API.md](docs/API.md) for the full endpoint reference with request/response examples.
 
 Interactive docs available at `/docs` when `ENABLE_DOCS=true` (development only).
 
@@ -232,17 +241,22 @@ Interactive docs available at `/docs` when `ENABLE_DOCS=true` (development only)
 |-------|-----------|
 | Health | `GET /health`, `GET /dashboard` |
 | Events | `POST /v1/events`, `POST /v1/events/batch`, `GET /v1/events` |
-| Library | `POST /v1/library/scan`, `GET /v1/library/scan/{id}`, `POST /v1/library/sync` |
+| Library | `POST /v1/library/scan`, `GET /v1/library/scan/{id}`, `GET /v1/library/scan/{id}/logs`, `POST /v1/library/sync` |
 | Tracks | `GET /v1/tracks`, `GET /v1/tracks/{id}/features`, `GET /v1/tracks/{id}/similar` |
 | Users | `GET/POST /v1/users`, `GET/PATCH /v1/users/{id}`, profile, interactions, history, sessions |
-| Recommendations | `GET /v1/recommend/{user_id}`, history, model stats |
+| Onboarding | `POST/GET /v1/users/{id}/onboarding` |
+| Recommendations | `GET /v1/recommend/{user_id}`, history, artists, model stats |
+| Radio | `POST /v1/radio/start`, `GET /v1/radio/{id}/next`, `DELETE /v1/radio/{id}`, `GET /v1/radio` |
 | Playlists | `POST/GET /v1/playlists`, `GET/DELETE /v1/playlists/{id}` |
 | Discovery | `GET/POST /v1/discovery`, stats |
-| Last.fm | connect, disconnect, sync, profile per user |
+| Last.fm | connect, disconnect, sync, backfill, profile per user |
 | Charts | list, get, build, download, stats |
 | Downloads | search, download, status, history |
 | Artists | `GET /v1/artists/{name}/meta` |
+| News | `POST /v1/news/refresh`, `GET /v1/news/{user_id}` |
 | Pipeline | run, reset, status, SSE stream, model readiness, per-step stats |
+| Algorithm | config CRUD, defaults, history, export/import, rollback |
+| Integrations | `GET /v1/integrations/status` |
 
 ## HTTPS / public deployment
 
