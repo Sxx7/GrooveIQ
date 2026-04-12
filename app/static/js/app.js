@@ -221,6 +221,7 @@ function switchTab(view) {
   else if (view === 'pipeline') loadPipeline();
   else if (view === 'content') loadContent(contentSubTab);
   else if (view === 'users') loadUsers();
+  else if (view === 'connections') loadConnections();
   else if (view === 'algorithm') loadAlgorithm();
 }
 
@@ -1676,6 +1677,100 @@ function radioStop(sessionId) {
   }).catch(function(e) {
     alert('Error stopping radio: ' + e.message);
   });
+}
+
+// =========================================================================
+// Connections Tab
+// =========================================================================
+
+var connectionsRefreshTimer = null;
+
+function loadConnections() {
+  $('#app').innerHTML = '<div class="page-header"><h1 class="page-title">Connections</h1><div class="page-actions"><button class="btn btn-primary btn-sm" onclick="loadConnections()">Refresh</button></div></div><div id="conn-grid" class="conn-grid"><div class="empty">Checking integrations\u2026</div></div>';
+  api('/v1/integrations/status').then(function(data) {
+    renderConnections(data);
+  }).catch(function(e) {
+    document.getElementById('conn-grid').innerHTML = '<div class="empty text-danger">Failed to check integrations: ' + esc(e.message) + '</div>';
+  });
+}
+
+function renderConnections(data) {
+  var integrations = data.integrations;
+  var order = [
+    { key: 'media_server', label: 'Media Server', icon: '\uD83C\uDFB5', desc: 'Navidrome or Plex — source of track IDs and library metadata' },
+    { key: 'lidarr', label: 'Lidarr', icon: '\uD83D\uDCE5', desc: 'Automatic music discovery and download management' },
+    { key: 'spotdl_api', label: 'spotdl-api', icon: '\u2B07', desc: 'YouTube Music downloads matched via Spotify metadata' },
+    { key: 'lastfm', label: 'Last.fm', icon: '\uD83C\uDFB6', desc: 'Scrobbling, taste enrichment, similar tracks, charts' },
+    { key: 'acousticbrainz_lookup', label: 'AcousticBrainz Lookup', icon: '\uD83E\uDDE0', desc: 'Audio-feature similarity search across 29.5M tracks' }
+  ];
+
+  var h = '';
+  for (var i = 0; i < order.length; i++) {
+    var o = order[i];
+    var s = integrations[o.key] || {};
+    var configured = s.configured;
+    var connected = s.connected;
+
+    var statusClass, statusLabel;
+    if (!configured) {
+      statusClass = 'conn-not-configured';
+      statusLabel = 'Not configured';
+    } else if (connected) {
+      statusClass = 'conn-connected';
+      statusLabel = 'Connected';
+    } else {
+      statusClass = 'conn-error';
+      statusLabel = 'Error';
+    }
+
+    h += '<div class="conn-card ' + statusClass + '">';
+    h += '<div class="conn-card-header">';
+    h += '<span class="conn-icon">' + o.icon + '</span>';
+    h += '<div class="conn-title-group"><span class="conn-title">' + esc(o.label) + '</span>';
+    if (s.type) h += '<span class="conn-type">' + esc(s.type) + '</span>';
+    if (s.version) h += '<span class="conn-version">v' + esc(String(s.version)) + '</span>';
+    h += '</div>';
+    h += '<span class="conn-status-badge ' + statusClass + '">' + statusLabel + '</span>';
+    h += '</div>';
+
+    h += '<div class="conn-desc">' + o.desc + '</div>';
+
+    if (configured && s.url) {
+      h += '<div class="conn-detail"><span class="conn-detail-label">URL</span><span class="conn-detail-value font-mono">' + esc(s.url) + '</span></div>';
+    }
+
+    if (s.scrobbling !== undefined) {
+      h += '<div class="conn-detail"><span class="conn-detail-label">Scrobbling</span><span class="conn-detail-value">' + (s.scrobbling ? '<span class="text-success">Enabled</span>' : '<span class="text-muted">Disabled</span>') + '</span></div>';
+    }
+
+    if (s.status) {
+      h += '<div class="conn-detail"><span class="conn-detail-label">Status</span><span class="conn-detail-value">' + esc(s.status) + '</span></div>';
+    }
+
+    if (s.details) {
+      var keys = Object.keys(s.details);
+      for (var j = 0; j < keys.length; j++) {
+        var dk = keys[j], dv = s.details[dk];
+        if (dv === null || dv === undefined) continue;
+        var label = dk.replace(/_/g, ' ').replace(/([A-Z])/g, ' $1').trim();
+        label = label.charAt(0).toUpperCase() + label.slice(1);
+        h += '<div class="conn-detail"><span class="conn-detail-label">' + esc(label) + '</span><span class="conn-detail-value font-mono">' + esc(String(dv)) + '</span></div>';
+      }
+    }
+
+    if (s.error) {
+      h += '<div class="conn-error-msg">' + esc(s.error) + '</div>';
+    }
+
+    if (!configured) {
+      h += '<div class="conn-hint">Set the required environment variables in your <code>.env</code> file to enable this integration.</div>';
+    }
+
+    h += '</div>';
+  }
+
+  var grid = document.getElementById('conn-grid');
+  if (grid) grid.innerHTML = h;
 }
 
 // =========================================================================
