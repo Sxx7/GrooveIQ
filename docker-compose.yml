@@ -117,6 +117,10 @@ services:
         reservations:
           memory: 256M
 
+    networks:
+      - default
+      - apps_default
+
     logging:
       driver: "json-file"
       options:
@@ -239,6 +243,13 @@ services:
   #   depends_on:
   #     grooveiq:
   #       condition: service_healthy
+
+networks:
+  default:
+    # grooveiq_default — spotdl-api, acousticbrainz-lookup stay here
+  apps_default:
+    external: true
+    # Shared network with the *arr stack (Lidarr, Sonarr, etc.)
 
 volumes:
   grooveiq_data:
