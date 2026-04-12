@@ -80,6 +80,15 @@ async def start_scheduler() -> None:
             replace_existing=True,
         )
 
+    # News feed refresh (Reddit)
+    if settings.news_enabled:
+        _scheduler.add_job(
+            _refresh_news_feed,
+            trigger=IntervalTrigger(minutes=settings.NEWS_INTERVAL_MINUTES),
+            id="news_feed_refresh",
+            replace_existing=True,
+        )
+
     # Last.fm scrobble queue processor (every 60s)
     if settings.lastfm_user_enabled and settings.LASTFM_SCROBBLE_ENABLED:
         _scheduler.add_job(
@@ -102,6 +111,7 @@ async def start_scheduler() -> None:
         f"Scheduler started. Library scan every {settings.RESCAN_INTERVAL_HOURS}h, "
         f"recommendation pipeline every {settings.SCORING_INTERVAL_HOURS}h."
         + (f", discovery cron '{settings.DISCOVERY_CRON}'" if settings.discovery_enabled else "")
+        + (f", news feed every {settings.NEWS_INTERVAL_MINUTES}min" if settings.news_enabled else "")
         + (f", Last.fm profile refresh every {settings.LASTFM_REFRESH_HOURS}h" if settings.lastfm_user_enabled else "")
     )
 
@@ -323,3 +333,14 @@ async def _reap_stuck_downloads() -> None:
         await reap_stuck_downloads()
     except Exception:
         logger.error(f"Download reaper failed: {traceback.format_exc()}")
+
+
+async def _refresh_news_feed() -> None:
+    """Refresh the in-memory Reddit news cache."""
+    try:
+        from app.services.reddit_news import refresh_cache
+        result = await refresh_cache()
+        if result.get("fetched", 0) > 0:
+            logger.info("News feed refreshed: %s", result)
+    except Exception:
+        logger.error(f"News feed refresh failed: {traceback.format_exc()}")

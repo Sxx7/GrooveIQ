@@ -206,7 +206,7 @@ var contentSubTab = 'recommendations';
 
 function switchTab(view) {
   // Map legacy tab names to content sub-tabs
-  var contentSubs = { recommendations:1, tracks:1, playlists:1, radio:1, charts:1, discovery:1 };
+  var contentSubs = { recommendations:1, tracks:1, playlists:1, radio:1, charts:1, discovery:1, news:1 };
   if (contentSubs[view]) { contentSubTab = view; view = 'content'; }
 
   currentView = view;
@@ -232,7 +232,8 @@ function contentSubTabBar() {
     { id: 'playlists', label: 'Playlists' },
     { id: 'radio', label: 'Radio' },
     { id: 'charts', label: 'Charts' },
-    { id: 'discovery', label: 'Discovery' }
+    { id: 'discovery', label: 'Discovery' },
+    { id: 'news', label: 'News' }
   ];
   var bar = '<div class="subtab-bar">';
   for (var i = 0; i < subs.length; i++) {
@@ -249,6 +250,7 @@ function loadContent(sub) {
   else if (contentSubTab === 'radio') loadRadio();
   else if (contentSubTab === 'charts') loadCharts();
   else if (contentSubTab === 'discovery') loadDiscovery();
+  else if (contentSubTab === 'news') loadNews();
 }
 
 // Inject sub-tab bar before content for content sub-views
@@ -1421,6 +1423,103 @@ function renderDiscovery(stats, data) {
 function runDiscovery(btn) {
   btn.disabled = true; btn.textContent = 'Running...';
   apiPost('/v1/discovery/run', {}).then(function() { btn.textContent = 'Started'; setTimeout(function() { loadDiscovery(); }, 3000); setTimeout(function() { loadDiscovery(); }, 10000); }).catch(function(e) { alert('Discovery failed: ' + e.message); btn.disabled = false; btn.textContent = 'Run Discovery'; });
+}
+
+// =========================================================================
+// News View
+// =========================================================================
+var newsTagFilter = '';
+var newsUser = '';
+
+function loadNews() {
+  if (!newsUser && cachedUsers && cachedUsers.length) newsUser = cachedUsers[0].user_id;
+  if (!newsUser) { setAppContent('<div class="empty">No users found. Create a user first.</div>'); return; }
+  var url = '/v1/news/' + encodeURIComponent(newsUser) + '?limit=50';
+  if (newsTagFilter) url += '&tag=' + encodeURIComponent(newsTagFilter);
+  api(url).then(renderNews).catch(function(e) {
+    if (e.message && e.message.indexOf('503') !== -1) {
+      setAppContent('<div class="page-header"><h1 class="page-title">Music News</h1></div><div class="empty">News feed is not enabled.<br>Set <code>NEWS_ENABLED=true</code> in your .env file.</div>');
+    } else {
+      setAppContent('<div class="page-header"><h1 class="page-title">Music News</h1></div><div class="empty">Failed to load news: ' + esc(e.message) + '</div>');
+    }
+  });
+}
+
+function renderNews(data) {
+  var h = '<div class="page-header"><h1 class="page-title">Music News</h1>';
+  h += '<div class="page-actions">';
+  // User selector
+  if (cachedUsers && cachedUsers.length > 1) {
+    h += '<select class="input input-sm" onchange="newsUser=this.value;loadNews()" style="width:auto;margin-right:8px">';
+    for (var i = 0; i < cachedUsers.length; i++) {
+      h += '<option value="' + esc(cachedUsers[i].user_id) + '"' + (cachedUsers[i].user_id === newsUser ? ' selected' : '') + '>' + esc(cachedUsers[i].user_id) + '</option>';
+    }
+    h += '</select>';
+  }
+  // Tag filter
+  h += '<select class="input input-sm" onchange="newsTagFilter=this.value;loadNews()" style="width:auto">';
+  h += '<option value="">All Posts</option>';
+  var tags = ['FRESH', 'NEWS', 'DISCUSSION'];
+  for (var t = 0; t < tags.length; t++) {
+    h += '<option value="' + tags[t] + '"' + (newsTagFilter === tags[t] ? ' selected' : '') + '>' + tags[t] + '</option>';
+  }
+  h += '</select>';
+  h += '</div></div>';
+
+  // Cache status
+  if (data.cache_age_minutes != null) {
+    var staleClass = data.cache_stale ? ' text-warning' : ' text-muted';
+    h += '<div style="text-align:right;margin-bottom:8px;font-size:0.75rem" class="' + staleClass + '">Cache: ' + Math.round(data.cache_age_minutes) + 'min ago' + (data.cache_stale ? ' (stale)' : '') + '</div>';
+  }
+
+  if (!data.items || !data.items.length) {
+    h += '<div class="empty">No news articles found.' + (newsTagFilter ? ' Try removing the tag filter.' : '') + '</div>';
+    setAppContent(h); return;
+  }
+
+  h += '<div class="news-grid">';
+  for (var i = 0; i < data.items.length; i++) {
+    var item = data.items[i];
+    h += '<div class="news-card">';
+    h += '<div class="news-card-header">';
+    h += '<a href="' + esc(item.reddit_url) + '" target="_blank" rel="noopener" class="news-title">' + esc(item.title) + '</a>';
+    h += '</div>';
+    h += '<div class="news-card-meta">';
+    h += '<span class="badge badge-info">r/' + esc(item.subreddit) + '</span> ';
+    if (item.is_fresh) h += '<span class="badge badge-success">FRESH</span> ';
+    if (item.parsed_tag && item.parsed_tag !== 'FRESH') h += '<span class="badge">' + esc(item.parsed_tag) + '</span> ';
+    h += '<span class="text-muted text-sm">' + item.score + ' pts &middot; ' + item.num_comments + ' comments &middot; ' + item.age_hours + 'h ago</span>';
+    h += '</div>';
+    // Relevance reasons
+    if (item.relevance_reasons && item.relevance_reasons.length) {
+      h += '<div class="news-reasons">';
+      for (var r = 0; r < item.relevance_reasons.length; r++) {
+        var reason = item.relevance_reasons[r];
+        var label = reason === 'artist_match' ? 'Artist you like' : reason === 'genre_match' ? 'Genre match' : reason === 'fresh' ? 'New release' : reason === 'high_engagement' ? 'Trending' : reason;
+        h += '<span class="news-reason">' + esc(label) + '</span>';
+      }
+      h += '</div>';
+    }
+    // Artists
+    if (item.parsed_artists && item.parsed_artists.length) {
+      h += '<div class="text-sm text-muted" style="margin-top:4px">';
+      for (var a = 0; a < item.parsed_artists.length; a++) {
+        if (a > 0) h += ', ';
+        h += esc(item.parsed_artists[a]);
+      }
+      h += '</div>';
+    }
+    h += '<div class="news-card-footer">';
+    h += '<span class="text-xs text-muted">' + esc(item.domain) + '</span>';
+    h += '<span class="news-score text-xs">relevance: ' + item.relevance_score + '</span>';
+    if (item.url && item.url !== item.reddit_url) {
+      h += ' <a href="' + esc(item.url) + '" target="_blank" rel="noopener" class="btn btn-sm" style="padding:2px 8px;font-size:0.6875rem">Link</a>';
+    }
+    h += '</div>';
+    h += '</div>';
+  }
+  h += '</div>';
+  setAppContent(h);
 }
 
 // =========================================================================

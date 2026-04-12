@@ -233,6 +233,15 @@ class Settings(BaseSettings):
     LASTFM_REFRESH_HOURS: int = 6               # how often to pull Last.fm profiles
 
     # ------------------------------------------------------------------
+    # Personalized news feed (Reddit-sourced)
+    # ------------------------------------------------------------------
+    NEWS_ENABLED: bool = False
+    NEWS_INTERVAL_MINUTES: int = 30
+    NEWS_MAX_AGE_HOURS: int = 48
+    NEWS_DEFAULT_SUBREDDITS: str = "Music,hiphopheads,indieheads,electronicmusic,popheads,metal,rnb"
+    NEWS_MAX_POSTS_PER_SUB: int = 50
+
+    # ------------------------------------------------------------------
     # Logging
     # ------------------------------------------------------------------
     LOG_LEVEL: str = "INFO"
@@ -285,6 +294,14 @@ class Settings(BaseSettings):
     @property
     def ab_lookup_enabled(self) -> bool:
         return bool(self.AB_LOOKUP_ENABLED and self.AB_LOOKUP_URL)
+
+    @property
+    def news_enabled(self) -> bool:
+        return bool(self.NEWS_ENABLED)
+
+    @property
+    def news_subreddits_list(self) -> List[str]:
+        return _split_csv(self.NEWS_DEFAULT_SUBREDDITS)
 
     @property
     def discovery_enabled(self) -> bool:
