@@ -16,7 +16,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
-from app.core.security import require_api_key
+from app.core.security import hash_key, require_api_key
 from app.db.session import get_session
 from app.models.db import DownloadRequest
 from app.models.schemas import (
@@ -136,7 +136,7 @@ async def create_download(
         artist_name=body.artist_name,
         album_name=body.album_name,
         cover_url=body.cover_url,
-        requested_by=_key if _key != "anonymous" else None,
+        requested_by=hash_key(_key)[:16] if _key != "anonymous" else None,
         error_message=dl_result.get("error"),
         updated_at=int(time.time()),
     )

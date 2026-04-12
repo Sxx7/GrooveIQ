@@ -9,7 +9,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Path, Query
 
 from app.core.config import settings
-from app.core.security import require_api_key
+from app.core.security import check_user_access, require_api_key
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -53,6 +53,7 @@ async def get_news(
     subreddit: Optional[str] = Query(None, max_length=100, description="Filter to a specific subreddit"),
     _key: str = Depends(require_api_key),
 ):
+    check_user_access(_key, user_id)
     if not settings.news_enabled:
         raise HTTPException(
             status_code=503,

@@ -208,6 +208,11 @@ services:
     build: ./acousticbrainz-lookup
     container_name: acousticbrainz-lookup
     restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    tmpfs:
+      - /tmp:noexec,nosuid,size=64M
     ports:
       - "${AB_LOOKUP_PORT:-8200}:8200"
     environment:

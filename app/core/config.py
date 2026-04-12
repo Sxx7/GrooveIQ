@@ -328,9 +328,14 @@ class Settings(BaseSettings):
         is_prod = self.APP_ENV == "production"
 
         # --- SECRET_KEY enforcement ---
-        if is_prod and not self.SECRET_KEY:
+        _placeholder_prefixes = ("CHANGE_ME", "changeme", "replace", "TODO", "FIXME")
+        if is_prod and (
+            not self.SECRET_KEY
+            or any(self.SECRET_KEY.startswith(p) for p in _placeholder_prefixes)
+        ):
             print(
-                "\n❌  FATAL: No SECRET_KEY configured and APP_ENV=production.\n"
+                "\n❌  FATAL: No SECRET_KEY configured (or placeholder detected) "
+                "and APP_ENV=production.\n"
                 "   Generate one:  openssl rand -base64 32\n"
                 "   Then set SECRET_KEY in your .env file.\n",
                 file=sys.stderr,
