@@ -13,15 +13,16 @@
 3. [Users](#users)
 4. [Tracks & Library](#tracks--library)
 5. [Recommendations](#recommendations)
-6. [Integrations](#integrations)
-7. [Playlists](#playlists)
-8. [Discovery](#discovery)
-9. [Last.fm](#lastfm)
-10. [Charts](#charts)
-11. [Downloads](#downloads)
-12. [Artists](#artists)
-13. [Pipeline & Stats](#pipeline--stats)
-14. [Configuration Reference](#configuration-reference)
+6. [News (planned)](#news-planned)
+7. [Integrations](#integrations)
+8. [Playlists](#playlists)
+9. [Discovery](#discovery)
+10. [Last.fm](#lastfm)
+11. [Charts](#charts)
+12. [Downloads](#downloads)
+13. [Artists](#artists)
+14. [Pipeline & Stats](#pipeline--stats)
+15. [Configuration Reference](#configuration-reference)
 
 ---
 
@@ -573,6 +574,59 @@ Ranker training info, offline evaluation metrics (NDCG), impression-to-stream ra
 
 ---
 
+## News (planned)
+
+> **Not yet implemented.** See `CLAUDE.md` section "Personalized Music News Feed" for the full implementation plan.
+
+### `GET /v1/news/{user_id}` — Personalized music news feed
+
+Returns Reddit music posts ranked by personal relevance to the user's taste profile.
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `limit` | 25 (1-100) | Max items to return |
+| `tag` | - | Filter by tag: `FRESH`, `NEWS`, `DISCUSSION` |
+| `subreddit` | - | Filter to a specific subreddit |
+
+**Response:**
+
+```json
+{
+    "user_id": "simon",
+    "total": 25,
+    "cache_age_minutes": 12,
+    "cache_stale": false,
+    "items": [
+        {
+            "id": "t3_abc123",
+            "title": "[FRESH] Kendrick Lamar - New Song",
+            "url": "https://youtube.com/watch?v=...",
+            "reddit_url": "https://www.reddit.com/r/hiphopheads/comments/abc123/...",
+            "subreddit": "hiphopheads",
+            "score": 4521,
+            "num_comments": 342,
+            "created_utc": 1712000000,
+            "age_hours": 3.5,
+            "flair": "FRESH",
+            "thumbnail": "https://...",
+            "domain": "youtube.com",
+            "is_fresh": true,
+            "parsed_artists": ["Kendrick Lamar"],
+            "relevance_score": 0.92,
+            "relevance_reasons": ["artist_match", "genre_match", "fresh"]
+        }
+    ]
+}
+```
+
+**Sources:** Posts fetched from genre-relevant subreddits every 30 min (configurable). Scored per-user: 55% personal relevance (artist match, genre-subreddit match, [FRESH] bonus), 25% recency (12h half-life), 20% popularity (log-scaled Reddit score).
+
+**`relevance_reasons`** values: `artist_match`, `genre_match`, `fresh`, `high_engagement` — enables "Because you listen to X" UI badges.
+
+**Config:** Set `NEWS_ENABLED=true` in `.env`. See Configuration Reference for all news settings.
+
+---
+
 ## Integrations
 
 ### `GET /v1/integrations/status` — Integration connectivity status
@@ -938,6 +992,16 @@ All settings via environment variables or `.env` file. See [`.env.example`](.env
 | `MEDIA_SERVER_TOKEN` | - | Plex X-Plex-Token |
 | `MEDIA_SERVER_LIBRARY_ID` | `1` | Plex library section ID |
 | `MEDIA_SERVER_MUSIC_PATH` | - | Server's music root path |
+
+### Music News Feed (planned)
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `NEWS_ENABLED` | `false` | Enable Reddit news feed |
+| `NEWS_INTERVAL_MINUTES` | `30` | Fetch frequency |
+| `NEWS_MAX_AGE_HOURS` | `48` | Discard posts older than this |
+| `NEWS_DEFAULT_SUBREDDITS` | `Music,hiphopheads,indieheads,...` | Comma-separated subreddits |
+| `NEWS_MAX_POSTS_PER_SUB` | `50` | Posts per subreddit per cycle |
 
 ### Logging
 
