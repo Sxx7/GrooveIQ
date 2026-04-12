@@ -15,6 +15,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import settings
 from app.core.security import check_user_access, require_admin, require_api_key
 from app.db.session import get_session
 from app.models.db import ListenEvent, TrackFeatures, TrackInteraction, User
