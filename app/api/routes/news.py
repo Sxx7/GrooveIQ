@@ -18,7 +18,8 @@ router = APIRouter()
 @router.post(
     "/news/refresh",
     summary="Refresh news feed cache",
-    description="Manually trigger a refresh of the Reddit news cache.",
+    description="Manually trigger a refresh of the Reddit news cache. Runs in background.",
+    status_code=202,
 )
 async def refresh_news(
     _key: str = Depends(require_api_key),
@@ -29,10 +30,12 @@ async def refresh_news(
             detail="News feed is not enabled. Set NEWS_ENABLED=true in your .env file.",
         )
 
+    import asyncio
+
     from app.services.reddit_news import refresh_cache
 
-    result = await refresh_cache()
-    return result
+    asyncio.create_task(refresh_cache())
+    return {"status": "refresh_started"}
 
 
 @router.get(

@@ -218,8 +218,11 @@ async def _fetch_subreddit(client: httpx.AsyncClient, subreddit: str) -> List[Re
         logger.warning("Failed to fetch r/%s: %s", subreddit, exc)
         return []
 
+    children = data.get("data", {}).get("children", [])
+    logger.info("r/%s: got %d children from Reddit", subreddit, len(children))
+
     posts: List[RedditPost] = []
-    for child in data.get("data", {}).get("children", []):
+    for child in children:
         d = child.get("data", {})
         if not d or d.get("stickied") or d.get("over_18"):
             continue
@@ -275,7 +278,9 @@ async def refresh_cache() -> Dict[str, Any]:
 async def _do_refresh_cache() -> Dict[str, Any]:
     import asyncio
 
+    logger.info("_do_refresh_cache starting")
     subs_to_fetch: Set[str] = set(settings.news_subreddits_list)
+    logger.info("Default subreddits from config: %s", subs_to_fetch)
 
     # Also add genre-specific subreddits for active users' taste profiles.
     try:

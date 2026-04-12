@@ -3152,7 +3152,19 @@ function refreshNewsFeed() {
   var btn = document.getElementById('news-refresh-btn');
   if (btn) { btn.disabled = true; btn.textContent = 'Refreshing…'; }
   apiPost('/v1/news/refresh', {}).then(function() {
-    loadNews();
+    // Refresh runs in background (~60s). Poll until cache is fresh.
+    var polls = 0;
+    var poller = setInterval(function() {
+      polls++;
+      if (polls > 40) { clearInterval(poller); if (btn) { btn.disabled = false; btn.textContent = 'Refresh Feed'; } return; }
+      var url = '/v1/news/' + encodeURIComponent(newsUser) + '?limit=1';
+      api(url).then(function(d) {
+        if (d.total > 0 && d.cache_age_minutes != null && d.cache_age_minutes < 2) {
+          clearInterval(poller);
+          loadNews();
+        }
+      }).catch(function(){});
+    }, 3000);
   }).catch(function(e) {
     alert('Failed to refresh news: ' + e.message);
     if (btn) { btn.disabled = false; btn.textContent = 'Refresh Feed'; }

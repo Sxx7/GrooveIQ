@@ -80,8 +80,14 @@ async def start_scheduler() -> None:
             replace_existing=True,
         )
 
-    # News feed refresh (Reddit)
+    # News feed refresh (Reddit) — run once at startup, then on interval
     if settings.news_enabled:
+        _scheduler.add_job(
+            _refresh_news_feed,
+            trigger="date",  # fire once immediately
+            id="news_feed_initial",
+            replace_existing=True,
+        )
         _scheduler.add_job(
             _refresh_news_feed,
             trigger=IntervalTrigger(minutes=settings.NEWS_INTERVAL_MINUTES),
