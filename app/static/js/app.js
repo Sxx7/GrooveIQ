@@ -202,7 +202,13 @@ document.getElementById('nav-toggle').addEventListener('click', function() {
   document.getElementById('nav-links').classList.toggle('open');
 });
 
+var contentSubTab = 'recommendations';
+
 function switchTab(view) {
+  // Map legacy tab names to content sub-tabs
+  var contentSubs = { recommendations:1, tracks:1, playlists:1, radio:1, charts:1, discovery:1 };
+  if (contentSubs[view]) { contentSubTab = view; view = 'content'; }
+
   currentView = view;
   var links = document.querySelectorAll('.nav-link');
   for (var i = 0; i < links.length; i++) {
@@ -213,14 +219,40 @@ function switchTab(view) {
 
   if (view === 'dashboard') loadDashboard();
   else if (view === 'pipeline') loadPipeline();
-  else if (view === 'recommendations') loadRecommendations();
+  else if (view === 'content') loadContent(contentSubTab);
   else if (view === 'users') loadUsers();
-  else if (view === 'tracks') loadTracks();
-  else if (view === 'playlists') loadPlaylists();
-  else if (view === 'charts') loadCharts();
-  else if (view === 'radio') loadRadio();
-  else if (view === 'discovery') loadDiscovery();
   else if (view === 'algorithm') loadAlgorithm();
+}
+
+function contentSubTabBar() {
+  var subs = [
+    { id: 'recommendations', label: 'Recommendations' },
+    { id: 'tracks', label: 'Tracks' },
+    { id: 'playlists', label: 'Playlists' },
+    { id: 'radio', label: 'Radio' },
+    { id: 'charts', label: 'Charts' },
+    { id: 'discovery', label: 'Discovery' }
+  ];
+  var bar = '<div class="subtab-bar">';
+  for (var i = 0; i < subs.length; i++) {
+    bar += '<button class="subtab' + (subs[i].id === contentSubTab ? ' active' : '') + '" onclick="loadContent(\'' + subs[i].id + '\')">' + subs[i].label + '</button>';
+  }
+  return bar + '</div>';
+}
+
+function loadContent(sub) {
+  contentSubTab = sub || contentSubTab;
+  if (contentSubTab === 'recommendations') loadRecommendations();
+  else if (contentSubTab === 'tracks') loadTracks();
+  else if (contentSubTab === 'playlists') loadPlaylists();
+  else if (contentSubTab === 'radio') loadRadio();
+  else if (contentSubTab === 'charts') loadCharts();
+  else if (contentSubTab === 'discovery') loadDiscovery();
+}
+
+// Inject sub-tab bar before content for content sub-views
+function setAppContent(html) {
+  $('#app').innerHTML = (currentView === 'content' ? contentSubTabBar() : '') + html;
 }
 
 // =========================================================================
@@ -713,7 +745,7 @@ function renderTracks(data) {
   h += '</table></div>';
   var from = s.offset + 1, to = Math.min(s.offset + tracks.length, s.total);
   h += '<div class="pagination"><span>Showing ' + from + '\u2013' + to + ' of ' + s.total + '</span><div class="btn-group"><button class="btn btn-secondary btn-sm" onclick="trackPage(-1)"' + (s.offset === 0 ? ' disabled' : '') + '>\u2190 Prev</button><button class="btn btn-secondary btn-sm" onclick="trackPage(1)"' + (s.offset + s.limit >= s.total ? ' disabled' : '') + '>Next \u2192</button></div></div></div>';
-  $('#app').innerHTML = h;
+  setAppContent(h);
 }
 
 // =========================================================================
@@ -723,11 +755,11 @@ function loadPlaylists() { return api('/v1/playlists?limit=50').then(function(da
 
 function renderPlaylistList(playlists) {
   var h = '<div class="page-header"><h1 class="page-title">Playlists (' + playlists.length + ')</h1><div class="page-actions"><button class="btn btn-primary btn-sm" onclick="showGenerateModal()">Generate Playlist</button></div></div>';
-  if (!playlists.length) { h += '<div class="empty">No playlists yet. Generate one from the button above.</div>'; $('#app').innerHTML = h; return; }
+  if (!playlists.length) { h += '<div class="empty">No playlists yet. Generate one from the button above.</div>'; setAppContent(h); return; }
   h += '<div class="playlist-grid">';
   for (var i = 0; i < playlists.length; i++) { var p = playlists[i]; h += '<div class="playlist-card" onclick="viewPlaylist(' + p.id + ')"><h3>' + esc(p.name) + '</h3><div class="meta">' + strategyBadge(p.strategy) + '<span>' + p.track_count + ' tracks</span><span>' + fmtDuration(p.total_duration) + '</span><span>' + timeAgo(p.created_at) + '</span></div></div>'; }
   h += '</div>';
-  $('#app').innerHTML = h;
+  setAppContent(h);
 }
 
 function viewPlaylist(id) { api('/v1/playlists/' + id).then(function(p) { renderPlaylistDetail(p); }); }
@@ -738,7 +770,7 @@ function renderPlaylistDetail(p) {
   h += '<div class="card-body" style="overflow-x:auto"><table><tr><th>#</th><th>Track</th><th>Artist</th><th>BPM</th><th>Key</th><th>Energy</th><th>Mood</th><th>Duration</th></tr>';
   for (var i = 0; i < p.tracks.length; i++) { var t = p.tracks[i]; h += '<tr><td>' + (t.position + 1) + '</td><td class="truncate" title="' + trackTooltip(t) + '">' + (esc(t.title || '') || basename(t.file_path)) + '</td><td class="truncate" style="max-width:150px">' + esc(t.artist || '\u2014') + '</td><td>' + (t.bpm ? t.bpm.toFixed(1) : '\u2014') + '</td><td>' + esc(t.key || '\u2014') + ' ' + (t.mode ? t.mode.charAt(0) : '') + '</td><td>' + (t.energy != null ? t.energy.toFixed(2) : '\u2014') + '</td><td>' + topMood(t.mood_tags) + '</td><td>' + fmtTrackDur(t.duration) + '</td></tr>'; }
   h += '</table></div></div>';
-  $('#app').innerHTML = h;
+  setAppContent(h);
 }
 
 function deletePlaylist(id) { if (!confirm('Delete this playlist?')) return; apiDelete('/v1/playlists/' + id).then(function() { loadPlaylists(); }); }
@@ -1207,7 +1239,7 @@ function loadRecommendations() {
   h += '<button class="btn btn-secondary btn-sm" onclick="fetchDebugRecommendations()">Debug Recs</button>';
   h += '</div></div>';
   h += '<div id="reco-results"><div class="empty">Select a user and click "Get Recs" for normal results, or "Debug Recs" to trace the pipeline.</div></div>';
-  $('#app').innerHTML = h;
+  setAppContent(h);
 }
 
 function fetchRecommendations() {
@@ -1331,7 +1363,7 @@ function renderCharts(available, stats, chartData) {
     h += '<div class="stats-grid"><div class="stat-card"><div class="stat-label">Charts</div><div class="stat-value">' + (stats.chart_count||0) + '</div></div><div class="stat-card"><div class="stat-label">Total Entries</div><div class="stat-value">' + (stats.total_entries||0) + '</div></div><div class="stat-card"><div class="stat-label">Library Matches</div><div class="stat-value text-success">' + (stats.library_matches||0) + '</div></div><div class="stat-card"><div class="stat-label">Match Rate</div><div class="stat-value">' + ((stats.match_rate||0) * 100).toFixed(1) + '%</div>' + (stats.last_fetched_at ? '<div class="stat-sub">Updated ' + timeAgo(stats.last_fetched_at) + '</div>' : '') + '</div></div>';
   }
   var charts = (available && available.charts) || [];
-  if (!charts.length) { h += '<div class="empty">No charts built yet. Click "Build Charts" to fetch from Last.fm.<br><br>Configure <code>CHARTS_ENABLED=true</code> and <code>CHARTS_TAGS</code> / <code>CHARTS_COUNTRIES</code> in your .env file.</div>'; $('#app').innerHTML = h; return; }
+  if (!charts.length) { h += '<div class="empty">No charts built yet. Click "Build Charts" to fetch from Last.fm.<br><br>Configure <code>CHARTS_ENABLED=true</code> and <code>CHARTS_TAGS</code> / <code>CHARTS_COUNTRIES</code> in your .env file.</div>'; setAppContent(h); return; }
   var scopes = [], seenScopes = {};
   for (var i = 0; i < charts.length; i++) { if (!seenScopes[charts[i].scope]) { seenScopes[charts[i].scope] = true; scopes.push(charts[i].scope); } }
   h += '<div class="filter-bar"><label>Scope</label><select class="form-select" onchange="chartsCurrentScope=this.value;loadCharts()">';
@@ -1339,7 +1371,7 @@ function renderCharts(available, stats, chartData) {
   h += '</select><label>Type</label><select class="form-select" onchange="chartsCurrentType=this.value;loadCharts()">';
   h += '<option value="top_tracks"' + (chartsCurrentType === 'top_tracks' ? ' selected' : '') + '>Top Tracks</option>';
   h += '<option value="top_artists"' + (chartsCurrentType === 'top_artists' ? ' selected' : '') + '>Top Artists</option></select></div>';
-  if (!chartData || !chartData.entries || !chartData.entries.length) { h += '<div class="empty">No data for this chart type / scope combination.</div>'; $('#app').innerHTML = h; return; }
+  if (!chartData || !chartData.entries || !chartData.entries.length) { h += '<div class="empty">No data for this chart type / scope combination.</div>'; setAppContent(h); return; }
   var isTrack = chartsCurrentType === 'top_tracks';
   h += '<div class="card" style="margin-top:var(--space-4)"><div class="card-header">' + esc(chartsCurrentScope === 'global' ? 'Global' : chartsCurrentScope) + ' \u2014 ' + (isTrack ? 'Top Tracks' : 'Top Artists') + ' <span class="subtitle">' + chartData.total + ' entries' + (chartData.fetched_at ? ', updated ' + timeAgo(chartData.fetched_at) : '') + '</span></div>';
   h += '<div class="card-body" style="overflow-x:auto"><table>';
@@ -1347,7 +1379,7 @@ function renderCharts(available, stats, chartData) {
   else h += '<tr><th style="width:40px">#</th><th style="width:52px"></th><th>Artist</th><th>Plays</th><th>Listeners</th><th>Library Tracks</th><th>Status</th></tr>';
   for (var i = 0; i < chartData.entries.length; i++) { var e = chartData.entries[i]; h += '<tr><td class="text-muted font-semibold">' + (e.position + 1) + '</td><td>' + chartsThumbnail(e) + '</td>'; if (isTrack) h += '<td><strong>' + esc(e.track_title||'') + '</strong></td><td>' + esc(e.artist_name||'') + '</td>'; else h += '<td><strong>' + esc(e.artist_name||'') + '</strong></td>'; h += '<td>' + fmtNumber(e.playcount) + '</td><td>' + fmtNumber(e.listeners) + '</td>'; if (!isTrack) h += '<td>' + (e.library_track_count||0) + '</td>'; h += '<td>' + chartsLibraryBadge(e) + '</td></tr>'; }
   h += '</table></div></div>';
-  $('#app').innerHTML = h;
+  setAppContent(h);
 }
 
 function buildCharts(btn) {
@@ -1366,11 +1398,11 @@ function renderDiscovery(stats, data) {
   var h = '<div class="page-header"><h1 class="page-title">Music Discovery</h1>';
   if (stats.enabled) h += '<div class="page-actions"><button class="btn btn-primary btn-sm" onclick="runDiscovery(this)">Run Discovery</button></div>';
   h += '</div>';
-  if (!stats.enabled) { h += '<div class="empty">Music Discovery is not configured.<br>Set <code>LASTFM_API_KEY</code>, <code>LIDARR_URL</code>, and <code>LIDARR_API_KEY</code> in your .env file.</div>'; $('#app').innerHTML = h; return; }
+  if (!stats.enabled) { h += '<div class="empty">Music Discovery is not configured.<br>Set <code>LASTFM_API_KEY</code>, <code>LIDARR_URL</code>, and <code>LIDARR_API_KEY</code> in your .env file.</div>'; setAppContent(h); return; }
   var sent = (stats.by_status.sent||0) + (stats.by_status.in_lidarr||0);
   h += '<div class="stats-grid"><div class="stat-card"><div class="stat-label">Total Discovered</div><div class="stat-value">' + stats.total + '</div></div><div class="stat-card"><div class="stat-label">Sent to Lidarr</div><div class="stat-value text-success">' + sent + '</div></div><div class="stat-card"><div class="stat-label">Pending</div><div class="stat-value text-warning">' + (stats.by_status.pending||0) + '</div></div><div class="stat-card"><div class="stat-label">Today</div><div class="stat-value">' + stats.today_count + ' <span style="font-size:0.875rem" class="text-muted">/ ' + stats.daily_limit + '</span></div></div></div>';
   var requests = data.requests || [];
-  if (!requests.length) { h += '<div class="empty">No discovery requests yet. Click "Run Discovery" to start finding new music.</div>'; $('#app').innerHTML = h; return; }
+  if (!requests.length) { h += '<div class="empty">No discovery requests yet. Click "Run Discovery" to start finding new music.</div>'; setAppContent(h); return; }
   h += '<div class="card"><div class="card-header">Recent Discoveries <span class="subtitle">' + data.total + ' total</span></div>';
   h += '<div class="card-body" style="overflow-x:auto"><table><tr><th>Artist</th><th>Source</th><th>Seed</th><th>Similarity</th><th>Status</th><th>When</th></tr>';
   for (var i = 0; i < requests.length; i++) {
@@ -1382,7 +1414,7 @@ function renderDiscovery(stats, data) {
     h += '<tr' + err + '><td><strong>' + esc(r.artist_name) + '</strong>' + (r.artist_mbid ? '<br><span class="mono text-xs text-muted">' + esc(r.artist_mbid).substring(0, 16) + '...</span>' : '') + '</td><td>' + srcBadge + '</td><td>' + seed + '</td><td style="min-width:80px">' + (r.similarity_score != null ? '<div class="bar-track" style="height:14px"><div class="bar-fill" style="width:' + (r.similarity_score * 100).toFixed(0) + '%"></div></div>' : '\u2014') + '</td><td><span class="badge badge-' + statusCls + '">' + esc(r.status) + '</span></td><td>' + timeAgo(r.created_at) + '</td></tr>';
   }
   h += '</table></div></div>';
-  $('#app').innerHTML = h;
+  setAppContent(h);
 }
 
 function runDiscovery(btn) {
@@ -1424,7 +1456,7 @@ function loadRadio() {
 
   // Now playing / queue
   h += '<div id="radio-now-playing"></div>';
-  $('#app').innerHTML = h;
+  setAppContent(h);
 
   // Load active sessions
   radioLoadSessions();
