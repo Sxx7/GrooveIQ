@@ -18,6 +18,7 @@ stages:
   - test
   - security
   - build
+  - scan
 
 variables:
   PIP_CACHE_DIR: "$CI_PROJECT_DIR/.cache/pip"
@@ -117,7 +118,7 @@ semgrep:
     expire_in: 30 days
 
 trivy-image:
-  stage: security
+  stage: scan
   image: docker:24
   services:
     - docker:24-dind
