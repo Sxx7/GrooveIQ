@@ -57,18 +57,39 @@ async def get_news(
         )
 
     from app.db.session import AsyncSessionLocal
-    from app.models.db import User
+    from app.models.db import TrackFeatures, TrackInteraction, User
     from app.services.reddit_news import get_cache_age_minutes, get_personalized_feed
     from sqlalchemy import select
 
-    # Load user's taste profile
+    # Load user's taste profile + top artists/genres from library
     taste_profile = None
+    library_artists: set[str] = set()
+    library_genres: set[str] = set()
     async with AsyncSessionLocal() as session:
         row = (await session.execute(
             select(User.taste_profile).where(User.user_id == user_id)
         )).scalar_one_or_none()
         if row is not None:
             taste_profile = row
+
+        # Fetch artist and genre names for user's top interacted tracks
+        top_tracks_q = (
+            select(TrackFeatures.artist, TrackFeatures.genre)
+            .join(TrackInteraction, TrackInteraction.track_id == TrackFeatures.track_id)
+            .where(TrackInteraction.user_id == user_id)
+            .where(TrackInteraction.satisfaction_score > 0)
+            .order_by(TrackInteraction.satisfaction_score.desc())
+            .limit(200)
+        )
+        rows = (await session.execute(top_tracks_q)).all()
+        for artist, genre in rows:
+            if artist:
+                library_artists.add(artist.strip().lower())
+            if genre:
+                for g in genre.split(","):
+                    g = g.strip().lower()
+                    if g:
+                        library_genres.add(g)
 
     cache_age = get_cache_age_minutes()
     cache_stale = cache_age > (settings.NEWS_INTERVAL_MINUTES * 2)
@@ -78,6 +99,8 @@ async def get_news(
         limit=limit,
         tag_filter=tag,
         subreddit_filter=subreddit,
+        extra_artists=library_artists,
+        extra_genres=library_genres,
     )
 
     return {

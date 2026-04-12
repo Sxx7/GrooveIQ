@@ -253,11 +253,26 @@ async def _fetch_subreddit(client: httpx.AsyncClient, subreddit: str) -> List[Re
     return posts
 
 
+_refresh_in_progress = False
+
+
 async def refresh_cache() -> Dict[str, Any]:
     """Fetch all configured subreddits and rebuild the in-memory cache.
 
     Called by the scheduler. Returns summary dict.
     """
+    global _refresh_in_progress
+    if _refresh_in_progress:
+        logger.info("News cache refresh already in progress, skipping")
+        return {"skipped": True}
+    _refresh_in_progress = True
+    try:
+        return await _do_refresh_cache()
+    finally:
+        _refresh_in_progress = False
+
+
+async def _do_refresh_cache() -> Dict[str, Any]:
     import asyncio
 
     subs_to_fetch: Set[str] = set(settings.news_subreddits_list)
@@ -434,6 +449,8 @@ def get_personalized_feed(
     limit: int = 25,
     tag_filter: Optional[str] = None,
     subreddit_filter: Optional[str] = None,
+    extra_artists: Optional[Set[str]] = None,
+    extra_genres: Optional[Set[str]] = None,
 ) -> List[Dict[str, Any]]:
     """Score and rank all cached posts for a user.
 
@@ -443,7 +460,11 @@ def get_personalized_feed(
     max_age = settings.NEWS_MAX_AGE_HOURS
 
     user_artists = _build_user_artist_set(taste_profile)
+    if extra_artists:
+        user_artists |= extra_artists
     user_genres = _build_user_genre_set(taste_profile)
+    if extra_genres:
+        user_genres |= extra_genres
 
     scored: List[Tuple[float, RedditPost]] = []
 
