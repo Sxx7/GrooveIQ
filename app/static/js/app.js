@@ -192,7 +192,14 @@ function firstMetricKey(metrics) {
 document.getElementById('nav-links').addEventListener('click', function(e) {
   var btn = e.target.closest('.nav-link');
   if (!btn) return;
+  // Close mobile menu on tab select
+  document.getElementById('nav-links').classList.remove('open');
   switchTab(btn.getAttribute('data-tab'));
+});
+
+// Hamburger toggle for mobile
+document.getElementById('nav-toggle').addEventListener('click', function() {
+  document.getElementById('nav-links').classList.toggle('open');
 });
 
 function switchTab(view) {
@@ -230,7 +237,7 @@ function connect() {
   }).catch(function(){});
   loadDashboard().then(function() {
     $('#refresh-info').style.display = 'flex';
-    $('#nav-links').style.display = 'flex';
+    $('#nav-links').classList.add('connected');
     startAutoRefresh();
   }).catch(function(e) {
     $('#app').innerHTML = '<div class="empty" style="color:var(--color-danger)">Connection failed: ' + esc(e.message) + '</div>';
@@ -1837,7 +1844,11 @@ function renderAlgorithm() {
       h += '</div>';
       h += '<div class="algo-field-controls">';
       h += '<input type="range" class="algo-slider" min="' + meta.min + '" max="' + meta.max + '" step="' + meta.step + '" value="' + val + '" data-gk="' + gk + '" data-fk="' + fk + '" data-int="' + (meta.integer ? '1' : '0') + '">';
+      h += '<div class="algo-num-wrap">';
+      h += '<button type="button" class="algo-spin algo-spin-down" data-gk="' + gk + '" data-fk="' + fk + '" data-dir="-1">&minus;</button>';
       h += '<input type="number" class="algo-num" min="' + meta.min + '" max="' + meta.max + '" step="' + meta.step + '" value="' + val + '" data-gk="' + gk + '" data-fk="' + fk + '" data-int="' + (meta.integer ? '1' : '0') + '">';
+      h += '<button type="button" class="algo-spin algo-spin-up" data-gk="' + gk + '" data-fk="' + fk + '" data-dir="1">+</button>';
+      h += '</div>';
       h += '</div>';
       h += '<div class="algo-field-info">';
       h += '<span class="text-muted">' + esc(meta.desc.replace(' [RETRAIN]', '')) + '</span>';
@@ -1865,6 +1876,20 @@ function renderAlgorithm() {
       var meta = algoGetFieldMeta(gk, fk);
       var v = isInt ? parseInt(this.value, 10) : parseFloat(this.value);
       if (isNaN(v)) return;
+      if (v < meta.min) v = meta.min;
+      if (v > meta.max) v = meta.max;
+      algoEdited[gk][fk] = v;
+      renderAlgorithm();
+    });
+  });
+  document.querySelectorAll('.algo-spin').forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      var gk = this.dataset.gk, fk = this.dataset.fk, dir = parseInt(this.dataset.dir, 10);
+      var meta = algoGetFieldMeta(gk, fk);
+      var isInt = meta.integer;
+      var cur = algoEdited[gk][fk];
+      var v = cur + dir * meta.step;
+      v = isInt ? Math.round(v) : parseFloat(v.toPrecision(10));
       if (v < meta.min) v = meta.min;
       if (v > meta.max) v = meta.max;
       algoEdited[gk][fk] = v;
