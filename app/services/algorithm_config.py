@@ -54,6 +54,7 @@ def get_config_version() -> int:
 # DB operations
 # ---------------------------------------------------------------------------
 
+
 async def load_active_config() -> None:
     """
     Load the active config from DB into memory.
@@ -119,11 +120,7 @@ async def save_config(
     Deactivates the previous active config.  Returns the new row.
     """
     # Get next version number.
-    result = await session.execute(
-        select(AlgorithmConfig.version)
-        .order_by(AlgorithmConfig.version.desc())
-        .limit(1)
-    )
+    result = await session.execute(select(AlgorithmConfig.version).order_by(AlgorithmConfig.version.desc()).limit(1))
     last_version = result.scalar_one_or_none() or 0
     new_version = last_version + 1
 
@@ -153,9 +150,7 @@ async def save_config(
 
 async def activate_version(session: AsyncSession, version: int) -> AlgorithmConfig | None:
     """Activate a specific historical version (rollback)."""
-    result = await session.execute(
-        select(AlgorithmConfig).where(AlgorithmConfig.version == version)
-    )
+    result = await session.execute(select(AlgorithmConfig).where(AlgorithmConfig.version == version))
     row = result.scalar_one_or_none()
     if row is None:
         return None
@@ -180,10 +175,7 @@ async def get_history(
 ) -> list[AlgorithmConfig]:
     """Fetch config version history, newest first."""
     result = await session.execute(
-        select(AlgorithmConfig)
-        .order_by(AlgorithmConfig.version.desc())
-        .limit(limit)
-        .offset(offset)
+        select(AlgorithmConfig).order_by(AlgorithmConfig.version.desc()).limit(limit).offset(offset)
     )
     return list(result.scalars().all())
 

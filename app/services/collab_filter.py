@@ -30,12 +30,12 @@ logger = logging.getLogger(__name__)
 
 # Singleton state.
 _lock = threading.Lock()
-_model: object | None = None                     # implicit.als.AlternatingLeastSquares
+_model: object | None = None  # implicit.als.AlternatingLeastSquares
 _user_to_idx: dict[str, int] = {}
 _idx_to_user: list[str] = []
 _track_to_idx: dict[str, int] = {}
 _idx_to_track: list[str] = []
-_interaction_matrix = None                           # scipy.sparse.csr_matrix (user × track)
+_interaction_matrix = None  # scipy.sparse.csr_matrix (user × track)
 
 # Minimum interactions to bother training.
 _MIN_INTERACTIONS = 10
@@ -77,7 +77,10 @@ def _train_als_sync(rows: list) -> tuple[object, dict[str, int], list[str], dict
     )
 
     model = AlternatingLeastSquares(
-        factors=64, iterations=15, regularization=0.1, random_state=42,
+        factors=64,
+        iterations=15,
+        regularization=0.1,
+        random_state=42,
     )
     model.fit(matrix)
 
@@ -93,18 +96,14 @@ async def build_model() -> dict:
     import asyncio
 
     async with AsyncSessionLocal() as session:
-        count_result = await session.execute(
-            select(func.count(TrackInteraction.id))
-        )
+        count_result = await session.execute(select(func.count(TrackInteraction.id)))
         total = count_result.scalar_one()
 
         if total < _MIN_INTERACTIONS:
             logger.warning(f"CF build: only {total} interactions (<{_MIN_INTERACTIONS}), skipping.")
             return {"tracks": 0, "users": 0, "interactions": total, "trained": False}
 
-        user_count = (await session.execute(
-            select(func.count(func.distinct(TrackInteraction.user_id)))
-        )).scalar_one()
+        user_count = (await session.execute(select(func.count(func.distinct(TrackInteraction.user_id))))).scalar_one()
 
         if user_count < _MIN_USERS:
             logger.warning(f"CF build: only {user_count} user(s), CF is meaningless, skipping.")
@@ -122,7 +121,9 @@ async def build_model() -> dict:
     # Run CPU-heavy ALS training in a thread so the event loop stays responsive.
     loop = asyncio.get_running_loop()
     model, user_map, user_ids, track_map, track_ids, matrix = await loop.run_in_executor(
-        None, _train_als_sync, rows,
+        None,
+        _train_als_sync,
+        rows,
     )
 
     n_users = len(user_ids)

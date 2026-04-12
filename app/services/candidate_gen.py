@@ -45,12 +45,11 @@ async def get_content_candidates(
     Returns list of {"track_id": str, "score": float, "source": "content"}.
     """
     results = faiss_index.search_by_track_id(
-        seed_track_id, k=k, exclude_ids=exclude_ids,
+        seed_track_id,
+        k=k,
+        exclude_ids=exclude_ids,
     )
-    return [
-        {"track_id": tid, "score": score, "source": "content"}
-        for tid, score in results
-    ]
+    return [{"track_id": tid, "score": score, "source": "content"} for tid, score in results]
 
 
 async def get_content_candidates_for_user(
@@ -67,15 +66,11 @@ async def get_content_candidates_for_user(
     queries FAISS for the nearest neighbours to that centroid.
     """
     if session is not None:
-        result = await session.execute(
-            select(User.taste_profile).where(User.user_id == user_id)
-        )
+        result = await session.execute(select(User.taste_profile).where(User.user_id == user_id))
         row = result.scalar_one_or_none()
     else:
         async with AsyncSessionLocal() as session:
-            result = await session.execute(
-                select(User.taste_profile).where(User.user_id == user_id)
-            )
+            result = await session.execute(select(User.taste_profile).where(User.user_id == user_id))
             row = result.scalar_one_or_none()
 
     if not row:
@@ -90,10 +85,7 @@ async def get_content_candidates_for_user(
         return []
 
     results = faiss_index.search(centroid, k=k, exclude_ids=exclude_ids)
-    return [
-        {"track_id": tid, "score": score, "source": "content_profile"}
-        for tid, score in results
-    ]
+    return [{"track_id": tid, "score": score, "source": "content_profile"} for tid, score in results]
 
 
 async def _get_disliked_track_ids(user_id: str, session: AsyncSession) -> set[str]:
@@ -102,8 +94,7 @@ async def _get_disliked_track_ids(user_id: str, session: AsyncSession) -> set[st
     These are filtered out of all candidate sources.
     """
     result = await session.execute(
-        select(TrackInteraction.track_id)
-        .where(
+        select(TrackInteraction.track_id).where(
             TrackInteraction.user_id == user_id,
             (TrackInteraction.dislike_count > 0) | (TrackInteraction.early_skip_count > 2),
         )
@@ -115,8 +106,7 @@ async def _get_recently_skipped_ids(user_id: str, session: AsyncSession) -> set[
     """Tracks the user skipped in the last 24h."""
     cutoff = int(time.time()) - 86_400
     result = await session.execute(
-        select(TrackInteraction.track_id)
-        .where(
+        select(TrackInteraction.track_id).where(
             TrackInteraction.user_id == user_id,
             TrackInteraction.last_played_at >= cutoff,
             TrackInteraction.early_skip_count > 0,
@@ -143,15 +133,10 @@ async def _get_popular_tracks(session: AsyncSession, k: int = 50) -> list[dict[s
     rows = result.all()
 
     cfg = get_config().candidate_sources
-    return [
-        {"track_id": row.track_id, "score": cfg.popular, "source": "popular"}
-        for row in rows
-    ]
+    return [{"track_id": row.track_id, "score": cfg.popular, "source": "popular"} for row in rows]
 
 
-async def _get_recently_played_artist_tracks(
-    user_id: str, session: AsyncSession, k: int = 50
-) -> list[dict[str, Any]]:
+async def _get_recently_played_artist_tracks(user_id: str, session: AsyncSession, k: int = 50) -> list[dict[str, Any]]:
     """
     Heuristic recall: tracks from artists the user listened to in the last 7 days.
     Uses file_path heuristic (parent directory = artist/album) since we don't
@@ -174,10 +159,7 @@ async def _get_recently_played_artist_tracks(
         return []
 
     # Get file paths for these tracks to extract artist dirs.
-    result = await session.execute(
-        select(TrackFeatures.file_path)
-        .where(TrackFeatures.track_id.in_(recent_track_ids))
-    )
+    result = await session.execute(select(TrackFeatures.file_path).where(TrackFeatures.track_id.in_(recent_track_ids)))
     paths = [row[0] for row in result.all() if row[0]]
 
     if not paths:
@@ -185,6 +167,7 @@ async def _get_recently_played_artist_tracks(
 
     # Extract parent directories (assumed to be artist or artist/album).
     import os
+
     artist_dirs = set()
     for p in paths:
         parts = p.split(os.sep)
@@ -197,6 +180,7 @@ async def _get_recently_played_artist_tracks(
     # Find other tracks in the same directories.
     conditions = [TrackFeatures.file_path.contains(d) for d in list(artist_dirs)[:10]]
     from sqlalchemy import or_
+
     result = await session.execute(
         select(TrackFeatures.track_id)
         .where(
@@ -208,10 +192,7 @@ async def _get_recently_played_artist_tracks(
     tracks = [row[0] for row in result.all()]
 
     cfg = get_config().candidate_sources
-    return [
-        {"track_id": tid, "score": cfg.artist_recall, "source": "artist_recall"}
-        for tid in tracks
-    ]
+    return [{"track_id": tid, "score": cfg.artist_recall, "source": "artist_recall"} for tid in tracks]
 
 
 async def get_candidates(
@@ -258,15 +239,19 @@ async def _get_candidates_impl(
     if faiss_index.is_ready():
         if seed_track_id:
             raw = await get_content_candidates(
-                seed_track_id, k=100, exclude_ids=exclude,
+                seed_track_id,
+                k=100,
+                exclude_ids=exclude,
             )
             content_candidates = [
-                {"track_id": c["track_id"], "score": c["score"] * cfg.content, "source": "content"}
-                for c in raw
+                {"track_id": c["track_id"], "score": c["score"] * cfg.content, "source": "content"} for c in raw
             ]
         else:
             raw = await get_content_candidates_for_user(
-                user_id, k=100, exclude_ids=exclude, session=session,
+                user_id,
+                k=100,
+                exclude_ids=exclude,
+                session=session,
             )
             content_candidates = [
                 {"track_id": c["track_id"], "score": c["score"] * cfg.content_profile, "source": "content_profile"}
@@ -278,9 +263,7 @@ async def _get_candidates_impl(
     if collab_filter.is_ready():
         raw = collab_filter.get_cf_candidates(user_id, k=100)
         cf_candidates = [
-            {"track_id": tid, "score": score * cfg.cf, "source": "cf"}
-            for tid, score in raw
-            if tid not in exclude
+            {"track_id": tid, "score": score * cfg.cf, "source": "cf"} for tid, score in raw if tid not in exclude
         ]
 
     # Source 3: Session skip-gram embeddings (behavioral co-occurrence).
@@ -288,7 +271,9 @@ async def _get_candidates_impl(
     if session_embeddings.is_ready():
         if seed_track_id:
             raw = session_embeddings.get_similar_tracks(
-                seed_track_id, k=100, exclude_ids=exclude,
+                seed_track_id,
+                k=100,
+                exclude_ids=exclude,
             )
             session_emb_candidates = [
                 {"track_id": tid, "score": score * cfg.session_skipgram, "source": "session_skipgram"}
@@ -296,15 +281,15 @@ async def _get_candidates_impl(
             ]
         else:
             # Use user's top tracks as centroid for session-based retrieval.
-            user_result = await session.execute(
-                select(User.taste_profile).where(User.user_id == user_id)
-            )
+            user_result = await session.execute(select(User.taste_profile).where(User.user_id == user_id))
             tp = user_result.scalar_one_or_none()
             if tp:
                 top_ids = _get_user_top_track_ids(tp, limit=20)
                 if top_ids:
                     raw = session_embeddings.get_similar_to_tracks(
-                        top_ids, k=100, exclude_ids=exclude,
+                        top_ids,
+                        k=100,
+                        exclude_ids=exclude,
                     )
                     session_emb_candidates = [
                         {"track_id": tid, "score": score * cfg.session_skipgram, "source": "session_skipgram"}
@@ -316,18 +301,24 @@ async def _get_candidates_impl(
     if lastfm_candidates.is_ready():
         if seed_track_id:
             raw = lastfm_candidates.get_similar_for_track(
-                seed_track_id, k=100, exclude_ids=exclude,
+                seed_track_id,
+                k=100,
+                exclude_ids=exclude,
             )
         else:
             # Use user's top tracks for merged similar-track retrieval.
-            user_result = await session.execute(
-                select(User.taste_profile).where(User.user_id == user_id)
-            )
+            user_result = await session.execute(select(User.taste_profile).where(User.user_id == user_id))
             tp = user_result.scalar_one_or_none()
             top_ids = _get_user_top_track_ids(tp, limit=20) if tp else []
-            raw = lastfm_candidates.get_similar_for_user(
-                top_ids, k=100, exclude_ids=exclude,
-            ) if top_ids else []
+            raw = (
+                lastfm_candidates.get_similar_for_user(
+                    top_ids,
+                    k=100,
+                    exclude_ids=exclude,
+                )
+                if top_ids
+                else []
+            )
 
         lastfm_sim_candidates = [
             {"track_id": tid, "score": score * cfg.lastfm_similar, "source": "lastfm_similar"}
@@ -353,7 +344,15 @@ async def _get_candidates_impl(
     seen: set[str] = set()
     merged: list[dict[str, Any]] = []
 
-    for candidate_list in [content_candidates, cf_candidates, session_emb_candidates, sasrec_candidates, lastfm_sim_candidates, artist_recall, popular]:
+    for candidate_list in [
+        content_candidates,
+        cf_candidates,
+        session_emb_candidates,
+        sasrec_candidates,
+        lastfm_sim_candidates,
+        artist_recall,
+        popular,
+    ]:
         for c in candidate_list:
             tid = c["track_id"]
             if tid in seen or tid in exclude:

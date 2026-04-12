@@ -1,4 +1,5 @@
 """GrooveIQ – Algorithm configuration API routes."""
+
 from __future__ import annotations
 
 import time
@@ -36,6 +37,7 @@ def _row_to_response(row) -> dict:
 # ---------------------------------------------------------------------------
 # Read
 # ---------------------------------------------------------------------------
+
 
 @router.get("/algorithm/config", summary="Get active algorithm config")
 async def get_config(
@@ -75,6 +77,7 @@ async def get_history(
 # ---------------------------------------------------------------------------
 # Write
 # ---------------------------------------------------------------------------
+
 
 @router.put("/algorithm/config", summary="Update algorithm config (creates new version)")
 async def update_config(
@@ -124,6 +127,7 @@ async def activate_version(
 # ---------------------------------------------------------------------------
 # Export / Import
 # ---------------------------------------------------------------------------
+
 
 @router.get("/algorithm/config/export", summary="Export active config as JSON")
 async def export_config(
@@ -176,6 +180,7 @@ async def import_config(
 # Version lookup (must be LAST to avoid shadowing fixed paths like /export)
 # ---------------------------------------------------------------------------
 
+
 @router.get("/algorithm/config/{version}", summary="Get a specific config version")
 async def get_version(
     version: int,
@@ -186,9 +191,8 @@ async def get_version(
     from sqlalchemy import select
 
     from app.models.db import AlgorithmConfig
-    result = await session.execute(
-        select(AlgorithmConfig).where(AlgorithmConfig.version == version)
-    )
+
+    result = await session.execute(select(AlgorithmConfig).where(AlgorithmConfig.version == version))
     row = result.scalar_one_or_none()
     if row is None:
         raise HTTPException(404, f"Config version {version} not found")

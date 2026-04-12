@@ -43,6 +43,7 @@ _running_scan_id: int | None = None
 # Public interface
 # ---------------------------------------------------------------------------
 
+
 def is_scan_running() -> bool:
     """Return True if a library scan is currently in progress."""
     return _running_scan_id is not None
@@ -81,9 +82,7 @@ async def resume_interrupted_scans() -> int | None:
     """
     async with AsyncSessionLocal() as session:
         result = await session.execute(
-            select(LibraryScanState)
-            .where(LibraryScanState.status == "running")
-            .order_by(LibraryScanState.id.desc())
+            select(LibraryScanState).where(LibraryScanState.status == "running").order_by(LibraryScanState.id.desc())
         )
         interrupted = result.scalars().all()
 
@@ -112,9 +111,7 @@ async def resume_interrupted_scans() -> int | None:
 
 async def get_scan_status(scan_id: int) -> dict | None:
     async with AsyncSessionLocal() as session:
-        result = await session.execute(
-            select(LibraryScanState).where(LibraryScanState.id == scan_id)
-        )
+        result = await session.execute(select(LibraryScanState).where(LibraryScanState.id == scan_id))
         scan = result.scalar_one_or_none()
         if not scan:
             return None
@@ -155,6 +152,7 @@ async def get_scan_status(scan_id: int) -> dict | None:
 # Internal scan logic
 # ---------------------------------------------------------------------------
 
+
 async def _run_scan(scan_id: int) -> None:
     global _running_scan_id
     counters = {"found": 0, "ok": 0, "skipped": 0, "failed": 0}
@@ -177,16 +175,20 @@ async def _run_scan(scan_id: int) -> None:
         # Pre-load all existing hashes in one query (avoids per-file DB round-trips)
         hash_cache: dict[str, tuple[str, str]] = {}  # file_path → (file_hash, analysis_version)
         async with AsyncSessionLocal() as session:
-            rows = (await session.execute(
-                select(TrackFeatures.file_path, TrackFeatures.file_hash, TrackFeatures.analysis_version)
-                .where(TrackFeatures.file_hash.isnot(None))
-            )).all()
+            rows = (
+                await session.execute(
+                    select(TrackFeatures.file_path, TrackFeatures.file_hash, TrackFeatures.analysis_version).where(
+                        TrackFeatures.file_hash.isnot(None)
+                    )
+                )
+            ).all()
             for row in rows:
                 hash_cache[row[0]] = (row[1], row[2])
         logger.info(f"[Scan {scan_id}] Pre-loaded {len(hash_cache)} file hashes for skip detection")
 
         # Ensure the worker pool is running before processing
         from app.services.analysis_worker import get_worker_pool
+
         pool = await get_worker_pool()
 
         # Process in batches, yielding to the event loop between batches
@@ -194,7 +196,9 @@ async def _run_scan(scan_id: int) -> None:
         for i in range(0, len(audio_files), batch_size):
             batch = audio_files[i : i + batch_size]
             await _process_batch(batch, scan_id, counters, scan_start, hash_cache, pool)
-            _log_progress(scan_id, counters["found"], counters["ok"], counters["skipped"], counters["failed"], scan_start)
+            _log_progress(
+                scan_id, counters["found"], counters["ok"], counters["skipped"], counters["failed"], scan_start
+            )
             await asyncio.sleep(0.05)  # yield between batches
 
         # --- Post-scan phases (each timed for diagnostics) ---
@@ -212,10 +216,9 @@ async def _run_scan(scan_id: int) -> None:
                 .scalar_subquery()
             )
             from sqlalchemy import delete as del_stmt
+
             result = await session.execute(
-                del_stmt(ScanLog)
-                .where(ScanLog.scan_id == scan_id)
-                .where(ScanLog.id.notin_(keep_subq))
+                del_stmt(ScanLog).where(ScanLog.scan_id == scan_id).where(ScanLog.id.notin_(keep_subq))
             )
             if result.rowcount:
                 await session.commit()
@@ -227,6 +230,7 @@ async def _run_scan(scan_id: int) -> None:
         t_phase = time.time()
         try:
             from app.services.media_server import is_configured, sync_track_ids
+
             if is_configured():
                 async with AsyncSessionLocal() as sync_session:
                     sync_result = await sync_track_ids(sync_session)
@@ -238,13 +242,16 @@ async def _run_scan(scan_id: int) -> None:
             else:
                 logger.info(f"[Scan {scan_id}] Post-scan phase B (media sync): skipped (not configured)")
         except Exception as e:
-            logger.error(f"[Scan {scan_id}] Post-scan phase B (media sync) failed after {time.time() - t_phase:.1f}s: {e}")
+            logger.error(
+                f"[Scan {scan_id}] Post-scan phase B (media sync) failed after {time.time() - t_phase:.1f}s: {e}"
+            )
         await asyncio.sleep(0.05)
 
         # Phase C: Rebuild FAISS index with new/updated embeddings.
         t_phase = time.time()
         try:
             from app.services.faiss_index import rebuild as rebuild_faiss
+
             indexed = await rebuild_faiss()
             logger.info(f"[Scan {scan_id}] Post-scan phase C (FAISS): {indexed} tracks, {time.time() - t_phase:.1f}s")
         except Exception as e:
@@ -388,16 +395,13 @@ async def _upsert_track_features(session: AsyncSession, data: dict) -> None:
     file_path = data.get("file_path", "")
     track_id = data.get("track_id") or generate_track_id(file_path)
 
-    result = await session.execute(
-        select(TrackFeatures).where(TrackFeatures.track_id == track_id)
-    )
+    result = await session.execute(select(TrackFeatures).where(TrackFeatures.track_id == track_id))
     existing = result.scalar_one_or_none()
 
     if existing is None:
-        row = TrackFeatures(track_id=track_id, **{
-            k: v for k, v in data.items()
-            if hasattr(TrackFeatures, k) and k != "track_id"
-        })
+        row = TrackFeatures(
+            track_id=track_id, **{k: v for k, v in data.items() if hasattr(TrackFeatures, k) and k != "track_id"}
+        )
         session.add(row)
     else:
         for k, v in data.items():
@@ -451,9 +455,5 @@ def _iter_audio_files(root: Path):
 
 async def _update_scan(scan_id: int, **kwargs) -> None:
     async with AsyncSessionLocal() as session:
-        await session.execute(
-            update(LibraryScanState)
-            .where(LibraryScanState.id == scan_id)
-            .values(**kwargs)
-        )
+        await session.execute(update(LibraryScanState).where(LibraryScanState.id == scan_id).values(**kwargs))
         await session.commit()

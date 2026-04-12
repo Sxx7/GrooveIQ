@@ -89,6 +89,7 @@ async def trigger_discovery(
         }
 
     from app.services.discovery import run_discovery_pipeline
+
     result = await run_discovery_pipeline()
     return {"status": "completed", "result": result}
 
@@ -103,21 +104,24 @@ async def discovery_stats(
     _key: str = Depends(require_api_key),
 ):
     # Count by status.
-    status_rows = (await session.execute(
-        select(
-            DiscoveryRequest.status,
-            func.count().label("cnt"),
-        ).group_by(DiscoveryRequest.status)
-    )).all()
+    status_rows = (
+        await session.execute(
+            select(
+                DiscoveryRequest.status,
+                func.count().label("cnt"),
+            ).group_by(DiscoveryRequest.status)
+        )
+    ).all()
     by_status = {row.status: row.cnt for row in status_rows}
     total = sum(by_status.values())
 
     # Today's count.
     today_start = int(time.time()) - (int(time.time()) % 86400)
-    today_count = (await session.execute(
-        select(func.count()).select_from(DiscoveryRequest)
-        .where(DiscoveryRequest.created_at >= today_start)
-    )).scalar() or 0
+    today_count = (
+        await session.execute(
+            select(func.count()).select_from(DiscoveryRequest).where(DiscoveryRequest.created_at >= today_start)
+        )
+    ).scalar() or 0
 
     return {
         "enabled": settings.discovery_enabled,

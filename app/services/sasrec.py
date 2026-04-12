@@ -42,13 +42,13 @@ _user_sequences: dict[str, list[str]] = {}  # cached recent sequences per user
 _EMBED_DIM = 64
 _NUM_HEADS = 4
 _NUM_LAYERS = 2
-_MAX_SEQ_LEN = 50       # max tracks in sequence
+_MAX_SEQ_LEN = 50  # max tracks in sequence
 _DROPOUT = 0.1
 _LEARNING_RATE = 0.001
 _EPOCHS = 30
 _BATCH_SIZE = 64
-_MIN_SESSIONS = 20      # don't train with fewer sessions
-_MIN_VOCAB = 10         # don't train with fewer unique tracks
+_MIN_SESSIONS = 20  # don't train with fewer sessions
+_MIN_VOCAB = 10  # don't train with fewer unique tracks
 
 
 class SASRecModel:
@@ -59,8 +59,9 @@ class SASRecModel:
     Uses learned embeddings + positional encodings + causal self-attention.
     """
 
-    def __init__(self, vocab_size: int, embed_dim: int, num_heads: int,
-                 num_layers: int, max_seq_len: int, dropout: float = 0.1):
+    def __init__(
+        self, vocab_size: int, embed_dim: int, num_heads: int, num_layers: int, max_seq_len: int, dropout: float = 0.1
+    ):
         self.vocab_size = vocab_size
         self.embed_dim = embed_dim
         self.num_heads = num_heads
@@ -198,7 +199,7 @@ class SASRecModel:
                 continue
 
             # Truncate to max sequence length.
-            seq = seq[-self.max_seq_len:]
+            seq = seq[-self.max_seq_len :]
             input_ids = seq[:-1]
             target_ids = seq[1:]
 
@@ -247,9 +248,13 @@ async def _load_sequences() -> tuple[list[list[str]], dict[str, list[str]]]:
     """
     async with AsyncSessionLocal() as session:
         sess_result = await session.execute(
-            select(ListenSession.session_key, ListenSession.user_id,
-                   ListenSession.event_id_min, ListenSession.event_id_max,
-                   ListenSession.started_at)
+            select(
+                ListenSession.session_key,
+                ListenSession.user_id,
+                ListenSession.event_id_min,
+                ListenSession.event_id_max,
+                ListenSession.started_at,
+            )
             .where(ListenSession.track_count >= 2)
             .order_by(ListenSession.started_at)
         )
@@ -357,14 +362,14 @@ async def train() -> dict[str, Any]:
     sequences, user_recent = await _load_sequences()
 
     if len(sequences) < _MIN_SESSIONS:
-        logger.info(
-            f"SASRec: only {len(sequences)} sessions (< {_MIN_SESSIONS}), skipping."
-        )
+        logger.info(f"SASRec: only {len(sequences)} sessions (< {_MIN_SESSIONS}), skipping.")
         return {"trained": False, "sessions": len(sequences), "reason": "insufficient_sessions"}
 
     loop = asyncio.get_running_loop()
     model, vocab, inv_vocab = await loop.run_in_executor(
-        None, _train_model_sync, sequences,
+        None,
+        _train_model_sync,
+        sequences,
     )
 
     if model is None:
@@ -377,10 +382,7 @@ async def train() -> dict[str, Any]:
         _inv_vocab = inv_vocab
         _user_sequences = user_recent
 
-    logger.info(
-        f"SASRec trained: {len(sequences)} sessions, "
-        f"{len(vocab)} tracks in vocabulary."
-    )
+    logger.info(f"SASRec trained: {len(sequences)} sessions, {len(vocab)} tracks in vocabulary.")
 
     return {
         "trained": True,
@@ -433,10 +435,7 @@ def predict_next_scores(
     exp_scores = np.exp(candidate_scores - max_score)
     softmax_scores = exp_scores / (exp_scores.sum() + 1e-9)
 
-    return {
-        tid: float(score)
-        for (tid, _), score in zip(candidate_tokens, softmax_scores)
-    }
+    return {tid: float(score) for (tid, _), score in zip(candidate_tokens, softmax_scores)}
 
 
 def get_top_predictions(

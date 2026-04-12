@@ -79,11 +79,13 @@ async def setup_db(monkeypatch):
 
     # Reset singletons.
     import app.services.ranker as r
+
     r._model = None
     r._model_version = None
     r._model_stats = {}
 
     import app.services.collab_filter as cf
+
     cf._user_factors = None
     cf._item_factors = None
 
@@ -97,9 +99,7 @@ async def client():
     async with AsyncClient(
         transport=ASGITransport(app=app),
         base_url="http://test",
-        headers={"Authorization": f"Bearer {settings.api_keys_list[0]}"}
-        if settings.api_keys_list
-        else {},
+        headers={"Authorization": f"Bearer {settings.api_keys_list[0]}"} if settings.api_keys_list else {},
     ) as c:
         yield c
 
@@ -114,30 +114,34 @@ async def client():
 # t0-t9 and chill_fan's should lean toward t10-t19.
 # ---------------------------------------------------------------------------
 
+
 async def _create_library():
     """Create 20 tracks: 10 high-energy 'metal' + 10 low-energy 'chill'."""
     now = _now()
     async with _TestSession() as session:
         for i in range(20):
             is_metal = i < 10
-            session.add(TrackFeatures(
-                track_id=f"t{i}",
-                file_path=f"/music/{'Metal' if is_metal else 'Chill'}/album{i % 4}/track{i}.mp3",
-                title=f"Track {i}",
-                artist=f"{'Metal' if is_metal else 'Chill'} Artist {i % 4}",
-                bpm=160.0 + i * 2 if is_metal else 80.0 + i * 2,
-                energy=0.8 + (i % 5) * 0.04 if is_metal else 0.2 + (i % 5) * 0.04,
-                danceability=0.3 if is_metal else 0.7,
-                valence=0.3 if is_metal else 0.7,
-                loudness=-3.0 if is_metal else -15.0,
-                instrumentalness=0.1 if is_metal else 0.5,
-                duration=240.0 + i * 5,
-                embedding=_make_embedding(i),
-                mood_tags=[{"label": "aggressive", "confidence": 0.9}] if is_metal
+            session.add(
+                TrackFeatures(
+                    track_id=f"t{i}",
+                    file_path=f"/music/{'Metal' if is_metal else 'Chill'}/album{i % 4}/track{i}.mp3",
+                    title=f"Track {i}",
+                    artist=f"{'Metal' if is_metal else 'Chill'} Artist {i % 4}",
+                    bpm=160.0 + i * 2 if is_metal else 80.0 + i * 2,
+                    energy=0.8 + (i % 5) * 0.04 if is_metal else 0.2 + (i % 5) * 0.04,
+                    danceability=0.3 if is_metal else 0.7,
+                    valence=0.3 if is_metal else 0.7,
+                    loudness=-3.0 if is_metal else -15.0,
+                    instrumentalness=0.1 if is_metal else 0.5,
+                    duration=240.0 + i * 5,
+                    embedding=_make_embedding(i),
+                    mood_tags=[{"label": "aggressive", "confidence": 0.9}]
+                    if is_metal
                     else [{"label": "relaxed", "confidence": 0.9}],
-                analyzed_at=now - 86_400 * 30,
-                analysis_version="1",
-            ))
+                    analyzed_at=now - 86_400 * 30,
+                    analysis_version="1",
+                )
+            )
         await session.commit()
 
 
@@ -169,57 +173,67 @@ async def _create_users_and_events():
                 # Play liked tracks with full listens.
                 for i, ti in enumerate(liked_range):
                     ts = session_ts + i * 300  # 5 min apart
-                    session.add(ListenEvent(
-                        user_id=user_id,
-                        track_id=f"t{ti}",
-                        event_type="play_start",
-                        timestamp=ts,
-                        session_id=f"{user_id}_day{day}",
-                        hour_of_day=14,
-                        day_of_week=day % 7 + 1,
-                    ))
-                    session.add(ListenEvent(
-                        user_id=user_id,
-                        track_id=f"t{ti}",
-                        event_type="play_end",
-                        value=0.95,  # 95% completion
-                        dwell_ms=240_000,  # 4 minutes
-                        timestamp=ts + 240,
-                        session_id=f"{user_id}_day{day}",
-                        hour_of_day=14,
-                        day_of_week=day % 7 + 1,
-                    ))
+                    session.add(
+                        ListenEvent(
+                            user_id=user_id,
+                            track_id=f"t{ti}",
+                            event_type="play_start",
+                            timestamp=ts,
+                            session_id=f"{user_id}_day{day}",
+                            hour_of_day=14,
+                            day_of_week=day % 7 + 1,
+                        )
+                    )
+                    session.add(
+                        ListenEvent(
+                            user_id=user_id,
+                            track_id=f"t{ti}",
+                            event_type="play_end",
+                            value=0.95,  # 95% completion
+                            dwell_ms=240_000,  # 4 minutes
+                            timestamp=ts + 240,
+                            session_id=f"{user_id}_day{day}",
+                            hour_of_day=14,
+                            day_of_week=day % 7 + 1,
+                        )
+                    )
 
                 # Skip disliked tracks early.
                 for i, ti in enumerate(disliked_range):
                     ts = session_ts + (10 + i) * 300
-                    session.add(ListenEvent(
-                        user_id=user_id,
-                        track_id=f"t{ti}",
-                        event_type="play_start",
-                        timestamp=ts,
-                        session_id=f"{user_id}_day{day}",
-                    ))
-                    session.add(ListenEvent(
-                        user_id=user_id,
-                        track_id=f"t{ti}",
-                        event_type="skip",
-                        value=1.5,  # skipped at 1.5s
-                        dwell_ms=1500,
-                        timestamp=ts + 2,
-                        session_id=f"{user_id}_day{day}",
-                    ))
+                    session.add(
+                        ListenEvent(
+                            user_id=user_id,
+                            track_id=f"t{ti}",
+                            event_type="play_start",
+                            timestamp=ts,
+                            session_id=f"{user_id}_day{day}",
+                        )
+                    )
+                    session.add(
+                        ListenEvent(
+                            user_id=user_id,
+                            track_id=f"t{ti}",
+                            event_type="skip",
+                            value=1.5,  # skipped at 1.5s
+                            dwell_ms=1500,
+                            timestamp=ts + 2,
+                            session_id=f"{user_id}_day{day}",
+                        )
+                    )
 
                 # Add some explicit likes for liked tracks.
                 if day % 2 == 0:
                     for ti in list(liked_range)[:3]:
-                        session.add(ListenEvent(
-                            user_id=user_id,
-                            track_id=f"t{ti}",
-                            event_type="like",
-                            timestamp=session_ts + 5000,
-                            session_id=f"{user_id}_day{day}",
-                        ))
+                        session.add(
+                            ListenEvent(
+                                user_id=user_id,
+                                track_id=f"t{ti}",
+                                event_type="like",
+                                timestamp=session_ts + 5000,
+                                session_id=f"{user_id}_day{day}",
+                            )
+                        )
 
         await session.commit()
 
@@ -238,6 +252,7 @@ async def _run_pipeline():
     # Try CF but don't fail if it can't train (needs enough data).
     try:
         from app.services.collab_filter import build_model
+
         await build_model()
     except Exception:
         pass
@@ -278,8 +293,7 @@ class TestEndToEndRecommendation:
 
         # At least 3 of top 5 should be metal tracks.
         assert metal_in_top5 >= 3, (
-            f"metal_fan should get mostly metal tracks in top 5, "
-            f"got {metal_in_top5}/5: {top5_ids}"
+            f"metal_fan should get mostly metal tracks in top 5, got {metal_in_top5}/5: {top5_ids}"
         )
 
     async def test_chill_fan_gets_chill(self, client: AsyncClient):
@@ -300,8 +314,7 @@ class TestEndToEndRecommendation:
         chill_in_top5 = sum(1 for tid in top5_ids if tid in chill_ids)
 
         assert chill_in_top5 >= 3, (
-            f"chill_fan should get mostly chill tracks in top 5, "
-            f"got {chill_in_top5}/5: {top5_ids}"
+            f"chill_fan should get mostly chill tracks in top 5, got {chill_in_top5}/5: {top5_ids}"
         )
 
     async def test_users_get_different_recommendations(self, client: AsyncClient):
@@ -319,10 +332,7 @@ class TestEndToEndRecommendation:
         # Top-5 lists should overlap by at most 2 tracks (allowing for
         # exploration slots which inject random low-interaction tracks).
         overlap = metal_tracks & chill_tracks
-        assert len(overlap) <= 2, (
-            f"Users with opposite tastes should get different recs, "
-            f"overlap={overlap}"
-        )
+        assert len(overlap) <= 2, f"Users with opposite tastes should get different recs, overlap={overlap}"
 
     async def test_recommendations_include_metadata(self, client: AsyncClient):
         """Recommendation response should include track metadata."""
@@ -354,13 +364,15 @@ class TestEndToEndRecommendation:
         # Check that impression events were logged.
         async with _TestSession() as session:
             from sqlalchemy import func, select
-            count = (await session.execute(
-                select(func.count(ListenEvent.id))
-                .where(
-                    ListenEvent.event_type == "reco_impression",
-                    ListenEvent.request_id == request_id,
+
+            count = (
+                await session.execute(
+                    select(func.count(ListenEvent.id)).where(
+                        ListenEvent.event_type == "reco_impression",
+                        ListenEvent.request_id == request_id,
+                    )
                 )
-            )).scalar_one()
+            ).scalar_one()
 
         assert count == 5, f"Should log 5 impression events, got {count}"
 
@@ -371,6 +383,7 @@ class TestEndToEndRecommendation:
         await _run_pipeline()
 
         from app.services.evaluation import evaluate_holdout
+
         result = await evaluate_holdout()
 
         metrics = result.get("metrics", {})
@@ -379,9 +392,7 @@ class TestEndToEndRecommendation:
             random_ndcg = metrics.get("baseline_random_ndcg_at_10")
 
             if random_ndcg is not None:
-                assert model_ndcg >= random_ndcg, (
-                    f"Model NDCG@10 ({model_ndcg}) should beat random ({random_ndcg})"
-                )
+                assert model_ndcg >= random_ndcg, f"Model NDCG@10 ({model_ndcg}) should beat random ({random_ndcg})"
 
     async def test_model_stats_endpoint(self, client: AsyncClient):
         """GET /v1/stats/model should return ranker info and impression stats."""
@@ -439,8 +450,7 @@ class TestSemanticQuality:
             avg_chill = sum(chill_energies) / len(chill_energies)
 
             assert avg_metal > avg_chill, (
-                f"metal_fan's avg energy ({avg_metal:.2f}) should be higher "
-                f"than chill_fan's ({avg_chill:.2f})"
+                f"metal_fan's avg energy ({avg_metal:.2f}) should be higher than chill_fan's ({avg_chill:.2f})"
             )
 
     async def test_skipped_tracks_suppressed(self, client: AsyncClient):
@@ -459,8 +469,7 @@ class TestSemanticQuality:
 
         # At most 1 disliked track in top 3 (could be exploration slot).
         assert disliked_in_top3 <= 1, (
-            f"Skipped tracks should not dominate top recs, "
-            f"got {disliked_in_top3}/3 disliked in top 3: {top3_ids}"
+            f"Skipped tracks should not dominate top recs, got {disliked_in_top3}/3 disliked in top 3: {top3_ids}"
         )
 
     async def test_satisfaction_scores_match_behavior(self):
@@ -470,31 +479,23 @@ class TestSemanticQuality:
 
         from app.services.sessionizer import run_sessionizer
         from app.services.track_scoring import run_track_scoring
+
         await run_sessionizer()
         await run_track_scoring()
 
         async with _TestSession() as session:
             from sqlalchemy import select
-            result = await session.execute(
-                select(TrackInteraction)
-                .where(TrackInteraction.user_id == "metal_fan")
-            )
+
+            result = await session.execute(select(TrackInteraction).where(TrackInteraction.user_id == "metal_fan"))
             interactions = {i.track_id: i for i in result.scalars().all()}
 
         # metal_fan's liked tracks should have higher satisfaction than skipped.
-        liked_scores = [
-            interactions[f"t{i}"].satisfaction_score
-            for i in range(10) if f"t{i}" in interactions
-        ]
-        skipped_scores = [
-            interactions[f"t{i}"].satisfaction_score
-            for i in range(10, 20) if f"t{i}" in interactions
-        ]
+        liked_scores = [interactions[f"t{i}"].satisfaction_score for i in range(10) if f"t{i}" in interactions]
+        skipped_scores = [interactions[f"t{i}"].satisfaction_score for i in range(10, 20) if f"t{i}" in interactions]
 
         if liked_scores and skipped_scores:
             avg_liked = sum(liked_scores) / len(liked_scores)
             avg_skipped = sum(skipped_scores) / len(skipped_scores)
             assert avg_liked > avg_skipped, (
-                f"Liked tracks ({avg_liked:.3f}) should score higher "
-                f"than skipped tracks ({avg_skipped:.3f})"
+                f"Liked tracks ({avg_liked:.3f}) should score higher than skipped tracks ({avg_skipped:.3f})"
             )

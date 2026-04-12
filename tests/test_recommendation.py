@@ -66,22 +66,24 @@ async def _insert_user(user_id: str) -> None:
 
 async def _insert_track_features(track_id: str, **kwargs) -> None:
     async with _TestSession() as session:
-        session.add(TrackFeatures(
-            track_id=track_id,
-            file_path=f"/music/{track_id}.mp3",
-            bpm=kwargs.get("bpm", 120.0),
-            energy=kwargs.get("energy", 0.7),
-            danceability=kwargs.get("danceability", 0.6),
-            valence=kwargs.get("valence", 0.5),
-            acousticness=kwargs.get("acousticness", 0.3),
-            instrumentalness=kwargs.get("instrumentalness", 0.1),
-            loudness=kwargs.get("loudness", -8.0),
-            key=kwargs.get("key", "C"),
-            mode=kwargs.get("mode", "major"),
-            mood_tags=kwargs.get("mood_tags", [{"label": "happy", "confidence": 0.8}]),
-            analyzed_at=_now(),
-            analysis_version="1",
-        ))
+        session.add(
+            TrackFeatures(
+                track_id=track_id,
+                file_path=f"/music/{track_id}.mp3",
+                bpm=kwargs.get("bpm", 120.0),
+                energy=kwargs.get("energy", 0.7),
+                danceability=kwargs.get("danceability", 0.6),
+                valence=kwargs.get("valence", 0.5),
+                acousticness=kwargs.get("acousticness", 0.3),
+                instrumentalness=kwargs.get("instrumentalness", 0.1),
+                loudness=kwargs.get("loudness", -8.0),
+                key=kwargs.get("key", "C"),
+                mode=kwargs.get("mode", "major"),
+                mood_tags=kwargs.get("mood_tags", [{"label": "happy", "confidence": 0.8}]),
+                analyzed_at=_now(),
+                analysis_version="1",
+            )
+        )
         await session.commit()
 
 
@@ -96,12 +98,14 @@ class TestSessionizer:
         from app.services.sessionizer import run_sessionizer
 
         now = _now()
-        await _insert_events([
-            {"user_id": "u1", "track_id": "t1", "event_type": "play_start", "timestamp": now},
-            {"user_id": "u1", "track_id": "t1", "event_type": "play_end", "timestamp": now + 60, "value": 1.0},
-            {"user_id": "u1", "track_id": "t2", "event_type": "play_start", "timestamp": now + 120},
-            {"user_id": "u1", "track_id": "t2", "event_type": "play_end", "timestamp": now + 180, "value": 0.9},
-        ])
+        await _insert_events(
+            [
+                {"user_id": "u1", "track_id": "t1", "event_type": "play_start", "timestamp": now},
+                {"user_id": "u1", "track_id": "t1", "event_type": "play_end", "timestamp": now + 60, "value": 1.0},
+                {"user_id": "u1", "track_id": "t2", "event_type": "play_start", "timestamp": now + 120},
+                {"user_id": "u1", "track_id": "t2", "event_type": "play_end", "timestamp": now + 180, "value": 0.9},
+            ]
+        )
 
         result = await run_sessionizer()
         assert result["sessions_created"] == 1
@@ -122,12 +126,20 @@ class TestSessionizer:
 
         now = _now()
         gap = 31 * 60  # 31 minutes > default 30 min gap
-        await _insert_events([
-            {"user_id": "u1", "track_id": "t1", "event_type": "play_start", "timestamp": now},
-            {"user_id": "u1", "track_id": "t1", "event_type": "play_end", "timestamp": now + 60, "value": 1.0},
-            {"user_id": "u1", "track_id": "t2", "event_type": "play_start", "timestamp": now + gap},
-            {"user_id": "u1", "track_id": "t2", "event_type": "play_end", "timestamp": now + gap + 60, "value": 1.0},
-        ])
+        await _insert_events(
+            [
+                {"user_id": "u1", "track_id": "t1", "event_type": "play_start", "timestamp": now},
+                {"user_id": "u1", "track_id": "t1", "event_type": "play_end", "timestamp": now + 60, "value": 1.0},
+                {"user_id": "u1", "track_id": "t2", "event_type": "play_start", "timestamp": now + gap},
+                {
+                    "user_id": "u1",
+                    "track_id": "t2",
+                    "event_type": "play_end",
+                    "timestamp": now + gap + 60,
+                    "value": 1.0,
+                },
+            ]
+        )
 
         result = await run_sessionizer()
         assert result["sessions_created"] == 2
@@ -137,12 +149,33 @@ class TestSessionizer:
         from app.services.sessionizer import run_sessionizer
 
         now = _now()
-        await _insert_events([
-            {"user_id": "u1", "track_id": "t1", "event_type": "play_start", "timestamp": now, "session_id": "s1"},
-            {"user_id": "u1", "track_id": "t2", "event_type": "play_start", "timestamp": now + 10, "session_id": "s1"},
-            {"user_id": "u1", "track_id": "t3", "event_type": "play_start", "timestamp": now + 20, "session_id": "s2"},
-            {"user_id": "u1", "track_id": "t3", "event_type": "play_end", "timestamp": now + 80, "session_id": "s2", "value": 1.0},
-        ])
+        await _insert_events(
+            [
+                {"user_id": "u1", "track_id": "t1", "event_type": "play_start", "timestamp": now, "session_id": "s1"},
+                {
+                    "user_id": "u1",
+                    "track_id": "t2",
+                    "event_type": "play_start",
+                    "timestamp": now + 10,
+                    "session_id": "s1",
+                },
+                {
+                    "user_id": "u1",
+                    "track_id": "t3",
+                    "event_type": "play_start",
+                    "timestamp": now + 20,
+                    "session_id": "s2",
+                },
+                {
+                    "user_id": "u1",
+                    "track_id": "t3",
+                    "event_type": "play_end",
+                    "timestamp": now + 80,
+                    "session_id": "s2",
+                    "value": 1.0,
+                },
+            ]
+        )
 
         result = await run_sessionizer()
         assert result["sessions_created"] == 2
@@ -152,9 +185,11 @@ class TestSessionizer:
         from app.services.sessionizer import run_sessionizer
 
         now = _now()
-        await _insert_events([
-            {"user_id": "u1", "track_id": "t1", "event_type": "play_start", "timestamp": now},
-        ])
+        await _insert_events(
+            [
+                {"user_id": "u1", "track_id": "t1", "event_type": "play_start", "timestamp": now},
+            ]
+        )
 
         result = await run_sessionizer()
         assert result["sessions_created"] == 0
@@ -164,10 +199,12 @@ class TestSessionizer:
         from app.services.sessionizer import run_sessionizer
 
         now = _now()
-        await _insert_events([
-            {"user_id": "u1", "track_id": "t1", "event_type": "play_start", "timestamp": now},
-            {"user_id": "u1", "track_id": "t1", "event_type": "play_end", "timestamp": now + 60, "value": 1.0},
-        ])
+        await _insert_events(
+            [
+                {"user_id": "u1", "track_id": "t1", "event_type": "play_start", "timestamp": now},
+                {"user_id": "u1", "track_id": "t1", "event_type": "play_end", "timestamp": now + 60, "value": 1.0},
+            ]
+        )
 
         r1 = await run_sessionizer()
         assert r1["sessions_created"] == 1
@@ -181,12 +218,14 @@ class TestSessionizer:
         from app.services.sessionizer import run_sessionizer
 
         now = _now()
-        await _insert_events([
-            {"user_id": "u1", "track_id": "t1", "event_type": "play_start", "timestamp": now},
-            {"user_id": "u1", "track_id": "t1", "event_type": "play_end", "timestamp": now + 60, "value": 1.0},
-            {"user_id": "u2", "track_id": "t1", "event_type": "play_start", "timestamp": now},
-            {"user_id": "u2", "track_id": "t1", "event_type": "play_end", "timestamp": now + 60, "value": 1.0},
-        ])
+        await _insert_events(
+            [
+                {"user_id": "u1", "track_id": "t1", "event_type": "play_start", "timestamp": now},
+                {"user_id": "u1", "track_id": "t1", "event_type": "play_end", "timestamp": now + 60, "value": 1.0},
+                {"user_id": "u2", "track_id": "t1", "event_type": "play_start", "timestamp": now},
+                {"user_id": "u2", "track_id": "t1", "event_type": "play_end", "timestamp": now + 60, "value": 1.0},
+            ]
+        )
 
         result = await run_sessionizer()
         assert result["sessions_created"] == 2
@@ -203,10 +242,19 @@ class TestTrackScoring:
         from app.services.track_scoring import run_track_scoring
 
         now = _now()
-        await _insert_events([
-            {"user_id": "u1", "track_id": "t1", "event_type": "play_end", "timestamp": now, "value": 1.0, "dwell_ms": 180_000},
-            {"user_id": "u1", "track_id": "t1", "event_type": "like", "timestamp": now + 1},
-        ])
+        await _insert_events(
+            [
+                {
+                    "user_id": "u1",
+                    "track_id": "t1",
+                    "event_type": "play_end",
+                    "timestamp": now,
+                    "value": 1.0,
+                    "dwell_ms": 180_000,
+                },
+                {"user_id": "u1", "track_id": "t1", "event_type": "like", "timestamp": now + 1},
+            ]
+        )
 
         result = await run_track_scoring()
         assert result["interactions_created"] == 1
@@ -226,21 +274,35 @@ class TestTrackScoring:
         from app.services.track_scoring import run_track_scoring
 
         now = _now()
-        await _insert_events([
-            # Track 1: fully listened + liked
-            {"user_id": "u1", "track_id": "t1", "event_type": "play_end", "timestamp": now, "value": 1.0, "dwell_ms": 180_000},
-            {"user_id": "u1", "track_id": "t1", "event_type": "like", "timestamp": now + 1},
-            # Track 2: early skip
-            {"user_id": "u1", "track_id": "t2", "event_type": "play_end", "timestamp": now + 2, "value": 0.02, "dwell_ms": 1000},
-            {"user_id": "u1", "track_id": "t2", "event_type": "skip", "timestamp": now + 3, "value": 1.0},
-        ])
+        await _insert_events(
+            [
+                # Track 1: fully listened + liked
+                {
+                    "user_id": "u1",
+                    "track_id": "t1",
+                    "event_type": "play_end",
+                    "timestamp": now,
+                    "value": 1.0,
+                    "dwell_ms": 180_000,
+                },
+                {"user_id": "u1", "track_id": "t1", "event_type": "like", "timestamp": now + 1},
+                # Track 2: early skip
+                {
+                    "user_id": "u1",
+                    "track_id": "t2",
+                    "event_type": "play_end",
+                    "timestamp": now + 2,
+                    "value": 0.02,
+                    "dwell_ms": 1000,
+                },
+                {"user_id": "u1", "track_id": "t2", "event_type": "skip", "timestamp": now + 3, "value": 1.0},
+            ]
+        )
 
         await run_track_scoring()
 
         async with _TestSession() as session:
-            result = await session.execute(
-                select(TrackInteraction).order_by(TrackInteraction.track_id)
-            )
+            result = await session.execute(select(TrackInteraction).order_by(TrackInteraction.track_id))
             interactions = result.scalars().all()
             assert len(interactions) == 2
             t1 = next(i for i in interactions if i.track_id == "t1")
@@ -253,17 +315,28 @@ class TestTrackScoring:
         from app.services.track_scoring import run_track_scoring
 
         now = _now()
-        await _insert_events([
-            {"user_id": "u1", "track_id": "t1", "event_type": "play_end", "timestamp": now, "value": 1.0, "dwell_ms": 180_000},
-        ])
+        await _insert_events(
+            [
+                {
+                    "user_id": "u1",
+                    "track_id": "t1",
+                    "event_type": "play_end",
+                    "timestamp": now,
+                    "value": 1.0,
+                    "dwell_ms": 180_000,
+                },
+            ]
+        )
 
         r1 = await run_track_scoring()
         assert r1["interactions_created"] == 1
 
         # Add more events for same pair.
-        await _insert_events([
-            {"user_id": "u1", "track_id": "t1", "event_type": "like", "timestamp": now + 10},
-        ])
+        await _insert_events(
+            [
+                {"user_id": "u1", "track_id": "t1", "event_type": "like", "timestamp": now + 10},
+            ]
+        )
 
         r2 = await run_track_scoring()
         assert r2["interactions_updated"] == 1
@@ -279,9 +352,18 @@ class TestTrackScoring:
         from app.services.track_scoring import run_track_scoring
 
         now = _now()
-        await _insert_events([
-            {"user_id": "u1", "track_id": "t1", "event_type": "play_end", "timestamp": now, "value": 1.0, "dwell_ms": 180_000},
-        ])
+        await _insert_events(
+            [
+                {
+                    "user_id": "u1",
+                    "track_id": "t1",
+                    "event_type": "play_end",
+                    "timestamp": now,
+                    "value": 1.0,
+                    "dwell_ms": 180_000,
+                },
+            ]
+        )
 
         await run_track_scoring()
 
@@ -295,9 +377,11 @@ class TestTrackScoring:
         from app.services.track_scoring import run_track_scoring
 
         now = _now()
-        await _insert_events([
-            {"user_id": "u1", "track_id": "t1", "event_type": "reco_impression", "timestamp": now},
-        ])
+        await _insert_events(
+            [
+                {"user_id": "u1", "track_id": "t1", "event_type": "reco_impression", "timestamp": now},
+            ]
+        )
 
         result = await run_track_scoring()
         assert result["events_processed"] == 0
@@ -321,12 +405,28 @@ class TestTasteProfile:
         await _insert_track_features("t1", bpm=120.0, energy=0.7, valence=0.5)
         await _insert_track_features("t2", bpm=130.0, energy=0.8, valence=0.6)
 
-        await _insert_events([
-            {"user_id": "u1", "track_id": "t1", "event_type": "play_start", "timestamp": now},
-            {"user_id": "u1", "track_id": "t1", "event_type": "play_end", "timestamp": now + 60, "value": 1.0, "dwell_ms": 180_000},
-            {"user_id": "u1", "track_id": "t2", "event_type": "play_start", "timestamp": now + 120},
-            {"user_id": "u1", "track_id": "t2", "event_type": "play_end", "timestamp": now + 180, "value": 0.9, "dwell_ms": 160_000},
-        ])
+        await _insert_events(
+            [
+                {"user_id": "u1", "track_id": "t1", "event_type": "play_start", "timestamp": now},
+                {
+                    "user_id": "u1",
+                    "track_id": "t1",
+                    "event_type": "play_end",
+                    "timestamp": now + 60,
+                    "value": 1.0,
+                    "dwell_ms": 180_000,
+                },
+                {"user_id": "u1", "track_id": "t2", "event_type": "play_start", "timestamp": now + 120},
+                {
+                    "user_id": "u1",
+                    "track_id": "t2",
+                    "event_type": "play_end",
+                    "timestamp": now + 180,
+                    "value": 0.9,
+                    "dwell_ms": 160_000,
+                },
+            ]
+        )
 
         # Run full pipeline.
         await run_sessionizer()
@@ -336,9 +436,7 @@ class TestTasteProfile:
         assert result["users_updated"] == 1
 
         async with _TestSession() as session:
-            user = (await session.execute(
-                select(User).where(User.user_id == "u1")
-            )).scalar_one()
+            user = (await session.execute(select(User).where(User.user_id == "u1"))).scalar_one()
             profile = user.taste_profile
             assert profile is not None
             assert "audio_preferences" in profile
@@ -357,9 +455,7 @@ class TestTasteProfile:
         assert result["users_skipped"] == 1
 
         async with _TestSession() as session:
-            user = (await session.execute(
-                select(User).where(User.user_id == "u1")
-            )).scalar_one()
+            user = (await session.execute(select(User).where(User.user_id == "u1"))).scalar_one()
             assert user.taste_profile is None
 
     async def test_profile_without_track_features(self):
@@ -369,19 +465,26 @@ class TestTasteProfile:
 
         now = _now()
         await _insert_user("u1")
-        await _insert_events([
-            {"user_id": "u1", "track_id": "t_unknown", "event_type": "play_end", "timestamp": now, "value": 1.0, "dwell_ms": 180_000},
-            {"user_id": "u1", "track_id": "t_unknown", "event_type": "like", "timestamp": now + 1},
-        ])
+        await _insert_events(
+            [
+                {
+                    "user_id": "u1",
+                    "track_id": "t_unknown",
+                    "event_type": "play_end",
+                    "timestamp": now,
+                    "value": 1.0,
+                    "dwell_ms": 180_000,
+                },
+                {"user_id": "u1", "track_id": "t_unknown", "event_type": "like", "timestamp": now + 1},
+            ]
+        )
 
         await run_track_scoring()
         result = await run_taste_profile_builder()
         assert result["users_updated"] == 1
 
         async with _TestSession() as session:
-            user = (await session.execute(
-                select(User).where(User.user_id == "u1")
-            )).scalar_one()
+            user = (await session.execute(select(User).where(User.user_id == "u1"))).scalar_one()
             profile = user.taste_profile
             assert profile is not None
             # No audio_preferences since track has no features.

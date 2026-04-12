@@ -42,38 +42,41 @@ logger = logging.getLogger(__name__)
 # Configuration (non-tunable constants)
 # ---------------------------------------------------------------------------
 
-_BATCH_OVERFETCH = 5               # multiplier for candidate overfetch
-_ARTIST_MAX_CONSECUTIVE = 2        # max tracks from same artist in a row
+_BATCH_OVERFETCH = 5  # multiplier for candidate overfetch
+_ARTIST_MAX_CONSECUTIVE = 2  # max tracks from same artist in a row
 
 
 # ---------------------------------------------------------------------------
 # Data structures
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class RadioFeedback:
     """A single in-session feedback signal."""
+
     track_id: str
-    action: str           # "skip", "like", "dislike"
+    action: str  # "skip", "like", "dislike"
     timestamp: float = field(default_factory=time.time)
 
 
 @dataclass
 class RadioSession:
     """Stateful radio session."""
+
     session_id: str
     user_id: str
-    seed_type: str                             # "track", "artist", "playlist"
-    seed_value: str                            # track_id, artist name, or playlist_id
+    seed_type: str  # "track", "artist", "playlist"
+    seed_value: str  # track_id, artist name, or playlist_id
     seed_track_ids: list[str] = field(default_factory=list)  # resolved seed tracks
 
     # Embeddings
-    seed_embedding: np.ndarray | None = None   # anchor point (never changes)
+    seed_embedding: np.ndarray | None = None  # anchor point (never changes)
     drift_embedding: np.ndarray | None = None  # shifts with feedback
 
     # Session state
-    played: list[str] = field(default_factory=list)       # ordered play history
-    played_set: set[str] = field(default_factory=set)     # fast lookup
+    played: list[str] = field(default_factory=list)  # ordered play history
+    played_set: set[str] = field(default_factory=set)  # fast lookup
     skipped: set[str] = field(default_factory=set)
     liked: set[str] = field(default_factory=set)
     disliked: set[str] = field(default_factory=set)
@@ -93,7 +96,7 @@ class RadioSession:
     total_served: int = 0
 
     # Display info
-    seed_display_name: str | None = None    # "Artist Name" or "Track Title" for UI
+    seed_display_name: str | None = None  # "Artist Name" or "Track Title" for UI
 
 
 # ---------------------------------------------------------------------------
@@ -107,10 +110,7 @@ _sessions: dict[str, RadioSession] = {}
 def _evict_expired() -> None:
     """Remove expired sessions (caller must hold _lock)."""
     now = time.time()
-    expired = [
-        sid for sid, s in _sessions.items()
-        if now - s.last_active > get_config().radio.session_ttl_hours * 3600
-    ]
+    expired = [sid for sid, s in _sessions.items() if now - s.last_active > get_config().radio.session_ttl_hours * 3600]
     for sid in expired:
         del _sessions[sid]
 
@@ -154,25 +154,28 @@ def list_sessions(user_id: str | None = None) -> list[dict[str, Any]]:
         for s in _sessions.values():
             if user_id and s.user_id != user_id:
                 continue
-            results.append({
-                "session_id": s.session_id,
-                "user_id": s.user_id,
-                "seed_type": s.seed_type,
-                "seed_value": s.seed_value,
-                "seed_display_name": s.seed_display_name,
-                "total_served": s.total_served,
-                "tracks_played": len(s.played),
-                "tracks_skipped": len(s.skipped),
-                "tracks_liked": len(s.liked),
-                "created_at": int(s.created_at),
-                "last_active": int(s.last_active),
-            })
+            results.append(
+                {
+                    "session_id": s.session_id,
+                    "user_id": s.user_id,
+                    "seed_type": s.seed_type,
+                    "seed_value": s.seed_value,
+                    "seed_display_name": s.seed_display_name,
+                    "total_served": s.total_served,
+                    "tracks_played": len(s.played),
+                    "tracks_skipped": len(s.skipped),
+                    "tracks_liked": len(s.liked),
+                    "created_at": int(s.created_at),
+                    "last_active": int(s.last_active),
+                }
+            )
         return results
 
 
 # ---------------------------------------------------------------------------
 # Session creation
 # ---------------------------------------------------------------------------
+
 
 async def create_radio_session(
     user_id: str,
@@ -205,8 +208,7 @@ async def create_radio_session(
         session.seed_track_ids = [seed_value]
         # Get display name
         row = await db.execute(
-            select(TrackFeatures.title, TrackFeatures.artist)
-            .where(TrackFeatures.track_id == seed_value)
+            select(TrackFeatures.title, TrackFeatures.artist).where(TrackFeatures.track_id == seed_value)
         )
         meta = row.first()
         if meta and meta.title:
@@ -218,9 +220,7 @@ async def create_radio_session(
     elif seed_type == "artist":
         # Find all tracks by this artist
         result = await db.execute(
-            select(TrackFeatures.track_id)
-            .where(TrackFeatures.artist.ilike(f"%{seed_value}%"))
-            .limit(200)
+            select(TrackFeatures.track_id).where(TrackFeatures.artist.ilike(f"%{seed_value}%")).limit(200)
         )
         session.seed_track_ids = [r[0] for r in result.all()]
         session.seed_display_name = seed_value
@@ -239,9 +239,7 @@ async def create_radio_session(
         session.seed_track_ids = [r[0] for r in result.all()]
 
         # Get playlist name for display
-        pl_row = await db.execute(
-            select(Playlist.name).where(Playlist.id == int(seed_value))
-        )
+        pl_row = await db.execute(select(Playlist.name).where(Playlist.id == int(seed_value)))
         pl_name = pl_row.scalar_one_or_none()
         session.seed_display_name = pl_name or f"Playlist #{seed_value}"
 
@@ -260,6 +258,7 @@ async def create_radio_session(
 # ---------------------------------------------------------------------------
 # Feedback processing
 # ---------------------------------------------------------------------------
+
 
 def record_feedback(session_id: str, track_id: str, action: str) -> bool:
     """
@@ -349,6 +348,7 @@ def _update_drift_embedding(s: RadioSession) -> None:
 # Candidate generation (radio-specific)
 # ---------------------------------------------------------------------------
 
+
 async def get_next_tracks(
     session_id: str,
     count: int,
@@ -373,8 +373,7 @@ async def get_next_tracks(
 
     # Also exclude globally disliked tracks
     disliked_result = await db.execute(
-        select(TrackInteraction.track_id)
-        .where(
+        select(TrackInteraction.track_id).where(
             TrackInteraction.user_id == s.user_id,
             (TrackInteraction.dislike_count > 0) | (TrackInteraction.early_skip_count > 2),
         )
@@ -397,63 +396,77 @@ async def get_next_tracks(
     # --- Source 1: FAISS similarity to drift embedding (primary, weighted high) ---
     if faiss_index.is_ready() and s.drift_embedding is not None:
         results = faiss_index.search(s.drift_embedding, k=overfetch, exclude_ids=exclude)
-        _add([
-            {"track_id": tid, "score": score * radio_cfg.source_drift, "source": "radio_drift"}
-            for tid, score in results
-        ])
+        _add(
+            [
+                {"track_id": tid, "score": score * radio_cfg.source_drift, "source": "radio_drift"}
+                for tid, score in results
+            ]
+        )
 
     # --- Source 2: FAISS similarity to seed embedding (anchor) ---
     if faiss_index.is_ready() and s.seed_embedding is not None and s.drift_embedding is not s.seed_embedding:
         results = faiss_index.search(s.seed_embedding, k=overfetch // 2, exclude_ids=exclude)
-        _add([
-            {"track_id": tid, "score": score * radio_cfg.source_seed, "source": "radio_seed"}
-            for tid, score in results
-        ])
+        _add(
+            [
+                {"track_id": tid, "score": score * radio_cfg.source_seed, "source": "radio_seed"}
+                for tid, score in results
+            ]
+        )
 
     # --- Source 3: Seed track direct similarity (for track seeds) ---
     if s.seed_type == "track" and faiss_index.is_ready():
         for seed_tid in s.seed_track_ids[:3]:
             results = faiss_index.search_by_track_id(seed_tid, k=50, exclude_ids=exclude)
-            _add([
-                {"track_id": tid, "score": score * radio_cfg.source_content, "source": "radio_content"}
-                for tid, score in results
-            ])
+            _add(
+                [
+                    {"track_id": tid, "score": score * radio_cfg.source_content, "source": "radio_content"}
+                    for tid, score in results
+                ]
+            )
 
     # --- Source 4: Session skip-gram (behavioral co-occurrence) ---
     if session_embeddings.is_ready() and s.seed_track_ids:
         for seed_tid in s.seed_track_ids[:5]:
             raw = session_embeddings.get_similar_tracks(seed_tid, k=50, exclude_ids=exclude)
-            _add([
-                {"track_id": tid, "score": score * radio_cfg.source_skipgram, "source": "radio_skipgram"}
-                for tid, score in raw
-            ])
+            _add(
+                [
+                    {"track_id": tid, "score": score * radio_cfg.source_skipgram, "source": "radio_skipgram"}
+                    for tid, score in raw
+                ]
+            )
 
     # --- Source 5: Last.fm similar tracks ---
     if lastfm_candidates.is_ready() and s.seed_track_ids:
         for seed_tid in s.seed_track_ids[:5]:
             raw = lastfm_candidates.get_similar_for_track(seed_tid, k=50, exclude_ids=exclude)
-            _add([
-                {"track_id": tid, "score": score * radio_cfg.source_lastfm, "source": "radio_lastfm"}
-                for tid, score in raw
-            ])
+            _add(
+                [
+                    {"track_id": tid, "score": score * radio_cfg.source_lastfm, "source": "radio_lastfm"}
+                    for tid, score in raw
+                ]
+            )
 
     # --- Source 6: CF (collaborative filtering) ---
     if collab_filter.is_ready():
         raw = collab_filter.get_cf_candidates(s.user_id, k=80)
-        _add([
-            {"track_id": tid, "score": score * radio_cfg.source_cf, "source": "radio_cf"}
-            for tid, score in raw
-            if tid not in exclude
-        ])
+        _add(
+            [
+                {"track_id": tid, "score": score * radio_cfg.source_cf, "source": "radio_cf"}
+                for tid, score in raw
+                if tid not in exclude
+            ]
+        )
 
     # --- Source 7: Artist recall (same artist tracks for artist seeds) ---
     if s.seed_type == "artist" and s.seed_track_ids:
         # Include more tracks from the seeded artist
-        _add([
-            {"track_id": tid, "score": radio_cfg.source_artist, "source": "radio_artist"}
-            for tid in s.seed_track_ids
-            if tid not in seen
-        ])
+        _add(
+            [
+                {"track_id": tid, "score": radio_cfg.source_artist, "source": "radio_artist"}
+                for tid in s.seed_track_ids
+                if tid not in seen
+            ]
+        )
 
     if not candidates:
         return []
@@ -471,10 +484,15 @@ async def get_next_tracks(
 
     # --- Score with LightGBM ranker ---
     scored = await score_candidates(
-        s.user_id, candidate_ids, db,
-        hour_of_day=s.hour_of_day, day_of_week=s.day_of_week,
-        device_type=s.device_type, output_type=s.output_type,
-        context_type="radio", location_label=s.location_label,
+        s.user_id,
+        candidate_ids,
+        db,
+        hour_of_day=s.hour_of_day,
+        day_of_week=s.day_of_week,
+        device_type=s.device_type,
+        output_type=s.output_type,
+        context_type="radio",
+        location_label=s.location_label,
     )
     source_map = {c["track_id"]: c["source"] for c in candidates}
 
@@ -482,16 +500,16 @@ async def get_next_tracks(
     # (fallback mode), satisfaction_score is 0.0 for unplayed tracks, which
     # kills all differentiation.  Blending preserves the FAISS similarity
     # ordering while still respecting any ranker signal that exists.
-    scored = [
-        (tid, ranker_score * 0.6 + retrieval_scores.get(tid, 0.0) * 0.4)
-        for tid, ranker_score in scored
-    ]
+    scored = [(tid, ranker_score * 0.6 + retrieval_scores.get(tid, 0.0) * 0.4) for tid, ranker_score in scored]
     scored.sort(key=lambda x: x[1], reverse=True)
 
     # --- Rerank for diversity ---
     reranked = await rerank(
-        scored, s.user_id, db,
-        device_type=s.device_type, output_type=s.output_type,
+        scored,
+        s.user_id,
+        db,
+        device_type=s.device_type,
+        output_type=s.output_type,
     )
 
     # Additional radio-specific filtering: enforce no consecutive same-artist
@@ -502,9 +520,7 @@ async def get_next_tracks(
 
     # Fetch track metadata
     final_ids = [tid for tid, _ in final]
-    feat_result = await db.execute(
-        select(TrackFeatures).where(TrackFeatures.track_id.in_(final_ids))
-    )
+    feat_result = await db.execute(select(TrackFeatures).where(TrackFeatures.track_id.in_(final_ids)))
     feat_map = {t.track_id: t for t in feat_result.scalars().all()}
 
     # Build response and update session state
@@ -522,20 +538,22 @@ async def get_next_tracks(
             "score": round(score, 4),
         }
         if tf:
-            track_data.update({
-                "title": tf.title,
-                "artist": tf.artist,
-                "album": tf.album,
-                "genre": tf.genre,
-                "bpm": tf.bpm,
-                "key": tf.key,
-                "mode": tf.mode,
-                "energy": tf.energy,
-                "danceability": tf.danceability,
-                "valence": tf.valence,
-                "mood_tags": tf.mood_tags,
-                "duration": tf.duration,
-            })
+            track_data.update(
+                {
+                    "title": tf.title,
+                    "artist": tf.artist,
+                    "album": tf.album,
+                    "genre": tf.genre,
+                    "bpm": tf.bpm,
+                    "key": tf.key,
+                    "mode": tf.mode,
+                    "energy": tf.energy,
+                    "danceability": tf.danceability,
+                    "valence": tf.valence,
+                    "mood_tags": tf.mood_tags,
+                    "duration": tf.duration,
+                }
+            )
         tracks.append(track_data)
 
     return tracks

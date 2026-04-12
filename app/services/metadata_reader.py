@@ -18,6 +18,7 @@ try:
     import mutagen
     from mutagen.easyid3 import EasyID3  # noqa: F401
     from mutagen.easymp4 import EasyMP4Tags  # noqa: F401
+
     MUTAGEN_AVAILABLE = True
 except ImportError:
     MUTAGEN_AVAILABLE = False

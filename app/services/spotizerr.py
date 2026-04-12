@@ -55,6 +55,7 @@ def _pick_image(images: list[dict[str, Any]]) -> str | None:
 # Spotizerr HTTP client
 # ---------------------------------------------------------------------------
 
+
 class SpotizerrClient:
     """Async HTTP client for the Spotizerr REST API."""
 
@@ -113,6 +114,7 @@ class SpotizerrClient:
 
     async def _throttle(self) -> None:
         import asyncio
+
         elapsed = time.monotonic() - self._last_request
         if elapsed < self._MIN_REQUEST_GAP:
             await asyncio.sleep(self._MIN_REQUEST_GAP - elapsed)
@@ -245,7 +247,8 @@ class SpotizerrClient:
         except Exception as exc:
             logger.warning(
                 "Spotizerr download transport error for %s: %s",
-                spotify_track_id, exc,
+                spotify_track_id,
+                exc,
             )
             return {"task_id": "", "status": "error", "error": str(exc)}
 
@@ -257,26 +260,18 @@ class SpotizerrClient:
             data = {}
 
         def _extract_task_id(payload: dict[str, Any]) -> str:
-            return (
-                payload.get("prg_file")
-                or payload.get("task_id")
-                or payload.get("existing_task")
-                or ""
-            )
+            return payload.get("prg_file") or payload.get("task_id") or payload.get("existing_task") or ""
 
         if resp.status_code == 409:
             # Duplicate — already downloading or downloaded.
             return {"task_id": _extract_task_id(data), "status": "duplicate"}
 
         if resp.status_code >= 400:
-            err_msg = (
-                data.get("error")
-                or data.get("message")
-                or f"Spotizerr HTTP {resp.status_code}"
-            )
+            err_msg = data.get("error") or data.get("message") or f"Spotizerr HTTP {resp.status_code}"
             logger.warning(
                 "Spotizerr download failed for %s: %s",
-                spotify_track_id, err_msg,
+                spotify_track_id,
+                err_msg,
             )
             return {
                 "task_id": _extract_task_id(data),
@@ -336,16 +331,9 @@ class SpotizerrClient:
 
         last_line = raw.get("last_line") if isinstance(raw.get("last_line"), dict) else {}
         # Fall back to top-level fields if last_line is missing/empty.
-        status = (
-            (last_line.get("status") if last_line else None)
-            or raw.get("status")
-            or "unknown"
-        )
+        status = (last_line.get("status") if last_line else None) or raw.get("status") or "unknown"
         error = (last_line.get("error") if last_line else None) or raw.get("error")
-        progress = (
-            (last_line.get("progress") if last_line else None)
-            or raw.get("progress")
-        )
+        progress = (last_line.get("progress") if last_line else None) or raw.get("progress")
         try:
             progress = float(progress) if progress is not None else None
         except (TypeError, ValueError):
@@ -362,6 +350,7 @@ class SpotizerrClient:
 # ---------------------------------------------------------------------------
 # High-level helpers
 # ---------------------------------------------------------------------------
+
 
 def _pick_best_match(
     results: list[dict[str, Any]],

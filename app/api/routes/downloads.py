@@ -52,6 +52,7 @@ def _require_download_backend() -> None:
 # Search
 # ---------------------------------------------------------------------------
 
+
 @router.get(
     "/downloads/search",
     summary="Search for tracks via Spotizerr",
@@ -105,6 +106,7 @@ def _flatten_track(track: dict) -> dict:
 # Download
 # ---------------------------------------------------------------------------
 
+
 @router.post(
     "/downloads",
     summary="Download a track via Spotizerr",
@@ -150,6 +152,7 @@ async def create_download(
     # the original request (start_watcher is idempotent).
     if record.task_id and record.status not in ("error", "unknown"):
         from app.services.download_watcher import start_watcher
+
         await start_watcher(record.task_id)
 
     return DownloadResponse.model_validate(record)
@@ -158,6 +161,7 @@ async def create_download(
 # ---------------------------------------------------------------------------
 # Status
 # ---------------------------------------------------------------------------
+
 
 @router.get(
     "/downloads/status/{task_id}",
@@ -178,9 +182,7 @@ async def get_download_status(
         await client.close()
 
     # Opportunistically update DB record.
-    result = await session.execute(
-        select(DownloadRequest).where(DownloadRequest.task_id == task_id)
-    )
+    result = await session.execute(select(DownloadRequest).where(DownloadRequest.task_id == task_id))
     record = result.scalar_one_or_none()
 
     # Flattened shape from SpotizerrClient.get_status():
@@ -210,6 +212,7 @@ async def get_download_status(
 # History
 # ---------------------------------------------------------------------------
 
+
 @router.get(
     "/downloads",
     summary="List download history",
@@ -226,9 +229,7 @@ async def list_downloads(
     if status:
         q = q.where(DownloadRequest.status == status)
 
-    total = (await session.execute(
-        select(func.count()).select_from(q.subquery())
-    )).scalar() or 0
+    total = (await session.execute(select(func.count()).select_from(q.subquery()))).scalar() or 0
 
     records = (await session.execute(q.offset(offset).limit(limit))).scalars().all()
 

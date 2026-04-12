@@ -1,4 +1,5 @@
 """GrooveIQ – Dashboard statistics & pipeline control routes."""
+
 from __future__ import annotations
 
 import asyncio
@@ -42,49 +43,54 @@ async def get_stats(
     total_users = (await session.execute(select(func.count(User.id)))).scalar() or 0
     total_tracks = (await session.execute(select(func.count(TrackFeatures.id)))).scalar() or 0
     total_playlists = (await session.execute(select(func.count(Playlist.id)))).scalar() or 0
-    events_24h = (await session.execute(
-        select(func.count(ListenEvent.id)).where(ListenEvent.timestamp >= day_ago)
-    )).scalar() or 0
-    events_1h = (await session.execute(
-        select(func.count(ListenEvent.id)).where(ListenEvent.timestamp >= hour_ago)
-    )).scalar() or 0
+    events_24h = (
+        await session.execute(select(func.count(ListenEvent.id)).where(ListenEvent.timestamp >= day_ago))
+    ).scalar() or 0
+    events_1h = (
+        await session.execute(select(func.count(ListenEvent.id)).where(ListenEvent.timestamp >= hour_ago))
+    ).scalar() or 0
 
     # Event type breakdown (last 24h)
-    type_rows = (await session.execute(
-        select(ListenEvent.event_type, func.count(ListenEvent.id))
-        .where(ListenEvent.timestamp >= day_ago)
-        .group_by(ListenEvent.event_type)
-        .order_by(func.count(ListenEvent.id).desc())
-    )).all()
+    type_rows = (
+        await session.execute(
+            select(ListenEvent.event_type, func.count(ListenEvent.id))
+            .where(ListenEvent.timestamp >= day_ago)
+            .group_by(ListenEvent.event_type)
+            .order_by(func.count(ListenEvent.id).desc())
+        )
+    ).all()
     event_types = {row[0]: row[1] for row in type_rows}
 
     # Top tracks (last 24h by event count), enriched with metadata
     from sqlalchemy import or_
-    track_rows = (await session.execute(
-        select(
-            ListenEvent.track_id,
-            func.count(ListenEvent.id).label("c"),
-            TrackFeatures.title,
-            TrackFeatures.artist,
+
+    track_rows = (
+        await session.execute(
+            select(
+                ListenEvent.track_id,
+                func.count(ListenEvent.id).label("c"),
+                TrackFeatures.title,
+                TrackFeatures.artist,
+            )
+            .outerjoin(
+                TrackFeatures,
+                or_(
+                    ListenEvent.track_id == TrackFeatures.track_id,
+                    ListenEvent.track_id == TrackFeatures.external_track_id,
+                ),
+            )
+            .where(ListenEvent.timestamp >= day_ago)
+            .group_by(ListenEvent.track_id, TrackFeatures.title, TrackFeatures.artist)
+            .order_by(func.count(ListenEvent.id).desc())
+            .limit(10)
         )
-        .outerjoin(TrackFeatures, or_(
-            ListenEvent.track_id == TrackFeatures.track_id,
-            ListenEvent.track_id == TrackFeatures.external_track_id,
-        ))
-        .where(ListenEvent.timestamp >= day_ago)
-        .group_by(ListenEvent.track_id, TrackFeatures.title, TrackFeatures.artist)
-        .order_by(func.count(ListenEvent.id).desc())
-        .limit(10)
-    )).all()
-    top_tracks = [
-        {"track_id": r[0], "events": r[1], "title": r[2], "artist": r[3]}
-        for r in track_rows
-    ]
+    ).all()
+    top_tracks = [{"track_id": r[0], "events": r[1], "title": r[2], "artist": r[3]} for r in track_rows]
 
     # Latest scan
-    scan_row = (await session.execute(
-        select(LibraryScanState).order_by(LibraryScanState.id.desc()).limit(1)
-    )).scalar_one_or_none()
+    scan_row = (
+        await session.execute(select(LibraryScanState).order_by(LibraryScanState.id.desc()).limit(1))
+    ).scalar_one_or_none()
     latest_scan = None
     if scan_row:
         now_ts = int(time.time())
@@ -118,20 +124,25 @@ async def get_stats(
         }
 
     # Library coverage: analysis version distribution and failed files
-    version_rows = (await session.execute(
-        select(TrackFeatures.analysis_version, func.count(TrackFeatures.id))
-        .group_by(TrackFeatures.analysis_version)
-    )).all()
+    version_rows = (
+        await session.execute(
+            select(TrackFeatures.analysis_version, func.count(TrackFeatures.id)).group_by(
+                TrackFeatures.analysis_version
+            )
+        )
+    ).all()
     version_distribution = {str(r[0] or "unknown"): r[1] for r in version_rows}
 
     failed_files = []
     if scan_row:
-        fail_rows = (await session.execute(
-            select(ScanLog.filename, ScanLog.message)
-            .where(ScanLog.scan_id == scan_row.id, ScanLog.level == "fail")
-            .order_by(ScanLog.id.desc())
-            .limit(20)
-        )).all()
+        fail_rows = (
+            await session.execute(
+                select(ScanLog.filename, ScanLog.message)
+                .where(ScanLog.scan_id == scan_row.id, ScanLog.level == "fail")
+                .order_by(ScanLog.id.desc())
+                .limit(20)
+            )
+        ).all()
         failed_files = [{"filename": r.filename, "message": r.message} for r in fail_rows]
 
     return {
@@ -165,11 +176,13 @@ async def trigger_pipeline(
     require_admin(_key)
     from app.core.audit import audit_log
     from app.services.pipeline_state import get_current_run
+
     if get_current_run():
         return {"message": "Pipeline already running", "status": "running"}
     import asyncio
 
     from app.workers.scheduler import run_recommendation_pipeline_now
+
     audit_log("pipeline_run", api_key=_key)
     asyncio.create_task(run_recommendation_pipeline_now(trigger="manual"))
     return {"message": "Pipeline started", "status": "running"}
@@ -197,9 +210,7 @@ async def reset_pipeline(
     # Clear derived data
     await session.execute(delete(TrackInteraction))
     await session.execute(delete(ListenSession))
-    await session.execute(
-        update(User).values(taste_profile=None, profile_updated_at=None)
-    )
+    await session.execute(update(User).values(taste_profile=None, profile_updated_at=None))
     await session.commit()
 
     # Rebuild from scratch
@@ -291,37 +302,37 @@ async def pipeline_stats_sessionizer(
     if total == 0:
         return {"total_sessions": 0}
 
-    avg_duration = (await session.execute(
-        select(func.avg(ListenSession.duration_s))
-    )).scalar() or 0
-    avg_tracks = (await session.execute(
-        select(func.avg(ListenSession.track_count))
-    )).scalar() or 0
-    avg_skip_rate = (await session.execute(
-        select(func.avg(ListenSession.skip_rate))
-    )).scalar() or 0
+    avg_duration = (await session.execute(select(func.avg(ListenSession.duration_s)))).scalar() or 0
+    avg_tracks = (await session.execute(select(func.avg(ListenSession.track_count)))).scalar() or 0
+    avg_skip_rate = (await session.execute(select(func.avg(ListenSession.skip_rate)))).scalar() or 0
 
     # Skip rate distribution (histogram buckets).
-    skip_0_10 = (await session.execute(
-        select(func.count(ListenSession.id)).where(ListenSession.skip_rate <= 0.10)
-    )).scalar() or 0
-    skip_10_25 = (await session.execute(
-        select(func.count(ListenSession.id)).where(ListenSession.skip_rate > 0.10, ListenSession.skip_rate <= 0.25)
-    )).scalar() or 0
-    skip_25_50 = (await session.execute(
-        select(func.count(ListenSession.id)).where(ListenSession.skip_rate > 0.25, ListenSession.skip_rate <= 0.50)
-    )).scalar() or 0
-    skip_50_plus = (await session.execute(
-        select(func.count(ListenSession.id)).where(ListenSession.skip_rate > 0.50)
-    )).scalar() or 0
+    skip_0_10 = (
+        await session.execute(select(func.count(ListenSession.id)).where(ListenSession.skip_rate <= 0.10))
+    ).scalar() or 0
+    skip_10_25 = (
+        await session.execute(
+            select(func.count(ListenSession.id)).where(ListenSession.skip_rate > 0.10, ListenSession.skip_rate <= 0.25)
+        )
+    ).scalar() or 0
+    skip_25_50 = (
+        await session.execute(
+            select(func.count(ListenSession.id)).where(ListenSession.skip_rate > 0.25, ListenSession.skip_rate <= 0.50)
+        )
+    ).scalar() or 0
+    skip_50_plus = (
+        await session.execute(select(func.count(ListenSession.id)).where(ListenSession.skip_rate > 0.50))
+    ).scalar() or 0
 
     # Sessions per user (top users).
-    per_user_rows = (await session.execute(
-        select(ListenSession.user_id, func.count(ListenSession.id).label("cnt"))
-        .group_by(ListenSession.user_id)
-        .order_by(func.count(ListenSession.id).desc())
-        .limit(20)
-    )).all()
+    per_user_rows = (
+        await session.execute(
+            select(ListenSession.user_id, func.count(ListenSession.id).label("cnt"))
+            .group_by(ListenSession.user_id)
+            .order_by(func.count(ListenSession.id).desc())
+            .limit(20)
+        )
+    ).all()
 
     return {
         "total_sessions": total,
@@ -334,9 +345,7 @@ async def pipeline_stats_sessionizer(
             "25-50%": skip_25_50,
             "50%+": skip_50_plus,
         },
-        "sessions_per_user": [
-            {"user_id": row.user_id, "sessions": row.cnt} for row in per_user_rows
-        ],
+        "sessions_per_user": [{"user_id": row.user_id, "sessions": row.cnt} for row in per_user_rows],
     }
 
 
@@ -359,75 +368,92 @@ async def pipeline_stats_scoring(
         lo = i * 0.1
         hi = (i + 1) * 0.1
         if i == 9:
-            cnt = (await session.execute(
-                select(func.count(TrackInteraction.id)).where(
-                    TrackInteraction.satisfaction_score >= lo,
-                    TrackInteraction.satisfaction_score <= hi,
+            cnt = (
+                await session.execute(
+                    select(func.count(TrackInteraction.id)).where(
+                        TrackInteraction.satisfaction_score >= lo,
+                        TrackInteraction.satisfaction_score <= hi,
+                    )
                 )
-            )).scalar() or 0
+            ).scalar() or 0
         else:
-            cnt = (await session.execute(
-                select(func.count(TrackInteraction.id)).where(
-                    TrackInteraction.satisfaction_score >= lo,
-                    TrackInteraction.satisfaction_score < hi,
+            cnt = (
+                await session.execute(
+                    select(func.count(TrackInteraction.id)).where(
+                        TrackInteraction.satisfaction_score >= lo,
+                        TrackInteraction.satisfaction_score < hi,
+                    )
                 )
-            )).scalar() or 0
+            ).scalar() or 0
         bins.append({"range": f"{lo:.1f}-{hi:.1f}", "count": cnt})
 
     # Top 10 highest-scored tracks.
     from sqlalchemy import or_
-    top_result = (await session.execute(
-        select(
-            TrackInteraction.track_id,
-            TrackInteraction.satisfaction_score,
-            TrackInteraction.play_count,
-            TrackFeatures.title,
-            TrackFeatures.artist,
+
+    top_result = (
+        await session.execute(
+            select(
+                TrackInteraction.track_id,
+                TrackInteraction.satisfaction_score,
+                TrackInteraction.play_count,
+                TrackFeatures.title,
+                TrackFeatures.artist,
+            )
+            .outerjoin(
+                TrackFeatures,
+                or_(
+                    TrackInteraction.track_id == TrackFeatures.track_id,
+                    TrackInteraction.track_id == TrackFeatures.external_track_id,
+                ),
+            )
+            .order_by(TrackInteraction.satisfaction_score.desc())
+            .limit(10)
         )
-        .outerjoin(TrackFeatures, or_(
-            TrackInteraction.track_id == TrackFeatures.track_id,
-            TrackInteraction.track_id == TrackFeatures.external_track_id,
-        ))
-        .order_by(TrackInteraction.satisfaction_score.desc())
-        .limit(10)
-    )).all()
+    ).all()
     top_tracks = [
         {"track_id": r[0], "score": round(float(r[1] or 0), 3), "plays": r[2], "title": r[3], "artist": r[4]}
         for r in top_result
     ]
 
     # Bottom 10 lowest-scored tracks.
-    bottom_result = (await session.execute(
-        select(
-            TrackInteraction.track_id,
-            TrackInteraction.satisfaction_score,
-            TrackInteraction.play_count,
-            TrackFeatures.title,
-            TrackFeatures.artist,
+    bottom_result = (
+        await session.execute(
+            select(
+                TrackInteraction.track_id,
+                TrackInteraction.satisfaction_score,
+                TrackInteraction.play_count,
+                TrackFeatures.title,
+                TrackFeatures.artist,
+            )
+            .outerjoin(
+                TrackFeatures,
+                or_(
+                    TrackInteraction.track_id == TrackFeatures.track_id,
+                    TrackInteraction.track_id == TrackFeatures.external_track_id,
+                ),
+            )
+            .order_by(TrackInteraction.satisfaction_score.asc())
+            .limit(10)
         )
-        .outerjoin(TrackFeatures, or_(
-            TrackInteraction.track_id == TrackFeatures.track_id,
-            TrackInteraction.track_id == TrackFeatures.external_track_id,
-        ))
-        .order_by(TrackInteraction.satisfaction_score.asc())
-        .limit(10)
-    )).all()
+    ).all()
     bottom_tracks = [
         {"track_id": r[0], "score": round(float(r[1] or 0), 3), "plays": r[2], "title": r[3], "artist": r[4]}
         for r in bottom_result
     ]
 
     # Signal counts across all interactions.
-    signal_result = (await session.execute(
-        select(
-            func.sum(TrackInteraction.like_count).label("likes"),
-            func.sum(TrackInteraction.dislike_count).label("dislikes"),
-            func.sum(TrackInteraction.repeat_count).label("repeats"),
-            func.sum(TrackInteraction.early_skip_count).label("early_skips"),
-            func.sum(TrackInteraction.full_listen_count).label("full_listens"),
-            func.sum(TrackInteraction.playlist_add_count).label("playlist_adds"),
+    signal_result = (
+        await session.execute(
+            select(
+                func.sum(TrackInteraction.like_count).label("likes"),
+                func.sum(TrackInteraction.dislike_count).label("dislikes"),
+                func.sum(TrackInteraction.repeat_count).label("repeats"),
+                func.sum(TrackInteraction.early_skip_count).label("early_skips"),
+                func.sum(TrackInteraction.full_listen_count).label("full_listens"),
+                func.sum(TrackInteraction.playlist_add_count).label("playlist_adds"),
+            )
         )
-    )).first()
+    ).first()
 
     return {
         "total_interactions": total,
@@ -455,9 +481,9 @@ async def pipeline_stats_taste_profiles(
 ):
     require_admin(_key)
     total_users = (await session.execute(select(func.count(User.id)))).scalar() or 0
-    with_profiles = (await session.execute(
-        select(func.count(User.id)).where(User.taste_profile.isnot(None))
-    )).scalar() or 0
+    with_profiles = (
+        await session.execute(select(func.count(User.id)).where(User.taste_profile.isnot(None)))
+    ).scalar() or 0
 
     return {
         "total_users": total_users,
@@ -478,15 +504,17 @@ async def pipeline_stats_events(
     day_ago = now - 86400
     bucket_size = 900  # 15 minutes
 
-    rows = (await session.execute(
-        select(
-            (ListenEvent.timestamp / bucket_size * bucket_size).label("bucket"),
-            func.count(ListenEvent.id).label("cnt"),
+    rows = (
+        await session.execute(
+            select(
+                (ListenEvent.timestamp / bucket_size * bucket_size).label("bucket"),
+                func.count(ListenEvent.id).label("cnt"),
+            )
+            .where(ListenEvent.timestamp >= day_ago)
+            .group_by("bucket")
+            .order_by("bucket")
         )
-        .where(ListenEvent.timestamp >= day_ago)
-        .group_by("bucket")
-        .order_by("bucket")
-    )).all()
+    ).all()
 
     return {
         "bucket_size_seconds": bucket_size,
@@ -508,16 +536,18 @@ async def pipeline_stats_activity(
     cutoff = now - days * 86400
     bucket_size = 3600  # 1 hour
 
-    rows = (await session.execute(
-        select(
-            ListenEvent.event_type,
-            (ListenEvent.timestamp / bucket_size * bucket_size).label("bucket"),
-            func.count(ListenEvent.id).label("cnt"),
+    rows = (
+        await session.execute(
+            select(
+                ListenEvent.event_type,
+                (ListenEvent.timestamp / bucket_size * bucket_size).label("bucket"),
+                func.count(ListenEvent.id).label("cnt"),
+            )
+            .where(ListenEvent.timestamp >= cutoff)
+            .group_by(ListenEvent.event_type, "bucket")
+            .order_by("bucket")
         )
-        .where(ListenEvent.timestamp >= cutoff)
-        .group_by(ListenEvent.event_type, "bucket")
-        .order_by("bucket")
-    )).all()
+    ).all()
 
     # Group by bucket, then event_type.
     buckets = {}
@@ -547,44 +577,49 @@ async def pipeline_stats_engagement(
     cutoff = now - 30 * 86400
 
     # Per-user stats from events.
-    play_rows = (await session.execute(
-        select(
-            ListenEvent.user_id,
-            func.count(ListenEvent.id).label("total_events"),
-            func.count(func.distinct(ListenEvent.track_id)).label("unique_tracks"),
-            func.max(ListenEvent.timestamp).label("last_active"),
+    play_rows = (
+        await session.execute(
+            select(
+                ListenEvent.user_id,
+                func.count(ListenEvent.id).label("total_events"),
+                func.count(func.distinct(ListenEvent.track_id)).label("unique_tracks"),
+                func.max(ListenEvent.timestamp).label("last_active"),
+            )
+            .where(ListenEvent.timestamp >= cutoff)
+            .group_by(ListenEvent.user_id)
+            .order_by(func.count(ListenEvent.id).desc())
+            .limit(50)
         )
-        .where(ListenEvent.timestamp >= cutoff)
-        .group_by(ListenEvent.user_id)
-        .order_by(func.count(ListenEvent.id).desc())
-        .limit(50)
-    )).all()
+    ).all()
 
     # Per-user skip rate and plays from interactions.
     users = []
     for row in play_rows:
-        inter_row = (await session.execute(
-            select(
-                func.sum(TrackInteraction.play_count).label("plays"),
-                func.sum(TrackInteraction.skip_count).label("skips"),
-                func.count(func.distinct(TrackInteraction.track_id)).label("interacted_tracks"),
+        inter_row = (
+            await session.execute(
+                select(
+                    func.sum(TrackInteraction.play_count).label("plays"),
+                    func.sum(TrackInteraction.skip_count).label("skips"),
+                    func.count(func.distinct(TrackInteraction.track_id)).label("interacted_tracks"),
+                ).where(TrackInteraction.user_id == row.user_id)
             )
-            .where(TrackInteraction.user_id == row.user_id)
-        )).first()
+        ).first()
         plays = inter_row.plays or 0
         skips = inter_row.skips or 0
         skip_rate = round(skips / max(plays, 1), 3)
         diversity = round(row.unique_tracks / max(row.total_events, 1), 3)
 
-        users.append({
-            "user_id": row.user_id,
-            "total_events": row.total_events,
-            "plays": plays,
-            "skip_rate": skip_rate,
-            "unique_tracks": row.unique_tracks,
-            "diversity": diversity,
-            "last_active": row.last_active,
-        })
+        users.append(
+            {
+                "user_id": row.user_id,
+                "total_events": row.total_events,
+                "plays": plays,
+                "skip_rate": skip_rate,
+                "unique_tracks": row.unique_tracks,
+                "diversity": diversity,
+                "last_active": row.last_active,
+            }
+        )
 
     return {"users": users}
 

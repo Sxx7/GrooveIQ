@@ -85,9 +85,7 @@ async def run_track_scoring() -> dict:
         # Correct approach: fetch ALL events above the global min last_event_id
         # across interactions (or 0), then for each (user, track) pair filter
         # to events above that pair's last_event_id.
-        result = await session.execute(
-            select(func.coalesce(func.min(TrackInteraction.last_event_id), 0))
-        )
+        result = await session.execute(select(func.coalesce(func.min(TrackInteraction.last_event_id), 0)))
         global_min_hwm = result.scalar_one()
 
         # But if there are NO interactions yet, we need all events.
@@ -138,9 +136,7 @@ async def run_track_scoring() -> dict:
     }
 
 
-async def _fetch_events_after(
-    session: AsyncSession, after_id: int, limit: int
-) -> Sequence:
+async def _fetch_events_after(session: AsyncSession, after_id: int, limit: int) -> Sequence:
     """Fetch events ordered by id, excluding reco_impression (not a user action)."""
     result = await session.execute(
         select(ListenEvent)
@@ -154,9 +150,7 @@ async def _fetch_events_after(
     return result.scalars().all()
 
 
-async def _process_events(
-    session: AsyncSession, events: Sequence
-) -> tuple[int, int]:
+async def _process_events(session: AsyncSession, events: Sequence) -> tuple[int, int]:
     """
     Aggregate events into TrackInteraction rows.
 
@@ -257,13 +251,8 @@ async def _fetch_existing_interactions(
     # slow, but _EVENT_CHUNK_SIZE bounds the number of unique pairs per chunk.
     from sqlalchemy import and_, or_
 
-    conditions = [
-        and_(TrackInteraction.user_id == uid, TrackInteraction.track_id == tid)
-        for uid, tid in pairs
-    ]
-    result = await session.execute(
-        select(TrackInteraction).where(or_(*conditions))
-    )
+    conditions = [and_(TrackInteraction.user_id == uid, TrackInteraction.track_id == tid) for uid, tid in pairs]
+    result = await session.execute(select(TrackInteraction).where(or_(*conditions)))
     rows = result.scalars().all()
     return {(r.user_id, r.track_id): r for r in rows}
 
@@ -377,9 +366,7 @@ def _compute_delta(events: list) -> dict:
             else:
                 total_seekbk += 1
 
-    avg_completion = (
-        sum(completions) / len(completions) if completions else None
-    )
+    avg_completion = sum(completions) / len(completions) if completions else None
 
     return {
         "play_count": play_count,
@@ -473,10 +460,7 @@ def _merge_interaction(existing: TrackInteraction, delta: dict) -> dict:
     new_plays = delta["play_count"]
     if old_compl is not None and new_compl is not None:
         total = old_plays + new_plays
-        merged_compl = (
-            (old_compl * old_plays + new_compl * new_plays) / total
-            if total > 0 else None
-        )
+        merged_compl = (old_compl * old_plays + new_compl * new_plays) / total if total > 0 else None
     elif new_compl is not None:
         merged_compl = new_compl
     else:
@@ -548,8 +532,7 @@ async def _normalise_scores(session: AsyncSession) -> None:
             func.min(TrackInteraction.satisfaction_score).label("min_score"),
             func.max(TrackInteraction.satisfaction_score).label("max_score"),
             func.count(TrackInteraction.id).label("cnt"),
-        )
-        .group_by(TrackInteraction.user_id)
+        ).group_by(TrackInteraction.user_id)
     )
     user_stats = result.all()
 
@@ -557,9 +540,7 @@ async def _normalise_scores(session: AsyncSession) -> None:
         if cnt <= 1 or min_score is None or max_score is None:
             # Single interaction or no scores: default to 0.5.
             await session.execute(
-                update(TrackInteraction)
-                .where(TrackInteraction.user_id == user_id)
-                .values(satisfaction_score=0.5)
+                update(TrackInteraction).where(TrackInteraction.user_id == user_id).values(satisfaction_score=0.5)
             )
             continue
 
@@ -567,9 +548,7 @@ async def _normalise_scores(session: AsyncSession) -> None:
         if score_range < 1e-9:
             # All interactions have the same raw score.
             await session.execute(
-                update(TrackInteraction)
-                .where(TrackInteraction.user_id == user_id)
-                .values(satisfaction_score=0.5)
+                update(TrackInteraction).where(TrackInteraction.user_id == user_id).values(satisfaction_score=0.5)
             )
             continue
 
@@ -577,9 +556,5 @@ async def _normalise_scores(session: AsyncSession) -> None:
         await session.execute(
             update(TrackInteraction)
             .where(TrackInteraction.user_id == user_id)
-            .values(
-                satisfaction_score=(
-                    (TrackInteraction.satisfaction_score - min_score) / score_range
-                )
-            )
+            .values(satisfaction_score=((TrackInteraction.satisfaction_score - min_score) / score_range))
         )

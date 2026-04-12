@@ -23,8 +23,10 @@ from app.models.db import CoverArtCache, ListenEvent, TrackFeatures, TrackIntera
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
+
 def _get_model_version() -> str:
     from app.services.ranker import get_model_version
+
     return get_model_version() or "phase4-candidate-gen-v1"
 
 
@@ -53,14 +55,20 @@ async def get_recommendations(
     limit: int = Query(25, ge=1, le=100),
     # Context params (all optional — client sends what it knows).
     device_type: str = Query(None, description="Device class: mobile, desktop, speaker, car, web"),
-    output_type: str = Query(None, description="Audio output: headphones, speaker, bluetooth_speaker, car_audio, built_in, airplay"),
+    output_type: str = Query(
+        None, description="Audio output: headphones, speaker, bluetooth_speaker, car_audio, built_in, airplay"
+    ),
     context_type: str = Query(None, description="Listening context: playlist, album, radio, search, home_shelf"),
     location_label: str = Query(None, description="Semantic location: home, work, gym, commute"),
     hour_of_day: int = Query(None, ge=0, le=23, description="Client's local hour (0-23)"),
     day_of_week: int = Query(None, ge=1, le=7, description="Client's local day of week (1=Mon, 7=Sun)"),
     genre: str = Query(None, description="Filter candidates by genre (case-insensitive substring match)"),
-    mood: str = Query(None, description="Filter candidates by mood tag label (e.g. happy, sad, aggressive). Requires confidence > 0.3"),
-    debug: bool = Query(False, description="Include debug info: candidates by source, feature vectors, reranker actions"),
+    mood: str = Query(
+        None, description="Filter candidates by mood tag label (e.g. happy, sad, aggressive). Requires confidence > 0.3"
+    ),
+    debug: bool = Query(
+        False, description="Include debug info: candidates by source, feature vectors, reranker actions"
+    ),
     session: AsyncSession = Depends(get_session),
     _key: str = Depends(require_api_key),
 ):
@@ -73,22 +81,19 @@ async def get_recommendations(
     check_user_access(_key, user_id)
 
     # Verify user exists.
-    result = await session.execute(
-        select(User.user_id).where(User.user_id == user_id)
-    )
+    result = await session.execute(select(User.user_id).where(User.user_id == user_id))
     if result.scalar_one_or_none() is None:
         raise HTTPException(status_code=404, detail="Not found.")
 
     # Verify seed track if provided.
     if seed_track_id:
-        result = await session.execute(
-            select(TrackFeatures.track_id).where(TrackFeatures.track_id == seed_track_id)
-        )
+        result = await session.execute(select(TrackFeatures.track_id).where(TrackFeatures.track_id == seed_track_id))
         if result.scalar_one_or_none() is None:
             raise HTTPException(status_code=404, detail="Not found.")
 
     # Generate candidates — over-fetch more when filtering by genre/mood.
     from app.services.candidate_gen import get_candidates
+
     overfetch = limit * 6 if (genre or mood) else limit * 3
     candidates = await get_candidates(
         user_id=user_id,
@@ -100,9 +105,7 @@ async def get_recommendations(
     # Filter candidates by genre/mood if requested.
     if candidates and (genre or mood):
         cand_ids = [c["track_id"] for c in candidates]
-        feat_q = await session.execute(
-            select(TrackFeatures).where(TrackFeatures.track_id.in_(cand_ids))
-        )
+        feat_q = await session.execute(select(TrackFeatures).where(TrackFeatures.track_id.in_(cand_ids)))
         feat_lookup = {t.track_id: t for t in feat_q.scalars().all()}
 
         filtered = []
@@ -115,9 +118,7 @@ async def get_recommendations(
             if mood:
                 tags = tf.mood_tags if isinstance(tf.mood_tags, list) else []
                 if not any(
-                    isinstance(tag, dict)
-                    and tag.get("label") == mood
-                    and tag.get("confidence", 0) > 0.3
+                    isinstance(tag, dict) and tag.get("label") == mood and tag.get("confidence", 0) > 0.3
                     for tag in tags
                 ):
                     continue
@@ -130,24 +131,23 @@ async def get_recommendations(
         # Diagnose why there are no candidates so the client can show a useful message.
         from sqlalchemy import func as sa_func
 
-        track_count = (await session.execute(
-            select(sa_func.count()).select_from(TrackFeatures)
-        )).scalar() or 0
+        track_count = (await session.execute(select(sa_func.count()).select_from(TrackFeatures))).scalar() or 0
 
         if track_count == 0:
             reason = "no_library"
         else:
-            interaction_count = (await session.execute(
-                select(sa_func.count()).select_from(TrackInteraction)
-                .where(TrackInteraction.user_id == user_id)
-            )).scalar() or 0
+            interaction_count = (
+                await session.execute(
+                    select(sa_func.count()).select_from(TrackInteraction).where(TrackInteraction.user_id == user_id)
+                )
+            ).scalar() or 0
 
             if interaction_count == 0:
                 reason = "no_history"
             else:
-                user_row = (await session.execute(
-                    select(User.taste_profile).where(User.user_id == user_id)
-                )).scalar_one_or_none()
+                user_row = (
+                    await session.execute(select(User.taste_profile).where(User.user_id == user_id))
+                ).scalar_one_or_none()
                 reason = "no_taste_profile" if not user_row else "no_candidates"
 
         return {
@@ -165,6 +165,7 @@ async def get_recommendations(
     debug_data = None
     if debug:
         from collections import defaultdict
+
         candidates_by_source = defaultdict(list)
         for c in candidates:
             candidates_by_source[c["source"]].append({"track_id": c["track_id"], "score": round(c["score"], 4)})
@@ -175,48 +176,67 @@ async def get_recommendations(
 
     # --- Step 1: Score candidates with LightGBM ranker (or fallback) ---
     from app.services.ranker import score_candidates
+
     scored = await score_candidates(
-        user_id, candidate_ids, session,
-        hour_of_day=hour_of_day, day_of_week=day_of_week,
-        device_type=device_type, output_type=output_type,
-        context_type=context_type, location_label=location_label,
+        user_id,
+        candidate_ids,
+        session,
+        hour_of_day=hour_of_day,
+        day_of_week=day_of_week,
+        device_type=device_type,
+        output_type=output_type,
+        context_type=context_type,
+        location_label=location_label,
     )
     {tid: score for tid, score in scored}
     source_map = {c["track_id"]: c["source"] for c in candidates}
 
     if debug:
-        debug_data["pre_rerank"] = [{"track_id": tid, "score": round(score, 4), "position": i} for i, (tid, score) in enumerate(scored)]
+        debug_data["pre_rerank"] = [
+            {"track_id": tid, "score": round(score, 4), "position": i} for i, (tid, score) in enumerate(scored)
+        ]
 
     # --- Step 2: Rerank for diversity / business rules ---
     from app.services.reranker import rerank
+
     reranked = await rerank(
-        scored, user_id, session,
-        device_type=device_type, output_type=output_type,
+        scored,
+        user_id,
+        session,
+        device_type=device_type,
+        output_type=output_type,
         collect_actions=debug,
     )
     reranked = reranked[:limit]
 
     if debug:
         from app.services.reranker import get_last_rerank_actions
+
         debug_data["reranker_actions"] = get_last_rerank_actions()
         # Build feature vectors for debug output
         from app.services.feature_eng import FEATURE_COLUMNS, build_features
+
         feat_result_debug = await build_features(
-            user_id, [tid for tid, _ in reranked], session,
-            hour_of_day=hour_of_day, day_of_week=day_of_week,
-            device_type=device_type, output_type=output_type,
-            context_type=context_type, location_label=location_label,
+            user_id,
+            [tid for tid, _ in reranked],
+            session,
+            hour_of_day=hour_of_day,
+            day_of_week=day_of_week,
+            device_type=device_type,
+            output_type=output_type,
+            context_type=context_type,
+            location_label=location_label,
         )
         feature_vectors = {}
         for idx, tid in enumerate(feat_result_debug["track_ids"]):
-            feature_vectors[tid] = {col: round(float(feat_result_debug["features"][idx][ci]), 4) for ci, col in enumerate(FEATURE_COLUMNS)}
+            feature_vectors[tid] = {
+                col: round(float(feat_result_debug["features"][idx][ci]), 4) for ci, col in enumerate(FEATURE_COLUMNS)
+            }
         debug_data["feature_vectors"] = feature_vectors
 
     # Fetch track metadata for response.
     final_ids = [tid for tid, _ in reranked]
-    feat_result = await session.execute(
-        select(TrackFeatures).where(TrackFeatures.track_id.in_(final_ids))
-    )
+    feat_result = await session.execute(select(TrackFeatures).where(TrackFeatures.track_id.in_(final_ids)))
     feat_map = {t.track_id: t for t in feat_result.scalars().all()}
 
     # Generate a request_id for impression tracking.
@@ -225,22 +245,24 @@ async def get_recommendations(
     # Log reco_impression events for feedback loop (include context for future training).
     now = int(time.time())
     for i, (tid, score) in enumerate(reranked):
-        session.add(ListenEvent(
-            user_id=user_id,
-            track_id=tid,
-            event_type="reco_impression",
-            surface="recommend_api",
-            position=i,
-            request_id=request_id,
-            model_version=model_version,
-            device_type=device_type,
-            output_type=output_type,
-            context_type=context_type,
-            location_label=location_label,
-            hour_of_day=hour_of_day,
-            day_of_week=day_of_week,
-            timestamp=now,
-        ))
+        session.add(
+            ListenEvent(
+                user_id=user_id,
+                track_id=tid,
+                event_type="reco_impression",
+                surface="recommend_api",
+                position=i,
+                request_id=request_id,
+                model_version=model_version,
+                device_type=device_type,
+                output_type=output_type,
+                context_type=context_type,
+                location_label=location_label,
+                hour_of_day=hour_of_day,
+                day_of_week=day_of_week,
+                timestamp=now,
+            )
+        )
     await session.commit()
 
     # Build response.
@@ -254,20 +276,22 @@ async def get_recommendations(
             "score": round(score, 4),
         }
         if tf:
-            track_data.update({
-                "title": tf.title,
-                "artist": tf.artist,
-                "album": tf.album,
-                "genre": tf.genre,
-                "bpm": tf.bpm,
-                "key": tf.key,
-                "mode": tf.mode,
-                "energy": tf.energy,
-                "danceability": tf.danceability,
-                "valence": tf.valence,
-                "mood_tags": tf.mood_tags,
-                "duration": tf.duration,
-            })
+            track_data.update(
+                {
+                    "title": tf.title,
+                    "artist": tf.artist,
+                    "album": tf.album,
+                    "genre": tf.genre,
+                    "bpm": tf.bpm,
+                    "key": tf.key,
+                    "mode": tf.mode,
+                    "energy": tf.energy,
+                    "danceability": tf.danceability,
+                    "valence": tf.valence,
+                    "mood_tags": tf.mood_tags,
+                    "duration": tf.duration,
+                }
+            )
         tracks.append(track_data)
 
     response = {
@@ -307,9 +331,7 @@ async def get_recommendation_history(
     check_user_access(_key, user_id)
 
     # Verify user exists.
-    result = await session.execute(
-        select(User.user_id).where(User.user_id == user_id)
-    )
+    result = await session.execute(select(User.user_id).where(User.user_id == user_id))
     if result.scalar_one_or_none() is None:
         raise HTTPException(status_code=404, detail="Not found.")
 
@@ -338,13 +360,10 @@ async def get_recommendation_history(
     request_ids = list({i.request_id for i in impressions if i.request_id})
     streamed_set = set()
     if request_ids:
-        stream_q = (
-            select(ListenEvent.request_id, ListenEvent.track_id)
-            .where(
-                ListenEvent.user_id == user_id,
-                ListenEvent.request_id.in_(request_ids),
-                ListenEvent.event_type.in_(["play_start", "play_end"]),
-            )
+        stream_q = select(ListenEvent.request_id, ListenEvent.track_id).where(
+            ListenEvent.user_id == user_id,
+            ListenEvent.request_id.in_(request_ids),
+            ListenEvent.event_type.in_(["play_start", "play_end"]),
         )
         stream_rows = (await session.execute(stream_q)).all()
         streamed_set = {(r[0], r[1]) for r in stream_rows}
@@ -400,9 +419,7 @@ async def get_recommended_artists(
     check_user_access(_key, user_id)
 
     # --- Verify user & load taste profile ---
-    user_row = (await session.execute(
-        select(User).where(User.user_id == user_id)
-    )).scalar_one_or_none()
+    user_row = (await session.execute(select(User).where(User.user_id == user_id))).scalar_one_or_none()
     if user_row is None:
         raise HTTPException(status_code=404, detail="User not found.")
 
@@ -442,6 +459,7 @@ async def get_recommended_artists(
 
     # Build artist dict: normalized_name -> data
     import time as _time
+
     now = _time.time()
     artist_map = {}
     for r in rows:
@@ -454,6 +472,7 @@ async def get_recommended_artists(
         if r.last_played:
             days_ago = (now - r.last_played) / 86400
             import math
+
             recency = math.exp(-days_ago / 60)  # 60-day half-life
 
         score = (r.avg_satisfaction or 0) * 0.5 + min((r.plays or 0) / 50, 1.0) * 0.3 + recency * 0.2
@@ -485,6 +504,7 @@ async def get_recommended_artists(
             lfm = DiscoveryLastFm(settings.LASTFM_API_KEY)
             try:
                 import asyncio
+
                 tasks = [lfm.get_similar_artists(a["name"], limit=15) for a in seed_artists]
                 results = await asyncio.gather(*tasks, return_exceptions=True)
                 for seed_idx, result in enumerate(results):
@@ -565,6 +585,7 @@ async def get_recommended_artists(
 
     # --- Batch-fetch artist images from cover_art_cache ---
     import re
+
     _STRIP_RE = re.compile(r"[^\w\s]", re.UNICODE)
 
     def _cover_norm(s: str) -> str:
@@ -577,8 +598,7 @@ async def get_recommended_artists(
     artist_norms = {_cover_norm(a["name"]): a["name"] for a in ranked}
     if artist_norms:
         img_q = await session.execute(
-            select(CoverArtCache.artist_norm, CoverArtCache.url)
-            .where(
+            select(CoverArtCache.artist_norm, CoverArtCache.url).where(
                 CoverArtCache.artist_norm.in_(list(artist_norms.keys())),
                 CoverArtCache.title_norm == "",
             )
@@ -610,17 +630,20 @@ async def get_recommended_artists(
 
     # Group by artist, take top 5 per artist
     from collections import defaultdict
+
     tracks_by_artist: dict[str, list] = defaultdict(list)
     for r in top_rows:
         if len(tracks_by_artist[r.artist]) < 5:
-            tracks_by_artist[r.artist].append({
-                "track_id": r.track_id,
-                "title": r.title,
-                "album": r.album,
-                "duration": r.duration,
-                "satisfaction_score": round(r.satisfaction_score, 4) if r.satisfaction_score else 0,
-                "play_count": r.play_count or 0,
-            })
+            tracks_by_artist[r.artist].append(
+                {
+                    "track_id": r.track_id,
+                    "title": r.title,
+                    "album": r.album,
+                    "duration": r.duration,
+                    "satisfaction_score": round(r.satisfaction_score, 4) if r.satisfaction_score else 0,
+                    "play_count": r.play_count or 0,
+                }
+            )
 
     for a in ranked:
         a["top_tracks"] = tracks_by_artist.get(a["name"], [])
@@ -641,6 +664,8 @@ async def get_model_stats(
     _key: str = Depends(require_api_key),
 ):
     from app.core.security import require_admin
+
     require_admin(_key)
     from app.services.evaluation import get_model_report
+
     return await get_model_report()

@@ -25,6 +25,7 @@ def _get_fernet():
     if not key:
         return None
     from cryptography.fernet import Fernet
+
     return Fernet(key.encode() if isinstance(key, str) else key)
 
 
@@ -58,10 +59,7 @@ def encrypt_credential(plaintext: str) -> str:
     """Encrypt a plaintext credential with the configured Fernet key."""
     f = _get_fernet()
     if f is None:
-        raise ValueError(
-            "CREDENTIAL_ENCRYPTION_KEY is not configured. "
-            "Generate one with: openssl rand -base64 32"
-        )
+        raise ValueError("CREDENTIAL_ENCRYPTION_KEY is not configured. Generate one with: openssl rand -base64 32")
     return f.encrypt(plaintext.encode("utf-8")).decode("ascii")
 
 

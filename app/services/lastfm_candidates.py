@@ -69,8 +69,7 @@ async def build_cache() -> dict[str, Any]:
     async with AsyncSessionLocal() as session:
         # Build a lookup index: (normalised_artist, normalised_title) → track_id.
         lib_result = await session.execute(
-            select(TrackFeatures.track_id, TrackFeatures.artist, TrackFeatures.title)
-            .where(
+            select(TrackFeatures.track_id, TrackFeatures.artist, TrackFeatures.title).where(
                 TrackFeatures.artist.isnot(None),
                 TrackFeatures.title.isnot(None),
             )
@@ -95,9 +94,7 @@ async def build_cache() -> dict[str, Any]:
         )
 
         # Collect seed tracks: top tracks across all users.
-        users = (await session.execute(
-            select(User).where(User.is_active.is_(True))
-        )).scalars().all()
+        users = (await session.execute(select(User).where(User.is_active.is_(True)))).scalars().all()
 
         seed_tracks: dict[str, tuple[str, str]] = {}  # track_id → (artist, title)
 
@@ -111,8 +108,7 @@ async def build_cache() -> dict[str, Any]:
                 if tid and tid not in seed_tracks:
                     # Look up metadata from library.
                     feat_result = await session.execute(
-                        select(TrackFeatures.artist, TrackFeatures.title)
-                        .where(TrackFeatures.track_id == tid)
+                        select(TrackFeatures.artist, TrackFeatures.title).where(TrackFeatures.track_id == tid)
                     )
                     row = feat_result.first()
                     if row and row[0] and row[1]:
@@ -131,7 +127,9 @@ async def build_cache() -> dict[str, Any]:
         for track_id, (artist, title) in seed_tracks.items():
             try:
                 similar = await client.get_similar_tracks(
-                    artist=artist, track=title, limit=_SIMILAR_PER_SEED,
+                    artist=artist,
+                    track=title,
+                    limit=_SIMILAR_PER_SEED,
                 )
                 api_calls += 1
             except LastFmError as e:
@@ -184,9 +182,11 @@ async def build_cache() -> dict[str, Any]:
         _built_at = int(time.time())
 
     logger.info(
-        "Last.fm candidates cache built: %d seeds cached, %d matches, "
-        "%d API calls, %d errors.",
-        len(new_cache), matched, api_calls, errors,
+        "Last.fm candidates cache built: %d seeds cached, %d matches, %d API calls, %d errors.",
+        len(new_cache),
+        matched,
+        api_calls,
+        errors,
     )
 
     return {

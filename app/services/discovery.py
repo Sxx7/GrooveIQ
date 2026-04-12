@@ -45,6 +45,7 @@ def _normalize_artist(name: str) -> str:
 # Last.fm client
 # ---------------------------------------------------------------------------
 
+
 class LastFmClient:
     BASE_URL = "https://ws.audioscrobbler.com/2.0/"
     MIN_REQUEST_GAP = 0.2  # 200ms between requests (5 req/s limit)
@@ -70,17 +71,17 @@ class LastFmClient:
         resp.raise_for_status()
         return resp.json()
 
-    async def get_similar_artists(
-        self, artist: str, limit: int = 20
-    ) -> list[dict[str, Any]]:
+    async def get_similar_artists(self, artist: str, limit: int = 20) -> list[dict[str, Any]]:
         """Return similar artists from Last.fm."""
         try:
-            data = await self._get({
-                "method": "artist.getSimilar",
-                "artist": artist,
-                "limit": limit,
-                "autocorrect": 1,
-            })
+            data = await self._get(
+                {
+                    "method": "artist.getSimilar",
+                    "artist": artist,
+                    "limit": limit,
+                    "autocorrect": 1,
+                }
+            )
         except httpx.HTTPStatusError as exc:
             logger.warning("Last.fm artist.getSimilar failed for %r: %s", artist, exc)
             return []
@@ -91,23 +92,25 @@ class LastFmClient:
 
         results = []
         for a in artists_raw:
-            results.append({
-                "name": a.get("name", ""),
-                "mbid": a.get("mbid") or None,
-                "match": float(a.get("match", 0)),
-            })
+            results.append(
+                {
+                    "name": a.get("name", ""),
+                    "mbid": a.get("mbid") or None,
+                    "match": float(a.get("match", 0)),
+                }
+            )
         return results
 
-    async def get_top_artists_for_tag(
-        self, tag: str, limit: int = 50
-    ) -> list[dict[str, Any]]:
+    async def get_top_artists_for_tag(self, tag: str, limit: int = 50) -> list[dict[str, Any]]:
         """Return top artists for a genre/tag from Last.fm."""
         try:
-            data = await self._get({
-                "method": "tag.getTopArtists",
-                "tag": tag,
-                "limit": limit,
-            })
+            data = await self._get(
+                {
+                    "method": "tag.getTopArtists",
+                    "tag": tag,
+                    "limit": limit,
+                }
+            )
         except httpx.HTTPStatusError as exc:
             logger.warning("Last.fm tag.getTopArtists failed for %r: %s", tag, exc)
             return []
@@ -118,16 +121,19 @@ class LastFmClient:
 
         results = []
         for a in artists_raw:
-            results.append({
-                "name": a.get("name", ""),
-                "mbid": a.get("mbid") or None,
-            })
+            results.append(
+                {
+                    "name": a.get("name", ""),
+                    "mbid": a.get("mbid") or None,
+                }
+            )
         return results
 
 
 # ---------------------------------------------------------------------------
 # Lidarr client
 # ---------------------------------------------------------------------------
+
 
 class LidarrClient:
     def __init__(self, base_url: str, api_key: str):
@@ -145,15 +151,9 @@ class LidarrClient:
         """Return the set of MusicBrainz IDs already in Lidarr."""
         resp = await self._client.get(f"{self._base_url}/api/v1/artist")
         resp.raise_for_status()
-        return {
-            a["foreignArtistId"]
-            for a in resp.json()
-            if a.get("foreignArtistId")
-        }
+        return {a["foreignArtistId"] for a in resp.json() if a.get("foreignArtistId")}
 
-    async def lookup_artist(
-        self, *, name: str | None = None, mbid: str | None = None
-    ) -> dict[str, Any] | None:
+    async def lookup_artist(self, *, name: str | None = None, mbid: str | None = None) -> dict[str, Any] | None:
         """Search Lidarr for an artist by mbid (preferred) or name."""
         if mbid:
             term = f"lidarr:{mbid}"
@@ -195,6 +195,7 @@ class LidarrClient:
 # ---------------------------------------------------------------------------
 # Discovery pipeline
 # ---------------------------------------------------------------------------
+
 
 def _extract_seed_artists(taste_profile: dict, limit: int = 10) -> list[str]:
     """Get the most-listened artist names from a taste profile."""
@@ -264,21 +265,24 @@ async def run_discovery_pipeline() -> dict[str, Any]:
         async with AsyncSessionLocal() as session:
             # Daily budget check.
             today_start = int(time.time()) - (int(time.time()) % 86400)
-            today_count = (await session.execute(
-                select(func.count()).select_from(DiscoveryRequest)
-                .where(DiscoveryRequest.created_at >= today_start)
-            )).scalar() or 0
+            today_count = (
+                await session.execute(
+                    select(func.count()).select_from(DiscoveryRequest).where(DiscoveryRequest.created_at >= today_start)
+                )
+            ).scalar() or 0
             remaining_budget = settings.DISCOVERY_MAX_REQUESTS_PER_DAY - today_count
             logger.info("Discovery budget: %d/%d remaining", remaining_budget, settings.DISCOVERY_MAX_REQUESTS_PER_DAY)
 
             if remaining_budget <= 0:
-                logger.info("Discovery daily limit reached (%d/%d)", today_count, settings.DISCOVERY_MAX_REQUESTS_PER_DAY)
+                logger.info(
+                    "Discovery daily limit reached (%d/%d)", today_count, settings.DISCOVERY_MAX_REQUESTS_PER_DAY
+                )
                 return {"status": "daily_limit_reached", **summary}
 
             # Build dedup sets.
-            library_artists_raw = (await session.execute(
-                select(TrackFeatures.artist).where(TrackFeatures.artist.isnot(None)).distinct()
-            )).all()
+            library_artists_raw = (
+                await session.execute(select(TrackFeatures.artist).where(TrackFeatures.artist.isnot(None)).distinct())
+            ).all()
             library_artists_norm = {_normalize_artist(r[0]) for r in library_artists_raw}
             logger.info("Discovery dedup: %d library artists", len(library_artists_norm))
 
@@ -291,10 +295,13 @@ async def run_discovery_pipeline() -> dict[str, Any]:
 
             already_requested = set()
             already_requested_names = set()
-            rows = (await session.execute(
-                select(DiscoveryRequest.artist_mbid, DiscoveryRequest.artist_name)
-                .where(DiscoveryRequest.status != "failed")
-            )).all()
+            rows = (
+                await session.execute(
+                    select(DiscoveryRequest.artist_mbid, DiscoveryRequest.artist_name).where(
+                        DiscoveryRequest.status != "failed"
+                    )
+                )
+            ).all()
             for mbid, name in rows:
                 if mbid:
                     already_requested.add(mbid)
@@ -321,22 +328,26 @@ async def run_discovery_pipeline() -> dict[str, Any]:
 
                     if not seed_artists and not seed_genres:
                         # Fallback: seed from the library's existing artists + genres.
-                        lib_artists = (await session.execute(
-                            select(TrackFeatures.artist)
-                            .where(TrackFeatures.artist.isnot(None))
-                            .group_by(TrackFeatures.artist)
-                            .order_by(func.count().desc())
-                            .limit(10)
-                        )).all()
+                        lib_artists = (
+                            await session.execute(
+                                select(TrackFeatures.artist)
+                                .where(TrackFeatures.artist.isnot(None))
+                                .group_by(TrackFeatures.artist)
+                                .order_by(func.count().desc())
+                                .limit(10)
+                            )
+                        ).all()
                         seed_artists = [r[0] for r in lib_artists]
 
-                        lib_genres = (await session.execute(
-                            select(TrackFeatures.genre)
-                            .where(TrackFeatures.genre.isnot(None))
-                            .group_by(TrackFeatures.genre)
-                            .order_by(func.count().desc())
-                            .limit(20)
-                        )).all()
+                        lib_genres = (
+                            await session.execute(
+                                select(TrackFeatures.genre)
+                                .where(TrackFeatures.genre.isnot(None))
+                                .group_by(TrackFeatures.genre)
+                                .order_by(func.count().desc())
+                                .limit(20)
+                            )
+                        ).all()
                         all_genres: list[str] = []
                         for r in lib_genres:
                             for g in r[0].split(","):
@@ -351,8 +362,11 @@ async def run_discovery_pipeline() -> dict[str, Any]:
 
                     logger.info(
                         "Discovery for user %s: %d seed artists %r, %d seed genres %r",
-                        user.user_id, len(seed_artists), seed_artists[:3],
-                        len(seed_genres), seed_genres[:3],
+                        user.user_id,
+                        len(seed_artists),
+                        seed_artists[:3],
+                        len(seed_genres),
+                        seed_genres[:3],
                     )
 
                     # Collect candidates from Last.fm.
@@ -361,7 +375,8 @@ async def run_discovery_pipeline() -> dict[str, Any]:
 
                     for artist_name in seed_artists:
                         similar = await lastfm.get_similar_artists(
-                            artist_name, limit=settings.DISCOVERY_SIMILAR_LIMIT,
+                            artist_name,
+                            limit=settings.DISCOVERY_SIMILAR_LIMIT,
                         )
                         for a in similar:
                             candidates.append((a, "lastfm_similar", artist_name, None))
@@ -438,7 +453,12 @@ async def run_discovery_pipeline() -> dict[str, Any]:
                                 status = "failed"
                                 error_msg = f"HTTP {exc.response.status_code}"
                                 summary["errors"] += 1
-                                logger.warning("Lidarr add failed for %r: HTTP %d: %s", name, exc.response.status_code, exc.response.text[:200])
+                                logger.warning(
+                                    "Lidarr add failed for %r: HTTP %d: %s",
+                                    name,
+                                    exc.response.status_code,
+                                    exc.response.text[:200],
+                                )
                         except Exception as exc:
                             status = "failed"
                             error_msg = "Internal error"
@@ -446,18 +466,20 @@ async def run_discovery_pipeline() -> dict[str, Any]:
                             logger.warning("Lidarr add failed for %r: %s", name, exc)
 
                         # Record in DB.
-                        session.add(DiscoveryRequest(
-                            user_id=user.user_id,
-                            artist_name=name,
-                            artist_mbid=mbid or foreign_id,
-                            source=source,
-                            seed_artist=seed_a,
-                            seed_genre=seed_g,
-                            similarity_score=artist_info.get("match"),
-                            status=status,
-                            lidarr_artist_id=lidarr_id,
-                            error_message=error_msg,
-                        ))
+                        session.add(
+                            DiscoveryRequest(
+                                user_id=user.user_id,
+                                artist_name=name,
+                                artist_mbid=mbid or foreign_id,
+                                source=source,
+                                seed_artist=seed_a,
+                                seed_genre=seed_g,
+                                similarity_score=artist_info.get("match"),
+                                status=status,
+                                lidarr_artist_id=lidarr_id,
+                                error_message=error_msg,
+                            )
+                        )
                         already_requested_names.add(norm)
                         if mbid:
                             already_requested.add(mbid)
@@ -521,9 +543,9 @@ async def _run_ab_discovery(session: AsyncSession | None = None) -> dict[str, An
 
         async with AsyncSessionLocal() as db:
             # Get library artists for dedup
-            library_artists_raw = (await db.execute(
-                select(TrackFeatures.artist).where(TrackFeatures.artist.isnot(None)).distinct()
-            )).all()
+            library_artists_raw = (
+                await db.execute(select(TrackFeatures.artist).where(TrackFeatures.artist.isnot(None)).distinct())
+            ).all()
             library_artists_norm = {_normalize_artist(r[0]) for r in library_artists_raw}
 
             lidarr_mbids: set[str] = set()
@@ -541,9 +563,7 @@ async def _run_ab_discovery(session: AsyncSession | None = None) -> dict[str, An
                     continue
 
                 try:
-                    results = await ab_client.search(
-                        profile, limit=settings.AB_DISCOVERY_LIMIT
-                    )
+                    results = await ab_client.search(profile, limit=settings.AB_DISCOVERY_LIMIT)
                     if not results:
                         continue
 
@@ -583,13 +603,15 @@ async def _run_ab_discovery(session: AsyncSession | None = None) -> dict[str, An
                                         summary["artists_sent_to_lidarr"] += 1
                                         logger.info(
                                             "AB discovery: added %s to Lidarr (mbid=%s)",
-                                            name, foreign_id,
+                                            name,
+                                            foreign_id,
                                         )
                             except httpx.HTTPStatusError as exc:
                                 if exc.response.status_code != 409:
                                     logger.warning(
                                         "AB discovery: Lidarr add failed for %s: %s",
-                                        name, exc,
+                                        name,
+                                        exc,
                                     )
                                     summary["errors"] += 1
                             except Exception as exc:
@@ -597,13 +619,15 @@ async def _run_ab_discovery(session: AsyncSession | None = None) -> dict[str, An
                                 summary["errors"] += 1
 
                         # Record discovery
-                        db.add(DiscoveryRequest(
-                            user_id=user.user_id,
-                            artist_name=name,
-                            artist_mbid=mb_artist_id,
-                            source="acousticbrainz",
-                            status="sent" if mb_artist_id else "pending",
-                        ))
+                        db.add(
+                            DiscoveryRequest(
+                                user_id=user.user_id,
+                                artist_name=name,
+                                artist_mbid=mb_artist_id,
+                                source="acousticbrainz",
+                                status="sent" if mb_artist_id else "pending",
+                            )
+                        )
                         summary["tracks_discovered"] += 1
                         library_artists_norm.add(norm)
 
@@ -613,7 +637,9 @@ async def _run_ab_discovery(session: AsyncSession | None = None) -> dict[str, An
                 except Exception as exc:
                     logger.error(
                         "AB discovery failed for user %s: %s",
-                        user.user_id, exc, exc_info=True,
+                        user.user_id,
+                        exc,
+                        exc_info=True,
                     )
                     summary["errors"] += 1
 

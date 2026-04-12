@@ -47,9 +47,7 @@ async def client():
     async with AsyncClient(
         transport=ASGITransport(app=app),
         base_url="http://test",
-        headers={"Authorization": f"Bearer {settings.api_keys_list[0]}"}
-        if settings.api_keys_list
-        else {},
+        headers={"Authorization": f"Bearer {settings.api_keys_list[0]}"} if settings.api_keys_list else {},
     ) as c:
         yield c
 
@@ -58,43 +56,87 @@ async def seed_user_with_data():
     """Insert a user with interactions, sessions, and track features."""
     now = int(time.time())
     async with _TestSession() as session:
-        user = User(user_id="testuser", display_name="Test User", taste_profile={
-            "audio_preferences": {"bpm_mean": 120.0, "energy_mean": 0.7, "danceability_mean": 0.6,
-                                  "valence_mean": 0.5, "acousticness_mean": 0.3,
-                                  "instrumentalness_mean": 0.1, "loudness_mean": -8.0},
-            "mood_preferences": {"happy": 0.8, "relaxed": 0.5},
-            "key_preferences": {"C major": 0.4, "G major": 0.3},
-            "behaviour": {"total_plays": 100, "active_days": 10, "avg_session_tracks": 8.5,
-                          "skip_rate": 0.15, "avg_completion": 0.85},
-        }, profile_updated_at=now)
+        user = User(
+            user_id="testuser",
+            display_name="Test User",
+            taste_profile={
+                "audio_preferences": {
+                    "bpm_mean": 120.0,
+                    "energy_mean": 0.7,
+                    "danceability_mean": 0.6,
+                    "valence_mean": 0.5,
+                    "acousticness_mean": 0.3,
+                    "instrumentalness_mean": 0.1,
+                    "loudness_mean": -8.0,
+                },
+                "mood_preferences": {"happy": 0.8, "relaxed": 0.5},
+                "key_preferences": {"C major": 0.4, "G major": 0.3},
+                "behaviour": {
+                    "total_plays": 100,
+                    "active_days": 10,
+                    "avg_session_tracks": 8.5,
+                    "skip_rate": 0.15,
+                    "avg_completion": 0.85,
+                },
+            },
+            profile_updated_at=now,
+        )
         session.add(user)
 
         tf = TrackFeatures(
-            track_id="track-001", file_path="/music/song.mp3", duration=240.0,
-            bpm=120.0, key="C", mode="major", energy=0.8, danceability=0.7, valence=0.6,
+            track_id="track-001",
+            file_path="/music/song.mp3",
+            duration=240.0,
+            bpm=120.0,
+            key="C",
+            mode="major",
+            energy=0.8,
+            danceability=0.7,
+            valence=0.6,
             mood_tags=[{"label": "happy", "confidence": 0.9}],
         )
         session.add(tf)
 
         ti = TrackInteraction(
-            user_id="testuser", track_id="track-001",
-            play_count=5, skip_count=1, like_count=1, dislike_count=0,
-            repeat_count=0, playlist_add_count=0, queue_add_count=0,
-            avg_completion=0.9, satisfaction_score=0.85,
-            first_played_at=now - 86400, last_played_at=now - 3600,
-            last_event_id=10, updated_at=now,
+            user_id="testuser",
+            track_id="track-001",
+            play_count=5,
+            skip_count=1,
+            like_count=1,
+            dislike_count=0,
+            repeat_count=0,
+            playlist_add_count=0,
+            queue_add_count=0,
+            avg_completion=0.9,
+            satisfaction_score=0.85,
+            first_played_at=now - 86400,
+            last_played_at=now - 3600,
+            last_event_id=10,
+            updated_at=now,
         )
         session.add(ti)
 
         ls = ListenSession(
-            session_key="testuser:1", user_id="testuser",
-            started_at=now - 7200, ended_at=now - 3600, duration_s=3600,
-            track_count=10, play_count=9, skip_count=1,
-            like_count=2, dislike_count=0, seek_count=0,
-            skip_rate=0.111, avg_completion=0.88,
-            dominant_context_type="playlist", dominant_device_type="desktop",
-            hour_of_day=14, day_of_week=3,
-            event_id_min=1, event_id_max=20, built_at=now,
+            session_key="testuser:1",
+            user_id="testuser",
+            started_at=now - 7200,
+            ended_at=now - 3600,
+            duration_s=3600,
+            track_count=10,
+            play_count=9,
+            skip_count=1,
+            like_count=2,
+            dislike_count=0,
+            seek_count=0,
+            skip_rate=0.111,
+            avg_completion=0.88,
+            dominant_context_type="playlist",
+            dominant_device_type="desktop",
+            hour_of_day=14,
+            day_of_week=3,
+            event_id_min=1,
+            event_id_max=20,
+            built_at=now,
         )
         session.add(ls)
 
@@ -105,7 +147,6 @@ async def seed_user_with_data():
 
 
 class TestUserProfile:
-
     async def test_get_profile(self, client: AsyncClient):
         await seed_user_with_data()
         resp = await client.get("/v1/users/testuser/profile")
@@ -122,7 +163,6 @@ class TestUserProfile:
 
 
 class TestUserInteractions:
-
     async def test_get_interactions(self, client: AsyncClient):
         await seed_user_with_data()
         resp = await client.get("/v1/users/testuser/interactions")
@@ -154,7 +194,6 @@ class TestUserInteractions:
 
 
 class TestUserSessions:
-
     async def test_get_sessions(self, client: AsyncClient):
         await seed_user_with_data()
         resp = await client.get("/v1/users/testuser/sessions")
@@ -172,7 +211,6 @@ class TestUserSessions:
 
 
 class TestRecommendationHistory:
-
     async def test_history_empty(self, client: AsyncClient):
         await seed_user_with_data()
         resp = await client.get("/v1/recommend/testuser/history")
@@ -186,18 +224,28 @@ class TestRecommendationHistory:
         now = int(time.time())
         async with _TestSession() as session:
             # Add impression events
-            session.add(ListenEvent(
-                user_id="testuser", track_id="track-001",
-                event_type="reco_impression", surface="recommend_api",
-                position=0, request_id="req-123", model_version="v1",
-                timestamp=now,
-            ))
+            session.add(
+                ListenEvent(
+                    user_id="testuser",
+                    track_id="track-001",
+                    event_type="reco_impression",
+                    surface="recommend_api",
+                    position=0,
+                    request_id="req-123",
+                    model_version="v1",
+                    timestamp=now,
+                )
+            )
             # Add a stream attributed to the same request_id
-            session.add(ListenEvent(
-                user_id="testuser", track_id="track-001",
-                event_type="play_start", request_id="req-123",
-                timestamp=now + 10,
-            ))
+            session.add(
+                ListenEvent(
+                    user_id="testuser",
+                    track_id="track-001",
+                    event_type="play_start",
+                    request_id="req-123",
+                    timestamp=now + 10,
+                )
+            )
             await session.commit()
 
         resp = await client.get("/v1/recommend/testuser/history")
@@ -215,7 +263,6 @@ class TestRecommendationHistory:
 
 
 class TestUidExposure:
-
     async def test_create_user_returns_uid(self, client: AsyncClient):
         resp = await client.post("/v1/users", json={"user_id": "alice", "display_name": "Alice"})
         assert resp.status_code == 201
@@ -249,7 +296,6 @@ class TestUidExposure:
 
 
 class TestUserRename:
-
     async def test_rename_user_id(self, client: AsyncClient):
         await seed_user_with_data()
         # Get the uid first
@@ -277,10 +323,15 @@ class TestUserRename:
         now = int(time.time())
         # Add an event under old name
         async with _TestSession() as session:
-            session.add(ListenEvent(
-                user_id="testuser", track_id="track-001",
-                event_type="play_end", value=0.9, timestamp=now,
-            ))
+            session.add(
+                ListenEvent(
+                    user_id="testuser",
+                    track_id="track-001",
+                    event_type="play_end",
+                    value=0.9,
+                    timestamp=now,
+                )
+            )
             await session.commit()
 
         # Get uid and rename

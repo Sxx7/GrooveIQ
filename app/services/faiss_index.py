@@ -28,10 +28,10 @@ logger = logging.getLogger(__name__)
 
 # Singleton state — protected by a lock for atomic swap.
 _lock = threading.Lock()
-_index: object | None = None          # faiss.Index
-_id_to_track: list[str] = []             # FAISS int id → track_id
-_track_to_id: dict[str, int] = {}        # track_id → FAISS int id
-_embeddings: np.ndarray | None = None # raw normalised matrix (for centroid queries)
+_index: object | None = None  # faiss.Index
+_id_to_track: list[str] = []  # FAISS int id → track_id
+_track_to_id: dict[str, int] = {}  # track_id → FAISS int id
+_embeddings: np.ndarray | None = None  # raw normalised matrix (for centroid queries)
 
 # Threshold for switching from flat to IVF.
 _IVF_THRESHOLD = 50_000
@@ -53,7 +53,9 @@ def _decode_embedding(b64: str) -> np.ndarray | None:
         return None
 
 
-def _build_index_sync(rows: list[tuple[str, str]]) -> tuple[object | None, list[str], dict[str, int], np.ndarray | None, int]:
+def _build_index_sync(
+    rows: list[tuple[str, str]],
+) -> tuple[object | None, list[str], dict[str, int], np.ndarray | None, int]:
     """
     CPU-bound FAISS index construction.  Runs in a thread executor so it
     doesn't block the async event loop.
@@ -97,15 +99,16 @@ async def build_index() -> int:
 
     async with AsyncSessionLocal() as session:
         result = await session.execute(
-            select(TrackFeatures.track_id, TrackFeatures.embedding)
-            .where(TrackFeatures.embedding.isnot(None))
+            select(TrackFeatures.track_id, TrackFeatures.embedding).where(TrackFeatures.embedding.isnot(None))
         )
         rows = result.all()
 
     # Run CPU-heavy numpy/FAISS work in a thread so the event loop stays responsive.
     loop = asyncio.get_running_loop()
     index, track_ids, id_map, matrix, n = await loop.run_in_executor(
-        None, _build_index_sync, rows,
+        None,
+        _build_index_sync,
+        rows,
     )
 
     if n == 0:

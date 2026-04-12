@@ -27,28 +27,48 @@ from app.services.algorithm_config import get_config
 # Feature columns in deterministic order (model input contract).
 FEATURE_COLUMNS = [
     # Track-side
-    "bpm", "energy", "danceability", "valence", "loudness",
-    "instrumentalness", "duration",
+    "bpm",
+    "energy",
+    "danceability",
+    "valence",
+    "loudness",
+    "instrumentalness",
+    "duration",
     # Track popularity
     "track_popularity",
     # User-track interaction
-    "satisfaction_score", "play_count", "skip_count",
-    "recency_days", "avg_completion",
+    "satisfaction_score",
+    "play_count",
+    "skip_count",
+    "recency_days",
+    "avg_completion",
     "has_prior_interaction",
     # Preference deltas
-    "delta_bpm", "delta_energy", "delta_danceability", "delta_valence",
+    "delta_bpm",
+    "delta_energy",
+    "delta_danceability",
+    "delta_valence",
     # Mood match
     "mood_match_score",
     # Time-of-day affinity
     "time_affinity",
     # Context (cyclic encoding)
-    "hour_sin", "hour_cos", "dow_sin", "dow_cos",
+    "hour_sin",
+    "hour_cos",
+    "dow_sin",
+    "dow_cos",
     # Context affinity (from taste profile + real-time context)
-    "device_affinity", "output_affinity", "context_type_affinity",
-    "location_affinity", "is_mobile", "is_headphones",
+    "device_affinity",
+    "output_affinity",
+    "context_type_affinity",
+    "location_affinity",
+    "is_mobile",
+    "is_headphones",
     # Multi-timescale preference deltas (short=7d, long=all-time vs track)
-    "delta_energy_short", "delta_energy_long",
-    "delta_valence_short", "delta_valence_long",
+    "delta_energy_short",
+    "delta_energy_long",
+    "delta_valence_short",
+    "delta_valence_long",
     # Freshness: days since track was added to the library
     "days_since_added",
     # Position bias (logged during reco_impression; zeroed at serving time)
@@ -95,9 +115,7 @@ async def build_features(
         return {"track_ids": [], "features": np.empty((0, NUM_FEATURES), dtype=np.float32)}
 
     # --- Load user taste profile ---
-    user_result = await session.execute(
-        select(User.taste_profile).where(User.user_id == user_id)
-    )
+    user_result = await session.execute(select(User.taste_profile).where(User.user_id == user_id))
     taste_profile = user_result.scalar_one_or_none() or {}
     audio_prefs = taste_profile.get("audio_preferences", {})
     timescale_audio = taste_profile.get("timescale_audio", {})
@@ -112,12 +130,8 @@ async def build_features(
     popularity_pref = float(taste_profile.get("popularity_preference", 0.5))
 
     # --- Load track features in bulk ---
-    feat_result = await session.execute(
-        select(TrackFeatures).where(TrackFeatures.track_id.in_(candidate_track_ids))
-    )
-    feat_map: dict[str, TrackFeatures] = {
-        t.track_id: t for t in feat_result.scalars().all()
-    }
+    feat_result = await session.execute(select(TrackFeatures).where(TrackFeatures.track_id.in_(candidate_track_ids)))
+    feat_map: dict[str, TrackFeatures] = {t.track_id: t for t in feat_result.scalars().all()}
 
     # --- Load interactions for this user × candidates ---
     inter_result = await session.execute(
@@ -126,12 +140,11 @@ async def build_features(
             TrackInteraction.track_id.in_(candidate_track_ids),
         )
     )
-    inter_map: dict[str, TrackInteraction] = {
-        i.track_id: i for i in inter_result.scalars().all()
-    }
+    inter_map: dict[str, TrackInteraction] = {i.track_id: i for i in inter_result.scalars().all()}
 
     # --- Track popularity (total play_count across all users) ---
     from sqlalchemy import func
+
     pop_result = await session.execute(
         select(
             TrackInteraction.track_id,
@@ -168,6 +181,7 @@ async def build_features(
     sasrec_scores: dict[str, float] = {}
     try:
         from app.services.sasrec import predict_next_scores
+
         sasrec_scores = predict_next_scores(user_id, set(candidate_track_ids))
     except Exception:
         pass  # model not trained yet
@@ -176,6 +190,7 @@ async def build_features(
     gru_scores: dict[str, float] = {}
     try:
         from app.services.session_gru import predict_drift_scores
+
         gru_scores = predict_drift_scores(user_id, set(candidate_track_ids))
     except Exception:
         pass  # model not trained yet
@@ -248,27 +263,50 @@ async def build_features(
         # Session GRU taste drift score.
         drift_score = gru_scores.get(tid, 0.0)
 
-        row = np.array([
-            bpm, energy, danceability, valence, loudness,
-            instrumentalness, duration,
-            track_pop,
-            satisfaction, play_count, skip_count,
-            recency, avg_completion,
-            has_inter,
-            delta_bpm, delta_energy, delta_dance, delta_valence,
-            mood_score,
-            time_affinity_val,
-            hour_sin, hour_cos, dow_sin, dow_cos,
-            device_affinity, output_affinity, context_type_affinity,
-            location_affinity, is_mobile, is_headphones,
-            delta_energy_short, delta_energy_long,
-            delta_valence_short, delta_valence_long,
-            days_since_added,
-            pos_bias,
-            popularity_pref,
-            seq_score,
-            drift_score,
-        ], dtype=np.float32)
+        row = np.array(
+            [
+                bpm,
+                energy,
+                danceability,
+                valence,
+                loudness,
+                instrumentalness,
+                duration,
+                track_pop,
+                satisfaction,
+                play_count,
+                skip_count,
+                recency,
+                avg_completion,
+                has_inter,
+                delta_bpm,
+                delta_energy,
+                delta_dance,
+                delta_valence,
+                mood_score,
+                time_affinity_val,
+                hour_sin,
+                hour_cos,
+                dow_sin,
+                dow_cos,
+                device_affinity,
+                output_affinity,
+                context_type_affinity,
+                location_affinity,
+                is_mobile,
+                is_headphones,
+                delta_energy_short,
+                delta_energy_long,
+                delta_valence_short,
+                delta_valence_long,
+                days_since_added,
+                pos_bias,
+                popularity_pref,
+                seq_score,
+                drift_score,
+            ],
+            dtype=np.float32,
+        )
 
         rows.append(row)
         valid_ids.append(tid)
@@ -373,13 +411,18 @@ async def build_training_data(session: AsyncSession) -> dict[str, Any]:
     """
     # Load all interactions grouped by user.
     result = await session.execute(
-        select(TrackInteraction)
-        .order_by(TrackInteraction.user_id, TrackInteraction.satisfaction_score.desc())
+        select(TrackInteraction).order_by(TrackInteraction.user_id, TrackInteraction.satisfaction_score.desc())
     )
     interactions = result.scalars().all()
 
     if not interactions:
-        return {"features": np.empty((0, NUM_FEATURES)), "labels": np.array([]), "groups": np.array([]), "sample_weights": np.array([]), "n_samples": 0}
+        return {
+            "features": np.empty((0, NUM_FEATURES)),
+            "labels": np.array([]),
+            "groups": np.array([]),
+            "sample_weights": np.array([]),
+            "n_samples": 0,
+        }
 
     # Load position bias data from impression events.
     position_data = await _load_impression_positions(session)
@@ -389,6 +432,7 @@ async def build_training_data(session: AsyncSession) -> dict[str, Any]:
 
     # Group by user.
     from collections import defaultdict
+
     by_user: dict[str, list] = defaultdict(list)
     for inter in interactions:
         by_user[inter.user_id].append(inter)
@@ -407,7 +451,9 @@ async def build_training_data(session: AsyncSession) -> dict[str, Any]:
         imp_neg_ids = impression_negatives.get(user_id, set()) - set(track_ids)
 
         result = await build_features(
-            user_id, track_ids, session,
+            user_id,
+            track_ids,
+            session,
             position_map=user_positions,
         )
 
@@ -442,7 +488,9 @@ async def build_training_data(session: AsyncSession) -> dict[str, Any]:
             neg_list = list(imp_neg_ids)[:50]  # cap to avoid imbalance
             neg_positions = {tid: user_positions.get(tid, 0) for tid in neg_list}
             neg_result = await build_features(
-                user_id, neg_list, session,
+                user_id,
+                neg_list,
+                session,
                 position_map=neg_positions,
             )
             if neg_result["features"].shape[0] > 0:
@@ -451,7 +499,9 @@ async def build_training_data(session: AsyncSession) -> dict[str, Any]:
                 result["track_ids"] = result["track_ids"] + neg_result["track_ids"]
                 # Impression negatives: label = 0.0, weight stronger than random.
                 labels = np.concatenate([labels, np.zeros(n_neg, dtype=np.float32)])
-                weights = np.concatenate([weights, np.full(n_neg, ranker_cfg.weight_impression_negative, dtype=np.float32)])
+                weights = np.concatenate(
+                    [weights, np.full(n_neg, ranker_cfg.weight_impression_negative, dtype=np.float32)]
+                )
 
         all_features.append(result["features"])
         all_labels.append(labels)
@@ -459,7 +509,13 @@ async def build_training_data(session: AsyncSession) -> dict[str, Any]:
         groups.append(result["features"].shape[0])
 
     if not all_features:
-        return {"features": np.empty((0, NUM_FEATURES)), "labels": np.array([]), "groups": np.array([]), "sample_weights": np.array([]), "n_samples": 0}
+        return {
+            "features": np.empty((0, NUM_FEATURES)),
+            "labels": np.array([]),
+            "groups": np.array([]),
+            "sample_weights": np.array([]),
+            "n_samples": 0,
+        }
 
     features = np.vstack(all_features)
     labels = np.concatenate(all_labels)

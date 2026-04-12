@@ -28,6 +28,7 @@ router = APIRouter()
 # POST /v1/events  – single event
 # ---------------------------------------------------------------------------
 
+
 @router.post(
     "/events",
     response_model=EventResponse,
@@ -77,6 +78,7 @@ async def ingest_event(
 # ---------------------------------------------------------------------------
 # POST /v1/events/batch  – up to N events
 # ---------------------------------------------------------------------------
+
 
 @router.post(
     "/events/batch",
@@ -129,6 +131,7 @@ async def ingest_event_batch(
 # GET /v1/events  – query (debug / admin)
 # ---------------------------------------------------------------------------
 
+
 @router.get(
     "/events",
     response_model=list[ListenEventRead],
@@ -136,16 +139,16 @@ async def ingest_event_batch(
     description="Returns raw events for a user/track. Useful for debugging.",
 )
 async def query_events(
-    user_id:      str | None = Query(None, max_length=128),
-    track_id:     str | None = Query(None, max_length=128),
-    event_type:   str | None = Query(None, max_length=32),
-    device_id:    str | None = Query(None, max_length=128),
+    user_id: str | None = Query(None, max_length=128),
+    track_id: str | None = Query(None, max_length=128),
+    event_type: str | None = Query(None, max_length=32),
+    device_id: str | None = Query(None, max_length=128),
     context_type: str | None = Query(None, max_length=32),
-    request_id:   str | None = Query(None, max_length=128),
-    limit:        int = Query(50, ge=1, le=500),
-    offset:       int = Query(0, ge=0),
-    session:      AsyncSession = Depends(get_session),
-    _key:         str = Depends(require_api_key),
+    request_id: str | None = Query(None, max_length=128),
+    limit: int = Query(50, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+    session: AsyncSession = Depends(get_session),
+    _key: str = Depends(require_api_key),
 ):
     # Per-user auth: if a user_id filter is provided, verify the key
     # has access. If no user_id is provided, require admin privileges

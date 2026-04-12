@@ -39,6 +39,7 @@ async def setup_db(monkeypatch):
 
     # Reset singleton state after each test.
     import app.services.faiss_index as fi
+
     fi._index = None
     fi._id_to_track = []
     fi._track_to_id = {}
@@ -54,22 +55,23 @@ async def _insert_tracks(n: int, seed_offset: int = 0) -> list[str]:
     async with _TestSession() as session:
         for i in range(n):
             tid = f"track_{i + seed_offset}"
-            session.add(TrackFeatures(
-                track_id=tid,
-                file_path=f"/music/{tid}.mp3",
-                bpm=120.0 + i,
-                energy=0.5,
-                embedding=_make_embedding(i + seed_offset),
-                analyzed_at=int(time.time()),
-                analysis_version="1",
-            ))
+            session.add(
+                TrackFeatures(
+                    track_id=tid,
+                    file_path=f"/music/{tid}.mp3",
+                    bpm=120.0 + i,
+                    energy=0.5,
+                    embedding=_make_embedding(i + seed_offset),
+                    analyzed_at=int(time.time()),
+                    analysis_version="1",
+                )
+            )
             track_ids.append(tid)
         await session.commit()
     return track_ids
 
 
 class TestFaissIndex:
-
     async def test_build_index(self):
         """Index builds successfully with valid embeddings."""
         from app.services.faiss_index import build_index, index_size, is_ready
@@ -140,15 +142,17 @@ class TestFaissIndex:
         await _insert_tracks(3)
         # Add a track with no embedding.
         async with _TestSession() as session:
-            session.add(TrackFeatures(
-                track_id="no_emb",
-                file_path="/music/no_emb.mp3",
-                bpm=100.0,
-                energy=0.5,
-                embedding=None,
-                analyzed_at=int(time.time()),
-                analysis_version="1",
-            ))
+            session.add(
+                TrackFeatures(
+                    track_id="no_emb",
+                    file_path="/music/no_emb.mp3",
+                    bpm=100.0,
+                    energy=0.5,
+                    embedding=None,
+                    analyzed_at=int(time.time()),
+                    analysis_version="1",
+                )
+            )
             await session.commit()
 
         count = await build_index()

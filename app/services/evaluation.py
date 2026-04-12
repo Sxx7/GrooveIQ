@@ -114,6 +114,7 @@ async def evaluate_holdout(train_cutoff_ts: int | None = None) -> dict[str, Any]
     #   - random: shuffled order (expected NDCG depends on score distribution)
     #   - popularity: ranked by global play_count descending
     from collections import defaultdict
+
     test_by_user: dict[str, list] = defaultdict(list)
     for inter in test_interactions:
         test_by_user[inter.user_id].append(inter)
@@ -127,12 +128,12 @@ async def evaluate_holdout(train_cutoff_ts: int | None = None) -> dict[str, Any]
     async with AsyncSessionLocal() as session:
         # Pre-load global popularity (total play_count across all users).
         from sqlalchemy import func as sa_func
+
         pop_result = await session.execute(
             select(
                 TrackInteraction.track_id,
                 sa_func.sum(TrackInteraction.play_count).label("total"),
-            )
-            .group_by(TrackInteraction.track_id)
+            ).group_by(TrackInteraction.track_id)
         )
         global_popularity = {row.track_id: row.total or 0 for row in pop_result.all()}
 
@@ -213,38 +214,39 @@ async def get_impression_stats() -> dict[str, Any]:
     """
     async with AsyncSessionLocal() as session:
         # Total impressions.
-        imp_count = (await session.execute(
-            select(func.count(ListenEvent.id))
-            .where(ListenEvent.event_type == "reco_impression")
-        )).scalar_one()
+        imp_count = (
+            await session.execute(select(func.count(ListenEvent.id)).where(ListenEvent.event_type == "reco_impression"))
+        ).scalar_one()
 
         if imp_count == 0:
             return {"impressions": 0, "streams": 0, "i2s_rate": None}
 
         # Get distinct request_ids that have impressions.
-        imp_requests = (await session.execute(
-            select(func.count(func.distinct(ListenEvent.request_id)))
-            .where(
-                ListenEvent.event_type == "reco_impression",
-                ListenEvent.request_id.isnot(None),
+        imp_requests = (
+            await session.execute(
+                select(func.count(func.distinct(ListenEvent.request_id))).where(
+                    ListenEvent.event_type == "reco_impression",
+                    ListenEvent.request_id.isnot(None),
+                )
             )
-        )).scalar_one()
+        ).scalar_one()
 
         # Streams that were attributed to a reco (share a request_id with an impression).
         # A "stream" = play_start or play_end event with same request_id.
-        stream_count = (await session.execute(
-            select(func.count(ListenEvent.id))
-            .where(
-                ListenEvent.event_type.in_(["play_start", "play_end"]),
-                ListenEvent.request_id.isnot(None),
-                ListenEvent.request_id.in_(
-                    select(ListenEvent.request_id)
-                    .where(ListenEvent.event_type == "reco_impression")
-                    .where(ListenEvent.request_id.isnot(None))
-                    .distinct()
-                ),
+        stream_count = (
+            await session.execute(
+                select(func.count(ListenEvent.id)).where(
+                    ListenEvent.event_type.in_(["play_start", "play_end"]),
+                    ListenEvent.request_id.isnot(None),
+                    ListenEvent.request_id.in_(
+                        select(ListenEvent.request_id)
+                        .where(ListenEvent.event_type == "reco_impression")
+                        .where(ListenEvent.request_id.isnot(None))
+                        .distinct()
+                    ),
+                )
             )
-        )).scalar_one()
+        ).scalar_one()
 
         i2s = round(stream_count / imp_count, 4) if imp_count > 0 else None
 

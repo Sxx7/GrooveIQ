@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 # Singleton state.
 _lock = threading.Lock()
 _model: object | None = None  # gensim Word2Vec
-_track_ids: list[str] = []       # tracks in the model vocabulary
+_track_ids: list[str] = []  # tracks in the model vocabulary
 
 
 async def _load_session_sequences() -> list[list[str]]:
@@ -40,8 +40,9 @@ async def _load_session_sequences() -> list[list[str]]:
     async with AsyncSessionLocal() as session:
         # Get all sessions with enough tracks.
         sess_result = await session.execute(
-            select(ListenSession.session_key, ListenSession.user_id,
-                   ListenSession.event_id_min, ListenSession.event_id_max)
+            select(
+                ListenSession.session_key, ListenSession.user_id, ListenSession.event_id_min, ListenSession.event_id_max
+            )
             .where(ListenSession.track_count >= 2)
             .order_by(ListenSession.started_at)
         )
@@ -88,8 +89,8 @@ def _train_model_sync(sequences: list[list[str]]) -> object | None:
         vector_size=cfg.embedding_dim,
         window=cfg.window_size,
         min_count=cfg.min_count,
-        sg=1,           # skip-gram (not CBOW)
-        workers=1,      # single thread inside executor
+        sg=1,  # skip-gram (not CBOW)
+        workers=1,  # single thread inside executor
         epochs=cfg.epochs,
         seed=42,
     )
@@ -108,10 +109,7 @@ async def train() -> dict:
     sequences = await _load_session_sequences()
 
     if len(sequences) < cfg.min_sessions:
-        logger.info(
-            f"Session embeddings: only {len(sequences)} sessions "
-            f"(< {cfg.min_sessions}), skipping training."
-        )
+        logger.info(f"Session embeddings: only {len(sequences)} sessions (< {cfg.min_sessions}), skipping training.")
         return {
             "trained": False,
             "sessions": len(sequences),
@@ -124,10 +122,7 @@ async def train() -> dict:
         all_tracks.update(seq)
 
     if len(all_tracks) < cfg.min_vocab:
-        logger.info(
-            f"Session embeddings: only {len(all_tracks)} unique tracks "
-            f"(< {cfg.min_vocab}), skipping training."
-        )
+        logger.info(f"Session embeddings: only {len(all_tracks)} unique tracks (< {cfg.min_vocab}), skipping training.")
         return {
             "trained": False,
             "sessions": len(sequences),
@@ -148,10 +143,7 @@ async def train() -> dict:
         _model = model
         _track_ids = list(model.wv.index_to_key)
 
-    logger.info(
-        f"Session embeddings trained: {len(sequences)} sessions, "
-        f"{vocab_size} tracks in vocabulary."
-    )
+    logger.info(f"Session embeddings trained: {len(sequences)} sessions, {vocab_size} tracks in vocabulary.")
 
     return {
         "trained": True,

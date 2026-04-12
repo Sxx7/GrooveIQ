@@ -68,14 +68,18 @@ def _cache_set(key: str, value: dict[str, Any]) -> None:
 # Library lookups
 # ---------------------------------------------------------------------------
 
+
 async def _build_track_lookup(
     session: AsyncSession,
 ) -> dict[tuple[str, str], str]:
     """Build (normalized_artist, normalized_title) -> track_id lookup."""
-    rows = (await session.execute(
-        select(TrackFeatures.track_id, TrackFeatures.artist, TrackFeatures.title)
-        .where(TrackFeatures.artist.isnot(None), TrackFeatures.title.isnot(None))
-    )).all()
+    rows = (
+        await session.execute(
+            select(TrackFeatures.track_id, TrackFeatures.artist, TrackFeatures.title).where(
+                TrackFeatures.artist.isnot(None), TrackFeatures.title.isnot(None)
+            )
+        )
+    ).all()
     lookup: dict[tuple[str, str], str] = {}
     for track_id, artist, title in rows:
         key = (_normalize(artist), _normalize(title))
@@ -88,10 +92,11 @@ async def _build_artist_lookup(
     session: AsyncSession,
 ) -> dict[str, list[str]]:
     """Build normalized_artist -> [track_id, ...] lookup."""
-    rows = (await session.execute(
-        select(TrackFeatures.track_id, TrackFeatures.artist)
-        .where(TrackFeatures.artist.isnot(None))
-    )).all()
+    rows = (
+        await session.execute(
+            select(TrackFeatures.track_id, TrackFeatures.artist).where(TrackFeatures.artist.isnot(None))
+        )
+    ).all()
     lookup: dict[str, list[str]] = {}
     for track_id, artist in rows:
         norm = _normalize(artist)
@@ -102,6 +107,7 @@ async def _build_artist_lookup(
 # ---------------------------------------------------------------------------
 # Image extraction
 # ---------------------------------------------------------------------------
+
 
 def _pick_image_url(images: list) -> str | None:
     """Pick the best image URL from Last.fm's image array.
@@ -126,6 +132,7 @@ def _pick_image_url(images: list) -> str | None:
 # ---------------------------------------------------------------------------
 # Main fetch
 # ---------------------------------------------------------------------------
+
 
 async def get_artist_meta(name: str) -> dict[str, Any] | None:
     """
@@ -152,7 +159,9 @@ async def get_artist_meta(name: str) -> dict[str, Any] | None:
         tags_task = client.get_artist_tags(name)
         top_tracks_task = client.get_artist_top_tracks(name, limit=10)
         info, tags, top_tracks = await asyncio.gather(
-            info_task, tags_task, top_tracks_task,
+            info_task,
+            tags_task,
+            top_tracks_task,
             return_exceptions=True,
         )
     except Exception as exc:
@@ -201,11 +210,13 @@ async def get_artist_meta(name: str) -> dict[str, Any] | None:
         sa_name = sa.get("name", "")
         if not sa_name:
             continue
-        similar.append({
-            "name": sa_name,
-            "match": float(sa.get("match", 0)) if sa.get("match") else None,
-            "in_library": _normalize(sa_name) in artist_lookup,
-        })
+        similar.append(
+            {
+                "name": sa_name,
+                "match": float(sa.get("match", 0)) if sa.get("match") else None,
+                "in_library": _normalize(sa_name) in artist_lookup,
+            }
+        )
 
     # Parse top tracks with library matching.
     top_tracks_out = []
@@ -215,12 +226,14 @@ async def get_artist_meta(name: str) -> dict[str, Any] | None:
             continue
         playcount = int(t.get("playcount", 0))
         matched_id = track_lookup.get((_normalize(info.get("name", name)), _normalize(title)))
-        top_tracks_out.append({
-            "title": title,
-            "playcount": playcount,
-            "in_library": matched_id is not None,
-            "matched_track_id": matched_id,
-        })
+        top_tracks_out.append(
+            {
+                "title": title,
+                "playcount": playcount,
+                "in_library": matched_id is not None,
+                "matched_track_id": matched_id,
+            }
+        )
 
     # Parse top albums from artist.getInfo (if present).
     # Note: artist.getInfo doesn't include top albums directly.
@@ -253,9 +266,11 @@ async def get_artist_meta(name: str) -> dict[str, Any] | None:
     if image_url is None:
         try:
             from app.services.cover_art import resolve_artist_image
+
             async with AsyncSessionLocal() as cover_session:
                 image_url = await resolve_artist_image(
-                    cover_session, info.get("name", name),
+                    cover_session,
+                    info.get("name", name),
                 )
                 await cover_session.commit()
         except Exception as exc:

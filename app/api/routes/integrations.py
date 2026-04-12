@@ -1,4 +1,5 @@
 """GrooveIQ – Integration health / connectivity status."""
+
 from __future__ import annotations
 
 import asyncio
@@ -44,10 +45,7 @@ async def _check_spotdl() -> dict[str, Any]:
     if result["ok"]:
         data = result["data"]
         entry["version"] = data.get("version")
-        entry["details"] = {
-            k: data[k] for k in ("output_dir", "output_format", "active_tasks")
-            if k in data
-        }
+        entry["details"] = {k: data[k] for k in ("output_dir", "output_format", "active_tasks") if k in data}
     else:
         entry["error"] = result["error"]
     return entry
@@ -70,10 +68,7 @@ async def _check_lidarr() -> dict[str, Any]:
     if result["ok"]:
         data = result["data"]
         entry["version"] = data.get("version")
-        entry["details"] = {
-            k: data[k] for k in ("startupPath", "appData", "osName", "runtimeName")
-            if k in data
-        }
+        entry["details"] = {k: data[k] for k in ("startupPath", "appData", "osName", "runtimeName") if k in data}
     else:
         entry["error"] = result["error"]
     return entry
@@ -93,10 +88,7 @@ async def _check_acousticbrainz() -> dict[str, Any]:
     if result["ok"]:
         data = result["data"]
         entry["status"] = data.get("status")  # "ready" or "ingesting"
-        entry["details"] = {
-            k: data[k] for k in ("track_count", "ingestion_progress")
-            if k in data
-        }
+        entry["details"] = {k: data[k] for k in ("track_count", "ingestion_progress") if k in data}
     else:
         entry["error"] = result["error"]
     return entry
@@ -108,8 +100,7 @@ async def _check_lastfm() -> dict[str, Any]:
         return {"configured": False}
     # Light probe: fetch a known artist to verify the API key works
     result = await _probe(
-        f"https://ws.audioscrobbler.com/2.0/?method=artist.getinfo"
-        f"&artist=Radiohead&api_key={api_key}&format=json"
+        f"https://ws.audioscrobbler.com/2.0/?method=artist.getinfo&artist=Radiohead&api_key={api_key}&format=json"
     )
     entry: dict[str, Any] = {
         "configured": True,
@@ -140,11 +131,13 @@ async def _check_media_server() -> dict[str, Any]:
         # Subsonic ping endpoint
         import hashlib
         import secrets
+
         password = settings.MEDIA_SERVER_PASSWORD
         # Decrypt if encrypted
         if password and settings.CREDENTIAL_ENCRYPTION_KEY:
             try:
                 from cryptography.fernet import Fernet
+
                 f = Fernet(settings.CREDENTIAL_ENCRYPTION_KEY.encode())
                 password = f.decrypt(password.encode()).decode()
             except Exception:
@@ -156,10 +149,7 @@ async def _check_media_server() -> dict[str, Any]:
             f"?u={settings.MEDIA_SERVER_USER}&t={token}&s={salt}"
             f"&v=1.16.1&c=grooveiq&f=json"
         )
-        entry["connected"] = (
-            result["ok"]
-            and result.get("data", {}).get("subsonic-response", {}).get("status") == "ok"
-        )
+        entry["connected"] = result["ok"] and result.get("data", {}).get("subsonic-response", {}).get("status") == "ok"
         if not result["ok"]:
             entry["error"] = result["error"]
         elif not entry["connected"]:
@@ -171,6 +161,7 @@ async def _check_media_server() -> dict[str, Any]:
         if token and settings.CREDENTIAL_ENCRYPTION_KEY:
             try:
                 from cryptography.fernet import Fernet
+
                 f = Fernet(settings.CREDENTIAL_ENCRYPTION_KEY.encode())
                 token = f.decrypt(token.encode()).decode()
             except Exception:

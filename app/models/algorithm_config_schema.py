@@ -20,45 +20,70 @@ from pydantic import BaseModel, Field
 # Per-group schemas
 # ---------------------------------------------------------------------------
 
+
 class TrackScoringConfig(BaseModel):
     """Weights and thresholds for computing satisfaction_score."""
 
-    w_full_listen: float = Field(1.0, ge=-10, le=10, description="Weight for a full listen (completion >= 0.8 or dwell >= 30s)")
+    w_full_listen: float = Field(
+        1.0, ge=-10, le=10, description="Weight for a full listen (completion >= 0.8 or dwell >= 30s)"
+    )
     w_mid_listen: float = Field(0.2, ge=-10, le=10, description="Weight for a mid-length listen (2s-30s dwell)")
     w_early_skip: float = Field(-0.5, ge=-10, le=10, description="Default weight for an early skip (<2s dwell)")
-    w_early_skip_playlist: float = Field(-0.75, ge=-10, le=10, description="Early skip weight in playlist/album context (strong rejection)")
-    w_early_skip_radio: float = Field(-0.25, ge=-10, le=10, description="Early skip weight in radio/search context (expected behaviour)")
+    w_early_skip_playlist: float = Field(
+        -0.75, ge=-10, le=10, description="Early skip weight in playlist/album context (strong rejection)"
+    )
+    w_early_skip_radio: float = Field(
+        -0.25, ge=-10, le=10, description="Early skip weight in radio/search context (expected behaviour)"
+    )
     w_like: float = Field(2.0, ge=-10, le=10, description="Weight for an explicit like")
     w_dislike: float = Field(-2.0, ge=-10, le=10, description="Weight for an explicit dislike")
     w_repeat: float = Field(1.5, ge=-10, le=10, description="Weight for a repeat action")
     w_playlist_add: float = Field(1.5, ge=-10, le=10, description="Weight for adding track to a playlist")
     w_queue_add: float = Field(0.5, ge=-10, le=10, description="Weight for adding track to the queue")
     w_heavy_seek: float = Field(-0.3, ge=-10, le=10, description="Penalty per excess seek above threshold")
-    early_skip_ms: int = Field(2000, ge=100, le=30000, description="Milliseconds threshold for early skip classification")
-    mid_skip_ms: int = Field(30000, ge=1000, le=120000, description="Milliseconds threshold for mid-skip classification")
-    heavy_seek_threshold: int = Field(2, ge=1, le=20, description="Seeks per play above which heavy-seek penalty applies")
+    early_skip_ms: int = Field(
+        2000, ge=100, le=30000, description="Milliseconds threshold for early skip classification"
+    )
+    mid_skip_ms: int = Field(
+        30000, ge=1000, le=120000, description="Milliseconds threshold for mid-skip classification"
+    )
+    heavy_seek_threshold: int = Field(
+        2, ge=1, le=20, description="Seeks per play above which heavy-seek penalty applies"
+    )
 
 
 class RerankerConfig(BaseModel):
     """Post-ranking diversity and business rule parameters."""
 
-    artist_diversity_top_n: int = Field(10, ge=1, le=100, description="Number of top positions to enforce artist diversity in")
+    artist_diversity_top_n: int = Field(
+        10, ge=1, le=100, description="Number of top positions to enforce artist diversity in"
+    )
     artist_max_per_top: int = Field(2, ge=1, le=20, description="Max tracks from the same artist in the top N")
     repeat_window_hours: float = Field(2.0, ge=0, le=168, description="Hours to suppress recently played tracks")
     freshness_boost: float = Field(0.10, ge=0, le=1, description="Score multiplier boost for never-played tracks")
     skip_threshold: int = Field(2, ge=1, le=50, description="Early skip count above which skip suppression activates")
-    skip_demote_factor: float = Field(0.5, ge=0, le=1, description="Score multiplier for skip-suppressed tracks (lower = stronger demotion)")
-    exploration_fraction: float = Field(0.15, ge=0, le=0.5, description="Fraction of slots reserved for under-explored tracks")
-    exploration_low_plays: int = Field(3, ge=1, le=50, description="Play count below which a track is considered under-explored")
+    skip_demote_factor: float = Field(
+        0.5, ge=0, le=1, description="Score multiplier for skip-suppressed tracks (lower = stronger demotion)"
+    )
+    exploration_fraction: float = Field(
+        0.15, ge=0, le=0.5, description="Fraction of slots reserved for under-explored tracks"
+    )
+    exploration_low_plays: int = Field(
+        3, ge=1, le=50, description="Play count below which a track is considered under-explored"
+    )
     exploration_noise_scale: float = Field(0.25, ge=0, le=2, description="Noise magnitude for exploration scoring")
-    min_duration_car: float = Field(90.0, ge=0, le=600, description="Minimum track duration (seconds) in car/speaker mode")
+    min_duration_car: float = Field(
+        90.0, ge=0, le=600, description="Minimum track duration (seconds) in car/speaker mode"
+    )
 
 
 class CandidateSourceConfig(BaseModel):
     """Score multipliers for each candidate retrieval source."""
 
     content: float = Field(1.0, ge=0, le=5, description="FAISS content-based similarity (from seed track)")
-    content_profile: float = Field(1.0, ge=0, le=5, description="FAISS content-based similarity (from user taste centroid)")
+    content_profile: float = Field(
+        1.0, ge=0, le=5, description="FAISS content-based similarity (from user taste centroid)"
+    )
     cf: float = Field(1.0, ge=0, le=5, description="Collaborative filtering")
     session_skipgram: float = Field(0.8, ge=0, le=5, description="Session skip-gram behavioural co-occurrence")
     lastfm_similar: float = Field(0.7, ge=0, le=5, description="Last.fm similar tracks (external CF)")
@@ -70,12 +95,22 @@ class CandidateSourceConfig(BaseModel):
 class TasteProfileConfig(BaseModel):
     """Taste profile builder parameters."""
 
-    timescale_short_days: float = Field(7.0, ge=1, le=90, description="Short-term taste window (days) — captures current mood")
-    timescale_long_days: float = Field(365.0, ge=30, le=3650, description="Long-term taste window (days) — captures core identity")
+    timescale_short_days: float = Field(
+        7.0, ge=1, le=90, description="Short-term taste window (days) — captures current mood"
+    )
+    timescale_long_days: float = Field(
+        365.0, ge=30, le=3650, description="Long-term taste window (days) — captures core identity"
+    )
     top_tracks_limit: int = Field(50, ge=10, le=500, description="Number of top tracks to include in taste profile")
-    lastfm_decay_interactions: float = Field(150.0, ge=10, le=1000, description="Interaction count at which Last.fm influence reaches ~37% (e^-1)")
-    onboarding_decay_interactions: float = Field(80.0, ge=10, le=500, description="Interaction count at which onboarding influence reaches ~37%")
-    enrichment_min_weight: float = Field(0.05, ge=0.001, le=0.5, description="Minimum weight below which Last.fm/onboarding enrichment is skipped")
+    lastfm_decay_interactions: float = Field(
+        150.0, ge=10, le=1000, description="Interaction count at which Last.fm influence reaches ~37% (e^-1)"
+    )
+    onboarding_decay_interactions: float = Field(
+        80.0, ge=10, le=500, description="Interaction count at which onboarding influence reaches ~37%"
+    )
+    enrichment_min_weight: float = Field(
+        0.05, ge=0.001, le=0.5, description="Minimum weight below which Last.fm/onboarding enrichment is skipped"
+    )
 
 
 class RankerConfig(BaseModel):
@@ -97,14 +132,18 @@ class RankerConfig(BaseModel):
     weight_disliked: float = Field(3.0, ge=1, le=10, description="Sample weight for disliked tracks (hard negatives)")
     weight_heavy_skip: float = Field(2.0, ge=1, le=10, description="Sample weight for heavily skipped tracks")
     weight_strong_positive: float = Field(2.0, ge=1, le=10, description="Sample weight for liked/repeated tracks")
-    weight_impression_negative: float = Field(1.5, ge=1, le=10, description="Sample weight for shown-but-not-played tracks")
+    weight_impression_negative: float = Field(
+        1.5, ge=1, le=10, description="Sample weight for shown-but-not-played tracks"
+    )
 
 
 class RadioConfig(BaseModel):
     """Radio session parameters."""
 
     seed_weight: float = Field(0.50, ge=0, le=1, description="How much the seed anchor influences the drift embedding")
-    feedback_weight: float = Field(0.30, ge=0, le=1, description="How much in-session feedback shifts the drift embedding")
+    feedback_weight: float = Field(
+        0.30, ge=0, le=1, description="How much in-session feedback shifts the drift embedding"
+    )
     profile_weight: float = Field(0.20, ge=0, le=1, description="How much the user's global taste profile contributes")
     source_drift: float = Field(1.2, ge=0, le=5, description="Score multiplier for drift-FAISS candidates")
     source_seed: float = Field(1.0, ge=0, le=5, description="Score multiplier for seed-FAISS candidates")
@@ -117,7 +156,9 @@ class RadioConfig(BaseModel):
     feedback_dislike_weight: float = Field(1.0, ge=0, le=5, description="Repulsion weight when user dislikes a track")
     feedback_skip_weight: float = Field(0.5, ge=0, le=5, description="Mild repulsion weight when user skips a track")
     feedback_decay: float = Field(0.9, ge=0.1, le=1, description="Exponential decay for older feedback signals")
-    session_ttl_hours: float = Field(4.0, ge=0.5, le=24, description="Hours of inactivity before a radio session expires")
+    session_ttl_hours: float = Field(
+        4.0, ge=0.5, le=24, description="Hours of inactivity before a radio session expires"
+    )
     max_sessions: int = Field(50, ge=1, le=500, description="Maximum concurrent radio sessions")
 
 
@@ -135,6 +176,7 @@ class SessionEmbeddingsConfig(BaseModel):
 # ---------------------------------------------------------------------------
 # Top-level config
 # ---------------------------------------------------------------------------
+
 
 class AlgorithmConfigData(BaseModel):
     """
@@ -157,8 +199,10 @@ class AlgorithmConfigData(BaseModel):
 # API request/response models
 # ---------------------------------------------------------------------------
 
+
 class AlgorithmConfigResponse(BaseModel):
     """Response when reading a config."""
+
     id: int
     version: int
     name: str | None = None
@@ -170,12 +214,14 @@ class AlgorithmConfigResponse(BaseModel):
 
 class AlgorithmConfigUpdate(BaseModel):
     """Request body for updating config. Partial updates supported."""
+
     name: str | None = None
     config: AlgorithmConfigData
 
 
 class AlgorithmConfigImport(BaseModel):
     """Request body for importing a config (e.g. shared by another user)."""
+
     name: str | None = None
     config: dict[str, Any]
 

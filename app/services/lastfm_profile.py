@@ -40,12 +40,18 @@ async def refresh_lastfm_profiles() -> dict:
     cutoff = int(time.time()) - settings.LASTFM_REFRESH_HOURS * 3600
 
     async with AsyncSessionLocal() as session:
-        users = (await session.execute(
-            select(User).where(
-                User.lastfm_username.isnot(None),
-                User.is_active.is_(True),
+        users = (
+            (
+                await session.execute(
+                    select(User).where(
+                        User.lastfm_username.isnot(None),
+                        User.is_active.is_(True),
+                    )
+                )
             )
-        )).scalars().all()
+            .scalars()
+            .all()
+        )
 
         client = get_lastfm_client()
 
@@ -61,13 +67,15 @@ async def refresh_lastfm_profiles() -> dict:
             except LastFmError as e:
                 logger.warning(
                     "Last.fm profile fetch failed for %s: %s",
-                    user.lastfm_username, e,
+                    user.lastfm_username,
+                    e,
                 )
                 errors += 1
             except Exception as e:
                 logger.error(
                     "Unexpected error fetching Last.fm profile for %s: %s",
-                    user.lastfm_username, e,
+                    user.lastfm_username,
+                    e,
                 )
                 errors += 1
 
@@ -101,14 +109,18 @@ async def _fetch_user_profile(client, username: str) -> dict:
     profile["top_artists"] = {}
     for period in _PERIODS:
         profile["top_artists"][period] = await client.get_top_artists(
-            username, period=period, limit=50,
+            username,
+            period=period,
+            limit=50,
         )
 
     # Top tracks by period
     profile["top_tracks"] = {}
     for period in _PERIODS:
         profile["top_tracks"][period] = await client.get_top_tracks(
-            username, period=period, limit=50,
+            username,
+            period=period,
+            limit=50,
         )
 
     # Recent tracks
@@ -135,9 +147,7 @@ async def _fetch_user_profile(client, username: str) -> dict:
             pass  # non-critical
 
     # Sort genres by aggregate count
-    profile["genres"] = dict(
-        sorted(genre_counts.items(), key=lambda x: x[1], reverse=True)[:30]
-    )
+    profile["genres"] = dict(sorted(genre_counts.items(), key=lambda x: x[1], reverse=True)[:30])
 
     profile["fetched_at"] = int(time.time())
     return profile

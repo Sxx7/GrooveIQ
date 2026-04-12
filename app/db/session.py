@@ -23,9 +23,7 @@ logger = logging.getLogger(__name__)
 # heavy scan-completion operations (log prune, media-server sync, FAISS).
 _SQLITE_CONNECT_ARGS = {"check_same_thread": False, "timeout": 30}
 
-_connect_args = (
-    _SQLITE_CONNECT_ARGS if "sqlite" in settings.DATABASE_URL else {}
-)
+_connect_args = _SQLITE_CONNECT_ARGS if "sqlite" in settings.DATABASE_URL else {}
 
 engine = create_async_engine(
     settings.DATABASE_URL,
@@ -64,9 +62,7 @@ async def init_db() -> None:
 
 
 _SAFE_IDENTIFIER = re.compile(r"^[a-z_][a-z0-9_]*$", re.IGNORECASE)
-_SAFE_COL_TYPE = re.compile(
-    r"^(VARCHAR\(\d+\)|INTEGER( DEFAULT \d+)?|TEXT|REAL|BLOB)$", re.IGNORECASE
-)
+_SAFE_COL_TYPE = re.compile(r"^(VARCHAR\(\d+\)|INTEGER( DEFAULT \d+)?|TEXT|REAL|BLOB)$", re.IGNORECASE)
 
 
 async def _apply_column_migrations(conn) -> None:
@@ -105,9 +101,7 @@ async def _apply_column_migrations(conn) -> None:
         if not _SAFE_COL_TYPE.match(col_type):
             raise ValueError(f"Unsafe column type in migration: {col_type!r}")
         try:
-            await conn.exec_driver_sql(
-                f"ALTER TABLE {table} ADD COLUMN {column} {col_type}"
-            )
+            await conn.exec_driver_sql(f"ALTER TABLE {table} ADD COLUMN {column} {col_type}")
             logger.info(f"Migration: added {table}.{column}")
         except Exception:
             pass  # Column already exists

@@ -50,6 +50,7 @@ PIPELINE_STEPS = [
 
 # ── Data classes ─────────────────────────────────────────────────────
 
+
 @dataclass
 class StepResult:
     name: str
@@ -91,11 +92,7 @@ class PipelineRun:
             "duration_ms": int((self.ended_at - self.started_at) * 1000) if self.ended_at else None,
             "trigger": self.trigger,
             "config_version": self.config_version,
-            "steps": [
-                self.steps[name].to_dict()
-                for name in PIPELINE_STEPS
-                if name in self.steps
-            ],
+            "steps": [self.steps[name].to_dict() for name in PIPELINE_STEPS if name in self.steps],
         }
 
 
@@ -142,9 +139,7 @@ def subscribe() -> asyncio.Queue:
     subscribers has been reached (prevents resource exhaustion).
     """
     if len(_sse_queues) >= MAX_SSE_SUBSCRIBERS:
-        raise RuntimeError(
-            f"Too many SSE subscribers (max {MAX_SSE_SUBSCRIBERS})"
-        )
+        raise RuntimeError(f"Too many SSE subscribers (max {MAX_SSE_SUBSCRIBERS})")
     q: asyncio.Queue = asyncio.Queue(maxsize=200)
     _sse_queues.append(q)
     return q
@@ -158,9 +153,11 @@ def unsubscribe(q: asyncio.Queue) -> None:
 
 # ── Pipeline lifecycle ───────────────────────────────────────────────
 
+
 def start_run(trigger: str = "scheduled") -> PipelineRun:
     """Begin tracking a new pipeline run."""
     from app.services.algorithm_config import get_config_version
+
     global _current_run
     run = PipelineRun(
         run_id=uuid.uuid4().hex[:12],
@@ -179,12 +176,14 @@ def start_run(trigger: str = "scheduled") -> PipelineRun:
     while len(_runs) > MAX_HISTORY:
         _runs.pop(0)
 
-    _broadcast({
-        "event": "pipeline_start",
-        "run_id": run.run_id,
-        "trigger": trigger,
-        "timestamp": run.started_at,
-    })
+    _broadcast(
+        {
+            "event": "pipeline_start",
+            "run_id": run.run_id,
+            "trigger": trigger,
+            "timestamp": run.started_at,
+        }
+    )
     return run
 
 
@@ -192,18 +191,18 @@ def finish_run(run: PipelineRun) -> None:
     """Mark a pipeline run as finished."""
     global _current_run
     run.ended_at = time.time()
-    has_failures = any(
-        s.status == StepStatus.FAILED for s in run.steps.values()
-    )
+    has_failures = any(s.status == StepStatus.FAILED for s in run.steps.values())
     run.status = RunStatus.FAILED if has_failures else RunStatus.COMPLETED
 
-    _broadcast({
-        "event": "pipeline_end",
-        "run_id": run.run_id,
-        "status": run.status.value,
-        "duration_ms": int((run.ended_at - run.started_at) * 1000),
-        "timestamp": run.ended_at,
-    })
+    _broadcast(
+        {
+            "event": "pipeline_end",
+            "run_id": run.run_id,
+            "status": run.status.value,
+            "duration_ms": int((run.ended_at - run.started_at) * 1000),
+            "timestamp": run.ended_at,
+        }
+    )
 
     if _current_run is run:
         _current_run = None
@@ -215,12 +214,14 @@ def step_start(run: PipelineRun, step_name: str) -> None:
     step.status = StepStatus.RUNNING
     step.started_at = time.time()
 
-    _broadcast({
-        "event": "step_start",
-        "run_id": run.run_id,
-        "step": step_name,
-        "timestamp": step.started_at,
-    })
+    _broadcast(
+        {
+            "event": "step_start",
+            "run_id": run.run_id,
+            "step": step_name,
+            "timestamp": step.started_at,
+        }
+    )
 
 
 def step_complete(
@@ -236,14 +237,16 @@ def step_complete(
     if metrics:
         step.metrics = metrics
 
-    _broadcast({
-        "event": "step_complete",
-        "run_id": run.run_id,
-        "step": step_name,
-        "duration_ms": step.duration_ms,
-        "metrics": step.metrics,
-        "timestamp": step.ended_at,
-    })
+    _broadcast(
+        {
+            "event": "step_complete",
+            "run_id": run.run_id,
+            "step": step_name,
+            "duration_ms": step.duration_ms,
+            "metrics": step.metrics,
+            "timestamp": step.ended_at,
+        }
+    )
 
 
 def step_failed(
@@ -260,17 +263,20 @@ def step_failed(
     safe_error = _redact_error(error)
     step.error = safe_error
 
-    _broadcast({
-        "event": "step_failed",
-        "run_id": run.run_id,
-        "step": step_name,
-        "duration_ms": step.duration_ms,
-        "error": safe_error,
-        "timestamp": step.ended_at,
-    })
+    _broadcast(
+        {
+            "event": "step_failed",
+            "run_id": run.run_id,
+            "step": step_name,
+            "duration_ms": step.duration_ms,
+            "error": safe_error,
+            "timestamp": step.ended_at,
+        }
+    )
 
 
 # ── Queries ──────────────────────────────────────────────────────────
+
 
 def get_current_run() -> dict[str, Any] | None:
     """Return the currently running pipeline, if any."""

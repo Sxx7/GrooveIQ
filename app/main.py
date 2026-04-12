@@ -50,6 +50,7 @@ async def lifespan(app: FastAPI):
     # Load algorithm config from DB (seeds defaults on first run).
     try:
         from app.services.algorithm_config import load_active_config
+
         await load_active_config()
     except Exception as e:
         logger.warning(f"Algorithm config load failed on startup: {e}")
@@ -57,6 +58,7 @@ async def lifespan(app: FastAPI):
     # Build FAISS index from existing embeddings (non-blocking if empty).
     try:
         from app.services.faiss_index import build_index
+
         indexed = await build_index()
         logger.info(f"FAISS index ready: {indexed} tracks.")
     except Exception as e:
@@ -70,6 +72,7 @@ async def lifespan(app: FastAPI):
     # Shut down analysis worker pool (long-lived subprocesses)
     try:
         from app.services.analysis_worker import shutdown_worker_pool
+
         await shutdown_worker_pool()
     except Exception as e:
         logger.warning(f"Worker pool shutdown error: {e}")
@@ -123,9 +126,7 @@ async def add_security_headers(request: Request, call_next):
         response.headers["Cache-Control"] = "no-store, private"
     # HSTS: instruct browsers to only use HTTPS.  The reverse proxy should
     # handle TLS termination, but this header ensures browsers remember.
-    response.headers["Strict-Transport-Security"] = (
-        "max-age=63072000; includeSubDomains"
-    )
+    response.headers["Strict-Transport-Security"] = "max-age=63072000; includeSubDomains"
     # CSP: dashboard (index.html) uses only external /static/js/app.js —
     # no inline scripts needed.  style-src keeps 'unsafe-inline' because
     # the UI sets inline style attributes via JS.
@@ -148,8 +149,7 @@ async def log_slow_requests(request: Request, call_next):
     elapsed = time.monotonic() - t0
     if elapsed > 2.0:
         logger.warning(
-            f"Slow request: {request.method} {request.url.path} "
-            f"took {elapsed:.1f}s (status={response.status_code})"
+            f"Slow request: {request.method} {request.url.path} took {elapsed:.1f}s (status={response.status_code})"
         )
     return response
 

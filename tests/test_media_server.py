@@ -56,9 +56,7 @@ async def client():
     async with AsyncClient(
         transport=ASGITransport(app=app),
         base_url="http://test",
-        headers={"Authorization": f"Bearer {settings.api_keys_list[0]}"}
-        if settings.api_keys_list
-        else {},
+        headers={"Authorization": f"Bearer {settings.api_keys_list[0]}"} if settings.api_keys_list else {},
     ) as c:
         yield c
 
@@ -67,8 +65,8 @@ async def client():
 # Path normalisation
 # ---------------------------------------------------------------------------
 
-class TestPathNormalisation:
 
+class TestPathNormalisation:
     def test_relative_from_root(self):
         assert _normalise_path("/music/Artist/Album/Song.flac", "/music") == "artist/album/song.flac"
 
@@ -98,41 +96,62 @@ class TestPathNormalisation:
 # Sync logic
 # ---------------------------------------------------------------------------
 
-class TestSyncTrackIds:
 
+class TestSyncTrackIds:
     async def _seed_tracks(self):
         """Create GrooveIQ tracks with hash-based IDs."""
         async with _TestSession() as session:
-            session.add(TrackFeatures(
-                track_id="hash_abc123",
-                file_path="/music/Artist One/Album A/Track 1.flac",
-                bpm=120.0, energy=0.8,
-            ))
-            session.add(TrackFeatures(
-                track_id="hash_def456",
-                file_path="/music/Artist Two/Album B/Track 2.mp3",
-                bpm=90.0, energy=0.5,
-            ))
+            session.add(
+                TrackFeatures(
+                    track_id="hash_abc123",
+                    file_path="/music/Artist One/Album A/Track 1.flac",
+                    bpm=120.0,
+                    energy=0.8,
+                )
+            )
+            session.add(
+                TrackFeatures(
+                    track_id="hash_def456",
+                    file_path="/music/Artist Two/Album B/Track 2.mp3",
+                    bpm=90.0,
+                    energy=0.5,
+                )
+            )
             # A track with an event and interaction
-            session.add(TrackFeatures(
-                track_id="hash_ghi789",
-                file_path="/music/Artist One/Album A/Track 3.flac",
-                bpm=140.0, energy=0.9,
-            ))
+            session.add(
+                TrackFeatures(
+                    track_id="hash_ghi789",
+                    file_path="/music/Artist One/Album A/Track 3.flac",
+                    bpm=140.0,
+                    energy=0.9,
+                )
+            )
             session.add(User(user_id="testuser"))
-            session.add(ListenEvent(
-                user_id="testuser", track_id="hash_ghi789",
-                event_type="play_end", value=0.95,
-                timestamp=int(time.time()),
-            ))
-            session.add(TrackInteraction(
-                user_id="testuser", track_id="hash_ghi789",
-                play_count=5, skip_count=0, like_count=1,
-                dislike_count=0, repeat_count=0,
-                playlist_add_count=0, queue_add_count=0,
-                satisfaction_score=0.9,
-                last_event_id=1, updated_at=int(time.time()),
-            ))
+            session.add(
+                ListenEvent(
+                    user_id="testuser",
+                    track_id="hash_ghi789",
+                    event_type="play_end",
+                    value=0.95,
+                    timestamp=int(time.time()),
+                )
+            )
+            session.add(
+                TrackInteraction(
+                    user_id="testuser",
+                    track_id="hash_ghi789",
+                    play_count=5,
+                    skip_count=0,
+                    like_count=1,
+                    dislike_count=0,
+                    repeat_count=0,
+                    playlist_add_count=0,
+                    queue_add_count=0,
+                    satisfaction_score=0.9,
+                    last_event_id=1,
+                    updated_at=int(time.time()),
+                )
+            )
             await session.commit()
 
     @patch("app.services.media_server.settings")
@@ -177,10 +196,11 @@ class TestSyncTrackIds:
 
         # Verify the track_ids were updated.
         from sqlalchemy import select
+
         async with _TestSession() as session:
-            t1 = (await session.execute(
-                select(TrackFeatures).where(TrackFeatures.track_id == "nav-uuid-001")
-            )).scalar_one_or_none()
+            t1 = (
+                await session.execute(select(TrackFeatures).where(TrackFeatures.track_id == "nav-uuid-001"))
+            ).scalar_one_or_none()
             assert t1 is not None
             assert t1.title == "Track One"
             assert t1.artist == "Artist One"
@@ -220,23 +240,28 @@ class TestSyncTrackIds:
 
         # Verify cascade.
         from sqlalchemy import select
+
         async with _TestSession() as session:
             # Event should now reference the new track_id.
-            events = (await session.execute(
-                select(ListenEvent).where(ListenEvent.track_id == "nav-uuid-003")
-            )).scalars().all()
+            events = (
+                (await session.execute(select(ListenEvent).where(ListenEvent.track_id == "nav-uuid-003")))
+                .scalars()
+                .all()
+            )
             assert len(events) == 1
 
             # Old track_id should have no events.
-            old_events = (await session.execute(
-                select(ListenEvent).where(ListenEvent.track_id == "hash_ghi789")
-            )).scalars().all()
+            old_events = (
+                (await session.execute(select(ListenEvent).where(ListenEvent.track_id == "hash_ghi789")))
+                .scalars()
+                .all()
+            )
             assert len(old_events) == 0
 
             # Interaction should be updated.
-            interaction = (await session.execute(
-                select(TrackInteraction).where(TrackInteraction.track_id == "nav-uuid-003")
-            )).scalar_one_or_none()
+            interaction = (
+                await session.execute(select(TrackInteraction).where(TrackInteraction.track_id == "nav-uuid-003"))
+            ).scalar_one_or_none()
             assert interaction is not None
             assert interaction.play_count == 5
 
@@ -320,11 +345,13 @@ class TestSyncTrackIds:
 
         # Create a track that already has the correct track_id.
         async with _TestSession() as session:
-            session.add(TrackFeatures(
-                track_id="nav-uuid-001",
-                file_path="/music/Artist/Album/Song.flac",
-                bpm=120.0,
-            ))
+            session.add(
+                TrackFeatures(
+                    track_id="nav-uuid-001",
+                    file_path="/music/Artist/Album/Song.flac",
+                    bpm=120.0,
+                )
+            )
             await session.commit()
 
         server_tracks = [
@@ -341,14 +368,15 @@ class TestSyncTrackIds:
             async with _TestSession() as session:
                 result = await sync_track_ids(session)
 
-        assert result.tracks_updated == 0   # ID didn't change.
+        assert result.tracks_updated == 0  # ID didn't change.
         assert result.tracks_metadata == 1  # But metadata was updated.
 
         from sqlalchemy import select
+
         async with _TestSession() as session:
-            t = (await session.execute(
-                select(TrackFeatures).where(TrackFeatures.track_id == "nav-uuid-001")
-            )).scalar_one()
+            t = (
+                await session.execute(select(TrackFeatures).where(TrackFeatures.track_id == "nav-uuid-001"))
+            ).scalar_one()
             assert t.title == "Updated Title"
             assert t.artist == "Updated Artist"
 
@@ -357,8 +385,8 @@ class TestSyncTrackIds:
 # Sync API endpoint
 # ---------------------------------------------------------------------------
 
-class TestSyncEndpoint:
 
+class TestSyncEndpoint:
     async def test_sync_not_configured(self, client: AsyncClient):
         """Returns 400 if no media server is configured."""
         resp = await client.post("/v1/library/sync")

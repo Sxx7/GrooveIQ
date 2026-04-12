@@ -35,6 +35,7 @@ _bearer = HTTPBearer(auto_error=False)
 # Key hashing
 # ---------------------------------------------------------------------------
 
+
 def hash_key(raw_key: str) -> str:
     """Return the SHA-256 hex digest of a raw API key."""
     return hashlib.sha256(raw_key.encode()).hexdigest()
@@ -43,21 +44,19 @@ def hash_key(raw_key: str) -> str:
 # Pre-compute at import time — settings are immutable after startup.
 # A frozen tuple avoids re-hashing on every request and keeps the
 # collection size constant (no timing side-channel on key count).
-_HASHED_CONFIGURED_KEYS: tuple[str, ...] = tuple(
-    hash_key(k) for k in settings.api_keys_list
-)
+_HASHED_CONFIGURED_KEYS: tuple[str, ...] = tuple(hash_key(k) for k in settings.api_keys_list)
 
 
 # ---------------------------------------------------------------------------
 # Rate limiter interface + implementations
 # ---------------------------------------------------------------------------
 
+
 class RateLimiter(ABC):
     """Abstract rate limiter interface."""
 
     @abstractmethod
-    def is_allowed(self, key: str, limit: int, window_seconds: int = 60) -> bool:
-        ...
+    def is_allowed(self, key: str, limit: int, window_seconds: int = 60) -> bool: ...
 
     def is_batch_allowed(self, key: str, count: int, limit: int, window_seconds: int = 60) -> bool:
         """Check whether *count* new entries fit within the rate limit window.
@@ -117,14 +116,13 @@ class RedisLimiter(RateLimiter):
         self._fallback = InMemoryLimiter()
         try:
             import redis
+
             self._r = redis.from_url(redis_url, decode_responses=True)
             # Verify connectivity.
             self._r.ping()
             logger.info("Redis rate limiter connected: %s", redis_url.split("@")[-1])
         except Exception as e:
-            logger.warning(
-                "Redis rate limiter unavailable (%s), falling back to in-memory", e
-            )
+            logger.warning("Redis rate limiter unavailable (%s), falling back to in-memory", e)
             self._r = None
 
     def is_allowed(self, key: str, limit: int, window_seconds: int = 60) -> bool:
@@ -179,6 +177,7 @@ _USER_EVENT_LIMIT = 600
 # ---------------------------------------------------------------------------
 # Per-user authorization (optional)
 # ---------------------------------------------------------------------------
+
 
 def _parse_key_user_bindings() -> dict[str, set[str]]:
     """Parse API_KEY_USERS into a mapping of key hash -> allowed user_ids.
@@ -246,6 +245,7 @@ def check_user_access(api_key: str, user_id: str) -> None:
 # Dependency: require valid API key
 # ---------------------------------------------------------------------------
 
+
 async def require_api_key(
     request: Request,
     credentials: HTTPAuthorizationCredentials | None = Security(_bearer),
@@ -261,8 +261,7 @@ async def require_api_key(
     if credentials is None or credentials.scheme.lower() != "bearer":
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Missing or invalid Authorization header. "
-                   "Use: Authorization: Bearer <your-api-key>",
+            detail="Missing or invalid Authorization header. Use: Authorization: Bearer <your-api-key>",
             headers={"WWW-Authenticate": "Bearer"},
         )
 
@@ -301,6 +300,7 @@ async def require_api_key(
 # Per-user event rate limiting
 # ---------------------------------------------------------------------------
 
+
 def check_user_event_rate(user_id: str, count: int = 1) -> None:
     """Enforce per-user rate limit on event ingestion.
 
@@ -315,7 +315,9 @@ def check_user_event_rate(user_id: str, count: int = 1) -> None:
         allowed = _user_event_limiter.is_allowed(rkey, limit=_USER_EVENT_LIMIT)
     else:
         allowed = _user_event_limiter.is_batch_allowed(
-            rkey, count=count, limit=_USER_EVENT_LIMIT,
+            rkey,
+            count=count,
+            limit=_USER_EVENT_LIMIT,
         )
     if not allowed:
         raise HTTPException(
@@ -328,6 +330,7 @@ def check_user_event_rate(user_id: str, count: int = 1) -> None:
 # ---------------------------------------------------------------------------
 # Optional auth (for endpoints that work anonymously but can be keyed)
 # ---------------------------------------------------------------------------
+
 
 def _parse_admin_keys() -> set[str]:
     """Parse ADMIN_API_KEYS into a set of key hashes.

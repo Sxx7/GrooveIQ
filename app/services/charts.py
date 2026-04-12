@@ -63,6 +63,7 @@ def _normalize(s: str) -> str:
 # Last.fm chart API
 # ---------------------------------------------------------------------------
 
+
 class _ChartClient:
     """Thin wrapper around Last.fm chart/geo/tag endpoints."""
 
@@ -81,6 +82,7 @@ class _ChartClient:
         elapsed = time.monotonic() - self._last_request
         if elapsed < self.MIN_REQUEST_GAP:
             import asyncio
+
             await asyncio.sleep(self.MIN_REQUEST_GAP - elapsed)
         self._last_request = time.monotonic()
 
@@ -94,11 +96,13 @@ class _ChartClient:
     async def get_top_tracks(self, limit: int = 100, page: int = 1) -> list[dict[str, Any]]:
         """Global top tracks (chart.getTopTracks)."""
         try:
-            data = await self._get({
-                "method": "chart.getTopTracks",
-                "limit": limit,
-                "page": page,
-            })
+            data = await self._get(
+                {
+                    "method": "chart.getTopTracks",
+                    "limit": limit,
+                    "page": page,
+                }
+            )
         except httpx.HTTPStatusError as exc:
             logger.warning("chart.getTopTracks failed: %s", exc)
             return []
@@ -108,11 +112,13 @@ class _ChartClient:
     async def get_top_artists(self, limit: int = 100, page: int = 1) -> list[dict[str, Any]]:
         """Global top artists (chart.getTopArtists)."""
         try:
-            data = await self._get({
-                "method": "chart.getTopArtists",
-                "limit": limit,
-                "page": page,
-            })
+            data = await self._get(
+                {
+                    "method": "chart.getTopArtists",
+                    "limit": limit,
+                    "page": page,
+                }
+            )
         except httpx.HTTPStatusError as exc:
             logger.warning("chart.getTopArtists failed: %s", exc)
             return []
@@ -122,12 +128,14 @@ class _ChartClient:
     async def get_geo_top_tracks(self, country: str, limit: int = 100, page: int = 1) -> list[dict[str, Any]]:
         """Top tracks by country (geo.getTopTracks)."""
         try:
-            data = await self._get({
-                "method": "geo.getTopTracks",
-                "country": country,
-                "limit": limit,
-                "page": page,
-            })
+            data = await self._get(
+                {
+                    "method": "geo.getTopTracks",
+                    "country": country,
+                    "limit": limit,
+                    "page": page,
+                }
+            )
         except httpx.HTTPStatusError as exc:
             logger.warning("geo.getTopTracks failed for %r: %s", country, exc)
             return []
@@ -137,12 +145,14 @@ class _ChartClient:
     async def get_tag_top_tracks(self, tag: str, limit: int = 100, page: int = 1) -> list[dict[str, Any]]:
         """Top tracks by genre tag (tag.getTopTracks)."""
         try:
-            data = await self._get({
-                "method": "tag.getTopTracks",
-                "tag": tag,
-                "limit": limit,
-                "page": page,
-            })
+            data = await self._get(
+                {
+                    "method": "tag.getTopTracks",
+                    "tag": tag,
+                    "limit": limit,
+                    "page": page,
+                }
+            )
         except httpx.HTTPStatusError as exc:
             logger.warning("tag.getTopTracks failed for %r: %s", tag, exc)
             return []
@@ -152,11 +162,13 @@ class _ChartClient:
     async def get_tag_top_artists(self, tag: str, limit: int = 100) -> list[dict[str, Any]]:
         """Top artists by genre tag (tag.getTopArtists)."""
         try:
-            data = await self._get({
-                "method": "tag.getTopArtists",
-                "tag": tag,
-                "limit": limit,
-            })
+            data = await self._get(
+                {
+                    "method": "tag.getTopArtists",
+                    "tag": tag,
+                    "limit": limit,
+                }
+            )
         except httpx.HTTPStatusError as exc:
             logger.warning("tag.getTopArtists failed for %r: %s", tag, exc)
             return []
@@ -168,12 +180,16 @@ class _ChartClient:
 # Library matching
 # ---------------------------------------------------------------------------
 
+
 async def _build_library_lookup(session: AsyncSession) -> dict[tuple[str, str], str]:
     """Build (normalized_artist, normalized_title) -> track_id lookup."""
-    rows = (await session.execute(
-        select(TrackFeatures.track_id, TrackFeatures.artist, TrackFeatures.title)
-        .where(TrackFeatures.artist.isnot(None), TrackFeatures.title.isnot(None))
-    )).all()
+    rows = (
+        await session.execute(
+            select(TrackFeatures.track_id, TrackFeatures.artist, TrackFeatures.title).where(
+                TrackFeatures.artist.isnot(None), TrackFeatures.title.isnot(None)
+            )
+        )
+    ).all()
     lookup: dict[tuple[str, str], str] = {}
     for track_id, artist, title in rows:
         key = (_normalize(artist), _normalize(title))
@@ -183,10 +199,11 @@ async def _build_library_lookup(session: AsyncSession) -> dict[tuple[str, str], 
 
 async def _build_artist_lookup(session: AsyncSession) -> dict[str, list[str]]:
     """Build normalized_artist -> [track_id, ...] lookup."""
-    rows = (await session.execute(
-        select(TrackFeatures.track_id, TrackFeatures.artist)
-        .where(TrackFeatures.artist.isnot(None))
-    )).all()
+    rows = (
+        await session.execute(
+            select(TrackFeatures.track_id, TrackFeatures.artist).where(TrackFeatures.artist.isnot(None))
+        )
+    ).all()
     lookup: dict[str, list[str]] = {}
     for track_id, artist in rows:
         norm = _normalize(artist)
@@ -197,6 +214,7 @@ async def _build_artist_lookup(session: AsyncSession) -> dict[str, list[str]]:
 # ---------------------------------------------------------------------------
 # Lidarr integration (reuse discovery's LidarrClient)
 # ---------------------------------------------------------------------------
+
 
 async def _send_artists_to_lidarr(
     artist_names_mbids: list[tuple[str, str | None]],
@@ -216,10 +234,9 @@ async def _send_artists_to_lidarr(
 
         async with AsyncSessionLocal() as session:
             already_requested = set()
-            rows = (await session.execute(
-                select(DiscoveryRequest.artist_mbid)
-                .where(DiscoveryRequest.status != "failed")
-            )).all()
+            rows = (
+                await session.execute(select(DiscoveryRequest.artist_mbid).where(DiscoveryRequest.status != "failed"))
+            ).all()
             already_requested = {r[0] for r in rows if r[0]}
 
         added = 0
@@ -253,13 +270,15 @@ async def _send_artists_to_lidarr(
                 logger.info("Charts: added artist to Lidarr: %s", name)
 
                 async with AsyncSessionLocal() as session:
-                    session.add(DiscoveryRequest(
-                        user_id="__charts__",
-                        artist_name=name,
-                        artist_mbid=mbid or foreign_id,
-                        source="chart",
-                        status="sent",
-                    ))
+                    session.add(
+                        DiscoveryRequest(
+                            user_id="__charts__",
+                            artist_name=name,
+                            artist_mbid=mbid or foreign_id,
+                            source="chart",
+                            status="sent",
+                        )
+                    )
                     await session.commit()
             except httpx.HTTPStatusError as exc:
                 if exc.response.status_code == 409:
@@ -277,6 +296,7 @@ async def _send_artists_to_lidarr(
 # ---------------------------------------------------------------------------
 # Spotizerr integration (individual track downloads)
 # ---------------------------------------------------------------------------
+
 
 async def _send_tracks_to_spotizerr(
     tracks: list[tuple[str, str]],
@@ -335,29 +355,30 @@ async def _send_tracks_to_spotizerr(
             # the write transactions short.
             matched_title = match.get("name", title)
             matched_artists = match.get("artists") or []
-            matched_artist_name = (
-                matched_artists[0].get("name", artist)
-                if matched_artists else artist
-            )
+            matched_artist_name = matched_artists[0].get("name", artist) if matched_artists else artist
             matched_album = (match.get("album") or {}).get("name")
             try:
                 async with AsyncSessionLocal() as dl_session:
-                    dl_session.add(DownloadRequest(
-                        spotify_id=spotify_id,
-                        task_id=task_id,
-                        status=status,
-                        track_title=matched_title,
-                        artist_name=matched_artist_name,
-                        album_name=matched_album,
-                        requested_by="__charts__",
-                        error_message=dl_result.get("error"),
-                        updated_at=int(time.time()),
-                    ))
+                    dl_session.add(
+                        DownloadRequest(
+                            spotify_id=spotify_id,
+                            task_id=task_id,
+                            status=status,
+                            track_title=matched_title,
+                            artist_name=matched_artist_name,
+                            album_name=matched_album,
+                            requested_by="__charts__",
+                            error_message=dl_result.get("error"),
+                            updated_at=int(time.time()),
+                        )
+                    )
                     await dl_session.commit()
             except Exception as exc:
                 logger.warning(
                     "Charts/Spotizerr: could not persist download row for %s-%s: %s",
-                    artist, title, exc,
+                    artist,
+                    title,
+                    exc,
                 )
 
             if status == "downloading":
@@ -388,6 +409,7 @@ async def _send_tracks_to_spotizerr(
 # Chart build pipeline
 # ---------------------------------------------------------------------------
 
+
 async def build_charts() -> dict[str, Any]:
     """
     Main entry point. Fetches charts from Last.fm, matches to library,
@@ -416,6 +438,7 @@ async def build_charts() -> dict[str, Any]:
     # Shared across all chart builds in this run so connection pooling
     # and auth token caching are reused.
     from app.services.spotdl import get_download_client
+
     cover_client = None
     if settings.download_enabled:
         cover_client = get_download_client()
@@ -431,8 +454,12 @@ async def build_charts() -> dict[str, Any]:
 
             # --- 1. Global top tracks ---
             await _build_track_chart(
-                client, session, track_lookup, artist_lookup,
-                lidarr_candidates, spotizerr_candidates,
+                client,
+                session,
+                track_lookup,
+                artist_lookup,
+                lidarr_candidates,
+                spotizerr_candidates,
                 chart_type="top_tracks",
                 scope="global",
                 fetch_fn=client.get_top_tracks,
@@ -444,7 +471,10 @@ async def build_charts() -> dict[str, Any]:
 
             # --- 2. Global top artists ---
             await _build_artist_chart(
-                client, session, artist_lookup, lidarr_candidates,
+                client,
+                session,
+                artist_lookup,
+                lidarr_candidates,
                 chart_type="top_artists",
                 scope="global",
                 fetch_fn=client.get_top_artists,
@@ -456,8 +486,12 @@ async def build_charts() -> dict[str, Any]:
             # --- 3. Genre/tag charts ---
             for tag in settings.charts_tags_list:
                 await _build_track_chart(
-                    client, session, track_lookup, artist_lookup,
-                    lidarr_candidates, spotizerr_candidates,
+                    client,
+                    session,
+                    track_lookup,
+                    artist_lookup,
+                    lidarr_candidates,
+                    spotizerr_candidates,
                     chart_type="top_tracks",
                     scope=f"tag:{tag}",
                     fetch_fn=lambda lim=100, pg=1, t=tag: client.get_tag_top_tracks(t, lim, pg),
@@ -467,7 +501,10 @@ async def build_charts() -> dict[str, Any]:
                     cover_client=cover_client,
                 )
                 await _build_artist_chart(
-                    client, session, artist_lookup, lidarr_candidates,
+                    client,
+                    session,
+                    artist_lookup,
+                    lidarr_candidates,
                     chart_type="top_artists",
                     scope=f"tag:{tag}",
                     fetch_fn=lambda lim=100, t=tag: client.get_tag_top_artists(t, lim),
@@ -479,8 +516,12 @@ async def build_charts() -> dict[str, Any]:
             # --- 4. Country charts ---
             for country in settings.charts_countries_list:
                 await _build_track_chart(
-                    client, session, track_lookup, artist_lookup,
-                    lidarr_candidates, spotizerr_candidates,
+                    client,
+                    session,
+                    track_lookup,
+                    artist_lookup,
+                    lidarr_candidates,
+                    spotizerr_candidates,
                     chart_type="top_tracks",
                     scope=f"geo:{country}",
                     fetch_fn=lambda lim=100, pg=1, c=country: client.get_geo_top_tracks(c, lim, pg),
@@ -592,10 +633,12 @@ async def _build_track_chart(
         # Fallback cover art: Last.fm dropped the placeholder filter above
         # and we have no URL, AND the track isn't in the library yet (matched
         # entries get media-server cover art at render time).  Hit Spotizerr.
-        if image_url is None and matched_track_id is None and cover_client is not None \
-                and artist_name and title:
+        if image_url is None and matched_track_id is None and cover_client is not None and artist_name and title:
             resolved = await _resolve_cover_art(
-                session, artist_name, title, client=cover_client,
+                session,
+                artist_name,
+                title,
+                client=cover_client,
             )
             if resolved:
                 image_url = resolved
@@ -608,19 +651,21 @@ async def _build_track_chart(
                 lidarr_candidates.append((artist_name, mbid))
             spotizerr_candidates.append((artist_name, title))
 
-        session.add(ChartEntry(
-            chart_type=chart_type,
-            scope=scope,
-            position=i,
-            track_title=title,
-            artist_name=artist_name,
-            artist_mbid=mbid,
-            playcount=playcount,
-            listeners=listeners,
-            image_url=image_url,
-            matched_track_id=matched_track_id,
-            fetched_at=now,
-        ))
+        session.add(
+            ChartEntry(
+                chart_type=chart_type,
+                scope=scope,
+                position=i,
+                track_title=title,
+                artist_name=artist_name,
+                artist_mbid=mbid,
+                playcount=playcount,
+                listeners=listeners,
+                image_url=image_url,
+                matched_track_id=matched_track_id,
+                fetched_at=now,
+            )
+        )
         summary["total_entries"] += 1
         if matched_track_id:
             summary["library_matches"] += 1
@@ -674,20 +719,22 @@ async def _build_artist_chart(
         if not matched_tracks and name:
             lidarr_candidates.append((name, mbid))
 
-        session.add(ChartEntry(
-            chart_type=chart_type,
-            scope=scope,
-            position=i,
-            artist_name=name,
-            artist_mbid=mbid,
-            playcount=playcount,
-            listeners=listeners,
-            image_url=image_url,
-            matched_track_id=matched_track_id,
-            in_library=len(matched_tracks) > 0,
-            library_track_count=len(matched_tracks),
-            fetched_at=now,
-        ))
+        session.add(
+            ChartEntry(
+                chart_type=chart_type,
+                scope=scope,
+                position=i,
+                artist_name=name,
+                artist_mbid=mbid,
+                playcount=playcount,
+                listeners=listeners,
+                image_url=image_url,
+                matched_track_id=matched_track_id,
+                in_library=len(matched_tracks) > 0,
+                library_track_count=len(matched_tracks),
+                fetched_at=now,
+            )
+        )
         summary["total_entries"] += 1
         if matched_tracks:
             summary["library_matches"] += 1

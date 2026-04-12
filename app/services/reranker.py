@@ -79,8 +79,9 @@ async def rerank(
 
     # Track features (for artist extraction and context-aware rules).
     feat_result = await session.execute(
-        select(TrackFeatures.track_id, TrackFeatures.file_path, TrackFeatures.duration)
-        .where(TrackFeatures.track_id.in_(track_ids))
+        select(TrackFeatures.track_id, TrackFeatures.file_path, TrackFeatures.duration).where(
+            TrackFeatures.track_id.in_(track_ids)
+        )
     )
     feat_rows = feat_result.all()
     path_map = {row.track_id: row.file_path for row in feat_rows}
@@ -88,15 +89,12 @@ async def rerank(
 
     # Interactions for this user.
     inter_result = await session.execute(
-        select(TrackInteraction)
-        .where(
+        select(TrackInteraction).where(
             TrackInteraction.user_id == user_id,
             TrackInteraction.track_id.in_(track_ids),
         )
     )
-    inter_map: dict[str, TrackInteraction] = {
-        i.track_id: i for i in inter_result.scalars().all()
-    }
+    inter_map: dict[str, TrackInteraction] = {i.track_id: i for i in inter_result.scalars().all()}
 
     cfg = get_config().reranker
 
@@ -106,7 +104,14 @@ async def rerank(
             old = score_map[tid]
             score_map[tid] = old * (1.0 + cfg.freshness_boost)
             if actions is not None:
-                actions.append({"track_id": tid, "action": "freshness_boost", "score_before": round(old, 4), "score_after": round(score_map[tid], 4)})
+                actions.append(
+                    {
+                        "track_id": tid,
+                        "action": "freshness_boost",
+                        "score_before": round(old, 4),
+                        "score_after": round(score_map[tid], 4),
+                    }
+                )
 
     # --- Rule 2: Skip suppression (early-skipped >threshold times recently → demote) ---
     cutoff_24h = now - 86_400
@@ -117,7 +122,14 @@ async def rerank(
                 old = score_map[tid]
                 score_map[tid] = old * cfg.skip_demote_factor
                 if actions is not None:
-                    actions.append({"track_id": tid, "action": "skip_suppression", "score_before": round(old, 4), "score_after": round(score_map[tid], 4)})
+                    actions.append(
+                        {
+                            "track_id": tid,
+                            "action": "skip_suppression",
+                            "score_before": round(old, 4),
+                            "score_after": round(score_map[tid], 4),
+                        }
+                    )
 
     # --- Rule 3: Anti-repetition (suppress tracks played recently) ---
     recently_played: set[str] = set()
@@ -127,13 +139,20 @@ async def rerank(
         if inter and inter.last_played_at and inter.last_played_at >= cutoff_repeat:
             recently_played.add(tid)
             if actions is not None:
-                actions.append({"track_id": tid, "action": "anti_repetition_exclude", "reason": f"played_within_{cfg.repeat_window_hours}h"})
+                actions.append(
+                    {
+                        "track_id": tid,
+                        "action": "anti_repetition_exclude",
+                        "reason": f"played_within_{cfg.repeat_window_hours}h",
+                    }
+                )
 
     # --- Rule 5: Context-aware — suppress short tracks in car/speaker mode ---
     short_tracks: set[str] = set()
-    is_car_or_speaker = (
-        device_type in ("car", "speaker")
-        or output_type in ("car_audio", "bluetooth_speaker", "speaker")
+    is_car_or_speaker = device_type in ("car", "speaker") or output_type in (
+        "car_audio",
+        "bluetooth_speaker",
+        "speaker",
     )
     if is_car_or_speaker:
         for tid in track_ids:
@@ -145,11 +164,7 @@ async def rerank(
 
     # --- Rebuild sorted list with updated scores, excluding filtered tracks ---
     excluded = recently_played | short_tracks
-    adjusted = [
-        (tid, score_map[tid])
-        for tid in track_ids
-        if tid not in excluded
-    ]
+    adjusted = [(tid, score_map[tid]) for tid in track_ids if tid not in excluded]
     adjusted.sort(key=lambda x: x[1], reverse=True)
 
     # --- Rule 4: Exploration slots (before artist diversity so diversity is final) ---
@@ -200,7 +215,14 @@ def _enforce_artist_diversity(
             else:
                 deferred.append((tid, score))
                 if actions is not None:
-                    actions.append({"track_id": tid, "action": "artist_diversity_demote", "from_position": len(accepted) + len(deferred) - 1, "to_position": cfg.artist_diversity_top_n + len(deferred) - 1})
+                    actions.append(
+                        {
+                            "track_id": tid,
+                            "action": "artist_diversity_demote",
+                            "from_position": len(accepted) + len(deferred) - 1,
+                            "to_position": cfg.artist_diversity_top_n + len(deferred) - 1,
+                        }
+                    )
         else:
             deferred.append((tid, score))
 
@@ -259,10 +281,7 @@ def _inject_exploration_slots(
     # Remove explore picks from exploit pool if they somehow overlap.
     exploit_pool = [(tid, s) for tid, s in exploit_pool if tid not in explore_ids]
     # Also remove from the remaining explore pool.
-    remaining = [
-        (tid, s) for tid, s in explore_pool
-        if tid not in explore_ids
-    ]
+    remaining = [(tid, s) for tid, s in explore_pool if tid not in explore_ids]
     # Full non-explore list in original rank order.
     non_explore = exploit_pool + remaining
 

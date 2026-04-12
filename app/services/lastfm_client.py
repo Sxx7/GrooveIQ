@@ -33,9 +33,11 @@ _MIN_REQUEST_GAP = 0.2  # 200ms = 5 req/s
 # Fernet encryption for session keys
 # ---------------------------------------------------------------------------
 
+
 def encrypt_session_key(plaintext: str) -> str:
     """Encrypt a Last.fm session key for database storage."""
     from cryptography.fernet import Fernet
+
     key = settings.LASTFM_SESSION_ENCRYPTION_KEY
     if not key:
         raise ValueError("LASTFM_SESSION_ENCRYPTION_KEY is not configured")
@@ -46,6 +48,7 @@ def encrypt_session_key(plaintext: str) -> str:
 def decrypt_session_key(ciphertext: str) -> str:
     """Decrypt a Last.fm session key from database storage."""
     from cryptography.fernet import Fernet
+
     key = settings.LASTFM_SESSION_ENCRYPTION_KEY
     if not key:
         raise ValueError("LASTFM_SESSION_ENCRYPTION_KEY is not configured")
@@ -56,6 +59,7 @@ def decrypt_session_key(ciphertext: str) -> str:
 # ---------------------------------------------------------------------------
 # API signature (required by Last.fm for all write operations)
 # ---------------------------------------------------------------------------
+
 
 def _generate_api_sig(params: dict[str, str]) -> str:
     """
@@ -74,6 +78,7 @@ def _generate_api_sig(params: dict[str, str]) -> str:
 # ---------------------------------------------------------------------------
 # Client
 # ---------------------------------------------------------------------------
+
 
 class LastFmClient:
     """Async Last.fm API client with rate limiting."""
@@ -120,76 +125,108 @@ class LastFmClient:
         data = await self._get("user.getInfo", {"user": username})
         return data.get("user", {})
 
-    async def get_top_artists(
-        self, username: str, period: str = "overall", limit: int = 50
-    ) -> list[dict]:
-        data = await self._get("user.getTopArtists", {
-            "user": username, "period": period, "limit": str(limit),
-        })
+    async def get_top_artists(self, username: str, period: str = "overall", limit: int = 50) -> list[dict]:
+        data = await self._get(
+            "user.getTopArtists",
+            {
+                "user": username,
+                "period": period,
+                "limit": str(limit),
+            },
+        )
         return data.get("topartists", {}).get("artist", [])
 
-    async def get_top_tracks(
-        self, username: str, period: str = "overall", limit: int = 50
-    ) -> list[dict]:
-        data = await self._get("user.getTopTracks", {
-            "user": username, "period": period, "limit": str(limit),
-        })
+    async def get_top_tracks(self, username: str, period: str = "overall", limit: int = 50) -> list[dict]:
+        data = await self._get(
+            "user.getTopTracks",
+            {
+                "user": username,
+                "period": period,
+                "limit": str(limit),
+            },
+        )
         return data.get("toptracks", {}).get("track", [])
 
     async def get_loved_tracks(self, username: str, limit: int = 50) -> list[dict]:
-        data = await self._get("user.getLovedTracks", {
-            "user": username, "limit": str(limit),
-        })
+        data = await self._get(
+            "user.getLovedTracks",
+            {
+                "user": username,
+                "limit": str(limit),
+            },
+        )
         return data.get("lovedtracks", {}).get("track", [])
 
-    async def get_recent_tracks(
-        self, username: str, limit: int = 50
-    ) -> list[dict]:
-        data = await self._get("user.getRecentTracks", {
-            "user": username, "limit": str(limit), "extended": "1",
-        })
+    async def get_recent_tracks(self, username: str, limit: int = 50) -> list[dict]:
+        data = await self._get(
+            "user.getRecentTracks",
+            {
+                "user": username,
+                "limit": str(limit),
+                "extended": "1",
+            },
+        )
         return data.get("recenttracks", {}).get("track", [])
 
     async def get_artist_tags(self, artist: str, limit: int = 10) -> list[dict]:
-        data = await self._get("artist.getTopTags", {
-            "artist": artist, "limit": str(limit),
-        })
+        data = await self._get(
+            "artist.getTopTags",
+            {
+                "artist": artist,
+                "limit": str(limit),
+            },
+        )
         return data.get("toptags", {}).get("tag", [])
 
     async def get_artist_info(
-        self, artist: str, autocorrect: bool = True,
+        self,
+        artist: str,
+        autocorrect: bool = True,
     ) -> dict:
         """
         Get artist metadata from Last.fm (artist.getInfo).
 
         Returns dict with keys: name, mbid, bio, image, stats, similar, tags, etc.
         """
-        data = await self._get("artist.getInfo", {
-            "artist": artist,
-            "autocorrect": "1" if autocorrect else "0",
-        })
+        data = await self._get(
+            "artist.getInfo",
+            {
+                "artist": artist,
+                "autocorrect": "1" if autocorrect else "0",
+            },
+        )
         return data.get("artist", {})
 
     async def get_artist_top_tracks(
-        self, artist: str, limit: int = 10, autocorrect: bool = True,
+        self,
+        artist: str,
+        limit: int = 10,
+        autocorrect: bool = True,
     ) -> list[dict]:
         """
         Get an artist's top tracks from Last.fm (artist.getTopTracks).
 
         Returns list of dicts with keys: name, playcount, listeners, mbid, etc.
         """
-        data = await self._get("artist.getTopTracks", {
-            "artist": artist,
-            "limit": str(limit),
-            "autocorrect": "1" if autocorrect else "0",
-        })
+        data = await self._get(
+            "artist.getTopTracks",
+            {
+                "artist": artist,
+                "limit": str(limit),
+                "autocorrect": "1" if autocorrect else "0",
+            },
+        )
         tracks = data.get("toptracks", {}).get("track", [])
         if isinstance(tracks, dict):
             tracks = [tracks]
         return tracks
 
     async def get_similar_tracks(
-        self, artist: str, track: str, limit: int = 50, autocorrect: bool = True,
+        self,
+        artist: str,
+        track: str,
+        limit: int = 50,
+        autocorrect: bool = True,
     ) -> list[dict]:
         """
         Get tracks similar to a given track from Last.fm.
@@ -197,12 +234,15 @@ class LastFmClient:
         Returns list of dicts with keys: name, artist (dict with name),
         match (float 0-1), mbid.
         """
-        data = await self._get("track.getSimilar", {
-            "artist": artist,
-            "track": track,
-            "limit": str(limit),
-            "autocorrect": "1" if autocorrect else "0",
-        })
+        data = await self._get(
+            "track.getSimilar",
+            {
+                "artist": artist,
+                "track": track,
+                "limit": str(limit),
+                "autocorrect": "1" if autocorrect else "0",
+            },
+        )
         tracks = data.get("similartracks", {}).get("track", [])
         if isinstance(tracks, dict):
             tracks = [tracks]

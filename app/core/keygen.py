@@ -22,12 +22,14 @@ def generate_api_key() -> str:
 def generate_fernet_key() -> str:
     """Return a Fernet encryption key."""
     from cryptography.fernet import Fernet
+
     return Fernet.generate_key().decode()
 
 
 def encrypt_value(plaintext: str, fernet_key: str) -> str:
     """Encrypt a plaintext value with a Fernet key."""
     from cryptography.fernet import Fernet
+
     f = Fernet(fernet_key.encode())
     return f.encrypt(plaintext.encode("utf-8")).decode("ascii")
 
@@ -41,6 +43,7 @@ def main() -> None:
 
     if "--encrypt" in args:
         import getpass
+
         key = input("Fernet key (CREDENTIAL_ENCRYPTION_KEY): ").strip()
         if not key:
             print("Error: Fernet key is required.", file=sys.stderr)

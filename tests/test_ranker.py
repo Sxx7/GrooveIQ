@@ -44,6 +44,7 @@ async def setup_db(monkeypatch):
 
     # Reset ranker singleton.
     import app.services.ranker as r
+
     r._model = None
     r._model_version = None
     r._model_stats = {}
@@ -58,75 +59,79 @@ async def _seed_data(n_users: int = 3, n_tracks: int = 20, interactions_per_user
     async with _TestSession() as session:
         # Tracks
         for i in range(n_tracks):
-            session.add(TrackFeatures(
-                track_id=f"t{i}",
-                file_path=f"/music/artist{i % 4}/album{i % 8}/track{i}.mp3",
-                bpm=90.0 + i * 3,
-                energy=0.2 + (i % 10) * 0.08,
-                danceability=0.3 + (i % 7) * 0.1,
-                valence=0.4 + (i % 5) * 0.1,
-                loudness=-12.0 + i * 0.5,
-                instrumentalness=0.1 * (i % 3),
-                duration=180.0 + i * 10,
-                embedding=_make_embedding(i),
-                mood_tags=[{"label": "happy", "confidence": 0.7}] if i % 3 == 0 else [{"label": "chill", "confidence": 0.6}],
-                analyzed_at=now,
-                analysis_version="1",
-            ))
+            session.add(
+                TrackFeatures(
+                    track_id=f"t{i}",
+                    file_path=f"/music/artist{i % 4}/album{i % 8}/track{i}.mp3",
+                    bpm=90.0 + i * 3,
+                    energy=0.2 + (i % 10) * 0.08,
+                    danceability=0.3 + (i % 7) * 0.1,
+                    valence=0.4 + (i % 5) * 0.1,
+                    loudness=-12.0 + i * 0.5,
+                    instrumentalness=0.1 * (i % 3),
+                    duration=180.0 + i * 10,
+                    embedding=_make_embedding(i),
+                    mood_tags=[{"label": "happy", "confidence": 0.7}]
+                    if i % 3 == 0
+                    else [{"label": "chill", "confidence": 0.6}],
+                    analyzed_at=now,
+                    analysis_version="1",
+                )
+            )
 
         # Users with taste profiles
         for u in range(n_users):
-            top_tracks = [
-                {"track_id": f"t{j}", "score": round(0.9 - j * 0.04, 2)}
-                for j in range(min(10, n_tracks))
-            ]
-            session.add(User(
-                user_id=f"user{u}",
-                last_seen=now,
-                taste_profile={
-                    "top_tracks": top_tracks,
-                    "audio_preferences": {
-                        "bpm": {"mean": 120.0, "std": 15.0},
-                        "energy": {"mean": 0.6, "std": 0.15},
-                        "danceability": {"mean": 0.5, "std": 0.1},
-                        "valence": {"mean": 0.5, "std": 0.1},
+            top_tracks = [{"track_id": f"t{j}", "score": round(0.9 - j * 0.04, 2)} for j in range(min(10, n_tracks))]
+            session.add(
+                User(
+                    user_id=f"user{u}",
+                    last_seen=now,
+                    taste_profile={
+                        "top_tracks": top_tracks,
+                        "audio_preferences": {
+                            "bpm": {"mean": 120.0, "std": 15.0},
+                            "energy": {"mean": 0.6, "std": 0.15},
+                            "danceability": {"mean": 0.5, "std": 0.1},
+                            "valence": {"mean": 0.5, "std": 0.1},
+                        },
+                        "mood_preferences": {"happy": 0.5, "chill": 0.3},
+                        "time_patterns": {"14": 0.15, "20": 0.25},
+                        "updated_at": now,
                     },
-                    "mood_preferences": {"happy": 0.5, "chill": 0.3},
-                    "time_patterns": {"14": 0.15, "20": 0.25},
-                    "updated_at": now,
-                },
-            ))
+                )
+            )
 
         # Interactions (one per user×track to respect unique constraint)
         for u in range(n_users):
             for i in range(min(interactions_per_user, n_tracks)):
                 tid = f"t{i}"
-                session.add(TrackInteraction(
-                    user_id=f"user{u}",
-                    track_id=tid,
-                    play_count=3 + i % 5,
-                    skip_count=i % 3,
-                    like_count=1 if i < 3 else 0,
-                    dislike_count=0,
-                    repeat_count=0,
-                    playlist_add_count=0,
-                    queue_add_count=0,
-                    early_skip_count=i % 2,
-                    mid_skip_count=0,
-                    full_listen_count=2 + i % 3,
-                    total_seekfwd=0,
-                    total_seekbk=0,
-                    satisfaction_score=0.3 + (i % 8) * 0.08,
-                    last_event_id=u * 100 + i,
-                    first_played_at=now - 86_400 * 7,
-                    last_played_at=now - 3600 * (i + 1),
-                    updated_at=now,
-                ))
+                session.add(
+                    TrackInteraction(
+                        user_id=f"user{u}",
+                        track_id=tid,
+                        play_count=3 + i % 5,
+                        skip_count=i % 3,
+                        like_count=1 if i < 3 else 0,
+                        dislike_count=0,
+                        repeat_count=0,
+                        playlist_add_count=0,
+                        queue_add_count=0,
+                        early_skip_count=i % 2,
+                        mid_skip_count=0,
+                        full_listen_count=2 + i % 3,
+                        total_seekfwd=0,
+                        total_seekbk=0,
+                        satisfaction_score=0.3 + (i % 8) * 0.08,
+                        last_event_id=u * 100 + i,
+                        first_played_at=now - 86_400 * 7,
+                        last_played_at=now - 3600 * (i + 1),
+                        updated_at=now,
+                    )
+                )
         await session.commit()
 
 
 class TestFeatureEngineering:
-
     async def test_build_features_shape(self):
         """Feature vectors have the correct number of columns."""
         from app.services.feature_eng import NUM_FEATURES, build_features
@@ -194,7 +199,6 @@ class TestFeatureEngineering:
 
 
 class TestRanker:
-
     async def test_train_model(self):
         """Model trains successfully on synthetic data."""
         from app.services.ranker import get_model_version, is_ready, train_model
@@ -277,10 +281,15 @@ class TestRanker:
 
         async with _TestSession() as session:
             scored = await score_candidates(
-                "user0", ["t0", "t1", "t2", "t3", "t4"], session,
-                hour_of_day=14, day_of_week=3,
-                device_type="mobile", output_type="headphones",
-                context_type="playlist", location_label="commute",
+                "user0",
+                ["t0", "t1", "t2", "t3", "t4"],
+                session,
+                hour_of_day=14,
+                day_of_week=3,
+                device_type="mobile",
+                output_type="headphones",
+                context_type="playlist",
+                location_label="commute",
             )
 
         assert len(scored) == 5
@@ -298,15 +307,17 @@ class TestRanker:
 
         async with _TestSession() as session:
             scored = await score_candidates(
-                "user0", ["t0", "t1", "t2"], session,
-                device_type="speaker", output_type="bluetooth_speaker",
+                "user0",
+                ["t0", "t1", "t2"],
+                session,
+                device_type="speaker",
+                output_type="bluetooth_speaker",
             )
 
         assert len(scored) == 3
 
 
 class TestFeatureEngineeringContext:
-
     async def test_context_features_in_output(self):
         """Context features appear in the feature vector at the correct positions."""
         from app.services.feature_eng import FEATURE_COLUMNS, NUM_FEATURES, build_features
@@ -314,10 +325,15 @@ class TestFeatureEngineeringContext:
         await _seed_data()
         async with _TestSession() as session:
             result = await build_features(
-                "user0", ["t0", "t1"], session,
-                hour_of_day=10, day_of_week=2,
-                device_type="mobile", output_type="headphones",
-                context_type="playlist", location_label="gym",
+                "user0",
+                ["t0", "t1"],
+                session,
+                hour_of_day=10,
+                day_of_week=2,
+                device_type="mobile",
+                output_type="headphones",
+                context_type="playlist",
+                location_label="gym",
             )
 
         assert result["features"].shape == (2, NUM_FEATURES)
@@ -352,19 +368,19 @@ class TestFeatureEngineeringContext:
             from sqlalchemy import update
 
             from app.models.db import User
-            user_result = await session.execute(
-                select(User.taste_profile).where(User.user_id == "user0")
-            )
+
+            user_result = await session.execute(select(User.taste_profile).where(User.user_id == "user0"))
             profile = user_result.scalar_one()
             profile["device_patterns"] = {"mobile": 0.75, "desktop": 0.25}
-            await session.execute(
-                update(User).where(User.user_id == "user0").values(taste_profile=profile)
-            )
+            await session.execute(update(User).where(User.user_id == "user0").values(taste_profile=profile))
             await session.commit()
 
         async with _TestSession() as session:
             result = await build_features(
-                "user0", ["t0"], session, device_type="mobile",
+                "user0",
+                ["t0"],
+                session,
+                device_type="mobile",
             )
 
         dev_idx = FEATURE_COLUMNS.index("device_affinity")

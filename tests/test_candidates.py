@@ -45,12 +45,14 @@ async def setup_db(monkeypatch):
 
     # Reset singletons.
     import app.services.faiss_index as fi
+
     fi._index = None
     fi._id_to_track = []
     fi._track_to_id = {}
     fi._embeddings = None
 
     import app.services.collab_filter as cf
+
     cf._model = None
     cf._user_to_idx = {}
     cf._idx_to_user = []
@@ -68,19 +70,22 @@ async def _setup_library(n_tracks: int = 20) -> list[str]:
     async with _TestSession() as session:
         for i in range(n_tracks):
             tid = f"t{i}"
-            session.add(TrackFeatures(
-                track_id=tid,
-                file_path=f"/music/artist{i % 3}/{tid}.mp3",
-                bpm=100.0 + i * 2,
-                energy=0.3 + (i % 10) * 0.07,
-                embedding=_make_embedding(i),
-                analyzed_at=_now(),
-                analysis_version="1",
-            ))
+            session.add(
+                TrackFeatures(
+                    track_id=tid,
+                    file_path=f"/music/artist{i % 3}/{tid}.mp3",
+                    bpm=100.0 + i * 2,
+                    energy=0.3 + (i % 10) * 0.07,
+                    embedding=_make_embedding(i),
+                    analyzed_at=_now(),
+                    analysis_version="1",
+                )
+            )
             track_ids.append(tid)
         await session.commit()
 
     from app.services.faiss_index import build_index
+
     await build_index()
     return track_ids
 
@@ -91,40 +96,43 @@ async def _setup_user(user_id: str, track_ids: list[str], n_interactions: int = 
     async with _TestSession() as session:
         top_tracks = [
             {"track_id": tid, "score": round(0.9 - i * 0.05, 2)}
-            for i, tid in enumerate(track_ids[:min(n_interactions, len(track_ids))])
+            for i, tid in enumerate(track_ids[: min(n_interactions, len(track_ids))])
         ]
-        session.add(User(
-            user_id=user_id,
-            last_seen=now,
-            taste_profile={"top_tracks": top_tracks, "updated_at": now},
-        ))
-        for i, tid in enumerate(track_ids[:n_interactions]):
-            session.add(TrackInteraction(
+        session.add(
+            User(
                 user_id=user_id,
-                track_id=tid,
-                play_count=5 - i % 3,
-                skip_count=0,
-                like_count=1 if i < 3 else 0,
-                dislike_count=0,
-                repeat_count=0,
-                playlist_add_count=0,
-                queue_add_count=0,
-                early_skip_count=0,
-                mid_skip_count=0,
-                full_listen_count=3,
-                total_seekfwd=0,
-                total_seekbk=0,
-                satisfaction_score=0.8 - i * 0.05,
-                last_event_id=i + 1,
-                first_played_at=now - 86_400,
-                last_played_at=now - 3600,
-                updated_at=now,
-            ))
+                last_seen=now,
+                taste_profile={"top_tracks": top_tracks, "updated_at": now},
+            )
+        )
+        for i, tid in enumerate(track_ids[:n_interactions]):
+            session.add(
+                TrackInteraction(
+                    user_id=user_id,
+                    track_id=tid,
+                    play_count=5 - i % 3,
+                    skip_count=0,
+                    like_count=1 if i < 3 else 0,
+                    dislike_count=0,
+                    repeat_count=0,
+                    playlist_add_count=0,
+                    queue_add_count=0,
+                    early_skip_count=0,
+                    mid_skip_count=0,
+                    full_listen_count=3,
+                    total_seekfwd=0,
+                    total_seekbk=0,
+                    satisfaction_score=0.8 - i * 0.05,
+                    last_event_id=i + 1,
+                    first_played_at=now - 86_400,
+                    last_played_at=now - 3600,
+                    updated_at=now,
+                )
+            )
         await session.commit()
 
 
 class TestContentCandidates:
-
     async def test_content_candidates_from_seed(self):
         """Content candidates from a seed track via FAISS."""
         from app.services.candidate_gen import get_content_candidates
@@ -158,7 +166,6 @@ class TestContentCandidates:
 
 
 class TestCFCandidates:
-
     async def test_cf_build_and_recommend(self):
         """CF model trains and returns recommendations."""
         track_ids = await _setup_library(20)
@@ -168,6 +175,7 @@ class TestCFCandidates:
         await _setup_user("bob", track_ids[5:15], n_interactions=10)
 
         from app.services.collab_filter import build_model, get_cf_candidates, is_ready
+
         result = await build_model()
         assert result["trained"] is True
         assert is_ready()
@@ -181,12 +189,14 @@ class TestCFCandidates:
     async def test_cf_cold_start_user(self):
         """Unknown user gets empty CF results."""
         from app.services.collab_filter import get_cf_candidates
+
         results = get_cf_candidates("unknown_user", k=5)
         assert results == []
 
     async def test_cf_too_few_interactions(self):
         """CF skips training with too few interactions."""
         from app.services.collab_filter import build_model
+
         result = await build_model()
         assert result["trained"] is False
 
@@ -198,28 +208,31 @@ class TestCFCandidates:
         # Need to insert enough interactions (>=10).
         async with _TestSession() as session:
             for i in range(5, 10):
-                session.add(TrackInteraction(
-                    user_id="alone",
-                    track_id=f"t{i}",
-                    play_count=2,
-                    skip_count=0,
-                    like_count=0,
-                    dislike_count=0,
-                    repeat_count=0,
-                    playlist_add_count=0,
-                    queue_add_count=0,
-                    early_skip_count=0,
-                    mid_skip_count=0,
-                    full_listen_count=2,
-                    total_seekfwd=0,
-                    total_seekbk=0,
-                    satisfaction_score=0.5,
-                    last_event_id=100 + i,
-                    updated_at=_now(),
-                ))
+                session.add(
+                    TrackInteraction(
+                        user_id="alone",
+                        track_id=f"t{i}",
+                        play_count=2,
+                        skip_count=0,
+                        like_count=0,
+                        dislike_count=0,
+                        repeat_count=0,
+                        playlist_add_count=0,
+                        queue_add_count=0,
+                        early_skip_count=0,
+                        mid_skip_count=0,
+                        full_listen_count=2,
+                        total_seekfwd=0,
+                        total_seekbk=0,
+                        satisfaction_score=0.5,
+                        last_event_id=100 + i,
+                        updated_at=_now(),
+                    )
+                )
             await session.commit()
 
         from app.services.collab_filter import build_model
+
         result = await build_model()
         assert result["trained"] is False  # single user → meaningless
 
@@ -230,6 +243,7 @@ class TestCFCandidates:
         await _setup_user("bob", track_ids[5:15], n_interactions=10)
 
         from app.services.collab_filter import build_model, get_similar_items
+
         await build_model()
 
         results = get_similar_items("t5", k=3)
@@ -239,13 +253,13 @@ class TestCFCandidates:
 
 
 class TestMergedRetrieval:
-
     async def test_merged_candidates_dedupe(self):
         """Merged retrieval deduplicates across sources."""
         track_ids = await _setup_library(20)
         await _setup_user("alice", track_ids[:10], n_interactions=10)
 
         from app.services.candidate_gen import get_candidates
+
         candidates = await get_candidates("alice", k=15)
 
         # Check no duplicates.
@@ -262,6 +276,7 @@ class TestMergedRetrieval:
         # Mark a track as disliked.
         async with _TestSession() as session:
             from sqlalchemy import update
+
             await session.execute(
                 update(TrackInteraction)
                 .where(
@@ -273,6 +288,7 @@ class TestMergedRetrieval:
             await session.commit()
 
         from app.services.candidate_gen import get_candidates
+
         candidates = await get_candidates("alice", k=50)
         candidate_ids = {c["track_id"] for c in candidates}
         assert "t0" not in candidate_ids
@@ -283,6 +299,7 @@ class TestMergedRetrieval:
         await _setup_user("newuser", track_ids[:3], n_interactions=3)
 
         from app.services.candidate_gen import get_candidates
+
         candidates = await get_candidates("newuser", k=10)
         # Should still get results (from content profile or popular/artist recall).
         assert len(candidates) > 0
@@ -293,6 +310,7 @@ class TestMergedRetrieval:
         await _setup_user("alice", track_ids[:10], n_interactions=10)
 
         from app.services.candidate_gen import get_candidates
+
         candidates = await get_candidates("alice", seed_track_id="t5", k=10)
         # Should have content-sourced candidates.
         sources = {c["source"] for c in candidates}
@@ -304,6 +322,7 @@ class TestMergedRetrieval:
         await _setup_user("alice", track_ids[:10], n_interactions=10)
 
         from app.services.candidate_gen import get_candidates
+
         candidates = await get_candidates("alice", k=10)
         for c in candidates:
             assert "source" in c

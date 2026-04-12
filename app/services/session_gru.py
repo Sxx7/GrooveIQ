@@ -39,12 +39,12 @@ _user_predicted_vectors: dict[str, np.ndarray] = {}  # user_id -> predicted next
 _track_embeddings: dict[str, np.ndarray] = {}  # track_id -> audio embedding (for scoring)
 
 # Config.
-_EMBED_DIM = 64       # matches FAISS/audio embedding dimension
-_HIDDEN_DIM = 64      # GRU hidden size
+_EMBED_DIM = 64  # matches FAISS/audio embedding dimension
+_HIDDEN_DIM = 64  # GRU hidden size
 _LEARNING_RATE = 0.005
 _EPOCHS = 30
 _MIN_SESSIONS_PER_USER = 3  # need at least 3 sessions per user to learn drift
-_MIN_USERS = 2              # need at least 2 users with enough sessions
+_MIN_USERS = 2  # need at least 2 users with enough sessions
 
 
 class GRUModel:
@@ -118,11 +118,11 @@ class GRUModel:
 
         # MSE loss.
         diff = predicted - target
-        loss = float(np.mean(diff ** 2))
+        loss = float(np.mean(diff**2))
 
         # Gradient of output projection.
         d_predicted = 2.0 * diff / len(diff)  # (input_dim,)
-        d_Wo = np.outer(h, d_predicted)        # (hidden_dim, input_dim)
+        d_Wo = np.outer(h, d_predicted)  # (hidden_dim, input_dim)
         d_bo = d_predicted
 
         # Update output projection.
@@ -154,8 +154,9 @@ async def _load_session_embeddings() -> dict[str, list[tuple[int, np.ndarray]]]:
     async with AsyncSessionLocal() as session:
         # Get all sessions ordered by user and time.
         sess_result = await session.execute(
-            select(ListenSession.user_id, ListenSession.started_at,
-                   ListenSession.event_id_min, ListenSession.event_id_max)
+            select(
+                ListenSession.user_id, ListenSession.started_at, ListenSession.event_id_min, ListenSession.event_id_max
+            )
             .where(ListenSession.track_count >= 2)
             .order_by(ListenSession.user_id, ListenSession.started_at)
         )
@@ -166,8 +167,7 @@ async def _load_session_embeddings() -> dict[str, list[tuple[int, np.ndarray]]]:
 
         # Load all track embeddings.
         emb_result = await session.execute(
-            select(TrackFeatures.track_id, TrackFeatures.embedding)
-            .where(TrackFeatures.embedding.isnot(None))
+            select(TrackFeatures.track_id, TrackFeatures.embedding).where(TrackFeatures.embedding.isnot(None))
         )
         track_embeddings: dict[str, np.ndarray] = {}
         for row in emb_result.all():
@@ -216,10 +216,7 @@ def _train_model_sync(
 ) -> tuple[GRUModel | None, dict[str, np.ndarray]]:
     """CPU-bound GRU training. Runs in a thread executor."""
     # Filter users with enough sessions.
-    eligible = {
-        uid: sessions for uid, sessions in user_data.items()
-        if len(sessions) >= _MIN_SESSIONS_PER_USER
-    }
+    eligible = {uid: sessions for uid, sessions in user_data.items() if len(sessions) >= _MIN_SESSIONS_PER_USER}
 
     if len(eligible) < _MIN_USERS:
         return None, {}
@@ -279,16 +276,10 @@ async def train() -> dict[str, Any]:
 
     user_data = await _load_session_embeddings()
 
-    eligible_count = sum(
-        1 for sessions in user_data.values()
-        if len(sessions) >= _MIN_SESSIONS_PER_USER
-    )
+    eligible_count = sum(1 for sessions in user_data.values() if len(sessions) >= _MIN_SESSIONS_PER_USER)
 
     if eligible_count < _MIN_USERS:
-        logger.info(
-            f"Session GRU: only {eligible_count} users with >= "
-            f"{_MIN_SESSIONS_PER_USER} sessions, skipping."
-        )
+        logger.info(f"Session GRU: only {eligible_count} users with >= {_MIN_SESSIONS_PER_USER} sessions, skipping.")
         return {
             "trained": False,
             "eligible_users": eligible_count,
@@ -297,7 +288,9 @@ async def train() -> dict[str, Any]:
 
     loop = asyncio.get_running_loop()
     model, user_predictions = await loop.run_in_executor(
-        None, _train_model_sync, user_data,
+        None,
+        _train_model_sync,
+        user_data,
     )
 
     if model is None:
@@ -309,8 +302,7 @@ async def train() -> dict[str, Any]:
         _user_predicted_vectors = user_predictions
 
     logger.info(
-        f"Session GRU trained: {eligible_count} users, "
-        f"{sum(len(s) for s in user_data.values())} total sessions."
+        f"Session GRU trained: {eligible_count} users, {sum(len(s) for s in user_data.values())} total sessions."
     )
 
     return {

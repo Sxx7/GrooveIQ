@@ -52,8 +52,12 @@ async def start_scheduler() -> None:
         _scheduler.add_job(
             _periodic_discovery,
             trigger=CronTrigger(
-                minute=cron[0], hour=cron[1], day=cron[2],
-                month=cron[3], day_of_week=cron[4], timezone="UTC",
+                minute=cron[0],
+                hour=cron[1],
+                day=cron[2],
+                month=cron[3],
+                day_of_week=cron[4],
+                timezone="UTC",
             ),
             id="music_discovery",
             replace_existing=True,
@@ -124,6 +128,7 @@ async def start_scheduler() -> None:
     # Resume any scan interrupted by a previous container restart,
     # or trigger a fresh initial scan if none are pending.
     import asyncio
+
     asyncio.create_task(_startup_scan())
 
     # Run recommendation pipeline once on startup so recommendations
@@ -175,6 +180,7 @@ async def _event_loop_watchdog() -> None:
     Runs every 5s as a background task.
     """
     import asyncio
+
     while True:
         t0 = time.monotonic()
         await asyncio.sleep(0.1)
@@ -197,6 +203,7 @@ async def run_recommendation_pipeline_now(trigger: str = "manual") -> dict:
     """Run the recommendation pipeline on demand. Returns summary."""
     await _periodic_recommendation_pipeline(trigger=trigger)
     from app.services.pipeline_state import get_last_run
+
     return get_last_run() or {"status": "completed"}
 
 
@@ -209,9 +216,7 @@ async def _periodic_library_scan() -> None:
 async def _cleanup_old_events() -> None:
     cutoff = int(time.time()) - (settings.EVENT_RETENTION_DAYS * 86_400)
     async with AsyncSessionLocal() as session:
-        result = await session.execute(
-            delete(ListenEvent).where(ListenEvent.timestamp < cutoff)
-        )
+        result = await session.execute(delete(ListenEvent).where(ListenEvent.timestamp < cutoff))
         await session.commit()
         deleted = result.rowcount
     if deleted:
@@ -244,21 +249,22 @@ async def _periodic_recommendation_pipeline(trigger: str = "scheduled") -> None:
     # ── Step definitions ─────────────────────────────────────────────
     # (step_name, display, import_path, callable_name)
     _steps = [
-        ("sessionizer",        "Sessionizer",         "app.services.sessionizer",        "run_sessionizer"),
-        ("track_scoring",      "Track scoring",       "app.services.track_scoring",      "run_track_scoring"),
-        ("taste_profiles",     "Taste profiles",      "app.services.taste_profile",      "run_taste_profile_builder"),
-        ("collab_filter",      "CF model rebuild",    "app.services.collab_filter",      "build_model"),
-        ("ranker",             "Ranker training",     "app.services.ranker",             "train_model"),
-        ("session_embeddings", "Session embeddings",  "app.services.session_embeddings", "train"),
-        ("lastfm_cache",       "Last.fm cache",       "app.services.lastfm_candidates",  "build_cache"),
-        ("sasrec",             "SASRec training",     "app.services.sasrec",             "train"),
-        ("session_gru",        "Session GRU",         "app.services.session_gru",        "train"),
+        ("sessionizer", "Sessionizer", "app.services.sessionizer", "run_sessionizer"),
+        ("track_scoring", "Track scoring", "app.services.track_scoring", "run_track_scoring"),
+        ("taste_profiles", "Taste profiles", "app.services.taste_profile", "run_taste_profile_builder"),
+        ("collab_filter", "CF model rebuild", "app.services.collab_filter", "build_model"),
+        ("ranker", "Ranker training", "app.services.ranker", "train_model"),
+        ("session_embeddings", "Session embeddings", "app.services.session_embeddings", "train"),
+        ("lastfm_cache", "Last.fm cache", "app.services.lastfm_candidates", "build_cache"),
+        ("sasrec", "SASRec training", "app.services.sasrec", "train"),
+        ("session_gru", "Session GRU", "app.services.session_gru", "train"),
     ]
 
     for step_name, display, module_path, func_name in _steps:
         step_start(run, step_name)
         try:
             import importlib
+
             mod = importlib.import_module(module_path)
             func = getattr(mod, func_name)
             result = await func()
@@ -282,6 +288,7 @@ async def _periodic_discovery() -> None:
     """Run the music discovery pipeline (Last.fm → Lidarr)."""
     try:
         from app.services.discovery import run_discovery_pipeline
+
         result = await run_discovery_pipeline()
         logger.info("Discovery pipeline done: %s", result)
     except Exception:
@@ -291,6 +298,7 @@ async def _periodic_discovery() -> None:
 async def run_discovery_now() -> dict:
     """Run the discovery pipeline on demand. Returns summary."""
     from app.services.discovery import run_discovery_pipeline
+
     return await run_discovery_pipeline()
 
 
@@ -298,6 +306,7 @@ async def _process_scrobble_queue() -> None:
     """Process pending Last.fm scrobbles."""
     try:
         from app.services.lastfm_scrobbler import process_scrobble_queue
+
         result = await process_scrobble_queue()
         if result.get("processed", 0) > 0 or result.get("failed", 0) > 0:
             logger.info("Scrobble queue: %s", result)
@@ -309,6 +318,7 @@ async def _periodic_charts_build() -> None:
     """Rebuild Last.fm charts (global, genre, country)."""
     try:
         from app.services.charts import build_charts
+
         result = await build_charts()
         logger.info("Charts build done: %s", result)
     except Exception:
@@ -318,6 +328,7 @@ async def _periodic_charts_build() -> None:
 async def run_charts_build_now() -> dict:
     """Run the charts build on demand. Returns summary."""
     from app.services.charts import build_charts
+
     return await build_charts()
 
 
@@ -325,6 +336,7 @@ async def _refresh_lastfm_profiles() -> None:
     """Refresh cached Last.fm profile data for linked users."""
     try:
         from app.services.lastfm_profile import refresh_lastfm_profiles
+
         result = await refresh_lastfm_profiles()
         if result.get("refreshed", 0) > 0:
             logger.info("Last.fm profiles refreshed: %s", result)
@@ -342,6 +354,7 @@ async def _reap_stuck_downloads() -> None:
     """
     try:
         from app.services.download_watcher import reap_stuck_downloads
+
         await reap_stuck_downloads()
     except Exception:
         logger.error(f"Download reaper failed: {traceback.format_exc()}")
@@ -351,6 +364,7 @@ async def _refresh_news_feed() -> None:
     """Refresh the in-memory Reddit news cache."""
     try:
         from app.services.reddit_news import refresh_cache
+
         result = await refresh_cache()
         if result.get("fetched", 0) > 0:
             logger.info("News feed refreshed: %s", result)

@@ -85,8 +85,13 @@ logger = logging.getLogger(__name__)
 
 # Audio feature columns to aggregate into preferences.
 _AUDIO_FEATURES = [
-    "bpm", "energy", "danceability", "valence",
-    "acousticness", "instrumentalness", "loudness",
+    "bpm",
+    "energy",
+    "danceability",
+    "valence",
+    "acousticness",
+    "instrumentalness",
+    "loudness",
 ]
 
 # Process users in batches.
@@ -123,9 +128,7 @@ async def run_taste_profile_builder() -> dict:
 
                 now = int(time.time())
                 await session.execute(
-                    update(User)
-                    .where(User.user_id == user_id)
-                    .values(taste_profile=profile, profile_updated_at=now)
+                    update(User).where(User.user_id == user_id).values(taste_profile=profile, profile_updated_at=now)
                 )
                 updated += 1
 
@@ -140,9 +143,7 @@ async def run_taste_profile_builder() -> dict:
     return {"users_updated": updated, "users_skipped": skipped}
 
 
-async def _build_profile(
-    session: AsyncSession, user_id: str
-) -> dict[str, Any] | None:
+async def _build_profile(session: AsyncSession, user_id: str) -> dict[str, Any] | None:
     """
     Build the full taste profile for one user.
 
@@ -160,9 +161,7 @@ async def _build_profile(
     if not interactions:
         # No local interactions — try to build a seed profile from
         # Last.fm cache and/or onboarding preferences.
-        user_result = await session.execute(
-            select(User).where(User.user_id == user_id)
-        )
+        user_result = await session.execute(select(User).where(User.user_id == user_id))
         user = user_result.scalar_one_or_none()
         if user:
             seed = await build_seed_profile(session, user)
@@ -185,7 +184,7 @@ async def _build_profile(
     tp_cfg = get_config().taste_profile
     top_tracks = [
         {"track_id": inter.track_id, "score": round(inter.satisfaction_score or 0, 4)}
-        for inter, _ in weighted_interactions[:tp_cfg.top_tracks_limit]
+        for inter, _ in weighted_interactions[: tp_cfg.top_tracks_limit]
     ]
 
     # --- Audio preferences (weighted by satisfaction * recency) ---
@@ -194,9 +193,7 @@ async def _build_profile(
     audio_prefs = _compute_audio_preferences(weighted_interactions, features_map)
 
     # --- Multi-timescale audio preferences (short=7d, medium=30d, long=all-time) ---
-    timescale_profiles = _compute_timescale_audio_preferences(
-        interactions, features_map, now
-    )
+    timescale_profiles = _compute_timescale_audio_preferences(interactions, features_map, now)
 
     # --- Mood preferences ---
     mood_prefs = _compute_mood_preferences(weighted_interactions, features_map)
@@ -237,9 +234,7 @@ async def _build_profile(
     behaviour = {
         "avg_session_tracks": session_stats.get("avg_track_count"),
         "avg_skip_rate": round(total_skips / max(total_plays, 1), 4),
-        "avg_completion": (
-            round(sum(completions) / len(completions), 4) if completions else None
-        ),
+        "avg_completion": (round(sum(completions) / len(completions), 4) if completions else None),
         "total_plays": total_plays,
         "active_days": len(active_days_set),
         "listening_since": first_played,
@@ -277,9 +272,7 @@ async def _build_profile(
         profile["location_patterns"] = location_patterns
 
     # --- Enrich with Last.fm data and onboarding preferences ---
-    user_result = await session.execute(
-        select(User).where(User.user_id == user_id)
-    )
+    user_result = await session.execute(select(User).where(User.user_id == user_id))
     user = user_result.scalar_one_or_none()
     if user:
         _enrich_with_lastfm(profile, user.lastfm_cache, len(interactions))
@@ -288,9 +281,7 @@ async def _build_profile(
     return profile
 
 
-async def _fetch_track_features(
-    session: AsyncSession, track_ids: list[str]
-) -> dict[str, TrackFeatures]:
+async def _fetch_track_features(session: AsyncSession, track_ids: list[str]) -> dict[str, TrackFeatures]:
     """Fetch TrackFeatures for a list of track_ids."""
     if not track_ids:
         return {}
@@ -304,10 +295,12 @@ async def _fetch_track_features(
     for i in range(0, len(track_ids), 500):
         batch = track_ids[i : i + 500]
         result = await session.execute(
-            select(TrackFeatures).where(or_(
-                TrackFeatures.track_id.in_(batch),
-                TrackFeatures.external_track_id.in_(batch),
-            ))
+            select(TrackFeatures).where(
+                or_(
+                    TrackFeatures.track_id.in_(batch),
+                    TrackFeatures.external_track_id.in_(batch),
+                )
+            )
         )
         for tf in result.scalars().all():
             features_map[tf.track_id] = tf
@@ -452,10 +445,7 @@ def _compute_mood_preferences(
         return None
 
     # Normalise to fractions that sum to ~1.
-    return {
-        label: round(score / total_weight, 4)
-        for label, score in sorted(mood_scores.items(), key=lambda x: -x[1])
-    }
+    return {label: round(score / total_weight, 4) for label, score in sorted(mood_scores.items(), key=lambda x: -x[1])}
 
 
 def _compute_key_preferences(
@@ -481,15 +471,10 @@ def _compute_key_preferences(
     if total_weight < 1e-9 or not key_scores:
         return None
 
-    return {
-        label: round(score / total_weight, 4)
-        for label, score in sorted(key_scores.items(), key=lambda x: -x[1])
-    }
+    return {label: round(score / total_weight, 4) for label, score in sorted(key_scores.items(), key=lambda x: -x[1])}
 
 
-async def _compute_popularity_preference(
-    session: AsyncSession, user_id: str, interactions: list
-) -> float:
+async def _compute_popularity_preference(session: AsyncSession, user_id: str, interactions: list) -> float:
     """
     Compute user's preference for popular vs niche tracks.
 
@@ -513,8 +498,7 @@ async def _compute_popularity_preference(
 
     # Get library-wide median popularity.
     all_pop_result = await session.execute(
-        select(func.sum(TrackInteraction.play_count).label("total"))
-        .group_by(TrackInteraction.track_id)
+        select(func.sum(TrackInteraction.play_count).label("total")).group_by(TrackInteraction.track_id)
     )
     all_pops = sorted([row.total or 0 for row in all_pop_result.all()])
 
@@ -544,12 +528,11 @@ async def _compute_popularity_preference(
     ratio = user_avg_pop / median_pop
     # ratio > 1 = mainstream, < 1 = niche. Map via tanh to [0, 1].
     import math
+
     return round(0.5 + 0.5 * math.tanh(ratio - 1.0), 4)
 
 
-async def _compute_session_stats(
-    session: AsyncSession, user_id: str
-) -> dict[str, Any]:
+async def _compute_session_stats(session: AsyncSession, user_id: str) -> dict[str, Any]:
     """Compute aggregate session statistics for a user."""
     result = await session.execute(
         select(
@@ -557,8 +540,7 @@ async def _compute_session_stats(
             func.avg(ListenSession.skip_rate).label("avg_sr"),
             func.avg(ListenSession.duration_s).label("avg_dur"),
             func.count(ListenSession.id).label("cnt"),
-        )
-        .where(ListenSession.user_id == user_id)
+        ).where(ListenSession.user_id == user_id)
     )
     row = result.first()
     if row is None or row.cnt == 0:
@@ -572,9 +554,7 @@ async def _compute_session_stats(
     }
 
 
-async def _compute_time_patterns(
-    session: AsyncSession, user_id: str
-) -> dict[str, float] | None:
+async def _compute_time_patterns(session: AsyncSession, user_id: str) -> dict[str, float] | None:
     """Fraction of sessions per hour-of-day."""
     result = await session.execute(
         select(
@@ -595,15 +575,10 @@ async def _compute_time_patterns(
     if total == 0:
         return None
 
-    return {
-        str(r.hour_of_day): round(r.cnt / total, 4)
-        for r in rows
-    }
+    return {str(r.hour_of_day): round(r.cnt / total, 4) for r in rows}
 
 
-async def _compute_device_patterns(
-    session: AsyncSession, user_id: str
-) -> dict[str, float] | None:
+async def _compute_device_patterns(session: AsyncSession, user_id: str) -> dict[str, float] | None:
     """Fraction of sessions per device type."""
     result = await session.execute(
         select(
@@ -624,15 +599,10 @@ async def _compute_device_patterns(
     if total == 0:
         return None
 
-    return {
-        r.dominant_device_type: round(r.cnt / total, 4)
-        for r in rows
-    }
+    return {r.dominant_device_type: round(r.cnt / total, 4) for r in rows}
 
 
-async def _compute_output_patterns(
-    session: AsyncSession, user_id: str
-) -> dict[str, float] | None:
+async def _compute_output_patterns(session: AsyncSession, user_id: str) -> dict[str, float] | None:
     """Fraction of events per audio output type (headphones, speaker, etc.)."""
     result = await session.execute(
         select(
@@ -653,15 +623,10 @@ async def _compute_output_patterns(
     if total == 0:
         return None
 
-    return {
-        r.output_type: round(r.cnt / total, 4)
-        for r in rows
-    }
+    return {r.output_type: round(r.cnt / total, 4) for r in rows}
 
 
-async def _compute_context_type_patterns(
-    session: AsyncSession, user_id: str
-) -> dict[str, float] | None:
+async def _compute_context_type_patterns(session: AsyncSession, user_id: str) -> dict[str, float] | None:
     """Fraction of sessions per listening context type (playlist, album, radio, etc.)."""
     result = await session.execute(
         select(
@@ -682,15 +647,10 @@ async def _compute_context_type_patterns(
     if total == 0:
         return None
 
-    return {
-        r.dominant_context_type: round(r.cnt / total, 4)
-        for r in rows
-    }
+    return {r.dominant_context_type: round(r.cnt / total, 4) for r in rows}
 
 
-async def _compute_location_patterns(
-    session: AsyncSession, user_id: str
-) -> dict[str, float] | None:
+async def _compute_location_patterns(session: AsyncSession, user_id: str) -> dict[str, float] | None:
     """Fraction of events per location label (home, work, gym, commute, etc.)."""
     result = await session.execute(
         select(
@@ -711,15 +671,13 @@ async def _compute_location_patterns(
     if total == 0:
         return None
 
-    return {
-        r.location_label: round(r.cnt / total, 4)
-        for r in rows
-    }
+    return {r.location_label: round(r.cnt / total, 4) for r in rows}
 
 
 # ---------------------------------------------------------------------------
 # Last.fm enrichment
 # ---------------------------------------------------------------------------
+
 
 def _enrich_with_lastfm(
     profile: dict[str, Any],
@@ -747,9 +705,7 @@ def _enrich_with_lastfm(
     genres = lastfm_cache.get("genres")
     if genres and isinstance(genres, dict):
         total = sum(genres.values()) or 1
-        lastfm_genres = {
-            g: round(c / total, 4) for g, c in genres.items()
-        }
+        lastfm_genres = {g: round(c / total, 4) for g, c in genres.items()}
         existing = profile.get("lastfm_genres")
         if not existing:
             profile["lastfm_genres"] = lastfm_genres
@@ -771,7 +727,9 @@ def _enrich_with_lastfm(
     if loved:
         profile["lastfm_loved_tracks"] = [
             {
-                "artist": t.get("artist", {}).get("name", "") if isinstance(t.get("artist"), dict) else str(t.get("artist", "")),
+                "artist": t.get("artist", {}).get("name", "")
+                if isinstance(t.get("artist"), dict)
+                else str(t.get("artist", "")),
                 "title": t.get("name", ""),
             }
             for t in loved[:30]
@@ -784,6 +742,7 @@ def _enrich_with_lastfm(
 # ---------------------------------------------------------------------------
 # Onboarding enrichment
 # ---------------------------------------------------------------------------
+
 
 def _enrich_with_onboarding(
     profile: dict[str, Any],
@@ -832,17 +791,13 @@ def _enrich_with_onboarding(
         existing = profile.get("context_type_patterns", {})
         if not existing:
             n = len(onboarding["listening_contexts"])
-            profile["context_type_patterns"] = {
-                ctx: round(1.0 / n, 4) for ctx in onboarding["listening_contexts"]
-            }
+            profile["context_type_patterns"] = {ctx: round(1.0 / n, 4) for ctx in onboarding["listening_contexts"]}
 
     if onboarding.get("device_types"):
         existing = profile.get("device_patterns", {})
         if not existing:
             n = len(onboarding["device_types"])
-            profile["device_patterns"] = {
-                dev: round(1.0 / n, 4) for dev in onboarding["device_types"]
-            }
+            profile["device_patterns"] = {dev: round(1.0 / n, 4) for dev in onboarding["device_types"]}
 
     profile["onboarding_weight"] = round(onboarding_weight, 4)
 
@@ -850,6 +805,7 @@ def _enrich_with_onboarding(
 # ---------------------------------------------------------------------------
 # Seed profile builder (cold-start from Last.fm + onboarding only)
 # ---------------------------------------------------------------------------
+
 
 async def build_seed_profile(
     session: AsyncSession,
@@ -900,39 +856,33 @@ async def build_seed_profile(
 
         if onboarding.get("mood_preferences"):
             n = len(onboarding["mood_preferences"])
-            profile["mood_preferences"] = {
-                m.lower(): round(1.0 / n, 4)
-                for m in onboarding["mood_preferences"]
-            }
+            profile["mood_preferences"] = {m.lower(): round(1.0 / n, 4) for m in onboarding["mood_preferences"]}
 
         if onboarding.get("listening_contexts"):
             n = len(onboarding["listening_contexts"])
-            profile["context_type_patterns"] = {
-                ctx: round(1.0 / n, 4)
-                for ctx in onboarding["listening_contexts"]
-            }
+            profile["context_type_patterns"] = {ctx: round(1.0 / n, 4) for ctx in onboarding["listening_contexts"]}
 
         if onboarding.get("device_types"):
             n = len(onboarding["device_types"])
-            profile["device_patterns"] = {
-                dev: round(1.0 / n, 4)
-                for dev in onboarding["device_types"]
-            }
+            profile["device_patterns"] = {dev: round(1.0 / n, 4) for dev in onboarding["device_types"]}
 
         # Match favourite tracks/artists against library to build audio prefs.
         if onboarding.get("favourite_tracks"):
             from sqlalchemy import or_
+
             result = await session.execute(
-                select(TrackFeatures).where(or_(
-                    TrackFeatures.track_id.in_(onboarding["favourite_tracks"]),
-                    TrackFeatures.external_track_id.in_(onboarding["favourite_tracks"]),
-                ))
+                select(TrackFeatures).where(
+                    or_(
+                        TrackFeatures.track_id.in_(onboarding["favourite_tracks"]),
+                        TrackFeatures.external_track_id.in_(onboarding["favourite_tracks"]),
+                    )
+                )
             )
             tracks = result.scalars().all()
             if tracks:
                 profile["top_tracks"] = [
                     {"track_id": t.track_id, "score": 1.0}
-                    for t in tracks[:get_config().taste_profile.top_tracks_limit]
+                    for t in tracks[: get_config().taste_profile.top_tracks_limit]
                 ]
                 # Compute audio preferences from favourite tracks.
                 audio = profile.get("audio_preferences", {})
@@ -945,12 +895,11 @@ async def build_seed_profile(
 
         if onboarding.get("favourite_artists"):
             from sqlalchemy import func as sa_func
+
             artist_tracks = []
             for artist in onboarding["favourite_artists"]:
                 result = await session.execute(
-                    select(TrackFeatures)
-                    .where(sa_func.lower(TrackFeatures.artist).contains(artist.lower()))
-                    .limit(20)
+                    select(TrackFeatures).where(sa_func.lower(TrackFeatures.artist).contains(artist.lower())).limit(20)
                 )
                 artist_tracks.extend(result.scalars().all())
             if artist_tracks:
@@ -982,10 +931,12 @@ async def build_seed_profile(
                 if not title or not artist_name:
                     continue
                 result = await session.execute(
-                    select(TrackFeatures).where(
+                    select(TrackFeatures)
+                    .where(
                         func.lower(TrackFeatures.title) == title.lower(),
                         func.lower(TrackFeatures.artist).contains(artist_name.lower()),
-                    ).limit(1)
+                    )
+                    .limit(1)
                 )
                 tf = result.scalar_one_or_none()
                 if tf:
@@ -1010,18 +961,14 @@ async def build_seed_profile(
                 existing_ids = {t["track_id"] for t in profile["top_tracks"]}
                 for tf in matched_features:
                     if tf.track_id not in existing_ids:
-                        profile["top_tracks"].append(
-                            {"track_id": tf.track_id, "score": 0.8}
-                        )
-                profile["top_tracks"] = profile["top_tracks"][:get_config().taste_profile.top_tracks_limit]
+                        profile["top_tracks"].append({"track_id": tf.track_id, "score": 0.8})
+                profile["top_tracks"] = profile["top_tracks"][: get_config().taste_profile.top_tracks_limit]
 
         # Genres from Last.fm.
         genres = lastfm_cache.get("genres")
         if genres and isinstance(genres, dict):
             total = sum(genres.values()) or 1
-            profile["lastfm_genres"] = {
-                g: round(c / total, 4) for g, c in genres.items()
-            }
+            profile["lastfm_genres"] = {g: round(c / total, 4) for g, c in genres.items()}
 
         # Top artists from Last.fm.
         top_artists = lastfm_cache.get("top_artists", {}).get("overall", [])
@@ -1037,7 +984,9 @@ async def build_seed_profile(
         if loved:
             profile["lastfm_loved_tracks"] = [
                 {
-                    "artist": t.get("artist", {}).get("name", "") if isinstance(t.get("artist"), dict) else str(t.get("artist", "")),
+                    "artist": t.get("artist", {}).get("name", "")
+                    if isinstance(t.get("artist"), dict)
+                    else str(t.get("artist", "")),
                     "title": t.get("name", ""),
                 }
                 for t in loved[:30]
@@ -1046,4 +995,8 @@ async def build_seed_profile(
 
         profile["lastfm_weight"] = 1.0
 
-    return profile if (profile.get("audio_preferences") or profile.get("lastfm_genres") or profile.get("top_tracks")) else None
+    return (
+        profile
+        if (profile.get("audio_preferences") or profile.get("lastfm_genres") or profile.get("top_tracks"))
+        else None
+    )

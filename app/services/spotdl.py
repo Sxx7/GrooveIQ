@@ -31,6 +31,7 @@ def _validate_id(value: str, label: str = "ID") -> None:
     if not _SAFE_ID_RE.match(value):
         raise ValueError(f"Invalid {label}: must be alphanumeric, 1-64 chars")
 
+
 logger = logging.getLogger(__name__)
 
 
@@ -56,6 +57,7 @@ class SpotdlClient:
 
     async def _throttle(self) -> None:
         import asyncio
+
         elapsed = time.monotonic() - self._last_request
         if elapsed < self._MIN_REQUEST_GAP:
             await asyncio.sleep(self._MIN_REQUEST_GAP - elapsed)
@@ -86,22 +88,20 @@ class SpotdlClient:
         # so _pick_best_match, _flatten_track, etc. work unchanged.
         items = []
         for entry in data:
-            items.append({
-                "id": entry.get("spotify_id", ""),
-                "name": entry.get("title", ""),
-                "artists": [
-                    {"name": a} for a in (entry.get("artists") or [])
-                ],
-                "album": {
-                    "name": entry.get("album"),
-                    "images": (
-                        [{"url": entry["cover_url"], "width": 300, "height": 300}]
-                        if entry.get("cover_url")
-                        else []
-                    ),
-                },
-                "type": "track",
-            })
+            items.append(
+                {
+                    "id": entry.get("spotify_id", ""),
+                    "name": entry.get("title", ""),
+                    "artists": [{"name": a} for a in (entry.get("artists") or [])],
+                    "album": {
+                        "name": entry.get("album"),
+                        "images": (
+                            [{"url": entry["cover_url"], "width": 300, "height": 300}] if entry.get("cover_url") else []
+                        ),
+                    },
+                    "type": "track",
+                }
+            )
         return items
 
     # -- Cover art ----------------------------------------------------------
@@ -159,7 +159,8 @@ class SpotdlClient:
         except Exception as exc:
             logger.warning(
                 "spotdl-api download transport error for %s: %s",
-                spotify_track_id, exc,
+                spotify_track_id,
+                exc,
             )
             return {"task_id": "", "status": "error", "error": str(exc)}
 
@@ -169,14 +170,11 @@ class SpotdlClient:
             data = {}
 
         if resp.status_code >= 400:
-            err_msg = (
-                data.get("error")
-                or data.get("detail")
-                or f"spotdl-api HTTP {resp.status_code}"
-            )
+            err_msg = data.get("error") or data.get("detail") or f"spotdl-api HTTP {resp.status_code}"
             logger.warning(
                 "spotdl-api download failed for %s: %s",
-                spotify_track_id, err_msg,
+                spotify_track_id,
+                err_msg,
             )
             return {
                 "task_id": data.get("task_id", ""),
@@ -220,7 +218,7 @@ class SpotdlClient:
         if status == "complete":
             status = "complete"  # already matches _TERMINAL_SUCCESS
         elif status == "error":
-            status = "error"    # already matches _TERMINAL_ERROR
+            status = "error"  # already matches _TERMINAL_ERROR
 
         return {
             "status": status,
@@ -234,6 +232,7 @@ class SpotdlClient:
 # Factory — returns the right client based on config
 # ---------------------------------------------------------------------------
 
+
 def get_download_client():
     """Return the appropriate download client based on configuration.
 
@@ -243,6 +242,7 @@ def get_download_client():
         return SpotdlClient(settings.SPOTDL_API_URL)
     elif settings.spotizerr_enabled:
         from app.services.spotizerr import SpotizerrClient
+
         return SpotizerrClient(
             settings.SPOTIZERR_URL,
             settings.SPOTIZERR_USERNAME,

@@ -38,6 +38,7 @@ def _media_server_auth_params() -> str | None:
             return None
         import hashlib
         import secrets as _secrets
+
         salt = _secrets.token_hex(8)
         token = hashlib.md5((password + salt).encode()).hexdigest()
         return f"u={user}&t={token}&s={salt}&v=1.16.1&c=grooveiq"
@@ -141,9 +142,7 @@ async def get_chart(
 
     if total == 0:
         # Give a helpful error: distinguish "never built" from "scope not configured".
-        any_charts = (await session.execute(
-            select(func.count()).select_from(ChartEntry)
-        )).scalar() or 0
+        any_charts = (await session.execute(select(func.count()).select_from(ChartEntry))).scalar() or 0
 
         if any_charts == 0:
             raise HTTPException(
@@ -152,15 +151,17 @@ async def get_chart(
             )
 
         # Charts exist but not for this scope — list available scopes.
-        available = (await session.execute(
-            select(ChartEntry.scope).where(ChartEntry.chart_type == chart_type).distinct()
-        )).scalars().all()
+        available = (
+            (await session.execute(select(ChartEntry.scope).where(ChartEntry.chart_type == chart_type).distinct()))
+            .scalars()
+            .all()
+        )
 
         raise HTTPException(
             status_code=404,
             detail=f"No chart data for scope '{scope}'. "
-                   f"Available scopes for {chart_type}: {', '.join(sorted(available)) or 'none'}. "
-                   f"Configure CHARTS_TAGS or CHARTS_COUNTRIES in .env and rebuild.",
+            f"Available scopes for {chart_type}: {', '.join(sorted(available)) or 'none'}. "
+            f"Configure CHARTS_TAGS or CHARTS_COUNTRIES in .env and rebuild.",
         )
 
     q = (
@@ -176,9 +177,7 @@ async def get_chart(
     matched_ids = [e.matched_track_id for e in entries if e.matched_track_id]
     feat_map = {}
     if matched_ids:
-        feat_q = await session.execute(
-            select(TrackFeatures).where(TrackFeatures.track_id.in_(matched_ids))
-        )
+        feat_q = await session.execute(select(TrackFeatures).where(TrackFeatures.track_id.in_(matched_ids)))
         feat_map = {t.track_id: t for t in feat_q.scalars().all()}
 
     # Pre-compute media server auth for cover art URLs.
@@ -264,6 +263,7 @@ async def trigger_chart_build(
 ):
     require_admin(_key)
     from app.services.charts import build_charts
+
     result = await build_charts()
     return {"status": "completed", "result": result}
 
@@ -293,20 +293,20 @@ async def download_chart_track(
     track_title = body.track_title
 
     if body.position is not None:
-        entry = (await session.execute(
-            select(ChartEntry)
-            .where(
-                ChartEntry.chart_type == body.chart_type,
-                ChartEntry.scope == body.scope,
-                ChartEntry.position == body.position,
+        entry = (
+            await session.execute(
+                select(ChartEntry).where(
+                    ChartEntry.chart_type == body.chart_type,
+                    ChartEntry.scope == body.scope,
+                    ChartEntry.position == body.position,
+                )
             )
-        )).scalar_one_or_none()
+        ).scalar_one_or_none()
 
         if not entry:
             raise HTTPException(
                 status_code=404,
-                detail=f"No chart entry at position {body.position} "
-                       f"in {body.chart_type}/{body.scope}.",
+                detail=f"No chart entry at position {body.position} in {body.chart_type}/{body.scope}.",
             )
         artist_name = entry.artist_name
         track_title = entry.track_title
@@ -346,27 +346,25 @@ async def chart_stats(
     session: AsyncSession = Depends(get_session),
     _key: str = Depends(require_api_key),
 ):
-    total = (await session.execute(
-        select(func.count()).select_from(ChartEntry)
-    )).scalar() or 0
+    total = (await session.execute(select(func.count()).select_from(ChartEntry))).scalar() or 0
 
-    matched = (await session.execute(
-        select(func.count()).select_from(ChartEntry)
-        .where(ChartEntry.matched_track_id.isnot(None))
-    )).scalar() or 0
-
-    last_fetch = (await session.execute(
-        select(func.max(ChartEntry.fetched_at))
-    )).scalar()
-
-    chart_count = (await session.execute(
-        select(func.count())
-        .select_from(
-            select(ChartEntry.chart_type, ChartEntry.scope)
-            .group_by(ChartEntry.chart_type, ChartEntry.scope)
-            .subquery()
+    matched = (
+        await session.execute(
+            select(func.count()).select_from(ChartEntry).where(ChartEntry.matched_track_id.isnot(None))
         )
-    )).scalar() or 0
+    ).scalar() or 0
+
+    last_fetch = (await session.execute(select(func.max(ChartEntry.fetched_at)))).scalar()
+
+    chart_count = (
+        await session.execute(
+            select(func.count()).select_from(
+                select(ChartEntry.chart_type, ChartEntry.scope)
+                .group_by(ChartEntry.chart_type, ChartEntry.scope)
+                .subquery()
+            )
+        )
+    ).scalar() or 0
 
     return {
         "total_entries": total,

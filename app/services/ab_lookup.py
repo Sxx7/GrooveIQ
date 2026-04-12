@@ -112,9 +112,7 @@ class AcousticBrainzClient:
 
         try:
             await self._throttle()
-            resp = await self._client.post(
-                f"{self._base_url}/v1/search", json=body
-            )
+            resp = await self._client.post(f"{self._base_url}/v1/search", json=body)
             resp.raise_for_status()
             data = resp.json()
             return data.get("results", [])

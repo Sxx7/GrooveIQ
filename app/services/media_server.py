@@ -39,25 +39,28 @@ _HTTP_TIMEOUT = 30.0
 # Data types
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class MediaServerTrack:
     """A single track as reported by the media server."""
+
     server_id: str
     title: str = ""
     artist: str = ""
     album: str = ""
-    genre: str = ""           # comma-separated genre tags
-    file_path: str = ""       # absolute or relative path as reported by the server
+    genre: str = ""  # comma-separated genre tags
+    file_path: str = ""  # absolute or relative path as reported by the server
     duration: float | None = None
 
 
 @dataclass
 class SyncResult:
     """Summary of a sync operation."""
+
     server_type: str = ""
     tracks_fetched: int = 0
     tracks_matched: int = 0
-    tracks_updated: int = 0   # track_id actually changed
+    tracks_updated: int = 0  # track_id actually changed
     tracks_metadata: int = 0  # metadata (title/artist/album) updated
     tracks_unmatched: int = 0
     errors: list[str] = field(default_factory=list)
@@ -67,6 +70,7 @@ class SyncResult:
 # ---------------------------------------------------------------------------
 # Path normalisation
 # ---------------------------------------------------------------------------
+
 
 def _normalise_path(file_path: str, music_root: str) -> str:
     """
@@ -87,7 +91,7 @@ def _normalise_path(file_path: str, music_root: str) -> str:
         path = file_path.replace("\\", "/")
         root_norm = root.replace("\\", "/")
         if path.lower().startswith(root_norm.lower()):
-            path = path[len(root_norm):]
+            path = path[len(root_norm) :]
     else:
         path = file_path.replace("\\", "/")
     # Strip leading slashes, lower-case for case-insensitive matching.
@@ -98,12 +102,12 @@ def _normalise_path(file_path: str, music_root: str) -> str:
 # Navidrome client  (Subsonic API)
 # ---------------------------------------------------------------------------
 
-async def _fetch_navidrome_tracks(
-    base_url: str, username: str, password: str
-) -> list[MediaServerTrack]:
+
+async def _fetch_navidrome_tracks(base_url: str, username: str, password: str) -> list[MediaServerTrack]:
     """Fetch all tracks from a Navidrome server via the Subsonic API."""
     # Subsonic token-based auth: token = md5(password + salt)
     import secrets as _secrets
+
     salt = _secrets.token_hex(8)
     token = hashlib.md5((password + salt).encode()).hexdigest()
 
@@ -145,15 +149,17 @@ async def _fetch_navidrome_tracks(
                 break
 
             for s in songs:
-                tracks.append(MediaServerTrack(
-                    server_id=str(s["id"]),
-                    title=s.get("title", ""),
-                    artist=s.get("artist", ""),
-                    album=s.get("album", ""),
-                    genre=s.get("genre", ""),
-                    file_path=s.get("path", ""),
-                    duration=float(s["duration"]) if s.get("duration") else None,
-                ))
+                tracks.append(
+                    MediaServerTrack(
+                        server_id=str(s["id"]),
+                        title=s.get("title", ""),
+                        artist=s.get("artist", ""),
+                        album=s.get("album", ""),
+                        genre=s.get("genre", ""),
+                        file_path=s.get("path", ""),
+                        duration=float(s["duration"]) if s.get("duration") else None,
+                    )
+                )
 
             if len(songs) < page_size:
                 break
@@ -167,9 +173,8 @@ async def _fetch_navidrome_tracks(
 # Plex client
 # ---------------------------------------------------------------------------
 
-async def _fetch_plex_tracks(
-    base_url: str, token: str, library_id: str
-) -> list[MediaServerTrack]:
+
+async def _fetch_plex_tracks(base_url: str, token: str, library_id: str) -> list[MediaServerTrack]:
     """Fetch all tracks from a Plex server."""
     base = base_url.rstrip("/")
     headers = {
@@ -216,15 +221,17 @@ async def _fetch_plex_tracks(
                 genre_tags = m.get("Genre", [])
                 genre = ", ".join(g["tag"] for g in genre_tags if isinstance(g, dict) and "tag" in g)
 
-                tracks.append(MediaServerTrack(
-                    server_id=str(m["ratingKey"]),
-                    title=m.get("title", ""),
-                    artist=m.get("grandparentTitle", ""),  # artist
-                    album=m.get("parentTitle", ""),         # album
-                    genre=genre,
-                    file_path=file_path,
-                    duration=duration,
-                ))
+                tracks.append(
+                    MediaServerTrack(
+                        server_id=str(m["ratingKey"]),
+                        title=m.get("title", ""),
+                        artist=m.get("grandparentTitle", ""),  # artist
+                        album=m.get("parentTitle", ""),  # album
+                        genre=genre,
+                        file_path=file_path,
+                        duration=duration,
+                    )
+                )
 
             if len(metadata_list) < page_size:
                 break
@@ -238,6 +245,7 @@ async def _fetch_plex_tracks(
 # Public API
 # ---------------------------------------------------------------------------
 
+
 async def fetch_tracks() -> list[MediaServerTrack]:
     """
     Fetch all tracks from the configured media server.
@@ -250,6 +258,7 @@ async def fetch_tracks() -> list[MediaServerTrack]:
         if not settings.MEDIA_SERVER_URL or not settings.MEDIA_SERVER_USER:
             raise RuntimeError("Navidrome requires MEDIA_SERVER_URL and MEDIA_SERVER_USER.")
         from app.core.credentials import get_media_server_password
+
         return await _fetch_navidrome_tracks(
             settings.MEDIA_SERVER_URL,
             settings.MEDIA_SERVER_USER,
@@ -259,6 +268,7 @@ async def fetch_tracks() -> list[MediaServerTrack]:
         if not settings.MEDIA_SERVER_URL or not settings.MEDIA_SERVER_TOKEN:
             raise RuntimeError("Plex requires MEDIA_SERVER_URL and MEDIA_SERVER_TOKEN.")
         from app.core.credentials import get_media_server_token
+
         return await _fetch_plex_tracks(
             settings.MEDIA_SERVER_URL,
             get_media_server_token(),
@@ -279,6 +289,7 @@ def is_configured() -> bool:
 # ---------------------------------------------------------------------------
 # Library refresh (API-triggered scan)
 # ---------------------------------------------------------------------------
+
 
 async def refresh_library(path: str | None = None) -> bool:
     """Trigger an immediate library rescan on the configured media server.
@@ -390,7 +401,8 @@ async def _refresh_plex(path: str | None = None) -> bool:
             scope = f"partial path={path}" if path else "full library"
             logger.info(
                 "Plex: library scan triggered (section=%s, %s)",
-                settings.MEDIA_SERVER_LIBRARY_ID, scope,
+                settings.MEDIA_SERVER_LIBRARY_ID,
+                scope,
             )
             return True
     except Exception as exc:
@@ -437,23 +449,25 @@ async def sync_track_ids(session: AsyncSession) -> SyncResult:
             server_map[norm] = st
 
     # 3. Load only the columns we need (not full ORM objects — 21k+ rows).
-    rows = (await session.execute(
-        select(
-            TrackFeatures.id,
-            TrackFeatures.track_id,
-            TrackFeatures.file_path,
-            TrackFeatures.title,
-            TrackFeatures.artist,
-            TrackFeatures.album,
-            TrackFeatures.genre,
-            TrackFeatures.external_track_id,
+    rows = (
+        await session.execute(
+            select(
+                TrackFeatures.id,
+                TrackFeatures.track_id,
+                TrackFeatures.file_path,
+                TrackFeatures.title,
+                TrackFeatures.artist,
+                TrackFeatures.album,
+                TrackFeatures.genre,
+                TrackFeatures.external_track_id,
+            )
         )
-    )).all()
+    ).all()
     grooveiq_music_root = settings.MUSIC_LIBRARY_PATH
 
     # 4. Build batch updates instead of per-row ORM flush.
-    metadata_updates: list[dict] = []       # bulk metadata UPDATE
-    track_id_renames: list[tuple] = []       # (tf_id, old_id, new_id, external_id)
+    metadata_updates: list[dict] = []  # bulk metadata UPDATE
+    track_id_renames: list[tuple] = []  # (tf_id, old_id, new_id, external_id)
     existing_track_ids = {r.track_id for r in rows}
 
     for r in rows:
@@ -472,20 +486,24 @@ async def sync_track_ids(session: AsyncSession) -> SyncResult:
 
         # Check metadata changes.
         if r.title != st.title or r.artist != st.artist or r.album != st.album or r.genre != st.genre:
-            metadata_updates.append({
-                "tf_id": r.id,
-                "title": st.title,
-                "artist": st.artist,
-                "album": st.album,
-                "genre": st.genre,
-            })
+            metadata_updates.append(
+                {
+                    "tf_id": r.id,
+                    "title": st.title,
+                    "artist": st.artist,
+                    "album": st.album,
+                    "genre": st.genre,
+                }
+            )
             result.tracks_metadata += 1
 
         # Check track_id rename.
         if old_track_id != new_track_id:
             # Skip if new_track_id already exists (conflict).
             if new_track_id in existing_track_ids:
-                logger.warning("Track ID conflict for %s: server ID '%s' already exists, keeping metadata only", norm, new_track_id)
+                logger.warning(
+                    "Track ID conflict for %s: server ID '%s' already exists, keeping metadata only", norm, new_track_id
+                )
             else:
                 ext_id = r.external_track_id or old_track_id
                 track_id_renames.append((r.id, old_track_id, new_track_id, ext_id))
@@ -503,7 +521,7 @@ async def sync_track_ids(session: AsyncSession) -> SyncResult:
     # 5. Apply metadata updates in batches (yield between batches).
     batch_size = 200
     for i in range(0, len(metadata_updates), batch_size):
-        batch = metadata_updates[i:i + batch_size]
+        batch = metadata_updates[i : i + batch_size]
         for upd in batch:
             await session.execute(
                 update(TrackFeatures)
@@ -517,19 +535,11 @@ async def sync_track_ids(session: AsyncSession) -> SyncResult:
     for tf_id, old_id, new_id, ext_id in track_id_renames:
         try:
             await session.execute(
-                update(TrackFeatures)
-                .where(TrackFeatures.id == tf_id)
-                .values(track_id=new_id, external_track_id=ext_id)
+                update(TrackFeatures).where(TrackFeatures.id == tf_id).values(track_id=new_id, external_track_id=ext_id)
             )
+            await session.execute(update(ListenEvent).where(ListenEvent.track_id == old_id).values(track_id=new_id))
             await session.execute(
-                update(ListenEvent)
-                .where(ListenEvent.track_id == old_id)
-                .values(track_id=new_id)
-            )
-            await session.execute(
-                update(TrackInteraction)
-                .where(TrackInteraction.track_id == old_id)
-                .values(track_id=new_id)
+                update(TrackInteraction).where(TrackInteraction.track_id == old_id).values(track_id=new_id)
             )
         except Exception as exc:
             result.errors.append(f"rename {old_id}→{new_id}: {str(exc)[:120]}")

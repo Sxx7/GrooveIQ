@@ -31,6 +31,7 @@ logger = logging.getLogger(__name__)
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _decode_embedding(b64: str) -> np.ndarray:
     return np.frombuffer(base64.b64decode(b64), dtype=np.float32)
 
@@ -45,9 +46,7 @@ def _cosine_sim(a: np.ndarray, b: np.ndarray) -> float:
 async def _load_tracks(session: AsyncSession) -> list[TrackFeatures]:
     """Load all analyzed tracks with non-null embeddings."""
     result = await session.execute(
-        select(TrackFeatures)
-        .where(TrackFeatures.embedding.isnot(None))
-        .where(TrackFeatures.analysis_error.is_(None))
+        select(TrackFeatures).where(TrackFeatures.embedding.isnot(None)).where(TrackFeatures.analysis_error.is_(None))
     )
     return list(result.scalars().all())
 
@@ -58,18 +57,32 @@ async def _load_tracks(session: AsyncSession) -> list[TrackFeatures]:
 
 # Maps (key, mode) → Camelot code (number 1–12, letter A/B)
 _CAMELOT = {
-    ("Ab", "minor"): (1, "A"), ("B",  "major"): (1, "B"),
-    ("Eb", "minor"): (2, "A"), ("F#", "major"): (2, "B"),
-    ("Bb", "minor"): (3, "A"), ("C#", "major"): (3, "B"),  ("Db", "major"): (3, "B"),
-    ("F",  "minor"): (4, "A"), ("Ab", "major"): (4, "B"),
-    ("C",  "minor"): (5, "A"), ("Eb", "major"): (5, "B"),
-    ("G",  "minor"): (6, "A"), ("Bb", "major"): (6, "B"),
-    ("D",  "minor"): (7, "A"), ("F",  "major"): (7, "B"),
-    ("A",  "minor"): (8, "A"), ("C",  "major"): (8, "B"),
-    ("E",  "minor"): (9, "A"), ("G",  "major"): (9, "B"),
-    ("B",  "minor"): (10, "A"), ("D",  "major"): (10, "B"),
-    ("F#", "minor"): (11, "A"), ("A",  "major"): (11, "B"),
-    ("C#", "minor"): (12, "A"), ("E",  "major"): (12, "B"), ("Db", "minor"): (12, "A"),
+    ("Ab", "minor"): (1, "A"),
+    ("B", "major"): (1, "B"),
+    ("Eb", "minor"): (2, "A"),
+    ("F#", "major"): (2, "B"),
+    ("Bb", "minor"): (3, "A"),
+    ("C#", "major"): (3, "B"),
+    ("Db", "major"): (3, "B"),
+    ("F", "minor"): (4, "A"),
+    ("Ab", "major"): (4, "B"),
+    ("C", "minor"): (5, "A"),
+    ("Eb", "major"): (5, "B"),
+    ("G", "minor"): (6, "A"),
+    ("Bb", "major"): (6, "B"),
+    ("D", "minor"): (7, "A"),
+    ("F", "major"): (7, "B"),
+    ("A", "minor"): (8, "A"),
+    ("C", "major"): (8, "B"),
+    ("E", "minor"): (9, "A"),
+    ("G", "major"): (9, "B"),
+    ("B", "minor"): (10, "A"),
+    ("D", "major"): (10, "B"),
+    ("F#", "minor"): (11, "A"),
+    ("A", "major"): (11, "B"),
+    ("C#", "minor"): (12, "A"),
+    ("E", "major"): (12, "B"),
+    ("Db", "minor"): (12, "A"),
 }
 
 
@@ -93,6 +106,7 @@ def _camelot_compatible(code1: tuple[int, str], code2: tuple[int, str], max_dist
 # ---------------------------------------------------------------------------
 # Strategy: Flow
 # ---------------------------------------------------------------------------
+
 
 def _generate_flow(tracks: list[TrackFeatures], seed_id: str, max_tracks: int) -> list[str]:
     """Greedy chain from seed, preferring smooth BPM/energy transitions."""
@@ -160,6 +174,7 @@ def _generate_flow(tracks: list[TrackFeatures], seed_id: str, max_tracks: int) -
 # Strategy: Mood
 # ---------------------------------------------------------------------------
 
+
 def _generate_mood(tracks: list[TrackFeatures], mood: str, max_tracks: int) -> list[str]:
     """Filter tracks by mood tag confidence, order by energy arc."""
     scored = []
@@ -193,6 +208,7 @@ def _generate_mood(tracks: list[TrackFeatures], mood: str, max_tracks: int) -> l
 # ---------------------------------------------------------------------------
 # Strategy: Energy Curve
 # ---------------------------------------------------------------------------
+
 
 def _generate_energy_curve(tracks: list[TrackFeatures], curve: str, max_tracks: int) -> list[str]:
     """Match tracks to a target energy profile."""
@@ -259,6 +275,7 @@ def _generate_energy_curve(tracks: list[TrackFeatures], curve: str, max_tracks: 
 # ---------------------------------------------------------------------------
 # Strategy: Key-Compatible (Camelot)
 # ---------------------------------------------------------------------------
+
 
 def _generate_key_compatible(tracks: list[TrackFeatures], seed_id: str, max_tracks: int) -> list[str]:
     """Chain tracks using Camelot wheel harmonic compatibility."""
@@ -327,6 +344,7 @@ def _generate_key_compatible(tracks: list[TrackFeatures], seed_id: str, max_trac
 # Public API
 # ---------------------------------------------------------------------------
 
+
 async def generate_playlist(
     session: AsyncSession,
     name: str,
@@ -380,25 +398,23 @@ async def generate_playlist(
     await session.flush()  # get playlist.id
 
     for pos, tid in enumerate(track_ids):
-        session.add(PlaylistTrack(
-            playlist_id=playlist.id,
-            track_id=tid,
-            position=pos,
-        ))
+        session.add(
+            PlaylistTrack(
+                playlist_id=playlist.id,
+                track_id=tid,
+                position=pos,
+            )
+        )
 
     await session.flush()
     logger.info(f"Created playlist '{name}' (id={playlist.id}): {len(track_ids)} tracks, {total_dur:.0f}s")
     return playlist
 
 
-async def get_playlist_with_tracks(
-    session: AsyncSession, playlist_id: int
-) -> dict[str, Any] | None:
+async def get_playlist_with_tracks(session: AsyncSession, playlist_id: int) -> dict[str, Any] | None:
     """Load a playlist with its tracks joined to track_features."""
     # Get playlist
-    result = await session.execute(
-        select(Playlist).where(Playlist.id == playlist_id)
-    )
+    result = await session.execute(select(Playlist).where(Playlist.id == playlist_id))
     playlist = result.scalar_one_or_none()
     if not playlist:
         return None
@@ -446,15 +462,11 @@ async def get_playlist_with_tracks(
 
 async def delete_playlist(session: AsyncSession, playlist_id: int) -> bool:
     """Delete a playlist and its tracks. Returns True if found."""
-    result = await session.execute(
-        select(Playlist).where(Playlist.id == playlist_id)
-    )
+    result = await session.execute(select(Playlist).where(Playlist.id == playlist_id))
     playlist = result.scalar_one_or_none()
     if not playlist:
         return False
 
-    await session.execute(
-        delete(PlaylistTrack).where(PlaylistTrack.playlist_id == playlist_id)
-    )
+    await session.execute(delete(PlaylistTrack).where(PlaylistTrack.playlist_id == playlist_id))
     await session.delete(playlist)
     return True

@@ -48,38 +48,29 @@ _ESSENTIA_MODELS_BASE = "https://essentia.upf.edu/models"
 
 _ONNX_MODELS = {
     # Feature extractor backbone (dynamic batch size)
-    "discogs-effnet-bsdynamic-1.onnx":
-        "feature-extractors/discogs-effnet/discogs-effnet-bsdynamic-1.onnx",
+    "discogs-effnet-bsdynamic-1.onnx": "feature-extractors/discogs-effnet/discogs-effnet-bsdynamic-1.onnx",
     # Classification heads
-    "danceability-discogs-effnet-1.onnx":
-        "classification-heads/danceability/danceability-discogs-effnet-1.onnx",
-    "mood_happy-discogs-effnet-1.onnx":
-        "classification-heads/mood_happy/mood_happy-discogs-effnet-1.onnx",
-    "mood_sad-discogs-effnet-1.onnx":
-        "classification-heads/mood_sad/mood_sad-discogs-effnet-1.onnx",
-    "mood_aggressive-discogs-effnet-1.onnx":
-        "classification-heads/mood_aggressive/mood_aggressive-discogs-effnet-1.onnx",
-    "mood_relaxed-discogs-effnet-1.onnx":
-        "classification-heads/mood_relaxed/mood_relaxed-discogs-effnet-1.onnx",
-    "mood_party-discogs-effnet-1.onnx":
-        "classification-heads/mood_party/mood_party-discogs-effnet-1.onnx",
-    "voice_instrumental-discogs-effnet-1.onnx":
-        "classification-heads/voice_instrumental/voice_instrumental-discogs-effnet-1.onnx",
-    "approachability_regression-discogs-effnet-1.onnx":
-        "classification-heads/approachability/approachability_regression-discogs-effnet-1.onnx",
+    "danceability-discogs-effnet-1.onnx": "classification-heads/danceability/danceability-discogs-effnet-1.onnx",
+    "mood_happy-discogs-effnet-1.onnx": "classification-heads/mood_happy/mood_happy-discogs-effnet-1.onnx",
+    "mood_sad-discogs-effnet-1.onnx": "classification-heads/mood_sad/mood_sad-discogs-effnet-1.onnx",
+    "mood_aggressive-discogs-effnet-1.onnx": "classification-heads/mood_aggressive/mood_aggressive-discogs-effnet-1.onnx",
+    "mood_relaxed-discogs-effnet-1.onnx": "classification-heads/mood_relaxed/mood_relaxed-discogs-effnet-1.onnx",
+    "mood_party-discogs-effnet-1.onnx": "classification-heads/mood_party/mood_party-discogs-effnet-1.onnx",
+    "voice_instrumental-discogs-effnet-1.onnx": "classification-heads/voice_instrumental/voice_instrumental-discogs-effnet-1.onnx",
+    "approachability_regression-discogs-effnet-1.onnx": "classification-heads/approachability/approachability_regression-discogs-effnet-1.onnx",
 }
 
 # ---------------------------------------------------------------------------
 # Mel-spectrogram parameters (must match EffNet-Discogs training pipeline)
 # ---------------------------------------------------------------------------
 
-_EFFNET_SR = 16000       # EffNet expects 16 kHz mono
+_EFFNET_SR = 16000  # EffNet expects 16 kHz mono
 _FFT_SIZE = 1024
 _HOP_SIZE = 256
 _N_MELS = 128
 _FREQ_MAX = 8000.0
-_PATCH_FRAMES = 96       # ~1.5 s per patch at 16 kHz / 256 hop
-_PATCH_HOP = 96          # non-overlapping patches
+_PATCH_FRAMES = 96  # ~1.5 s per patch at 16 kHz / 256 hop
+_PATCH_HOP = 96  # non-overlapping patches
 
 # ---------------------------------------------------------------------------
 # Embedding projection: EffNet 400-dim → 64-dim (Johnson-Lindenstrauss)
@@ -111,6 +102,7 @@ async def get_worker_pool() -> AnalysisWorkerPool:
         if _pool is not None and _pool._running:
             return _pool
         from app.core.config import settings
+
         pool = AnalysisWorkerPool(num_workers=settings.ANALYSIS_WORKERS)
         await pool.start()
         _pool = pool
@@ -222,10 +214,12 @@ class AnalysisWorkerPool:
 
         for future in self._pending.values():
             if not future.done():
-                future.set_result({
-                    "analysis_error": "Worker pool shut down",
-                    "analysis_version": "0",
-                })
+                future.set_result(
+                    {
+                        "analysis_error": "Worker pool shut down",
+                        "analysis_version": "0",
+                    }
+                )
         self._pending.clear()
         logger.info("Analysis worker pool shut down")
 
@@ -264,7 +258,8 @@ class AnalysisWorkerPool:
             if not p.is_alive():
                 logger.warning(
                     "Analysis worker %d died (exit=%s), respawning",
-                    i, p.exitcode,
+                    i,
+                    p.exitcode,
                 )
                 new_p = ctx.Process(
                     target=_worker_main,
@@ -279,6 +274,7 @@ class AnalysisWorkerPool:
 # ═══════════════════════════════════════════════════════════════════════════
 # Worker process (runs in subprocess — no FastAPI, no SQLAlchemy)
 # ═══════════════════════════════════════════════════════════════════════════
+
 
 def _worker_main(
     input_queue: mp.Queue,
@@ -297,6 +293,7 @@ def _worker_main(
     try:
         import essentia  # noqa: F401
         import essentia.standard as es
+
         has_essentia = True
     except ImportError:
         has_essentia = False
@@ -310,7 +307,9 @@ def _worker_main(
 
     logger.info(
         "Analysis worker %d ready: essentia=%s, onnx_models=%d",
-        worker_id, has_essentia, len(onnx_sessions),
+        worker_id,
+        has_essentia,
+        len(onnx_sessions),
     )
 
     while True:
@@ -343,27 +342,32 @@ def _worker_main(
 def _worker_init_env() -> None:
     """Configure worker process environment for optimal parallelism."""
     from app.core.config import settings
+
     omp = str(settings.ANALYSIS_OMP_THREADS)
-    os.environ.update({
-        "OMP_NUM_THREADS": omp,
-        "OPENBLAS_NUM_THREADS": omp,
-        "MKL_NUM_THREADS": omp,
-        "TF_CPP_MIN_LOG_LEVEL": "3",
-        # Hide GPU from TF (if it somehow gets imported via essentia-tensorflow).
-        # ONNX Runtime in this worker uses its own provider selection.
-        "CUDA_VISIBLE_DEVICES": "",
-    })
+    os.environ.update(
+        {
+            "OMP_NUM_THREADS": omp,
+            "OPENBLAS_NUM_THREADS": omp,
+            "MKL_NUM_THREADS": omp,
+            "TF_CPP_MIN_LOG_LEVEL": "3",
+            # Hide GPU from TF (if it somehow gets imported via essentia-tensorflow).
+            # ONNX Runtime in this worker uses its own provider selection.
+            "CUDA_VISIBLE_DEVICES": "",
+        }
+    )
 
 
 def _get_version() -> str:
     """Import ANALYSIS_VERSION lazily to avoid circular imports in subprocess."""
     from app.services.audio_analysis import ANALYSIS_VERSION
+
     return ANALYSIS_VERSION
 
 
 # ---------------------------------------------------------------------------
 # ONNX model management (worker process)
 # ---------------------------------------------------------------------------
+
 
 def _get_models_dir() -> str:
     d = os.environ.get(
@@ -404,11 +408,10 @@ def _download_models() -> bool:
         tmp_path = None
         try:
             import urllib.request
+
             logger.info("Downloading ONNX model: %s", filename)
             # Create temp file in the same directory (same filesystem for atomic rename).
-            fd, tmp_path = tempfile.mkstemp(
-                dir=models_dir, prefix=f".{filename}.", suffix=".tmp"
-            )
+            fd, tmp_path = tempfile.mkstemp(dir=models_dir, prefix=f".{filename}.", suffix=".tmp")
             os.close(fd)
             fd = None
             urllib.request.urlretrieve(url, tmp_path)
@@ -427,9 +430,7 @@ def _download_models() -> bool:
             os.rename(tmp_path, local_path)
             tmp_path = None  # prevent cleanup
             size_mb = file_size / 1024 / 1024
-            logger.info(
-                "Downloaded: %s (%.1f MB, sha256=%s)", filename, size_mb, digest[:16]
-            )
+            logger.info("Downloaded: %s (%.1f MB, sha256=%s)", filename, size_mb, digest[:16])
         except Exception as e:
             logger.warning("Failed to download %s: %s", filename, e)
             all_ok = False
@@ -451,6 +452,7 @@ def _detect_onnx_backend() -> str:
         return forced
     try:
         import onnxruntime as ort
+
         providers = ort.get_available_providers()
         # Prefer OpenVINO for Intel iGPU (Alder Lake / Iris Xe)
         if "OpenVINOExecutionProvider" in providers:
@@ -479,22 +481,33 @@ def _init_onnx_sessions() -> dict:
     sess_opts = ort.SessionOptions()
     sess_opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
     from app.core.config import settings
+
     sess_opts.intra_op_num_threads = settings.ANALYSIS_ONNX_INTRA_THREADS
     sess_opts.inter_op_num_threads = settings.ANALYSIS_ONNX_INTER_THREADS
 
     providers: list = []
     if backend == "openvino":
-        providers.append(("OpenVINOExecutionProvider", {
-            "device_type": "GPU",
-            "precision": "FP16",
-            "cache_dir": os.path.join(models_dir, "_ov_cache"),
-        }))
+        providers.append(
+            (
+                "OpenVINOExecutionProvider",
+                {
+                    "device_type": "GPU",
+                    "precision": "FP16",
+                    "cache_dir": os.path.join(models_dir, "_ov_cache"),
+                },
+            )
+        )
     elif backend == "cuda":
-        providers.append(("CUDAExecutionProvider", {
-            "device_id": 0,
-            "arena_extend_strategy": "kSameAsRequested",
-            "gpu_mem_limit": 512 * 1024 * 1024,
-        }))
+        providers.append(
+            (
+                "CUDAExecutionProvider",
+                {
+                    "device_id": 0,
+                    "arena_extend_strategy": "kSameAsRequested",
+                    "gpu_mem_limit": 512 * 1024 * 1024,
+                },
+            )
+        )
     providers.append("CPUExecutionProvider")
 
     sessions: dict = {}
@@ -504,7 +517,9 @@ def _init_onnx_sessions() -> dict:
             continue
         try:
             sessions[filename] = ort.InferenceSession(
-                path, sess_options=sess_opts, providers=providers,
+                path,
+                sess_options=sess_opts,
+                providers=providers,
             )
         except Exception as e:
             logger.warning("Failed to load ONNX model %s: %s", filename, e)
@@ -514,7 +529,10 @@ def _init_onnx_sessions() -> dict:
         actual = next(iter(sessions.values())).get_providers()
     logger.info(
         "ONNX: %d/%d models loaded, backend=%s, providers=%s",
-        len(sessions), len(_ONNX_MODELS), backend, actual,
+        len(sessions),
+        len(_ONNX_MODELS),
+        backend,
+        actual,
     )
     return sessions
 
@@ -522,6 +540,7 @@ def _init_onnx_sessions() -> dict:
 # ═══════════════════════════════════════════════════════════════════════════
 # Analysis pipeline (runs inside worker process)
 # ═══════════════════════════════════════════════════════════════════════════
+
 
 def _analyze_file(
     file_path: str,
@@ -558,10 +577,17 @@ def _analyze_file(
     # --- Metadata (mutagen — fast, no Essentia) ---
     try:
         from app.services.metadata_reader import read_metadata
+
         meta = read_metadata(file_path)
         for key in (
-            "title", "artist", "album", "album_artist",
-            "track_number", "duration_ms", "genre", "musicbrainz_track_id",
+            "title",
+            "artist",
+            "album",
+            "album_artist",
+            "track_number",
+            "duration_ms",
+            "genre",
+            "musicbrainz_track_id",
         ):
             if meta.get(key) is not None:
                 result[key] = meta[key]
@@ -583,7 +609,8 @@ def _analyze_file(
                 audio = np.mean(multi, axis=1).astype(np.float32)
                 if int(loaded_sr) != sr:
                     audio = es.Resample(
-                        inputSampleRate=loaded_sr, outputSampleRate=sr,
+                        inputSampleRate=loaded_sr,
+                        outputSampleRate=sr,
                     )(audio)
             else:
                 raise
@@ -609,7 +636,10 @@ def _analyze_file(
 
         # --- Build 64-dim embedding for FAISS ---
         result["embedding"] = _build_embedding(
-            result, effnet_embedding, hpcp_frames, proj_matrix,
+            result,
+            effnet_embedding,
+            hpcp_frames,
+            proj_matrix,
         )
 
         total = sum(timings.values())
@@ -634,6 +664,7 @@ def _analyze_file(
 # ---------------------------------------------------------------------------
 # DSP feature extraction (Essentia standard algorithms)
 # ---------------------------------------------------------------------------
+
 
 def _extract_dsp(
     audio: np.ndarray,
@@ -745,6 +776,7 @@ def _extract_dsp(
 # Mel-spectrogram computation
 # ---------------------------------------------------------------------------
 
+
 def _compute_melspec_patches(
     audio: np.ndarray,
     sr: int,
@@ -799,6 +831,7 @@ def _compute_melspec_patches(
 # ML feature extraction (ONNX Runtime)
 # ---------------------------------------------------------------------------
 
+
 def _extract_ml(
     audio: np.ndarray,
     sr: int,
@@ -832,7 +865,8 @@ def _extract_ml(
 
     logger.debug(
         "EffNet input: patches=%s, model expects=%s",
-        patches.shape, input_meta.shape,
+        patches.shape,
+        input_meta.shape,
     )
 
     # Run all outputs so we can pick the right one for classifier heads.
@@ -912,6 +946,7 @@ def _extract_ml(
 # ---------------------------------------------------------------------------
 # Embedding builder
 # ---------------------------------------------------------------------------
+
 
 def _build_embedding(
     result: dict,

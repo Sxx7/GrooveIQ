@@ -23,7 +23,7 @@ from app.models.db import Base
 TEST_DB_URL = "sqlite+aiosqlite:///:memory:"
 
 _test_engine = create_async_engine(TEST_DB_URL, connect_args={"check_same_thread": False})
-_TestSession  = async_sessionmaker(_test_engine, expire_on_commit=False)
+_TestSession = async_sessionmaker(_test_engine, expire_on_commit=False)
 
 
 async def override_get_session() -> AsyncGenerator[AsyncSession, None]:
@@ -52,61 +52,70 @@ async def client():
     async with AsyncClient(
         transport=ASGITransport(app=app),
         base_url="http://test",
-        headers={"Authorization": f"Bearer {settings.api_keys_list[0]}"}
-             if settings.api_keys_list else {},
+        headers={"Authorization": f"Bearer {settings.api_keys_list[0]}"} if settings.api_keys_list else {},
     ) as c:
         yield c
 
 
 # ── Tests ──────────────────────────────────────────────────────────────────
 
-class TestEventIngestion:
 
+class TestEventIngestion:
     async def test_single_event_accepted(self, client: AsyncClient):
-        resp = await client.post("/v1/events", json={
-            "user_id": "alice",
-            "track_id": "track-001",
-            "event_type": "play_end",
-            "value": 0.95,
-        })
+        resp = await client.post(
+            "/v1/events",
+            json={
+                "user_id": "alice",
+                "track_id": "track-001",
+                "event_type": "play_end",
+                "value": 0.95,
+            },
+        )
         assert resp.status_code == 202
         data = resp.json()
         assert data["accepted"] == 1
         assert data["rejected"] == 0
 
     async def test_play_end_below_threshold_rejected(self, client: AsyncClient):
-        resp = await client.post("/v1/events", json={
-            "user_id": "alice",
-            "track_id": "track-001",
-            "event_type": "play_end",
-            "value": 0.01,  # below 5% threshold
-        })
+        resp = await client.post(
+            "/v1/events",
+            json={
+                "user_id": "alice",
+                "track_id": "track-001",
+                "event_type": "play_end",
+                "value": 0.01,  # below 5% threshold
+            },
+        )
         assert resp.status_code == 202
         assert resp.json()["rejected"] == 1
 
     async def test_future_timestamp_rejected(self, client: AsyncClient):
-        resp = await client.post("/v1/events", json={
-            "user_id": "alice",
-            "track_id": "track-001",
-            "event_type": "like",
-            "timestamp": int(time.time()) + 3600,  # 1 hour in future
-        })
-        assert resp.status_code == 422   # Pydantic validation error
+        resp = await client.post(
+            "/v1/events",
+            json={
+                "user_id": "alice",
+                "track_id": "track-001",
+                "event_type": "like",
+                "timestamp": int(time.time()) + 3600,  # 1 hour in future
+            },
+        )
+        assert resp.status_code == 422  # Pydantic validation error
 
     async def test_old_timestamp_rejected(self, client: AsyncClient):
-        resp = await client.post("/v1/events", json={
-            "user_id": "alice",
-            "track_id": "track-001",
-            "event_type": "like",
-            "timestamp": int(time.time()) - 90_000,  # 25 hours ago
-        })
+        resp = await client.post(
+            "/v1/events",
+            json={
+                "user_id": "alice",
+                "track_id": "track-001",
+                "event_type": "like",
+                "timestamp": int(time.time()) - 90_000,  # 25 hours ago
+            },
+        )
         assert resp.status_code == 422
 
     async def test_batch_ingestion(self, client: AsyncClient):
         events = [
-            {"user_id": "bob", "track_id": f"track-{i:03d}",
-             "event_type": "play_end", "value": 0.8}
-            for i in range(10)
+            {"user_id": "bob", "track_id": f"track-{i:03d}", "event_type": "play_end", "value": 0.8} for i in range(10)
         ]
         resp = await client.post("/v1/events/batch", json={"events": events})
         assert resp.status_code == 202
@@ -114,9 +123,8 @@ class TestEventIngestion:
 
     async def test_batch_size_limit(self, client: AsyncClient):
         events = [
-            {"user_id": "bob", "track_id": f"track-{i}",
-             "event_type": "like"}
-            for i in range(100)   # exceeds default batch max of 50
+            {"user_id": "bob", "track_id": f"track-{i}", "event_type": "like"}
+            for i in range(100)  # exceeds default batch max of 50
         ]
         resp = await client.post("/v1/events/batch", json={"events": events})
         assert resp.status_code == 422
@@ -126,22 +134,29 @@ class TestEventIngestion:
         r1 = await client.post("/v1/events", json=payload)
         r2 = await client.post("/v1/events", json=payload)
         assert r1.status_code == 202
-        assert r2.status_code == 202   # silent dedup, not error
+        assert r2.status_code == 202  # silent dedup, not error
 
     async def test_invalid_event_type(self, client: AsyncClient):
-        resp = await client.post("/v1/events", json={
-            "user_id": "alice", "track_id": "track-001",
-            "event_type": "teleport",   # not a real event type
-        })
+        resp = await client.post(
+            "/v1/events",
+            json={
+                "user_id": "alice",
+                "track_id": "track-001",
+                "event_type": "teleport",  # not a real event type
+            },
+        )
         assert resp.status_code == 422
 
     async def test_skip_event_with_position(self, client: AsyncClient):
-        resp = await client.post("/v1/events", json={
-            "user_id": "alice",
-            "track_id": "track-002",
-            "event_type": "skip",
-            "value": 12.5,   # skipped 12.5 seconds in
-        })
+        resp = await client.post(
+            "/v1/events",
+            json={
+                "user_id": "alice",
+                "track_id": "track-002",
+                "event_type": "skip",
+                "value": 12.5,  # skipped 12.5 seconds in
+            },
+        )
         assert resp.status_code == 202
         assert resp.json()["accepted"] == 1
 
@@ -152,9 +167,7 @@ class TestEventIngestion:
 
     async def test_query_events(self, client: AsyncClient):
         # Seed an event
-        await client.post("/v1/events", json={
-            "user_id": "carol", "track_id": "track-xyz", "event_type": "like"
-        })
+        await client.post("/v1/events", json={"user_id": "carol", "track_id": "track-xyz", "event_type": "like"})
         resp = await client.get("/v1/events?user_id=carol")
         assert resp.status_code == 200
         data = resp.json()
@@ -246,23 +259,24 @@ class TestEventIngestion:
 
     async def test_reco_impression_event(self, client: AsyncClient):
         """The new reco_impression event type is accepted."""
-        resp = await client.post("/v1/events", json={
-            "user_id": "eve",
-            "track_id": "track-imp",
-            "event_type": "reco_impression",
-            "request_id": "req-imp-001",
-            "surface": "home",
-            "position": 0,
-            "model_version": "v1.0",
-        })
+        resp = await client.post(
+            "/v1/events",
+            json={
+                "user_id": "eve",
+                "track_id": "track-imp",
+                "event_type": "reco_impression",
+                "request_id": "req-imp-001",
+                "surface": "home",
+                "position": 0,
+                "model_version": "v1.0",
+            },
+        )
         assert resp.status_code == 202
         assert resp.json()["accepted"] == 1
 
     async def test_backwards_compat_no_new_fields(self, client: AsyncClient):
         """Old payload still works; new fields come back as null."""
-        await client.post("/v1/events", json={
-            "user_id": "frank", "track_id": "track-old", "event_type": "like"
-        })
+        await client.post("/v1/events", json={"user_id": "frank", "track_id": "track-old", "event_type": "like"})
         resp = await client.get("/v1/events?user_id=frank")
         ev = resp.json()[0]
         assert ev["surface"] is None
@@ -272,14 +286,26 @@ class TestEventIngestion:
 
     async def test_query_filter_by_device_id(self, client: AsyncClient):
         """device_id query filter returns only matching events."""
-        await client.post("/v1/events", json={
-            "user_id": "gina", "track_id": "t1", "event_type": "play_end",
-            "value": 0.9, "device_id": "phone-1",
-        })
-        await client.post("/v1/events", json={
-            "user_id": "gina", "track_id": "t2", "event_type": "play_end",
-            "value": 0.8, "device_id": "desktop-1",
-        })
+        await client.post(
+            "/v1/events",
+            json={
+                "user_id": "gina",
+                "track_id": "t1",
+                "event_type": "play_end",
+                "value": 0.9,
+                "device_id": "phone-1",
+            },
+        )
+        await client.post(
+            "/v1/events",
+            json={
+                "user_id": "gina",
+                "track_id": "t2",
+                "event_type": "play_end",
+                "value": 0.8,
+                "device_id": "desktop-1",
+            },
+        )
         resp = await client.get("/v1/events?device_id=phone-1")
         data = resp.json()
         assert len(data) == 1
@@ -288,10 +314,15 @@ class TestEventIngestion:
     async def test_query_filter_by_request_id(self, client: AsyncClient):
         """request_id groups impression + stream events."""
         for etype in ("reco_impression", "play_end"):
-            await client.post("/v1/events", json={
-                "user_id": "hank", "track_id": "t-req",
-                "event_type": etype, "request_id": "req-shared",
-                "value": 0.95 if etype == "play_end" else None,
-            })
+            await client.post(
+                "/v1/events",
+                json={
+                    "user_id": "hank",
+                    "track_id": "t-req",
+                    "event_type": etype,
+                    "request_id": "req-shared",
+                    "value": 0.95 if etype == "play_end" else None,
+                },
+            )
         resp = await client.get("/v1/events?request_id=req-shared")
         assert len(resp.json()) == 2

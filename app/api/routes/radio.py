@@ -43,6 +43,7 @@ router = APIRouter()
 
 def _get_model_version() -> str:
     from app.services.ranker import get_model_version
+
     return get_model_version() or "radio-v1"
 
 
@@ -67,26 +68,19 @@ async def start_radio(
     check_user_access(_key, body.user_id)
 
     # Verify user exists.
-    result = await db.execute(
-        select(User.user_id).where(User.user_id == body.user_id)
-    )
+    result = await db.execute(select(User.user_id).where(User.user_id == body.user_id))
     if result.scalar_one_or_none() is None:
         raise HTTPException(status_code=404, detail="User not found.")
 
     # Validate seed based on type.
     if body.seed_type == "track":
-        result = await db.execute(
-            select(TrackFeatures.track_id)
-            .where(TrackFeatures.track_id == body.seed_value)
-        )
+        result = await db.execute(select(TrackFeatures.track_id).where(TrackFeatures.track_id == body.seed_value))
         if result.scalar_one_or_none() is None:
             raise HTTPException(status_code=404, detail="Seed track not found.")
 
     elif body.seed_type == "artist":
         result = await db.execute(
-            select(TrackFeatures.track_id)
-            .where(TrackFeatures.artist.ilike(f"%{body.seed_value}%"))
-            .limit(1)
+            select(TrackFeatures.track_id).where(TrackFeatures.artist.ilike(f"%{body.seed_value}%")).limit(1)
         )
         if result.scalar_one_or_none() is None:
             raise HTTPException(status_code=404, detail="No tracks found for this artist.")
@@ -96,9 +90,7 @@ async def start_radio(
             pl_id = int(body.seed_value)
         except ValueError:
             raise HTTPException(status_code=400, detail="Playlist seed_value must be a numeric ID.")
-        result = await db.execute(
-            select(Playlist.id).where(Playlist.id == pl_id)
-        )
+        result = await db.execute(select(Playlist.id).where(Playlist.id == pl_id))
         if result.scalar_one_or_none() is None:
             raise HTTPException(status_code=404, detail="Playlist not found.")
 
@@ -138,23 +130,25 @@ async def start_radio(
     request_id = str(uuid.uuid4())
     now = int(time.time())
     for t in tracks:
-        db.add(ListenEvent(
-            user_id=body.user_id,
-            track_id=t["track_id"],
-            event_type="reco_impression",
-            surface="radio",
-            position=t["position"],
-            request_id=request_id,
-            model_version=model_version,
-            context_type="radio",
-            context_id=session.session_id,
-            device_type=body.device_type,
-            output_type=body.output_type,
-            location_label=body.location_label,
-            hour_of_day=body.hour_of_day,
-            day_of_week=body.day_of_week,
-            timestamp=now,
-        ))
+        db.add(
+            ListenEvent(
+                user_id=body.user_id,
+                track_id=t["track_id"],
+                event_type="reco_impression",
+                surface="radio",
+                position=t["position"],
+                request_id=request_id,
+                model_version=model_version,
+                context_type="radio",
+                context_id=session.session_id,
+                device_type=body.device_type,
+                output_type=body.output_type,
+                location_label=body.location_label,
+                hour_of_day=body.hour_of_day,
+                day_of_week=body.day_of_week,
+                timestamp=now,
+            )
+        )
     await db.commit()
 
     return RadioStartResponse(
@@ -216,23 +210,25 @@ async def radio_next(
     request_id = str(uuid.uuid4())
     now = int(time.time())
     for t in tracks:
-        db.add(ListenEvent(
-            user_id=s.user_id,
-            track_id=t["track_id"],
-            event_type="reco_impression",
-            surface="radio",
-            position=t["position"],
-            request_id=request_id,
-            model_version=model_version,
-            context_type="radio",
-            context_id=session_id,
-            device_type=s.device_type,
-            output_type=s.output_type,
-            location_label=s.location_label,
-            hour_of_day=s.hour_of_day,
-            day_of_week=s.day_of_week,
-            timestamp=now,
-        ))
+        db.add(
+            ListenEvent(
+                user_id=s.user_id,
+                track_id=t["track_id"],
+                event_type="reco_impression",
+                surface="radio",
+                position=t["position"],
+                request_id=request_id,
+                model_version=model_version,
+                context_type="radio",
+                context_id=session_id,
+                device_type=s.device_type,
+                output_type=s.output_type,
+                location_label=s.location_label,
+                hour_of_day=s.hour_of_day,
+                day_of_week=s.day_of_week,
+                timestamp=now,
+            )
+        )
     await db.commit()
 
     return RadioNextResponse(

@@ -101,9 +101,7 @@ async def remove_playlist(
     _key: str = Depends(require_api_key),
 ):
     # Check ownership: only the creator or an admin can delete.
-    result = await session.execute(
-        select(Playlist.created_by).where(Playlist.id == playlist_id)
-    )
+    result = await session.execute(select(Playlist.created_by).where(Playlist.id == playlist_id))
     row = result.scalar_one_or_none()
     if row is None:
         raise HTTPException(status_code=404, detail="Playlist not found.")
@@ -116,4 +114,5 @@ async def remove_playlist(
         raise HTTPException(status_code=404, detail="Playlist not found.")
 
     from app.core.audit import audit_log
+
     audit_log("playlist_delete", api_key=_key, detail={"playlist_id": playlist_id})

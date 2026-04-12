@@ -40,44 +40,47 @@ async def _setup_tracks_and_interactions():
     async with _TestSession() as session:
         for i in range(20):
             artist = f"artist{i // 4}"
-            session.add(TrackFeatures(
-                track_id=f"t{i}",
-                file_path=f"/music/{artist}/album1/track{i}.mp3",
-                bpm=120.0 + i,
-                energy=0.5 + i * 0.03,
-                analyzed_at=now,
-                analysis_version="1",
-            ))
+            session.add(
+                TrackFeatures(
+                    track_id=f"t{i}",
+                    file_path=f"/music/{artist}/album1/track{i}.mp3",
+                    bpm=120.0 + i,
+                    energy=0.5 + i * 0.03,
+                    analyzed_at=now,
+                    analysis_version="1",
+                )
+            )
 
         # user0 has interactions with first 12 tracks.
         for i in range(12):
-            session.add(TrackInteraction(
-                user_id="user0",
-                track_id=f"t{i}",
-                play_count=3,
-                skip_count=0,
-                like_count=0,
-                dislike_count=0,
-                repeat_count=0,
-                playlist_add_count=0,
-                queue_add_count=0,
-                early_skip_count=3 if i == 2 else 0,  # t2 heavily skipped
-                mid_skip_count=0,
-                full_listen_count=3,
-                total_seekfwd=0,
-                total_seekbk=0,
-                satisfaction_score=0.7,
-                last_event_id=i + 1,
-                first_played_at=now - 86_400 * 3,
-                # t0: played 1 min ago (anti-repetition); others: played 1 week ago (safe)
-                last_played_at=now - 60 if i == 0 else now - 86_400 * 7,
-                updated_at=now,
-            ))
+            session.add(
+                TrackInteraction(
+                    user_id="user0",
+                    track_id=f"t{i}",
+                    play_count=3,
+                    skip_count=0,
+                    like_count=0,
+                    dislike_count=0,
+                    repeat_count=0,
+                    playlist_add_count=0,
+                    queue_add_count=0,
+                    early_skip_count=3 if i == 2 else 0,  # t2 heavily skipped
+                    mid_skip_count=0,
+                    full_listen_count=3,
+                    total_seekfwd=0,
+                    total_seekbk=0,
+                    satisfaction_score=0.7,
+                    last_event_id=i + 1,
+                    first_played_at=now - 86_400 * 3,
+                    # t0: played 1 min ago (anti-repetition); others: played 1 week ago (safe)
+                    last_played_at=now - 60 if i == 0 else now - 86_400 * 7,
+                    updated_at=now,
+                )
+            )
         await session.commit()
 
 
 class TestReranker:
-
     async def test_artist_diversity(self):
         """No more than 2 tracks from the same artist in top 10."""
         from app.services.reranker import rerank
@@ -142,6 +145,7 @@ class TestReranker:
         # Update to within 24h but outside 2h anti-repetition window.
         async with _TestSession() as session:
             from sqlalchemy import update
+
             await session.execute(
                 update(TrackInteraction)
                 .where(
@@ -176,21 +180,39 @@ class TestReranker:
         now = _now()
         async with _TestSession() as session:
             # One short track (60s) and two normal tracks (200s, 180s).
-            session.add(TrackFeatures(
-                track_id="short", file_path="/music/a/b/short.mp3",
-                bpm=120.0, energy=0.5, duration=60.0,
-                analyzed_at=now, analysis_version="1",
-            ))
-            session.add(TrackFeatures(
-                track_id="normal1", file_path="/music/a/b/normal1.mp3",
-                bpm=120.0, energy=0.5, duration=200.0,
-                analyzed_at=now, analysis_version="1",
-            ))
-            session.add(TrackFeatures(
-                track_id="normal2", file_path="/music/c/d/normal2.mp3",
-                bpm=120.0, energy=0.5, duration=180.0,
-                analyzed_at=now, analysis_version="1",
-            ))
+            session.add(
+                TrackFeatures(
+                    track_id="short",
+                    file_path="/music/a/b/short.mp3",
+                    bpm=120.0,
+                    energy=0.5,
+                    duration=60.0,
+                    analyzed_at=now,
+                    analysis_version="1",
+                )
+            )
+            session.add(
+                TrackFeatures(
+                    track_id="normal1",
+                    file_path="/music/a/b/normal1.mp3",
+                    bpm=120.0,
+                    energy=0.5,
+                    duration=200.0,
+                    analyzed_at=now,
+                    analysis_version="1",
+                )
+            )
+            session.add(
+                TrackFeatures(
+                    track_id="normal2",
+                    file_path="/music/c/d/normal2.mp3",
+                    bpm=120.0,
+                    energy=0.5,
+                    duration=180.0,
+                    analyzed_at=now,
+                    analysis_version="1",
+                )
+            )
             await session.commit()
 
         ranked = [("short", 0.95), ("normal1", 0.90), ("normal2", 0.85)]
@@ -209,16 +231,28 @@ class TestReranker:
 
         now = _now()
         async with _TestSession() as session:
-            session.add(TrackFeatures(
-                track_id="short2", file_path="/music/a/b/short2.mp3",
-                bpm=120.0, energy=0.5, duration=45.0,
-                analyzed_at=now, analysis_version="1",
-            ))
-            session.add(TrackFeatures(
-                track_id="ok", file_path="/music/a/b/ok.mp3",
-                bpm=120.0, energy=0.5, duration=240.0,
-                analyzed_at=now, analysis_version="1",
-            ))
+            session.add(
+                TrackFeatures(
+                    track_id="short2",
+                    file_path="/music/a/b/short2.mp3",
+                    bpm=120.0,
+                    energy=0.5,
+                    duration=45.0,
+                    analyzed_at=now,
+                    analysis_version="1",
+                )
+            )
+            session.add(
+                TrackFeatures(
+                    track_id="ok",
+                    file_path="/music/a/b/ok.mp3",
+                    bpm=120.0,
+                    energy=0.5,
+                    duration=240.0,
+                    analyzed_at=now,
+                    analysis_version="1",
+                )
+            )
             await session.commit()
 
         ranked = [("short2", 0.90), ("ok", 0.80)]
@@ -236,11 +270,17 @@ class TestReranker:
 
         now = _now()
         async with _TestSession() as session:
-            session.add(TrackFeatures(
-                track_id="tiny", file_path="/music/a/b/tiny.mp3",
-                bpm=120.0, energy=0.5, duration=30.0,
-                analyzed_at=now, analysis_version="1",
-            ))
+            session.add(
+                TrackFeatures(
+                    track_id="tiny",
+                    file_path="/music/a/b/tiny.mp3",
+                    bpm=120.0,
+                    energy=0.5,
+                    duration=30.0,
+                    analyzed_at=now,
+                    analysis_version="1",
+                )
+            )
             await session.commit()
 
         ranked = [("tiny", 0.90)]

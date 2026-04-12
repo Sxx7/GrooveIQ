@@ -69,9 +69,7 @@ async def get_news(
     library_artists: set[str] = set()
     library_genres: set[str] = set()
     async with AsyncSessionLocal() as session:
-        row = (await session.execute(
-            select(User.taste_profile).where(User.user_id == user_id)
-        )).scalar_one_or_none()
+        row = (await session.execute(select(User.taste_profile).where(User.user_id == user_id))).scalar_one_or_none()
         if row is not None:
             taste_profile = row
 

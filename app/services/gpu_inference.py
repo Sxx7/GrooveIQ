@@ -34,39 +34,30 @@ _ESSENTIA_MODELS_BASE = "https://essentia.upf.edu/models"
 
 ONNX_MODELS = {
     # Feature extractor (dynamic batch size variant)
-    "discogs-effnet-bsdynamic-1.onnx":
-        "feature-extractors/discogs-effnet/discogs-effnet-bsdynamic-1.onnx",
+    "discogs-effnet-bsdynamic-1.onnx": "feature-extractors/discogs-effnet/discogs-effnet-bsdynamic-1.onnx",
     # Classification heads
-    "danceability-discogs-effnet-1.onnx":
-        "classification-heads/danceability/danceability-discogs-effnet-1.onnx",
-    "mood_happy-discogs-effnet-1.onnx":
-        "classification-heads/mood_happy/mood_happy-discogs-effnet-1.onnx",
-    "mood_sad-discogs-effnet-1.onnx":
-        "classification-heads/mood_sad/mood_sad-discogs-effnet-1.onnx",
-    "mood_aggressive-discogs-effnet-1.onnx":
-        "classification-heads/mood_aggressive/mood_aggressive-discogs-effnet-1.onnx",
-    "mood_relaxed-discogs-effnet-1.onnx":
-        "classification-heads/mood_relaxed/mood_relaxed-discogs-effnet-1.onnx",
-    "mood_party-discogs-effnet-1.onnx":
-        "classification-heads/mood_party/mood_party-discogs-effnet-1.onnx",
-    "voice_instrumental-discogs-effnet-1.onnx":
-        "classification-heads/voice_instrumental/voice_instrumental-discogs-effnet-1.onnx",
-    "approachability_regression-discogs-effnet-1.onnx":
-        "classification-heads/approachability/approachability_regression-discogs-effnet-1.onnx",
+    "danceability-discogs-effnet-1.onnx": "classification-heads/danceability/danceability-discogs-effnet-1.onnx",
+    "mood_happy-discogs-effnet-1.onnx": "classification-heads/mood_happy/mood_happy-discogs-effnet-1.onnx",
+    "mood_sad-discogs-effnet-1.onnx": "classification-heads/mood_sad/mood_sad-discogs-effnet-1.onnx",
+    "mood_aggressive-discogs-effnet-1.onnx": "classification-heads/mood_aggressive/mood_aggressive-discogs-effnet-1.onnx",
+    "mood_relaxed-discogs-effnet-1.onnx": "classification-heads/mood_relaxed/mood_relaxed-discogs-effnet-1.onnx",
+    "mood_party-discogs-effnet-1.onnx": "classification-heads/mood_party/mood_party-discogs-effnet-1.onnx",
+    "voice_instrumental-discogs-effnet-1.onnx": "classification-heads/voice_instrumental/voice_instrumental-discogs-effnet-1.onnx",
+    "approachability_regression-discogs-effnet-1.onnx": "classification-heads/approachability/approachability_regression-discogs-effnet-1.onnx",
 }
 
 # ---------------------------------------------------------------------------
 # Mel-spectrogram parameters matching EffNet-Discogs training pipeline
 # ---------------------------------------------------------------------------
 
-_EFFNET_SR = 16000         # EffNet expects 16 kHz mono
+_EFFNET_SR = 16000  # EffNet expects 16 kHz mono
 _FFT_SIZE = 512
 _HOP_SIZE = 256
 _N_MELS = 96
 _FREQ_MIN = 0.0
 _FREQ_MAX = 8000.0
-_PATCH_FRAMES = 187        # ~3 s per patch at 16 kHz / 256 hop
-_PATCH_HOP = 187           # non-overlapping patches (fastest)
+_PATCH_FRAMES = 187  # ~3 s per patch at 16 kHz / 256 hop
+_PATCH_HOP = 187  # non-overlapping patches (fastest)
 
 # ---------------------------------------------------------------------------
 # Singleton session cache
@@ -83,6 +74,7 @@ def is_available() -> bool:
     if _onnx_available is None:
         try:
             import onnxruntime  # noqa: F401
+
             _onnx_available = True
         except ImportError:
             _onnx_available = False
@@ -94,9 +86,9 @@ def gpu_detected() -> bool:
     if not is_available():
         return False
     import onnxruntime as ort
+
     providers = ort.get_available_providers()
-    return ("CUDAExecutionProvider" in providers
-            or "OpenVINOExecutionProvider" in providers)
+    return "CUDAExecutionProvider" in providers or "OpenVINOExecutionProvider" in providers
 
 
 def _detect_backend() -> str:
@@ -110,6 +102,7 @@ def _detect_backend() -> str:
         return "cpu"
 
     import onnxruntime as ort
+
     providers = ort.get_available_providers()
     if "CUDAExecutionProvider" in providers:
         return "cuda"
@@ -141,6 +134,7 @@ def ensure_onnx_models() -> bool:
         tmp_path = local_path + ".tmp"
         try:
             import urllib.request
+
             logger.info(f"Downloading ONNX model: {filename} ...")
             urllib.request.urlretrieve(url, tmp_path)
             os.rename(tmp_path, local_path)
@@ -172,17 +166,27 @@ def _get_session(model_file: str):
     providers = []
 
     if backend == "cuda":
-        providers.append(("CUDAExecutionProvider", {
-            "device_id": 0,
-            "arena_extend_strategy": "kSameAsRequested",
-            "gpu_mem_limit": 512 * 1024 * 1024,  # 512 MB cap
-        }))
+        providers.append(
+            (
+                "CUDAExecutionProvider",
+                {
+                    "device_id": 0,
+                    "arena_extend_strategy": "kSameAsRequested",
+                    "gpu_mem_limit": 512 * 1024 * 1024,  # 512 MB cap
+                },
+            )
+        )
     elif backend == "openvino":
-        providers.append(("OpenVINOExecutionProvider", {
-            "device_type": "GPU",
-            "precision": "FP16",
-            "cache_dir": os.path.join(models_dir, "_ov_cache"),
-        }))
+        providers.append(
+            (
+                "OpenVINOExecutionProvider",
+                {
+                    "device_type": "GPU",
+                    "precision": "FP16",
+                    "cache_dir": os.path.join(models_dir, "_ov_cache"),
+                },
+            )
+        )
 
     providers.append("CPUExecutionProvider")
 
@@ -197,6 +201,7 @@ def _get_session(model_file: str):
 # ---------------------------------------------------------------------------
 # Mel-spectrogram extraction (CPU, Essentia standard algos)
 # ---------------------------------------------------------------------------
+
 
 def _compute_melspec_patches(audio_16k: np.ndarray) -> np.ndarray:
     """
@@ -234,14 +239,14 @@ def _compute_melspec_patches(audio_16k: np.ndarray) -> np.ndarray:
             return np.zeros((0, 1, _N_MELS, _PATCH_FRAMES), dtype=np.float32)
         padded = np.zeros((_PATCH_FRAMES, _N_MELS), dtype=np.float32)
         arr = np.array(frames, dtype=np.float32)
-        padded[:len(arr)] = arr
+        padded[: len(arr)] = arr
         return padded.T[np.newaxis, np.newaxis, :, :]  # (1, 1, 96, 187)
 
     frames_arr = np.array(frames, dtype=np.float32)  # (num_frames, 96)
 
     patches = []
     for i in range(0, len(frames_arr) - _PATCH_FRAMES + 1, _PATCH_HOP):
-        patch = frames_arr[i:i + _PATCH_FRAMES].T  # (96, 187)
+        patch = frames_arr[i : i + _PATCH_FRAMES].T  # (96, 187)
         patches.append(patch)
 
     return np.array(patches, dtype=np.float32)[:, np.newaxis, :, :]  # (N, 1, 96, 187)
@@ -262,7 +267,7 @@ def extract_melspec_for_file(file_path: str, max_seconds: float = 15.0) -> np.nd
     max_samples = int(max_seconds * _EFFNET_SR)
     if len(audio) > max_samples:
         start = (len(audio) - max_samples) // 2
-        audio = audio[start:start + max_samples]
+        audio = audio[start : start + max_samples]
 
     return _compute_melspec_patches(audio)
 
@@ -270,6 +275,7 @@ def extract_melspec_for_file(file_path: str, max_seconds: float = 15.0) -> np.nd
 # ---------------------------------------------------------------------------
 # Batched GPU inference
 # ---------------------------------------------------------------------------
+
 
 def extract_melspecs_batch(file_paths: list[str], max_seconds: float = 15.0) -> dict:
     """
@@ -342,7 +348,7 @@ def infer_from_patches(
     gpu_batch_size = int(os.environ.get("ANALYSIS_GPU_BATCH_SIZE", "64"))
     all_embeddings = []
     for start in range(0, total_patches, gpu_batch_size):
-        batch = all_patches[start:start + gpu_batch_size]
+        batch = all_patches[start : start + gpu_batch_size]
         emb = effnet.run(None, {input_name: batch})[0]
         all_embeddings.append(emb)
 

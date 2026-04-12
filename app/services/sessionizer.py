@@ -49,9 +49,7 @@ async def run_sessionizer() -> dict:
     """
     async with AsyncSessionLocal() as session:
         # Find the high-water mark: highest event_id_max across all sessions.
-        result = await session.execute(
-            select(func.coalesce(func.max(ListenSession.event_id_max), 0))
-        )
+        result = await session.execute(select(func.coalesce(func.max(ListenSession.event_id_max), 0)))
         hwm = result.scalar_one()
 
         total_created = 0
@@ -95,22 +93,15 @@ async def run_sessionizer() -> dict:
     }
 
 
-async def _fetch_events_after(
-    session: AsyncSession, after_id: int, limit: int
-) -> Sequence:
+async def _fetch_events_after(session: AsyncSession, after_id: int, limit: int) -> Sequence:
     """Fetch events with id > after_id, ordered by id."""
     result = await session.execute(
-        select(ListenEvent)
-        .where(ListenEvent.id > after_id)
-        .order_by(ListenEvent.id)
-        .limit(limit)
+        select(ListenEvent).where(ListenEvent.id > after_id).order_by(ListenEvent.id).limit(limit)
     )
     return result.scalars().all()
 
 
-async def _process_events(
-    session: AsyncSession, events: Sequence
-) -> tuple[int, int]:
+async def _process_events(session: AsyncSession, events: Sequence) -> tuple[int, int]:
     """
     Group events into sessions and upsert ListenSession rows.
 
@@ -229,34 +220,22 @@ def _build_session_row(user_id: str, events: list) -> dict | None:
     skip_count = type_counts.get("skip", 0)
     like_count = type_counts.get("like", 0)
     dislike_count = type_counts.get("dislike", 0)
-    seek_count = (
-        type_counts.get("seek_forward", 0)
-        + type_counts.get("seek_back", 0)
-    )
+    seek_count = type_counts.get("seek_forward", 0) + type_counts.get("seek_back", 0)
 
     # Skip rate: avoid division by zero.
     skip_rate = skip_count / max(play_count, 1)
 
     # Average completion from play_end events with a value.
-    completions = [
-        ev.value for ev in events
-        if ev.event_type == "play_end" and ev.value is not None
-    ]
-    avg_completion = (
-        sum(completions) / len(completions) if completions else None
-    )
+    completions = [ev.value for ev in events if ev.event_type == "play_end" and ev.value is not None]
+    avg_completion = sum(completions) / len(completions) if completions else None
 
     # Total dwell from events that carry dwell_ms.
     dwell_values = [ev.dwell_ms for ev in events if ev.dwell_ms is not None]
     total_dwell_ms = sum(dwell_values) if dwell_values else None
 
     # Dominant context_type and device_type (most common non-null).
-    dominant_context_type = _most_common(
-        ev.context_type for ev in events if ev.context_type
-    )
-    dominant_device_type = _most_common(
-        ev.device_type for ev in events if ev.device_type
-    )
+    dominant_context_type = _most_common(ev.context_type for ev in events if ev.context_type)
+    dominant_device_type = _most_common(ev.device_type for ev in events if ev.device_type)
 
     # Time context from first event.
     first = events[0]
@@ -329,6 +308,7 @@ async def _upsert_session(session: AsyncSession, row: dict) -> bool:
         return False
 
     from sqlalchemy import update
+
     await session.execute(
         update(ListenSession)
         .where(ListenSession.id == existing_id)

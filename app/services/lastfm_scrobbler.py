@@ -36,9 +36,11 @@ _MIN_LISTEN_MS = 240_000  # 4 minutes
 # Track metadata resolution — multi-strategy lookup
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class _TrackMeta:
     """Minimal track metadata needed for scrobbling."""
+
     artist: str
     title: str
     album: str | None = None
@@ -58,15 +60,15 @@ async def _resolve_track_meta(
     Returns None if no metadata can be found.
     """
     # Strategy 1: direct track_id match
-    track = (await session.execute(
-        select(TrackFeatures).where(TrackFeatures.track_id == track_id)
-    )).scalar_one_or_none()
+    track = (
+        await session.execute(select(TrackFeatures).where(TrackFeatures.track_id == track_id))
+    ).scalar_one_or_none()
 
     # Strategy 2: external_track_id match
     if track is None:
-        track = (await session.execute(
-            select(TrackFeatures).where(TrackFeatures.external_track_id == track_id)
-        )).scalar_one_or_none()
+        track = (
+            await session.execute(select(TrackFeatures).where(TrackFeatures.external_track_id == track_id))
+        ).scalar_one_or_none()
 
     if track and track.artist and track.title:
         duration_s = track.duration
@@ -80,12 +82,14 @@ async def _resolve_track_meta(
         )
 
     # Strategy 3: reuse metadata from a previous scrobble queue entry
-    prev = (await session.execute(
-        select(ScrobbleQueue.artist, ScrobbleQueue.track_title, ScrobbleQueue.album, ScrobbleQueue.duration_s)
-        .where(ScrobbleQueue.track_id == track_id)
-        .order_by(ScrobbleQueue.id.desc())
-        .limit(1)
-    )).first()
+    prev = (
+        await session.execute(
+            select(ScrobbleQueue.artist, ScrobbleQueue.track_title, ScrobbleQueue.album, ScrobbleQueue.duration_s)
+            .where(ScrobbleQueue.track_id == track_id)
+            .order_by(ScrobbleQueue.id.desc())
+            .limit(1)
+        )
+    ).first()
     if prev and prev.artist and prev.track_title:
         return _TrackMeta(
             artist=prev.artist,
@@ -112,17 +116,16 @@ async def on_event(
         return
 
     # Look up user's Last.fm session key
-    user = (await session.execute(
-        select(User).where(User.user_id == event.user_id)
-    )).scalar_one_or_none()
+    user = (await session.execute(select(User).where(User.user_id == event.user_id))).scalar_one_or_none()
     if not user or not user.lastfm_session_key:
         return
 
     # Resolve track metadata (multi-strategy lookup)
     meta = await _resolve_track_meta(session, event.track_id)
     if not meta:
-        logger.warning("Scrobble skip: no metadata for track_id=%s (not in track_features, "
-                        "run library sync?)", event.track_id)
+        logger.warning(
+            "Scrobble skip: no metadata for track_id=%s (not in track_features, run library sync?)", event.track_id
+        )
         return
 
     if event.event_type == "play_start":
@@ -153,7 +156,11 @@ async def _fire_now_playing(user, meta: _TrackMeta) -> None:
 
 
 async def _enqueue_scrobble(
-    session: AsyncSession, event, persisted_event, user, meta: _TrackMeta,
+    session: AsyncSession,
+    event,
+    persisted_event,
+    user,
+    meta: _TrackMeta,
 ) -> None:
     """Check scrobble criteria and add to queue if qualifying."""
     duration_s = meta.duration_s
@@ -169,8 +176,9 @@ async def _enqueue_scrobble(
     if event.dwell_ms is not None and event.dwell_ms >= _MIN_LISTEN_MS:
         qualifies = True
     # If we have both duration and dwell, check 50% precisely
-    if (event.dwell_ms is not None and duration_s is not None
-            and event.dwell_ms >= duration_s * 500):  # duration_s * 1000 * 0.5
+    if (
+        event.dwell_ms is not None and duration_s is not None and event.dwell_ms >= duration_s * 500
+    ):  # duration_s * 1000 * 0.5
         qualifies = True
     # Fallback: play_end events that passed the noise filter (MIN_PLAY_PERCENTAGE)
     # but carry no completion/dwell data — assume the client confirmed a valid listen.
@@ -182,21 +190,24 @@ async def _enqueue_scrobble(
     # Use the persisted event's timestamp (has DB default) — event.timestamp may be None
     ts = persisted_event.timestamp if persisted_event.timestamp else int(time.time())
 
-    session.add(ScrobbleQueue(
-        user_id=user.user_id,
-        track_id=event.track_id,
-        artist=meta.artist,
-        track_title=meta.title,
-        album=meta.album,
-        duration_s=int(duration_s) if duration_s else None,
-        timestamp=ts,
-    ))
+    session.add(
+        ScrobbleQueue(
+            user_id=user.user_id,
+            track_id=event.track_id,
+            artist=meta.artist,
+            track_title=meta.title,
+            album=meta.album,
+            duration_s=int(duration_s) if duration_s else None,
+            timestamp=ts,
+        )
+    )
     logger.info("Scrobble enqueued: %s – %s for user %s", meta.artist, meta.title, user.user_id)
 
 
 # ---------------------------------------------------------------------------
 # Background worker
 # ---------------------------------------------------------------------------
+
 
 async def process_scrobble_queue() -> dict:
     """
@@ -210,12 +221,18 @@ async def process_scrobble_queue() -> dict:
 
     async with AsyncSessionLocal() as session:
         # Fetch all pending items, grouped by user
-        pending = (await session.execute(
-            select(ScrobbleQueue)
-            .where(ScrobbleQueue.status == "pending")
-            .order_by(ScrobbleQueue.user_id, ScrobbleQueue.timestamp)
-            .limit(500)
-        )).scalars().all()
+        pending = (
+            (
+                await session.execute(
+                    select(ScrobbleQueue)
+                    .where(ScrobbleQueue.status == "pending")
+                    .order_by(ScrobbleQueue.user_id, ScrobbleQueue.timestamp)
+                    .limit(500)
+                )
+            )
+            .scalars()
+            .all()
+        )
 
         if not pending:
             return {"processed": 0, "failed": 0}
@@ -231,9 +248,7 @@ async def process_scrobble_queue() -> dict:
 
         for user_id, items in by_user.items():
             # Get session key for this user
-            user = (await session.execute(
-                select(User).where(User.user_id == user_id)
-            )).scalar_one_or_none()
+            user = (await session.execute(select(User).where(User.user_id == user_id))).scalar_one_or_none()
             if not user or not user.lastfm_session_key:
                 # No session key — mark all as failed
                 for item in items:
@@ -255,7 +270,7 @@ async def process_scrobble_queue() -> dict:
             user_sent = False
             # Process in batches of 50
             for batch_start in range(0, len(items), 50):
-                batch = items[batch_start:batch_start + 50]
+                batch = items[batch_start : batch_start + 50]
                 tracks = [
                     {
                         "artist": item.artist,
@@ -325,9 +340,9 @@ async def _refresh_recent_tracks(users: list) -> None:
                 continue
             try:
                 recent = await client.get_recent_tracks(user.lastfm_username, limit=50)
-                user_row = (await session.execute(
-                    select(User).where(User.user_id == user.user_id)
-                )).scalar_one_or_none()
+                user_row = (
+                    await session.execute(select(User).where(User.user_id == user.user_id))
+                ).scalar_one_or_none()
                 if user_row:
                     cache = dict(user_row.lastfm_cache) if user_row.lastfm_cache else {}
                     cache["recent_tracks"] = recent
@@ -343,6 +358,7 @@ async def _refresh_recent_tracks(users: list) -> None:
 # Backfill — retroactively scrobble past play_end events
 # ---------------------------------------------------------------------------
 
+
 async def backfill_scrobbles(user_id: str) -> dict:
     """
     Scan past play_end events for a user and enqueue any that qualify
@@ -357,39 +373,52 @@ async def backfill_scrobbles(user_id: str) -> dict:
 
     async with AsyncSessionLocal() as session:
         # Verify user has Last.fm connected
-        user = (await session.execute(
-            select(User).where(User.user_id == user_id)
-        )).scalar_one_or_none()
+        user = (await session.execute(select(User).where(User.user_id == user_id))).scalar_one_or_none()
         if not user or not user.lastfm_session_key:
             return {"error": "User has no Last.fm session key"}
 
         # Get all play_end events for this user
-        events = (await session.execute(
-            select(ListenEvent)
-            .where(
-                ListenEvent.user_id == user_id,
-                ListenEvent.event_type == "play_end",
+        events = (
+            (
+                await session.execute(
+                    select(ListenEvent)
+                    .where(
+                        ListenEvent.user_id == user_id,
+                        ListenEvent.event_type == "play_end",
+                    )
+                    .order_by(ListenEvent.timestamp)
+                )
             )
-            .order_by(ListenEvent.timestamp)
-        )).scalars().all()
+            .scalars()
+            .all()
+        )
 
         if not events:
-            return {"enqueued": 0, "skipped_no_meta": 0, "skipped_criteria": 0,
-                    "already_queued": 0, "total_play_ends": 0}
+            return {
+                "enqueued": 0,
+                "skipped_no_meta": 0,
+                "skipped_criteria": 0,
+                "already_queued": 0,
+                "total_play_ends": 0,
+            }
 
         # Get all track_ids already in the scrobble queue for this user
         set(
-            row[0] for row in (await session.execute(
-                select(ScrobbleQueue.track_id, ScrobbleQueue.timestamp)
-                .where(ScrobbleQueue.user_id == user_id)
-            )).all()
+            row[0]
+            for row in (
+                await session.execute(
+                    select(ScrobbleQueue.track_id, ScrobbleQueue.timestamp).where(ScrobbleQueue.user_id == user_id)
+                )
+            ).all()
         )
         # Build a set of (track_id, timestamp) for dedup
         existing_pairs = set(
-            (row.track_id, row.timestamp) for row in (await session.execute(
-                select(ScrobbleQueue.track_id, ScrobbleQueue.timestamp)
-                .where(ScrobbleQueue.user_id == user_id)
-            )).all()
+            (row.track_id, row.timestamp)
+            for row in (
+                await session.execute(
+                    select(ScrobbleQueue.track_id, ScrobbleQueue.timestamp).where(ScrobbleQueue.user_id == user_id)
+                )
+            ).all()
         )
 
         for ev in events:
@@ -419,8 +448,7 @@ async def backfill_scrobbles(user_id: str) -> dict:
                 qualifies = True
             if ev.dwell_ms is not None and ev.dwell_ms >= _MIN_LISTEN_MS:
                 qualifies = True
-            if (ev.dwell_ms is not None and duration_s is not None
-                    and ev.dwell_ms >= duration_s * 500):
+            if ev.dwell_ms is not None and duration_s is not None and ev.dwell_ms >= duration_s * 500:
                 qualifies = True
             if not qualifies and ev.value is None and ev.dwell_ms is None:
                 qualifies = True
@@ -428,23 +456,31 @@ async def backfill_scrobbles(user_id: str) -> dict:
                 skipped_criteria += 1
                 continue
 
-            session.add(ScrobbleQueue(
-                user_id=user_id,
-                track_id=ev.track_id,
-                artist=meta.artist,
-                track_title=meta.title,
-                album=meta.album,
-                duration_s=int(duration_s) if duration_s else None,
-                timestamp=ts,
-            ))
+            session.add(
+                ScrobbleQueue(
+                    user_id=user_id,
+                    track_id=ev.track_id,
+                    artist=meta.artist,
+                    track_title=meta.title,
+                    album=meta.album,
+                    duration_s=int(duration_s) if duration_s else None,
+                    timestamp=ts,
+                )
+            )
             enqueued += 1
 
         await session.commit()
 
-    logger.info("Scrobble backfill for user=%s: enqueued=%d, skipped_no_meta=%d, "
-                "skipped_criteria=%d, already_queued=%d, total_play_ends=%d",
-                user_id, enqueued, skipped_no_meta, skipped_criteria,
-                already_queued, len(events))
+    logger.info(
+        "Scrobble backfill for user=%s: enqueued=%d, skipped_no_meta=%d, "
+        "skipped_criteria=%d, already_queued=%d, total_play_ends=%d",
+        user_id,
+        enqueued,
+        skipped_no_meta,
+        skipped_criteria,
+        already_queued,
+        len(events),
+    )
 
     return {
         "enqueued": enqueued,

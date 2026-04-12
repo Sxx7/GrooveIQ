@@ -79,12 +79,14 @@ async def resolve_cover_art(
     now = int(time.time())
 
     # -- Cache lookup -------------------------------------------------------
-    cached = (await session.execute(
-        select(CoverArtCache).where(
-            CoverArtCache.artist_norm == artist_norm,
-            CoverArtCache.title_norm == title_norm,
+    cached = (
+        await session.execute(
+            select(CoverArtCache).where(
+                CoverArtCache.artist_norm == artist_norm,
+                CoverArtCache.title_norm == title_norm,
+            )
         )
-    )).scalar_one_or_none()
+    ).scalar_one_or_none()
 
     if cached is not None:
         if cached.url:
@@ -121,13 +123,15 @@ async def resolve_cover_art(
         cached.source = source
         cached.fetched_at = now
     else:
-        session.add(CoverArtCache(
-            artist_norm=artist_norm,
-            title_norm=title_norm,
-            url=url,
-            source=source,
-            fetched_at=now,
-        ))
+        session.add(
+            CoverArtCache(
+                artist_norm=artist_norm,
+                title_norm=title_norm,
+                url=url,
+                source=source,
+                fetched_at=now,
+            )
+        )
 
     return url
 
@@ -151,12 +155,14 @@ async def resolve_artist_image(
 
     now = int(time.time())
 
-    cached = (await session.execute(
-        select(CoverArtCache).where(
-            CoverArtCache.artist_norm == artist_norm,
-            CoverArtCache.title_norm == "",
+    cached = (
+        await session.execute(
+            select(CoverArtCache).where(
+                CoverArtCache.artist_norm == artist_norm,
+                CoverArtCache.title_norm == "",
+            )
         )
-    )).scalar_one_or_none()
+    ).scalar_one_or_none()
 
     if cached is not None:
         if cached.url:
@@ -189,12 +195,14 @@ async def resolve_artist_image(
         cached.source = source
         cached.fetched_at = now
     else:
-        session.add(CoverArtCache(
-            artist_norm=artist_norm,
-            title_norm="",
-            url=url,
-            source=source,
-            fetched_at=now,
-        ))
+        session.add(
+            CoverArtCache(
+                artist_norm=artist_norm,
+                title_norm="",
+                url=url,
+                source=source,
+                fetched_at=now,
+            )
+        )
 
     return url

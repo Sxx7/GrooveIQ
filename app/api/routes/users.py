@@ -1,4 +1,5 @@
 """GrooveIQ – User management routes."""
+
 from __future__ import annotations
 
 import logging
@@ -19,6 +20,7 @@ router = APIRouter()
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 async def _resolve_user(
     session: AsyncSession,
@@ -41,6 +43,7 @@ async def _resolve_user(
 # ---------------------------------------------------------------------------
 # Taste profile
 # ---------------------------------------------------------------------------
+
 
 @router.get("/users/{user_id}/profile", summary="Get user taste profile")
 async def get_user_profile(
@@ -71,6 +74,7 @@ async def get_user_profile(
 # ---------------------------------------------------------------------------
 # Onboarding
 # ---------------------------------------------------------------------------
+
 
 @router.post(
     "/users/{user_id}/onboarding",
@@ -104,10 +108,12 @@ async def submit_onboarding(
     # --- Match favourite tracks against library ---
     if body.favourite_tracks:
         result = await session.execute(
-            select(TrackFeatures.track_id).where(or_(
-                TrackFeatures.track_id.in_(body.favourite_tracks),
-                TrackFeatures.external_track_id.in_(body.favourite_tracks),
-            ))
+            select(TrackFeatures.track_id).where(
+                or_(
+                    TrackFeatures.track_id.in_(body.favourite_tracks),
+                    TrackFeatures.external_track_id.in_(body.favourite_tracks),
+                )
+            )
         )
         found = {r[0] for r in result.all()}
         prefs["favourite_tracks"] = list(found) if found else body.favourite_tracks
@@ -155,16 +161,17 @@ async def submit_onboarding(
 
     # --- Trigger a taste profile seed if user has no interactions yet ---
     profile_seeded = False
-    interaction_count = (await session.execute(
-        select(func.count()).select_from(
-            select(TrackInteraction.id)
-            .where(TrackInteraction.user_id == user_id)
-            .subquery()
+    interaction_count = (
+        await session.execute(
+            select(func.count()).select_from(
+                select(TrackInteraction.id).where(TrackInteraction.user_id == user_id).subquery()
+            )
         )
-    )).scalar() or 0
+    ).scalar() or 0
 
     if interaction_count == 0:
         from app.services.taste_profile import build_seed_profile
+
         seed = await build_seed_profile(session, user)
         if seed:
             user.taste_profile = seed
@@ -203,6 +210,7 @@ async def get_onboarding(
 # Track interactions
 # ---------------------------------------------------------------------------
 
+
 @router.get("/users/{user_id}/interactions", summary="Get user track interactions")
 async def get_user_interactions(
     user_id: str,
@@ -224,6 +232,7 @@ async def get_user_interactions(
     }[sort_by]
     from sqlalchemy import asc
     from sqlalchemy import desc as sa_desc
+
     order = sa_desc(sort_col) if sort_dir == "desc" else asc(sort_col)
 
     count_q = select(func.count()).select_from(
@@ -232,12 +241,16 @@ async def get_user_interactions(
     total = (await session.execute(count_q)).scalar() or 0
 
     from sqlalchemy import or_
+
     q = (
         select(TrackInteraction, TrackFeatures)
-        .outerjoin(TrackFeatures, or_(
-            TrackInteraction.track_id == TrackFeatures.track_id,
-            TrackInteraction.track_id == TrackFeatures.external_track_id,
-        ))
+        .outerjoin(
+            TrackFeatures,
+            or_(
+                TrackInteraction.track_id == TrackFeatures.track_id,
+                TrackInteraction.track_id == TrackFeatures.external_track_id,
+            ),
+        )
         .where(TrackInteraction.user_id == user_id)
         .order_by(order)
         .offset(offset)
@@ -279,6 +292,7 @@ async def get_user_interactions(
 # Listening history
 # ---------------------------------------------------------------------------
 
+
 @router.get("/users/{user_id}/history", summary="Get user listening history")
 async def get_user_history(
     user_id: str,
@@ -295,10 +309,12 @@ async def get_user_history(
 
     # Count total play_start events for this user
     count_q = select(func.count()).select_from(
-        select(ListenEvent.id).where(
+        select(ListenEvent.id)
+        .where(
             ListenEvent.user_id == user_id,
             ListenEvent.event_type == "play_start",
-        ).subquery()
+        )
+        .subquery()
     )
     total = (await session.execute(count_q)).scalar() or 0
 
@@ -322,10 +338,12 @@ async def get_user_history(
     track_ids = list({s.track_id for s in starts})
 
     # Fetch track metadata
-    tf_q = select(TrackFeatures).where(or_(
-        TrackFeatures.track_id.in_(track_ids),
-        TrackFeatures.external_track_id.in_(track_ids),
-    ))
+    tf_q = select(TrackFeatures).where(
+        or_(
+            TrackFeatures.track_id.in_(track_ids),
+            TrackFeatures.external_track_id.in_(track_ids),
+        )
+    )
     tf_rows = (await session.execute(tf_q)).scalars().all()
     tf_map = {}
     for tf in tf_rows:
@@ -340,13 +358,10 @@ async def get_user_history(
     session_ids = list({s.session_id for s in starts if s.session_id})
     end_by_session = {}  # (session_id, track_id) → play_end
     if session_ids:
-        end_q = (
-            select(ListenEvent)
-            .where(
-                ListenEvent.user_id == user_id,
-                ListenEvent.event_type == "play_end",
-                ListenEvent.session_id.in_(session_ids),
-            )
+        end_q = select(ListenEvent).where(
+            ListenEvent.user_id == user_id,
+            ListenEvent.event_type == "play_end",
+            ListenEvent.session_id.in_(session_ids),
         )
         ends = (await session.execute(end_q)).scalars().all()
         for e in ends:
@@ -411,6 +426,7 @@ async def get_user_history(
 # Listening sessions
 # ---------------------------------------------------------------------------
 
+
 @router.get("/users/{user_id}/sessions", summary="Get user listening sessions")
 async def get_user_sessions(
     user_id: str,
@@ -465,6 +481,7 @@ async def get_user_sessions(
 # CRUD
 # ---------------------------------------------------------------------------
 
+
 @router.get("/users", summary="List all users")
 async def list_users(
     limit: int = Query(100, ge=1, le=500),
@@ -473,6 +490,7 @@ async def list_users(
     _key: str = Depends(require_api_key),
 ):
     from app.core.security import require_admin
+
     require_admin(_key)
     q = (
         select(
@@ -560,9 +578,7 @@ async def update_user(
     # Rename user_id with cascade.
     if body.user_id is not None and body.user_id != old_user_id:
         # Check uniqueness of the new user_id.
-        conflict = await session.execute(
-            select(User.id).where(User.user_id == body.user_id)
-        )
+        conflict = await session.execute(select(User.id).where(User.user_id == body.user_id))
         if conflict.scalar_one_or_none() is not None:
             raise HTTPException(
                 status_code=409,
@@ -571,28 +587,27 @@ async def update_user(
 
         # Cascade to all tables that store user_id as a string column.
         await session.execute(
-            update(ListenEvent)
-            .where(ListenEvent.user_id == old_user_id)
-            .values(user_id=body.user_id)
+            update(ListenEvent).where(ListenEvent.user_id == old_user_id).values(user_id=body.user_id)
         )
         await session.execute(
-            update(ListenSession)
-            .where(ListenSession.user_id == old_user_id)
-            .values(user_id=body.user_id)
+            update(ListenSession).where(ListenSession.user_id == old_user_id).values(user_id=body.user_id)
         )
         await session.execute(
-            update(TrackInteraction)
-            .where(TrackInteraction.user_id == old_user_id)
-            .values(user_id=body.user_id)
+            update(TrackInteraction).where(TrackInteraction.user_id == old_user_id).values(user_id=body.user_id)
         )
 
         user.user_id = body.user_id
 
         from app.core.audit import audit_log
-        audit_log("user_rename", api_key=_key, detail={
-            "uid": uid,
-            "old_user_id": old_user_id,
-            "new_user_id": body.user_id,
-        })
+
+        audit_log(
+            "user_rename",
+            api_key=_key,
+            detail={
+                "uid": uid,
+                "old_user_id": old_user_id,
+                "new_user_id": body.user_id,
+            },
+        )
 
     return user

@@ -40,7 +40,7 @@ def _require_lastfm_enabled() -> None:
         raise HTTPException(
             status_code=503,
             detail="Last.fm integration is not enabled. "
-                   "Set LASTFM_ENABLED=true, LASTFM_API_KEY, and LASTFM_API_SECRET.",
+            "Set LASTFM_ENABLED=true, LASTFM_API_KEY, and LASTFM_API_SECRET.",
         )
 
 
@@ -58,8 +58,8 @@ async def _resolve_user(session: AsyncSession, user_id: str, api_key: str = "ano
     response_model=LastfmConnectResponse,
     summary="Connect Last.fm account",
     description="Called by client apps to link a user's Last.fm account. "
-                "Credentials are exchanged for a session key via Last.fm and "
-                "discarded immediately — never stored or logged.",
+    "Credentials are exchanged for a session key via Last.fm and "
+    "discarded immediately — never stored or logged.",
 )
 async def connect_lastfm(
     user_id: str,
@@ -85,7 +85,8 @@ async def connect_lastfm(
     client = get_lastfm_client()
     try:
         result = await client.get_mobile_session(
-            body.lastfm_username, body.lastfm_password,
+            body.lastfm_username,
+            body.lastfm_password,
         )
     except LastFmError as e:
         logger.warning("Last.fm auth failed for %s: %s", user_id, e.message)
@@ -105,14 +106,20 @@ async def connect_lastfm(
     user.lastfm_session_key = encrypt_session_key(result)
 
     from app.core.audit import audit_log
-    audit_log("lastfm_connect", api_key=_key, detail={
-        "user_id": user_id,
-        "lastfm_username": body.lastfm_username,
-    })
+
+    audit_log(
+        "lastfm_connect",
+        api_key=_key,
+        detail={
+            "user_id": user_id,
+            "lastfm_username": body.lastfm_username,
+        },
+    )
 
     # Trigger immediate profile pull
     try:
         from app.services.lastfm_profile import refresh_single_user
+
         await refresh_single_user(session, user)
     except Exception as e:
         logger.warning("Initial Last.fm profile pull failed: %s", e)
@@ -136,6 +143,7 @@ async def disconnect_lastfm(
     user = await _resolve_user(session, user_id, _key)
 
     from app.core.audit import audit_log
+
     audit_log("lastfm_disconnect", api_key=_key, detail={"user_id": user_id})
 
     user.lastfm_username = None
@@ -158,8 +166,7 @@ async def disconnect_lastfm(
     "/users/{user_id}/lastfm/sync",
     response_model=LastfmProfileResponse,
     summary="Force-refresh Last.fm profile data",
-    description="Re-fetches the user's Last.fm profile from the API "
-                "regardless of the normal refresh interval.",
+    description="Re-fetches the user's Last.fm profile from the API regardless of the normal refresh interval.",
 )
 async def sync_lastfm_profile(
     user_id: str,
@@ -199,8 +206,8 @@ async def sync_lastfm_profile(
     "/users/{user_id}/lastfm/backfill",
     summary="Backfill missed scrobbles",
     description="Scans past play_end events and enqueues any that qualify "
-                "for scrobbling but were missed. The background worker will "
-                "send them to Last.fm on its next run.",
+    "for scrobbling but were missed. The background worker will "
+    "send them to Last.fm on its next run.",
 )
 async def backfill_scrobbles(
     user_id: str,
@@ -209,6 +216,7 @@ async def backfill_scrobbles(
     _require_lastfm_enabled()
 
     from app.core.security import check_user_access
+
     check_user_access(_key, user_id)
 
     from app.services.lastfm_scrobbler import backfill_scrobbles as do_backfill

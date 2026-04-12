@@ -29,6 +29,7 @@ router = APIRouter()
 # Media server sync
 # ---------------------------------------------------------------------------
 
+
 @router.post(
     "/library/sync",
     status_code=200,
@@ -55,10 +56,11 @@ async def trigger_sync(
         raise HTTPException(
             status_code=400,
             detail="No media server configured. Set MEDIA_SERVER_TYPE, MEDIA_SERVER_URL, "
-                   "and credentials in your .env file.",
+            "and credentials in your .env file.",
         )
 
     from app.core.audit import audit_log
+
     audit_log("media_server_sync", api_key=_key)
 
     try:
@@ -84,6 +86,7 @@ async def trigger_sync(
 # Library scan
 # ---------------------------------------------------------------------------
 
+
 @router.post(
     "/library/scan",
     response_model=ScanTriggerResponse,
@@ -105,6 +108,7 @@ async def trigger_library_scan(
 ):
     require_admin(_key)
     from app.core.audit import audit_log
+
     audit_log("library_scan", api_key=_key)
     scan_id = await trigger_scan()
     return ScanTriggerResponse(
@@ -205,13 +209,15 @@ async def list_tracks(
     # Search (file_path excluded — prevents filesystem enumeration)
     if search and search.strip():
         term = f"%{search.strip()[:256]}%"
-        q = q.where(or_(
-            TrackFeatures.title.ilike(term),
-            TrackFeatures.artist.ilike(term),
-            TrackFeatures.album.ilike(term),
-            TrackFeatures.genre.ilike(term),
-            TrackFeatures.track_id.ilike(term),
-        ))
+        q = q.where(
+            or_(
+                TrackFeatures.title.ilike(term),
+                TrackFeatures.artist.ilike(term),
+                TrackFeatures.album.ilike(term),
+                TrackFeatures.genre.ilike(term),
+                TrackFeatures.track_id.ilike(term),
+            )
+        )
 
     # Filters
     if min_bpm is not None:
@@ -281,6 +287,7 @@ async def list_tracks(
 # Track features
 # ---------------------------------------------------------------------------
 
+
 @router.get(
     "/tracks/{track_id}/features",
     response_model=TrackFeaturesResponse,
@@ -300,9 +307,7 @@ async def get_track_features(
     session: AsyncSession = Depends(get_session),
     _key: str = Depends(require_api_key),
 ):
-    result = await session.execute(
-        select(TrackFeatures).where(TrackFeatures.track_id == track_id)
-    )
+    result = await session.execute(select(TrackFeatures).where(TrackFeatures.track_id == track_id))
     track = result.scalar_one_or_none()
     if track is None:
         raise HTTPException(
@@ -334,23 +339,20 @@ async def get_similar_tracks(
     _key: str = Depends(require_api_key),
 ):
     # Verify seed track exists.
-    result = await session.execute(
-        select(TrackFeatures).where(TrackFeatures.track_id == track_id)
-    )
+    result = await session.execute(select(TrackFeatures).where(TrackFeatures.track_id == track_id))
     seed = result.scalar_one_or_none()
     if seed is None:
         raise HTTPException(status_code=404, detail="Not found.")
 
     # Try FAISS first (Phase 4).
     from app.services.faiss_index import is_ready, search_by_track_id
+
     if is_ready():
         faiss_results = search_by_track_id(track_id, k=limit)
         if faiss_results:
             similar_ids = [tid for tid, _ in faiss_results]
             scores_map = {tid: score for tid, score in faiss_results}
-            feat_result = await session.execute(
-                select(TrackFeatures).where(TrackFeatures.track_id.in_(similar_ids))
-            )
+            feat_result = await session.execute(select(TrackFeatures).where(TrackFeatures.track_id.in_(similar_ids)))
             feat_map = {t.track_id: t for t in feat_result.scalars().all()}
             # Preserve FAISS ranking order.
             candidates = [feat_map[tid] for tid in similar_ids if tid in feat_map]
@@ -378,10 +380,12 @@ async def get_similar_tracks(
     if seed.bpm:
         q = q.where(TrackFeatures.bpm.between(seed.bpm - 15, seed.bpm + 15))
     if seed.energy is not None:
-        q = q.where(TrackFeatures.energy.between(
-            max(0.0, seed.energy - 0.25),
-            min(1.0, seed.energy + 0.25),
-        ))
+        q = q.where(
+            TrackFeatures.energy.between(
+                max(0.0, seed.energy - 0.25),
+                min(1.0, seed.energy + 0.25),
+            )
+        )
     if seed.mode:
         q = q.where(TrackFeatures.mode == seed.mode)
 

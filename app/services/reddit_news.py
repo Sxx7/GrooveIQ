@@ -31,39 +31,39 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 GENRE_TO_SUBS: dict[str, list[str]] = {
-    "hip-hop":      ["hiphopheads", "rap"],
-    "hip hop":      ["hiphopheads", "rap"],
-    "rap":          ["hiphopheads", "rap"],
-    "indie":        ["indieheads", "indie"],
-    "indie rock":   ["indieheads", "indie"],
-    "electronic":   ["electronicmusic", "EDM"],
-    "edm":          ["electronicmusic", "EDM"],
-    "metal":        ["Metal", "metalcore"],
-    "r&b":          ["rnb", "soul"],
-    "rnb":          ["rnb", "soul"],
-    "soul":         ["rnb", "soul"],
-    "pop":          ["popheads"],
-    "rock":         ["rock", "classicrock"],
-    "jazz":         ["Jazz"],
-    "folk":         ["folk"],
-    "punk":         ["punk"],
-    "country":      ["country"],
-    "classical":    ["classicalmusic"],
-    "ambient":      ["ambient"],
-    "lo-fi":        ["LofiHipHop"],
-    "lofi":         ["LofiHipHop"],
-    "shoegaze":     ["shoegaze"],
-    "post-rock":    ["postrock"],
-    "synthwave":    ["synthwave", "outrun"],
+    "hip-hop": ["hiphopheads", "rap"],
+    "hip hop": ["hiphopheads", "rap"],
+    "rap": ["hiphopheads", "rap"],
+    "indie": ["indieheads", "indie"],
+    "indie rock": ["indieheads", "indie"],
+    "electronic": ["electronicmusic", "EDM"],
+    "edm": ["electronicmusic", "EDM"],
+    "metal": ["Metal", "metalcore"],
+    "r&b": ["rnb", "soul"],
+    "rnb": ["rnb", "soul"],
+    "soul": ["rnb", "soul"],
+    "pop": ["popheads"],
+    "rock": ["rock", "classicrock"],
+    "jazz": ["Jazz"],
+    "folk": ["folk"],
+    "punk": ["punk"],
+    "country": ["country"],
+    "classical": ["classicalmusic"],
+    "ambient": ["ambient"],
+    "lo-fi": ["LofiHipHop"],
+    "lofi": ["LofiHipHop"],
+    "shoegaze": ["shoegaze"],
+    "post-rock": ["postrock"],
+    "synthwave": ["synthwave", "outrun"],
     "drum and bass": ["DnB"],
-    "dnb":          ["DnB"],
-    "house":        ["House"],
-    "techno":       ["Techno"],
-    "k-pop":        ["kpop"],
-    "kpop":         ["kpop"],
-    "latin":        ["LatinMusic"],
-    "reggae":       ["reggae"],
-    "blues":        ["blues"],
+    "dnb": ["DnB"],
+    "house": ["House"],
+    "techno": ["Techno"],
+    "k-pop": ["kpop"],
+    "kpop": ["kpop"],
+    "latin": ["LatinMusic"],
+    "reggae": ["reggae"],
+    "blues": ["blues"],
 }
 
 SUB_TO_GENRES: dict[str, list[str]] = {}
@@ -75,6 +75,7 @@ for _genre, _subs in GENRE_TO_SUBS.items():
 # ---------------------------------------------------------------------------
 # Data model
 # ---------------------------------------------------------------------------
+
 
 @dataclass
 class RedditPost:
@@ -101,15 +102,30 @@ class RedditPost:
 # ---------------------------------------------------------------------------
 
 _TAG_RE = re.compile(r"\[([^\]]+)\]")
-_ARTIST_TITLE_RE = re.compile(
-    r"^(.+?)\s*[-\u2013\u2014]\s*(.+?)(?:\s*\[.*\])?\s*(?:\(.*\))?\s*$"
-)
+_ARTIST_TITLE_RE = re.compile(r"^(.+?)\s*[-\u2013\u2014]\s*(.+?)(?:\s*\[.*\])?\s*(?:\(.*\))?\s*$")
 
-_FRESH_TAGS = {"fresh", "fresh video", "fresh album", "fresh ep", "fresh single",
-               "fresh performance", "fresh stream", "fresh leak"}
-_KNOWN_TAGS = _FRESH_TAGS | {"news", "discussion", "article", "ama", "hype",
-                              "shots fired", "game thread", "daily discussion",
-                              "album of the year", "aoty"}
+_FRESH_TAGS = {
+    "fresh",
+    "fresh video",
+    "fresh album",
+    "fresh ep",
+    "fresh single",
+    "fresh performance",
+    "fresh stream",
+    "fresh leak",
+}
+_KNOWN_TAGS = _FRESH_TAGS | {
+    "news",
+    "discussion",
+    "article",
+    "ama",
+    "hype",
+    "shots fired",
+    "game thread",
+    "daily discussion",
+    "album of the year",
+    "aoty",
+}
 
 
 def _parse_title(title: str) -> tuple[list[str], str | None, bool]:
@@ -184,7 +200,9 @@ def _rebuild_artist_index() -> None:
 # Reddit fetcher
 # ---------------------------------------------------------------------------
 
-_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+)
 _BROWSER_HEADERS = {
     "User-Agent": _USER_AGENT,
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
@@ -234,24 +252,26 @@ async def _fetch_subreddit(client: httpx.AsyncClient, subreddit: str) -> list[Re
         if thumb in ("self", "default", "nsfw", "spoiler", "", None):
             thumb = None
 
-        posts.append(RedditPost(
-            id=d.get("name", ""),
-            subreddit=d.get("subreddit", subreddit),
-            title=d.get("title", ""),
-            url=d.get("url", ""),
-            permalink="https://www.reddit.com" + d.get("permalink", ""),
-            score=d.get("score", 0),
-            num_comments=d.get("num_comments", 0),
-            created_utc=int(d.get("created_utc", 0)),
-            flair=d.get("link_flair_text"),
-            selftext_snippet=selftext[:200],
-            thumbnail=thumb,
-            domain=d.get("domain", ""),
-            is_self=d.get("is_self", False),
-            parsed_artists=artists,
-            parsed_tag=tag,
-            is_fresh=is_fresh,
-        ))
+        posts.append(
+            RedditPost(
+                id=d.get("name", ""),
+                subreddit=d.get("subreddit", subreddit),
+                title=d.get("title", ""),
+                url=d.get("url", ""),
+                permalink="https://www.reddit.com" + d.get("permalink", ""),
+                score=d.get("score", 0),
+                num_comments=d.get("num_comments", 0),
+                created_utc=int(d.get("created_utc", 0)),
+                flair=d.get("link_flair_text"),
+                selftext_snippet=selftext[:200],
+                thumbnail=thumb,
+                domain=d.get("domain", ""),
+                is_self=d.get("is_self", False),
+                parsed_artists=artists,
+                parsed_tag=tag,
+                is_fresh=is_fresh,
+            )
+        )
 
     return posts
 
@@ -290,9 +310,11 @@ async def _do_refresh_cache() -> dict[str, Any]:
         from app.models.db import User
 
         async with AsyncSessionLocal() as session:
-            rows = (await session.execute(
-                select(User.taste_profile).where(User.taste_profile.isnot(None))
-            )).scalars().all()
+            rows = (
+                (await session.execute(select(User.taste_profile).where(User.taste_profile.isnot(None))))
+                .scalars()
+                .all()
+            )
             for profile in rows:
                 if not isinstance(profile, dict):
                     continue
@@ -343,6 +365,7 @@ async def _do_refresh_cache() -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 # Personalization scoring
 # ---------------------------------------------------------------------------
+
 
 def _build_user_artist_set(taste_profile: dict | None) -> set[str]:
     """Build a normalized set of artist names the user likes."""
@@ -413,18 +436,9 @@ def _score_post(
     # -- Engagement signal (high comments)
     engagement = min(1.0, post.num_comments / 500.0)
 
-    personal_relevance = (
-        0.50 * artist_match
-        + 0.30 * genre_match
-        + 0.10 * fresh_bonus
-        + 0.10 * engagement
-    )
+    personal_relevance = 0.50 * artist_match + 0.30 * genre_match + 0.10 * fresh_bonus + 0.10 * engagement
 
-    final_score = (
-        0.20 * popularity
-        + 0.25 * recency
-        + 0.55 * personal_relevance
-    )
+    final_score = 0.20 * popularity + 0.25 * recency + 0.55 * personal_relevance
 
     return final_score
 
@@ -500,24 +514,26 @@ def get_personalized_feed(
         age_hours = (now - post.created_utc) / 3600.0
         reasons = _relevance_reasons(post, user_artists, user_genres)
 
-        results.append({
-            "id": post.id,
-            "title": post.title,
-            "url": post.url,
-            "reddit_url": post.permalink,
-            "subreddit": post.subreddit,
-            "score": post.score,
-            "num_comments": post.num_comments,
-            "created_utc": post.created_utc,
-            "age_hours": round(age_hours, 1),
-            "flair": post.flair,
-            "thumbnail": post.thumbnail,
-            "domain": post.domain,
-            "is_fresh": post.is_fresh,
-            "parsed_artists": post.parsed_artists,
-            "parsed_tag": post.parsed_tag,
-            "relevance_score": round(score, 3),
-            "relevance_reasons": reasons,
-        })
+        results.append(
+            {
+                "id": post.id,
+                "title": post.title,
+                "url": post.url,
+                "reddit_url": post.permalink,
+                "subreddit": post.subreddit,
+                "score": post.score,
+                "num_comments": post.num_comments,
+                "created_utc": post.created_utc,
+                "age_hours": round(age_hours, 1),
+                "flair": post.flair,
+                "thumbnail": post.thumbnail,
+                "domain": post.domain,
+                "is_fresh": post.is_fresh,
+                "parsed_artists": post.parsed_artists,
+                "parsed_tag": post.parsed_tag,
+                "relevance_score": round(score, 3),
+                "relevance_reasons": reasons,
+            }
+        )
 
     return results

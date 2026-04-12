@@ -114,6 +114,7 @@ async def start_watcher(
 # Watcher loop
 # ---------------------------------------------------------------------------
 
+
 async def _watch_loop(task_id: str, timeout_s: int) -> None:
     logger.info("Download watcher started for task %s", task_id)
     started_at = time.monotonic()
@@ -133,7 +134,8 @@ async def _watch_loop(task_id: str, timeout_s: int) -> None:
             if time.monotonic() - started_at > timeout_s:
                 logger.warning(
                     "Download watcher %s: overall timeout after %ds",
-                    task_id, timeout_s,
+                    task_id,
+                    timeout_s,
                 )
                 break
 
@@ -150,7 +152,8 @@ async def _watch_loop(task_id: str, timeout_s: int) -> None:
             if status == "error" and not status_data.get("raw"):
                 logger.debug(
                     "Watcher %s: transient status poll error (%s), retrying",
-                    task_id, status_data.get("error"),
+                    task_id,
+                    status_data.get("error"),
                 )
                 continue
 
@@ -160,7 +163,8 @@ async def _watch_loop(task_id: str, timeout_s: int) -> None:
                     terminal_error = status_data.get("error") or ""
                 logger.info(
                     "Watcher %s: reached terminal status %s",
-                    task_id, status,
+                    task_id,
+                    status,
                 )
                 break
 
@@ -196,6 +200,7 @@ async def _watch_loop(task_id: str, timeout_s: int) -> None:
 # DB update
 # ---------------------------------------------------------------------------
 
+
 async def _mark_download_done(
     task_id: str,
     terminal_status: str,
@@ -209,9 +214,9 @@ async def _mark_download_done(
     )
     now = int(time.time())
     async with AsyncSessionLocal() as session:
-        record = (await session.execute(
-            select(DownloadRequest).where(DownloadRequest.task_id == task_id)
-        )).scalar_one_or_none()
+        record = (
+            await session.execute(select(DownloadRequest).where(DownloadRequest.task_id == task_id))
+        ).scalar_one_or_none()
         if record is None:
             logger.warning(
                 "Watcher %s: no download_requests row to update",
@@ -229,6 +234,7 @@ async def _mark_download_done(
 # Post-download refresh chain
 # ---------------------------------------------------------------------------
 
+
 async def _trigger_post_download_refresh(task_id: str) -> None:
     """After a download succeeds, tell the media server and GrooveIQ to scan.
 
@@ -238,6 +244,7 @@ async def _trigger_post_download_refresh(task_id: str) -> None:
     # 1. Media server refresh (Plex partial, Navidrome full).
     try:
         from app.services.media_server import is_configured, refresh_library
+
         if is_configured():
             ok = await refresh_library()
             if ok:
@@ -255,7 +262,8 @@ async def _trigger_post_download_refresh(task_id: str) -> None:
     except Exception as exc:
         logger.warning(
             "Download %s: media server refresh error: %s",
-            task_id, exc,
+            task_id,
+            exc,
         )
 
     # 2. GrooveIQ library scan — only if one isn't already running.
@@ -263,6 +271,7 @@ async def _trigger_post_download_refresh(task_id: str) -> None:
     #    check first to avoid the log noise.
     try:
         from app.workers.library_scanner import is_scan_running, trigger_scan
+
         if is_scan_running():
             logger.debug(
                 "Download %s: GrooveIQ scan already running, skipping",
@@ -272,12 +281,14 @@ async def _trigger_post_download_refresh(task_id: str) -> None:
         scan_id = await trigger_scan()
         logger.info(
             "Download %s: GrooveIQ library scan triggered (scan_id=%s)",
-            task_id, scan_id,
+            task_id,
+            scan_id,
         )
     except Exception as exc:
         logger.warning(
             "Download %s: GrooveIQ scan trigger error: %s",
-            task_id, exc,
+            task_id,
+            exc,
         )
 
 
@@ -317,12 +328,18 @@ async def reap_stuck_downloads() -> int:
     now = int(time.time())
 
     async with AsyncSessionLocal() as session:
-        rows = (await session.execute(
-            select(DownloadRequest).where(
-                DownloadRequest.status.in_(_INFLIGHT_STATUSES),
-                DownloadRequest.task_id.isnot(None),
+        rows = (
+            (
+                await session.execute(
+                    select(DownloadRequest).where(
+                        DownloadRequest.status.in_(_INFLIGHT_STATUSES),
+                        DownloadRequest.task_id.isnot(None),
+                    )
+                )
             )
-        )).scalars().all()
+            .scalars()
+            .all()
+        )
 
     if not rows:
         return 0
@@ -351,8 +368,7 @@ async def reap_stuck_downloads() -> int:
                 if fresh and fresh.status not in ("completed", "error"):
                     fresh.status = "error"
                     fresh.error_message = (
-                        "Watcher timed out: no terminal status observed "
-                        f"within {_REAPER_MAX_AGE_S // 60} minutes."
+                        f"Watcher timed out: no terminal status observed within {_REAPER_MAX_AGE_S // 60} minutes."
                     )
                     fresh.updated_at = now
             await session.commit()

@@ -35,6 +35,7 @@ EMBEDDING_DIM = 64
 # File hashing
 # ---------------------------------------------------------------------------
 
+
 def compute_file_hash(path: str) -> str:
     """
     Fast file identity hash: SHA-256 of first 64 KB + file size + mtime.
@@ -57,6 +58,7 @@ def compute_file_hash(path: str) -> str:
 # Track ID generation
 # ---------------------------------------------------------------------------
 
+
 def generate_track_id(file_path: str) -> str:
     """
     Generate a stable track_id from the file's path relative to the music
@@ -69,6 +71,7 @@ def generate_track_id(file_path: str) -> str:
       library size).
     """
     from app.core.config import settings
+
     try:
         rel = os.path.relpath(file_path, settings.MUSIC_LIBRARY_PATH)
     except ValueError:

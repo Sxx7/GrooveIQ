@@ -41,6 +41,7 @@ def _create_model():
     cfg = get_config().ranker
     try:
         import lightgbm as lgb
+
         return lgb.LGBMRegressor(
             n_estimators=cfg.n_estimators,
             max_depth=cfg.max_depth,
@@ -56,6 +57,7 @@ def _create_model():
         ), "lgbm"
     except (ImportError, OSError):
         from sklearn.ensemble import GradientBoostingRegressor
+
         logger.info("LightGBM unavailable, using sklearn GradientBoostingRegressor.")
         return GradientBoostingRegressor(
             n_estimators=cfg.n_estimators,
@@ -76,6 +78,7 @@ def _save_model(model, engine: str, version: str) -> str | None:
             model.booster_.save_model(saved_path)
         else:
             import joblib
+
             saved_path = str(model_dir / f"ranker_{version}.pkl")
             joblib.dump(model, saved_path)
         logger.info(f"Ranker model saved: {saved_path}")
@@ -120,7 +123,11 @@ async def train_model() -> dict[str, Any]:
     # Run CPU-heavy model training in a thread so the event loop stays responsive.
     loop = asyncio.get_running_loop()
     model, engine = await loop.run_in_executor(
-        None, _train_ranker_sync, features, labels, sample_weights,
+        None,
+        _train_ranker_sync,
+        features,
+        labels,
+        sample_weights,
     )
 
     version = f"{engine}-{int(time.time())}"
@@ -178,10 +185,15 @@ async def score_candidates(
 
     # Build feature vectors.
     result = await build_features(
-        user_id, candidate_track_ids, session,
-        hour_of_day=hour_of_day, day_of_week=day_of_week,
-        device_type=device_type, output_type=output_type,
-        context_type=context_type, location_label=location_label,
+        user_id,
+        candidate_track_ids,
+        session,
+        hour_of_day=hour_of_day,
+        day_of_week=day_of_week,
+        device_type=device_type,
+        output_type=output_type,
+        context_type=context_type,
+        location_label=location_label,
     )
 
     track_ids = result["track_ids"]
