@@ -74,6 +74,32 @@ async def _check_lidarr() -> dict[str, Any]:
     return entry
 
 
+async def _check_slskd() -> dict[str, Any]:
+    url = settings.SLSKD_URL
+    if not settings.slskd_enabled:
+        return {"configured": False}
+    result = await _probe(
+        f"{url.rstrip('/')}/api/v0/server",
+        headers={"X-API-Key": settings.SLSKD_API_KEY},
+    )
+    entry: dict[str, Any] = {
+        "configured": True,
+        "url": url,
+        "connected": result["ok"],
+    }
+    if result["ok"]:
+        data = result["data"]
+        entry["state"] = data.get("state")
+        entry["details"] = {
+            k: data[k]
+            for k in ("version", "isConnected", "username")
+            if k in data
+        }
+    else:
+        entry["error"] = result["error"]
+    return entry
+
+
 async def _check_acousticbrainz() -> dict[str, Any]:
     url = settings.AB_LOOKUP_URL
     enabled = settings.AB_LOOKUP_ENABLED
@@ -194,6 +220,7 @@ async def integrations_status(
     results = await asyncio.gather(
         _check_spotdl(),
         _check_lidarr(),
+        _check_slskd(),
         _check_acousticbrainz(),
         _check_lastfm(),
         _check_media_server(),
@@ -204,8 +231,9 @@ async def integrations_status(
         "integrations": {
             "spotdl_api": results[0],
             "lidarr": results[1],
-            "acousticbrainz_lookup": results[2],
-            "lastfm": results[3],
-            "media_server": results[4],
+            "slskd": results[2],
+            "acousticbrainz_lookup": results[3],
+            "lastfm": results[4],
+            "media_server": results[5],
         },
     }

@@ -688,13 +688,17 @@ class DownloadResponse(BaseModel):
     """A persisted download request."""
 
     id: int
-    spotify_id: str
+    spotify_id: str | None = None
     task_id: str | None = None
     status: str
+    source: str = "spotdl"
     track_title: str | None = None
     artist_name: str | None = None
     album_name: str | None = None
     cover_url: str | None = None
+    slskd_username: str | None = None
+    slskd_filename: str | None = None
+    slskd_transfer_id: str | None = None
     error_message: str | None = None
     created_at: int
     updated_at: int | None = None
@@ -709,3 +713,35 @@ class DownloadStatusResponse(BaseModel):
     status: str
     progress: float | None = None
     details: dict[str, Any] | None = None
+
+
+# ---------------------------------------------------------------------------
+# Soulseek (slskd) downloads
+# ---------------------------------------------------------------------------
+
+
+class SoulseekSearchResult(BaseModel):
+    """A single file result from a Soulseek search."""
+
+    username: str
+    filename: str
+    size: int
+    extension: str
+    bit_rate: int | None = None
+    sample_rate: int | None = None
+    bit_depth: int | None = None
+    length: int | None = None
+    has_free_slot: bool = False
+    queue_length: int = 0
+    score: float = 0.0
+
+
+class SoulseekDownloadRequest(BaseModel):
+    """Request body for POST /v1/soulseek/download."""
+
+    username: str = Field(..., min_length=1, max_length=256)
+    filename: str = Field(..., min_length=1, max_length=1024)
+    size: int = Field(..., gt=0)
+    track_title: str | None = Field(None, max_length=512)
+    artist_name: str | None = Field(None, max_length=512)
+    album_name: str | None = Field(None, max_length=512)

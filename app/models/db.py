@@ -562,16 +562,23 @@ class DownloadRequest(Base):
     __tablename__ = "download_requests"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    spotify_id = Column(String(64), nullable=False, index=True)
-    task_id = Column(String(128), nullable=True, index=True)  # Spotizerr task ID
+    spotify_id = Column(String(64), nullable=True, index=True)  # nullable: Soulseek downloads have no Spotify ID
+    task_id = Column(String(128), nullable=True, index=True)  # Spotizerr/spotdl task ID
     status = Column(String(32), nullable=False, default="pending")
     # pending | downloading | duplicate | completed | error
+    source = Column(String(32), nullable=False, default="spotdl")
+    # "spotdl" | "spotizerr" | "soulseek"
 
-    # Track metadata (from Spotizerr search results)
+    # Track metadata (from search results)
     track_title = Column(String(512), nullable=True)
     artist_name = Column(String(512), nullable=True)
     album_name = Column(String(512), nullable=True)
     cover_url = Column(String(1024), nullable=True)
+
+    # Soulseek-specific fields (slskd)
+    slskd_username = Column(String(256), nullable=True)  # Soulseek peer username
+    slskd_filename = Column(String(1024), nullable=True)  # Remote file path on peer
+    slskd_transfer_id = Column(String(128), nullable=True)  # slskd transfer GUID
 
     # Who requested it
     requested_by = Column(String(128), nullable=True)  # API key identity

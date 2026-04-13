@@ -211,6 +211,15 @@ class Settings(BaseSettings):
     CHARTS_SPOTIZERR_MAX_ADDS: int = 50  # max tracks to download per chart build
 
     # ------------------------------------------------------------------
+    # slskd (Soulseek) — optional peer-to-peer download backend
+    # ------------------------------------------------------------------
+    SLSKD_URL: str = ""  # e.g. http://slskd:5030
+    SLSKD_API_KEY: str = ""  # slskd API key (generate in slskd web UI or via --api-key)
+    SLSKD_ENABLED: bool = False  # master toggle
+    SLSKD_SEARCH_TIMEOUT: int = 15  # seconds to wait for Soulseek search results
+    SLSKD_PREFER_LOSSLESS: bool = True  # prefer FLAC over MP3 in result ranking
+
+    # ------------------------------------------------------------------
     # AcousticBrainz Lookup (optional add-on container)
     # ------------------------------------------------------------------
     AB_LOOKUP_URL: str = ""  # e.g. http://acousticbrainz-lookup:8200
@@ -280,9 +289,13 @@ class Settings(BaseSettings):
         return bool(self.SPOTIZERR_URL)
 
     @property
+    def slskd_enabled(self) -> bool:
+        return bool(self.SLSKD_ENABLED and self.SLSKD_URL and self.SLSKD_API_KEY)
+
+    @property
     def download_enabled(self) -> bool:
-        """True if any download backend (spotdl-api or Spotizerr) is configured."""
-        return self.spotdl_enabled or self.spotizerr_enabled
+        """True if any download backend (spotdl-api, Spotizerr, or slskd) is configured."""
+        return self.spotdl_enabled or self.spotizerr_enabled or self.slskd_enabled
 
     @property
     def ab_lookup_enabled(self) -> bool:
@@ -391,6 +404,7 @@ class Settings(BaseSettings):
         _validate_service_url(self.LIDARR_URL, "LIDARR_URL")
         _validate_service_url(self.SPOTDL_API_URL, "SPOTDL_API_URL")
         _validate_service_url(self.SPOTIZERR_URL, "SPOTIZERR_URL")
+        _validate_service_url(self.SLSKD_URL, "SLSKD_URL")
         _validate_service_url(self.AB_LOOKUP_URL, "AB_LOOKUP_URL")
 
         # --- HTTP cleartext warnings ---

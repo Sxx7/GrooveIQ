@@ -392,41 +392,95 @@ async def search_and_download(
 ) -> dict[str, Any] | None:
     """Search for a track and trigger download via the configured backend.
 
+    Tries spotdl-api / Spotizerr first (Spotify-ID-based).  If no match
+    is found and slskd is configured, falls back to Soulseek text search.
+
     Returns dict with task_id, spotify_id, matched artist/title,
-    or None if search returned no results.
+    or None if search returned no results on any backend.
     """
     from app.services.spotdl import get_download_client
 
     client = get_download_client()
+    if client is not None:
+        try:
+            query = f"{artist} {title}"
+            results = await client.search(query, limit=5)
+
+            match = _pick_best_match(results, artist, title)
+            if match:
+                spotify_id = match.get("id", "")
+                if spotify_id:
+                    matched_artists = [a.get("name", "") for a in match.get("artists", [])]
+                    matched_artist = matched_artists[0] if matched_artists else ""
+                    matched_title = match.get("name", "")
+
+                    dl_result = await client.download(spotify_id)
+
+                    return {
+                        "task_id": dl_result.get("task_id", ""),
+                        "status": dl_result.get("status", "unknown"),
+                        "spotify_id": spotify_id,
+                        "matched_artist": matched_artist,
+                        "matched_title": matched_title,
+                    }
+
+            logger.info("spotdl/Spotizerr: no results for %r", query)
+        finally:
+            await client.close()
+
+    # -- Soulseek fallback --------------------------------------------------
+    result = await _slskd_fallback_download(artist, title)
+    if result:
+        return result
+
+    return None
+
+
+async def _slskd_fallback_download(
+    artist: str,
+    title: str,
+) -> dict[str, Any] | None:
+    """Try downloading a track via Soulseek (slskd) as a last resort.
+
+    Searches Soulseek by "artist title", picks the best-ranked result,
+    and queues it for download.  Returns a result dict or None.
+    """
+    from app.core.config import settings
+    from app.services.slskd import get_slskd_client
+
+    if not settings.slskd_enabled:
+        return None
+
+    client = get_slskd_client()
     if client is None:
         return None
 
     try:
         query = f"{artist} {title}"
         results = await client.search(query, limit=5)
-
-        match = _pick_best_match(results, artist, title)
-        if not match:
-            logger.info("Spotizerr: no results for %r", query)
+        if not results:
+            logger.info("slskd fallback: no results for %r", query)
             return None
 
-        spotify_id = match.get("id", "")
-        if not spotify_id:
-            return None
-
-        # Extract matched artist name(s).
-        matched_artists = [a.get("name", "") for a in match.get("artists", [])]
-        matched_artist = matched_artists[0] if matched_artists else ""
-        matched_title = match.get("name", "")
-
-        dl_result = await client.download(spotify_id)
+        # Pick the top-ranked result.
+        best = results[0]
+        dl_result = await client.download(
+            best["username"],
+            best["filename"],
+            best["size"],
+        )
 
         return {
-            "task_id": dl_result.get("task_id", ""),
-            "status": dl_result.get("status", "unknown"),
-            "spotify_id": spotify_id,
-            "matched_artist": matched_artist,
-            "matched_title": matched_title,
+            "task_id": "",
+            "status": dl_result.get("state", "unknown"),
+            "source": "soulseek",
+            "matched_artist": artist,
+            "matched_title": title,
+            "slskd_username": best["username"],
+            "slskd_filename": best["filename"],
         }
+    except Exception as exc:
+        logger.warning("slskd fallback download failed for %r: %s", f"{artist} {title}", exc)
+        return None
     finally:
         await client.close()

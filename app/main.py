@@ -28,6 +28,7 @@ from app.api.routes import (
     playlists,
     radio,
     recommend,
+    soulseek,
     stats,
     tracks,
     users,
@@ -172,6 +173,7 @@ app.include_router(lastfm.router, prefix="/v1", tags=["lastfm"])
 app.include_router(artists.router, prefix="/v1", tags=["artists"])
 app.include_router(radio.router, prefix="/v1", tags=["radio"])
 app.include_router(algorithm_config.router, prefix="/v1", tags=["algorithm"])
+app.include_router(soulseek.router, prefix="/v1", tags=["soulseek"])
 app.include_router(integrations.router, prefix="/v1", tags=["integrations"])
 app.include_router(news.router, prefix="/v1", tags=["news"])
 
