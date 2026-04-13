@@ -35,6 +35,7 @@ LABEL org.opencontainers.image.source="https://gitlab.local.devii.ch/simon/groov
 # Runtime audio codec libs (needed by Essentia at import time)
 # Package versions match Debian Trixie (python:3.12-slim base)
 RUN apt-get update && apt-get install -y --no-install-recommends \
+        ffmpeg \
         libavcodec61 \
         libavformat61 \
         libavutil59 \

@@ -31,6 +31,8 @@ import base64
 import logging
 import multiprocessing as mp
 import os
+import subprocess
+import tempfile
 import time
 from pathlib import Path
 from queue import Empty
@@ -605,13 +607,22 @@ def _analyze_file(
             audio = es.MonoLoader(filename=file_path, sampleRate=sr)()
         except RuntimeError as e:
             if "more than 2 channels" in str(e):
-                multi, loaded_sr, _, _, _, _ = es.AudioLoader(filename=file_path)()
-                audio = np.mean(multi, axis=1).astype(np.float32)
-                if int(loaded_sr) != sr:
-                    audio = es.Resample(
-                        inputSampleRate=loaded_sr,
-                        outputSampleRate=sr,
-                    )(audio)
+                # Essentia can't load >2 channel audio; downmix via ffmpeg
+                with tempfile.NamedTemporaryFile(suffix=".wav", delete=True) as tmp:
+                    cmd = [
+                        "ffmpeg", "-y", "-i", file_path,
+                        "-ac", "1", "-ar", str(sr),
+                        "-f", "wav", tmp.name,
+                    ]
+                    proc = subprocess.run(
+                        cmd, capture_output=True, timeout=60,
+                    )
+                    if proc.returncode != 0:
+                        raise RuntimeError(
+                            f"ffmpeg downmix failed: {proc.stderr.decode(errors='replace')}"
+                        ) from e
+                    audio = es.MonoLoader(filename=tmp.name, sampleRate=sr)()
+                logger.info("Downmixed multichannel file via ffmpeg: %s", file_path)
             else:
                 raise
 
