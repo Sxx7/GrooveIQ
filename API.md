@@ -17,12 +17,13 @@
 7. [Integrations](#integrations)
 8. [Playlists](#playlists)
 9. [Discovery](#discovery)
-10. [Last.fm](#lastfm)
-11. [Charts](#charts)
-12. [Downloads](#downloads)
-13. [Artists](#artists)
-14. [Pipeline & Stats](#pipeline--stats)
-15. [Configuration Reference](#configuration-reference)
+10. [Fill Library](#fill-library)
+11. [Last.fm](#lastfm)
+12. [Charts](#charts)
+13. [Downloads](#downloads)
+14. [Artists](#artists)
+15. [Pipeline & Stats](#pipeline--stats)
+16. [Configuration Reference](#configuration-reference)
 
 ---
 
@@ -753,6 +754,97 @@ Finds similar artists via Last.fm, auto-adds to Lidarr. Requires `LASTFM_API_KEY
 
 ---
 
+## Fill Library
+
+Queries AcousticBrainz Lookup for tracks matching each user's taste profile (by audio characteristics — BPM, energy, mood, danceability, etc.), groups results by album, and sends the best-matching albums to Lidarr for FLAC download. Unlike discovery (which adds whole artist discographies), Fill Library targets specific albums containing taste-matched tracks.
+
+Requires `FILL_LIBRARY_ENABLED=true`, `AB_LOOKUP_URL`, `LIDARR_URL`, and `LIDARR_API_KEY`.
+
+### `POST /v1/fill-library/run` — Trigger Fill Library pipeline
+
+Admin only. Queries AB Lookup per user taste profile, groups matched tracks by album, deduplicates against library/Lidarr/previous runs, and sends top albums to Lidarr.
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `max_albums` | int | config default (20) | Override max albums per run (1-100) |
+
+```bash
+curl -X POST "http://localhost:8000/v1/fill-library/run?max_albums=5" \
+  -H "Authorization: Bearer YOUR_API_KEY"
+```
+
+**Response:**
+
+```json
+{
+  "status": "completed",
+  "result": {
+    "status": "completed",
+    "users_processed": 2,
+    "albums_queued": 5,
+    "albums_skipped": 12,
+    "tracks_matched": 347,
+    "tracks_no_album": 23,
+    "errors": 0
+  }
+}
+```
+
+### `GET /v1/fill-library` — List fill-library requests
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `user_id` | - | Filter by user |
+| `status` | - | Filter: `pending`, `artist_added`, `album_monitored`, `sent`, `skipped`, `failed` |
+| `limit` | 50 (1-200) | Results per page |
+| `offset` | 0 | Pagination offset |
+
+**Response:**
+
+```json
+{
+  "total": 42,
+  "requests": [
+    {
+      "id": 1,
+      "user_id": "simon",
+      "artist_name": "Boards of Canada",
+      "artist_mbid": "69158f97-...",
+      "album_name": "Music Has the Right to Children",
+      "album_mbid": "a3e7c2f1-...",
+      "matched_tracks": 8,
+      "avg_distance": 0.087,
+      "best_distance": 0.042,
+      "status": "sent",
+      "lidarr_artist_id": 234,
+      "lidarr_album_id": 567,
+      "error_message": null,
+      "created_at": 1712000000
+    }
+  ]
+}
+```
+
+### `GET /v1/fill-library/stats` — Fill Library statistics
+
+```json
+{
+  "enabled": true,
+  "total": 42,
+  "by_status": {
+    "sent": 28,
+    "skipped": 10,
+    "failed": 4
+  },
+  "today_count": 5,
+  "max_per_run": 20,
+  "max_distance": 0.15,
+  "avg_distance_sent": 0.0923
+}
+```
+
+---
+
 ## Last.fm
 
 ### `POST /v1/users/{user_id}/lastfm/connect` — Connect account
@@ -1013,6 +1105,16 @@ All settings via environment variables or `.env` file. See [`.env.example`](.env
 | `MEDIA_SERVER_TOKEN` | - | Plex X-Plex-Token |
 | `MEDIA_SERVER_LIBRARY_ID` | `1` | Plex library section ID |
 | `MEDIA_SERVER_MUSIC_PATH` | - | Server's music root path |
+
+### Fill Library
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `FILL_LIBRARY_ENABLED` | `false` | Enable Fill Library pipeline |
+| `FILL_LIBRARY_MAX_ALBUMS` | `20` | Max albums to queue per run |
+| `FILL_LIBRARY_MAX_DISTANCE` | `0.15` | Max AB distance threshold (lower = stricter match) |
+| `FILL_LIBRARY_CRON` | `0 4 * * *` | Cron schedule (default: 4 AM daily UTC) |
+| `FILL_LIBRARY_QUERY_LIMIT` | `500` | Max tracks per AB Lookup query |
 
 ### Music News Feed (planned)
 

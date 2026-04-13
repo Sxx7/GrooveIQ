@@ -115,6 +115,13 @@ services:
       AB_LOOKUP_ENABLED:           ${AB_LOOKUP_ENABLED:-false}
       AB_DISCOVERY_LIMIT:          ${AB_DISCOVERY_LIMIT:-50}
 
+      # Fill Library (AB taste-match → Lidarr album download)
+      FILL_LIBRARY_ENABLED:        ${FILL_LIBRARY_ENABLED:-false}
+      FILL_LIBRARY_MAX_ALBUMS:     ${FILL_LIBRARY_MAX_ALBUMS:-20}
+      FILL_LIBRARY_MAX_DISTANCE:   ${FILL_LIBRARY_MAX_DISTANCE:-0.15}
+      FILL_LIBRARY_CRON:           ${FILL_LIBRARY_CRON:-0 4 * * *}
+      FILL_LIBRARY_QUERY_LIMIT:    ${FILL_LIBRARY_QUERY_LIMIT:-500}
+
       # News feed (Reddit)
       NEWS_ENABLED:                ${NEWS_ENABLED:-false}
       NEWS_INTERVAL_MINUTES:       ${NEWS_INTERVAL_MINUTES:-30}
