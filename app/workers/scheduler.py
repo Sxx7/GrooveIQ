@@ -63,6 +63,23 @@ async def start_scheduler() -> None:
             replace_existing=True,
         )
 
+    # Fill Library (AB taste-match → Lidarr album download)
+    if settings.fill_library_enabled:
+        fl_cron = settings.FILL_LIBRARY_CRON.split()
+        _scheduler.add_job(
+            _periodic_fill_library,
+            trigger=CronTrigger(
+                minute=fl_cron[0],
+                hour=fl_cron[1],
+                day=fl_cron[2],
+                month=fl_cron[3],
+                day_of_week=fl_cron[4],
+                timezone="UTC",
+            ),
+            id="fill_library",
+            replace_existing=True,
+        )
+
     # Charts rebuild (Last.fm)
     if settings.charts_enabled:
         _scheduler.add_job(
@@ -121,6 +138,7 @@ async def start_scheduler() -> None:
         f"Scheduler started. Library scan every {settings.RESCAN_INTERVAL_HOURS}h, "
         f"recommendation pipeline every {settings.SCORING_INTERVAL_HOURS}h."
         + (f", discovery cron '{settings.DISCOVERY_CRON}'" if settings.discovery_enabled else "")
+        + (f", fill-library cron '{settings.FILL_LIBRARY_CRON}'" if settings.fill_library_enabled else "")
         + (f", news feed every {settings.NEWS_INTERVAL_MINUTES}min" if settings.news_enabled else "")
         + (f", Last.fm profile refresh every {settings.LASTFM_REFRESH_HOURS}h" if settings.lastfm_user_enabled else "")
     )
@@ -300,6 +318,17 @@ async def run_discovery_now() -> dict:
     from app.services.discovery import run_discovery_pipeline
 
     return await run_discovery_pipeline()
+
+
+async def _periodic_fill_library() -> None:
+    """Run the Fill Library pipeline (AB taste-match → Lidarr album download)."""
+    try:
+        from app.services.fill_library import run_fill_library
+
+        result = await run_fill_library()
+        logger.info("Fill Library pipeline done: %s", result)
+    except Exception:
+        logger.error(f"Fill Library pipeline failed: {traceback.format_exc()}")
 
 
 async def _process_scrobble_queue() -> None:

@@ -446,6 +446,40 @@ class DiscoveryRequest(Base):
     )
 
 
+class FillLibraryRequest(Base):
+    """
+    An album queued for download by the Fill Library pipeline.
+
+    The pipeline queries AcousticBrainz Lookup for tracks matching a user's
+    taste profile, groups results by album, and sends the best-matching
+    albums to Lidarr for download.  One row per album per run.
+    """
+
+    __tablename__ = "fill_library_requests"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(String(128), nullable=False)
+    artist_name = Column(String(512), nullable=False)
+    artist_mbid = Column(String(64), nullable=True)
+    album_name = Column(String(512), nullable=True)
+    album_mbid = Column(String(64), nullable=True)  # MB release group ID
+    matched_tracks = Column(Integer, nullable=False, default=1)
+    avg_distance = Column(Float, nullable=True)
+    best_distance = Column(Float, nullable=True)
+    status = Column(String(24), nullable=False, default="pending")
+    # pending → artist_added → album_monitored → sent → failed / skipped
+    lidarr_artist_id = Column(Integer, nullable=True)
+    lidarr_album_id = Column(Integer, nullable=True)
+    error_message = Column(Text, nullable=True)
+    created_at = Column(Integer, nullable=False, default=lambda: int(time.time()))
+
+    __table_args__ = (
+        Index("ix_fill_lib_user_status", "user_id", "status"),
+        Index("ix_fill_lib_album_mbid", "album_mbid"),
+        Index("ix_fill_lib_created", "created_at"),
+    )
+
+
 class ScrobbleQueue(Base):
     """
     Pending Last.fm scrobbles.  Written on qualifying play_end events,

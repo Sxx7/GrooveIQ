@@ -227,6 +227,15 @@ class Settings(BaseSettings):
     AB_DISCOVERY_LIMIT: int = 50
 
     # ------------------------------------------------------------------
+    # Fill Library (AB taste-match → Lidarr album download)
+    # ------------------------------------------------------------------
+    FILL_LIBRARY_ENABLED: bool = False
+    FILL_LIBRARY_MAX_ALBUMS: int = 20  # max albums added per run
+    FILL_LIBRARY_MAX_DISTANCE: float = 0.15  # max AB distance (lower = stricter)
+    FILL_LIBRARY_CRON: str = "0 4 * * *"  # default: 4 AM daily
+    FILL_LIBRARY_QUERY_LIMIT: int = 500  # max results per AB query
+
+    # ------------------------------------------------------------------
     # Last.fm per-user integration (profile + scrobbling)
     # ------------------------------------------------------------------
     LASTFM_ENABLED: bool = False  # master toggle
@@ -300,6 +309,10 @@ class Settings(BaseSettings):
     @property
     def ab_lookup_enabled(self) -> bool:
         return bool(self.AB_LOOKUP_ENABLED and self.AB_LOOKUP_URL)
+
+    @property
+    def fill_library_enabled(self) -> bool:
+        return bool(self.FILL_LIBRARY_ENABLED and self.AB_LOOKUP_URL and self.LIDARR_URL and self.LIDARR_API_KEY)
 
     @property
     def news_enabled(self) -> bool:

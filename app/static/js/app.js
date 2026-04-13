@@ -1420,35 +1420,91 @@ function buildCharts(btn) {
 // Discovery View
 // =========================================================================
 function loadDiscovery() {
-  return Promise.all([api('/v1/discovery/stats'), api('/v1/discovery?limit=50')]).then(function(r) { renderDiscovery(r[0], r[1]); });
+  return Promise.all([
+    api('/v1/discovery/stats'), api('/v1/discovery?limit=50'),
+    api('/v1/fill-library/stats').catch(function() { return null; }),
+    api('/v1/fill-library?limit=50').catch(function() { return null; })
+  ]).then(function(r) { renderDiscovery(r[0], r[1], r[2], r[3]); });
 }
 
-function renderDiscovery(stats, data) {
+function renderDiscovery(stats, data, flStats, flData) {
   var h = '<div class="page-header"><h1 class="page-title">Music Discovery</h1>';
   if (stats.enabled) h += '<div class="page-actions"><button class="btn btn-primary btn-sm" onclick="runDiscovery(this)">Run Discovery</button></div>';
   h += '</div>';
-  if (!stats.enabled) { h += '<div class="empty">Music Discovery is not configured.<br>Set <code>LASTFM_API_KEY</code>, <code>LIDARR_URL</code>, and <code>LIDARR_API_KEY</code> in your .env file.</div>'; setAppContent(h); return; }
-  var sent = (stats.by_status.sent||0) + (stats.by_status.in_lidarr||0);
-  h += '<div class="stats-grid"><div class="stat-card"><div class="stat-label">Total Discovered</div><div class="stat-value">' + stats.total + '</div></div><div class="stat-card"><div class="stat-label">Sent to Lidarr</div><div class="stat-value text-success">' + sent + '</div></div><div class="stat-card"><div class="stat-label">Pending</div><div class="stat-value text-warning">' + (stats.by_status.pending||0) + '</div></div><div class="stat-card"><div class="stat-label">Today</div><div class="stat-value">' + stats.today_count + ' <span style="font-size:0.875rem" class="text-muted">/ ' + stats.daily_limit + '</span></div></div></div>';
-  var requests = data.requests || [];
-  if (!requests.length) { h += '<div class="empty">No discovery requests yet. Click "Run Discovery" to start finding new music.</div>'; setAppContent(h); return; }
-  h += '<div class="card"><div class="card-header">Recent Discoveries <span class="subtitle">' + data.total + ' total</span></div>';
-  h += '<div class="card-body" style="overflow-x:auto"><table><tr><th>Artist</th><th>Source</th><th>Seed</th><th>Similarity</th><th>Status</th><th>When</th></tr>';
-  for (var i = 0; i < requests.length; i++) {
-    var r = requests[i];
-    var seed = r.seed_artist ? esc(r.seed_artist) : (r.seed_genre ? '<span class="text-muted">' + esc(r.seed_genre) + '</span>' : '\u2014');
-    var srcBadge = r.source === 'lastfm_similar' ? '<span class="badge badge-purple">similar</span>' : r.source === 'lastfm_genre' ? '<span class="badge badge-info">genre</span>' : '<span class="badge">' + esc(r.source) + '</span>';
-    var statusCls = r.status === 'sent' ? 'info' : r.status === 'in_lidarr' ? 'success' : r.status === 'failed' ? 'danger' : 'warning';
-    var err = r.error_message ? ' title="' + esc(r.error_message) + '"' : '';
-    h += '<tr' + err + '><td><strong>' + esc(r.artist_name) + '</strong>' + (r.artist_mbid ? '<br><span class="mono text-xs text-muted">' + esc(r.artist_mbid).substring(0, 16) + '...</span>' : '') + '</td><td>' + srcBadge + '</td><td>' + seed + '</td><td style="min-width:80px">' + (r.similarity_score != null ? '<div class="bar-track" style="height:14px"><div class="bar-fill" style="width:' + (r.similarity_score * 100).toFixed(0) + '%"></div></div>' : '\u2014') + '</td><td><span class="badge badge-' + statusCls + '">' + esc(r.status) + '</span></td><td>' + timeAgo(r.created_at) + '</td></tr>';
+  if (!stats.enabled) { h += '<div class="empty">Music Discovery is not configured.<br>Set <code>LASTFM_API_KEY</code>, <code>LIDARR_URL</code>, and <code>LIDARR_API_KEY</code> in your .env file.</div>'; }
+  else {
+    var sent = (stats.by_status.sent||0) + (stats.by_status.in_lidarr||0);
+    h += '<div class="stats-grid"><div class="stat-card"><div class="stat-label">Total Discovered</div><div class="stat-value">' + stats.total + '</div></div><div class="stat-card"><div class="stat-label">Sent to Lidarr</div><div class="stat-value text-success">' + sent + '</div></div><div class="stat-card"><div class="stat-label">Pending</div><div class="stat-value text-warning">' + (stats.by_status.pending||0) + '</div></div><div class="stat-card"><div class="stat-label">Today</div><div class="stat-value">' + stats.today_count + ' <span style="font-size:0.875rem" class="text-muted">/ ' + stats.daily_limit + '</span></div></div></div>';
+    var requests = data.requests || [];
+    if (!requests.length) { h += '<div class="empty">No discovery requests yet. Click "Run Discovery" to start finding new music.</div>'; }
+    else {
+      h += '<div class="card"><div class="card-header">Recent Discoveries <span class="subtitle">' + data.total + ' total</span></div>';
+      h += '<div class="card-body" style="overflow-x:auto"><table><tr><th>Artist</th><th>Source</th><th>Seed</th><th>Similarity</th><th>Status</th><th>When</th></tr>';
+      for (var i = 0; i < requests.length; i++) {
+        var r = requests[i];
+        var seed = r.seed_artist ? esc(r.seed_artist) : (r.seed_genre ? '<span class="text-muted">' + esc(r.seed_genre) + '</span>' : '\u2014');
+        var srcBadge = r.source === 'lastfm_similar' ? '<span class="badge badge-purple">similar</span>' : r.source === 'lastfm_genre' ? '<span class="badge badge-info">genre</span>' : '<span class="badge">' + esc(r.source) + '</span>';
+        var statusCls = r.status === 'sent' ? 'info' : r.status === 'in_lidarr' ? 'success' : r.status === 'failed' ? 'danger' : 'warning';
+        var err = r.error_message ? ' title="' + esc(r.error_message) + '"' : '';
+        h += '<tr' + err + '><td><strong>' + esc(r.artist_name) + '</strong>' + (r.artist_mbid ? '<br><span class="mono text-xs text-muted">' + esc(r.artist_mbid).substring(0, 16) + '...</span>' : '') + '</td><td>' + srcBadge + '</td><td>' + seed + '</td><td style="min-width:80px">' + (r.similarity_score != null ? '<div class="bar-track" style="height:14px"><div class="bar-fill" style="width:' + (r.similarity_score * 100).toFixed(0) + '%"></div></div>' : '\u2014') + '</td><td><span class="badge badge-' + statusCls + '">' + esc(r.status) + '</span></td><td>' + timeAgo(r.created_at) + '</td></tr>';
+      }
+      h += '</table></div></div>';
+    }
   }
-  h += '</table></div></div>';
+
+  // Fill Library section
+  h += '<div style="margin-top:2rem"><div class="page-header"><h1 class="page-title">Fill Library</h1>';
+  if (flStats && flStats.enabled) h += '<div class="page-actions"><button class="btn btn-primary btn-sm" onclick="runFillLibrary(this)">Run Fill Library</button></div>';
+  h += '</div>';
+  if (!flStats || !flStats.enabled) {
+    h += '<div class="empty">Fill Library is not configured.<br>Set <code>FILL_LIBRARY_ENABLED=true</code>, <code>AB_LOOKUP_URL</code>, <code>LIDARR_URL</code>, and <code>LIDARR_API_KEY</code> in your .env file.</div>';
+  } else {
+    var flSent = flStats.by_status.sent || 0;
+    var flFailed = flStats.by_status.failed || 0;
+    var avgMatch = flStats.avg_distance_sent != null ? ((1 - flStats.avg_distance_sent) * 100).toFixed(0) + '%' : '\u2014';
+    h += '<div class="stats-grid">';
+    h += '<div class="stat-card"><div class="stat-label">Albums Queued</div><div class="stat-value text-success">' + flSent + '</div></div>';
+    h += '<div class="stat-card"><div class="stat-label">Total Processed</div><div class="stat-value">' + flStats.total + '</div></div>';
+    h += '<div class="stat-card"><div class="stat-label">Avg Match</div><div class="stat-value">' + avgMatch + '</div></div>';
+    h += '<div class="stat-card"><div class="stat-label">Today</div><div class="stat-value">' + flStats.today_count + ' <span style="font-size:0.875rem" class="text-muted">/ ' + flStats.max_per_run + ' max</span></div></div>';
+    h += '</div>';
+
+    var flRequests = (flData && flData.requests) || [];
+    if (!flRequests.length) {
+      h += '<div class="empty">No fill-library requests yet. Click "Run Fill Library" to find taste-matched albums.</div>';
+    } else {
+      h += '<div class="card"><div class="card-header">Recent Fill Library Albums <span class="subtitle">' + flData.total + ' total</span></div>';
+      h += '<div class="card-body" style="overflow-x:auto"><table><tr><th>Artist</th><th>Album</th><th>Tracks</th><th>Match</th><th>Status</th><th>When</th></tr>';
+      for (var j = 0; j < flRequests.length; j++) {
+        var fl = flRequests[j];
+        var matchPct = fl.avg_distance != null ? ((1 - fl.avg_distance) * 100).toFixed(0) : '\u2014';
+        var bestPct = fl.best_distance != null ? ((1 - fl.best_distance) * 100).toFixed(0) : null;
+        var matchBar = fl.avg_distance != null ? '<div class="bar-track" style="height:14px"><div class="bar-fill" style="width:' + matchPct + '%"></div></div><span class="text-xs text-muted">' + matchPct + '%' + (bestPct ? ' (best ' + bestPct + '%)' : '') + '</span>' : '\u2014';
+        var flStatusCls = fl.status === 'sent' ? 'success' : fl.status === 'album_monitored' ? 'info' : fl.status === 'artist_added' ? 'info' : fl.status === 'failed' ? 'danger' : fl.status === 'skipped' ? 'warning' : 'warning';
+        var flErr = fl.error_message ? ' title="' + esc(fl.error_message) + '"' : '';
+        h += '<tr' + flErr + '><td><strong>' + esc(fl.artist_name) + '</strong></td>';
+        h += '<td>' + (fl.album_name ? esc(fl.album_name) : '<span class="text-muted">' + (fl.album_mbid ? esc(fl.album_mbid).substring(0, 16) + '...' : '\u2014') + '</span>') + '</td>';
+        h += '<td>' + (fl.matched_tracks || '\u2014') + '</td>';
+        h += '<td style="min-width:100px">' + matchBar + '</td>';
+        h += '<td><span class="badge badge-' + flStatusCls + '">' + esc(fl.status) + '</span></td>';
+        h += '<td>' + timeAgo(fl.created_at) + '</td></tr>';
+      }
+      h += '</table></div></div>';
+    }
+  }
+  h += '</div>';
+
   setAppContent(h);
 }
 
 function runDiscovery(btn) {
   btn.disabled = true; btn.textContent = 'Running...';
   apiPost('/v1/discovery/run', {}).then(function() { btn.textContent = 'Started'; setTimeout(function() { loadDiscovery(); }, 3000); setTimeout(function() { loadDiscovery(); }, 10000); }).catch(function(e) { alert('Discovery failed: ' + e.message); btn.disabled = false; btn.textContent = 'Run Discovery'; });
+}
+
+function runFillLibrary(btn) {
+  btn.disabled = true; btn.textContent = 'Running...';
+  apiPost('/v1/fill-library/run', {}).then(function() { btn.textContent = 'Started'; setTimeout(function() { loadDiscovery(); }, 5000); setTimeout(function() { loadDiscovery(); }, 15000); }).catch(function(e) { alert('Fill Library failed: ' + e.message); btn.disabled = false; btn.textContent = 'Run Fill Library'; });
 }
 
 // =========================================================================

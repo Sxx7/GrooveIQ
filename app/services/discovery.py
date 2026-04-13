@@ -191,6 +191,58 @@ class LidarrClient:
         resp.raise_for_status()
         return resp.json()
 
+    # --- Fill Library extensions (album-level control) ---
+
+    async def add_artist_unmonitored(self, foreign_artist_id: str, artist_name: str) -> dict[str, Any]:
+        """Add an artist with no albums monitored (for targeted album downloads)."""
+        body = {
+            "artistName": artist_name,
+            "foreignArtistId": foreign_artist_id,
+            "qualityProfileId": settings.LIDARR_QUALITY_PROFILE_ID,
+            "metadataProfileId": settings.LIDARR_METADATA_PROFILE_ID,
+            "rootFolderPath": settings.LIDARR_ROOT_FOLDER,
+            "monitored": True,
+            "addOptions": {
+                "monitor": "none",
+                "searchForMissingAlbums": False,
+            },
+        }
+        resp = await self._client.post(f"{self._base_url}/api/v1/artist", json=body)
+        resp.raise_for_status()
+        return resp.json()
+
+    async def get_existing_album_foreign_ids(self) -> set[str]:
+        """Return the set of MusicBrainz release group IDs already in Lidarr."""
+        resp = await self._client.get(f"{self._base_url}/api/v1/album")
+        resp.raise_for_status()
+        return {a["foreignAlbumId"] for a in resp.json() if a.get("foreignAlbumId")}
+
+    async def lookup_album(self, mb_release_group_id: str) -> dict[str, Any] | None:
+        """Look up an album by MusicBrainz release group ID."""
+        resp = await self._client.get(
+            f"{self._base_url}/api/v1/album/lookup",
+            params={"term": f"lidarr:{mb_release_group_id}"},
+        )
+        resp.raise_for_status()
+        results = resp.json()
+        return results[0] if results else None
+
+    async def monitor_album(self, album_ids: list[int]) -> None:
+        """Set specific albums to monitored."""
+        resp = await self._client.put(
+            f"{self._base_url}/api/v1/album/monitor",
+            json={"albumIds": album_ids, "monitored": True},
+        )
+        resp.raise_for_status()
+
+    async def search_album(self, album_ids: list[int]) -> None:
+        """Trigger Lidarr to search and download specific albums."""
+        resp = await self._client.post(
+            f"{self._base_url}/api/v1/command",
+            json={"name": "AlbumSearch", "albumIds": album_ids},
+        )
+        resp.raise_for_status()
+
 
 # ---------------------------------------------------------------------------
 # Discovery pipeline
