@@ -324,7 +324,8 @@ function renderScanPanel(scan) {
   h += '<span>Status: <span class="badge badge-' + cls + '">' + esc(scan.status).toUpperCase() + '</span></span>';
   if (scan.elapsed_seconds) h += '<span class="text-sm">Elapsed: <strong>' + fmtDuration(scan.elapsed_seconds) + '</strong></span>';
   if (scan.status === 'running' && scan.eta_seconds != null) h += '<span class="text-sm">ETA: <strong class="text-warning">' + fmtDuration(scan.eta_seconds) + '</strong></span>';
-  if (scan.rate_per_sec) h += '<span class="text-sm">Speed: <strong>' + scan.rate_per_sec + '</strong> files/s</span>';
+  if (scan.check_rate) h += '<span class="text-sm">Check: <strong>' + scan.check_rate + '</strong>/s</span>';
+  if (scan.analyze_rate) h += '<span class="text-sm">Analyze: <strong>' + scan.analyze_rate + '</strong>/s</span>';
   h += '</div>';
   if (scan.files_found > 0) {
     var pct = scan.percent_complete || 0;

@@ -38,9 +38,9 @@ logger = logging.getLogger(__name__)
 # Active scan tracking
 _running_scan_id: int | None = None
 
-# In-memory scan metadata (phase tracking, processing timestamps)
+# In-memory scan metadata (phase tracking, processing timestamps).
 # Avoids DB schema changes; lost on restart (acceptable — scan restarts anyway).
-_scan_meta: dict = {}  # {phase, processing_started_at}
+_scan_meta: dict = {}  # {phase, processing_started_at, check_elapsed, analyze_elapsed}
 
 
 # ---------------------------------------------------------------------------
@@ -121,23 +121,41 @@ async def get_scan_status(scan_id: int) -> dict | None:
             return None
 
         skipped = scan.files_skipped or 0
-        processed = scan.files_analyzed + scan.files_failed + skipped
+        analyzed = scan.files_analyzed
+        failed = scan.files_failed
+        processed = analyzed + failed + skipped
         percent = round(processed / scan.files_found * 100, 1) if scan.files_found > 0 else 0.0
         elapsed = (scan.scan_ended_at or int(time.time())) - scan.scan_started_at
 
-        # Rate and ETA based on processing time only (excludes discovery
-        # and hash-preload overhead that inflated elapsed and deflated rate).
-        proc_started = _scan_meta.get("processing_started_at")
-        if proc_started and processed > 0:
-            proc_elapsed = (scan.scan_ended_at or time.time()) - proc_started
-            throughput = round(processed / proc_elapsed, 1) if proc_elapsed > 0 else None
-        else:
-            throughput = None
+        # --- Per-type rates for accurate ETA ---
+        # Checking (hash compare + skip) and analysis have very different
+        # speeds.  Computing a blended rate gives a wildly wrong ETA when
+        # the mix shifts.  Instead, estimate remaining time from each type's
+        # observed rate and the ratio seen so far.
+        check_elapsed = _scan_meta.get("check_elapsed", 0.0)
+        analyze_elapsed = _scan_meta.get("analyze_elapsed", 0.0)
 
-        total_remaining = scan.files_found - processed
+        check_rate = skipped / check_elapsed if check_elapsed > 0 else None         # files/s
+        analyze_rate = (analyzed + failed) / analyze_elapsed if analyze_elapsed > 0 else None
+
+        remaining = scan.files_found - processed
         eta = None
-        if scan.status == "running" and throughput and throughput > 0:
-            eta = int(total_remaining / throughput)
+        throughput = None
+
+        if scan.status == "running" and processed > 0 and remaining > 0:
+            # Project remaining files using the observed skip/analyze ratio
+            skip_ratio = skipped / processed if processed > 0 else 1.0
+            analyze_ratio = 1.0 - skip_ratio
+            remaining_checks = remaining * skip_ratio
+            remaining_analyses = remaining * analyze_ratio
+
+            time_for_checks = remaining_checks / check_rate if check_rate else 0.0
+            time_for_analyses = remaining_analyses / analyze_rate if analyze_rate else 0.0
+            eta = int(time_for_checks + time_for_analyses)
+
+            # Displayed throughput: total processed / total processing time
+            total_proc_time = check_elapsed + analyze_elapsed
+            throughput = round(processed / total_proc_time, 1) if total_proc_time > 0 else None
 
         phase = _scan_meta.get("phase", "idle") if scan.status == "running" else scan.status
 
@@ -146,13 +164,15 @@ async def get_scan_status(scan_id: int) -> dict | None:
             "status": scan.status,
             "phase": phase,
             "files_found": scan.files_found,
-            "files_analyzed": scan.files_analyzed,
+            "files_analyzed": analyzed,
             "files_skipped": skipped,
-            "files_failed": scan.files_failed,
+            "files_failed": failed,
             "percent_complete": percent,
             "elapsed_seconds": elapsed,
             "eta_seconds": eta,
             "rate_per_sec": throughput,
+            "check_rate": round(check_rate, 1) if check_rate else None,
+            "analyze_rate": round(analyze_rate, 2) if analyze_rate else None,
             "current_file": scan.current_file,
             "started_at": scan.scan_started_at,
             "ended_at": scan.scan_ended_at,
@@ -319,12 +339,21 @@ def _log_progress(scan_id: int, found: int, analyzed: int, skipped: int, failed:
     """Log a human-readable progress line."""
     total_done = analyzed + skipped + failed
     pct = round(total_done / found * 100, 1) if found > 0 else 0
-    # Use processing start time for accurate rate (excludes discovery overhead)
-    proc_started = _scan_meta.get("processing_started_at") or start
-    proc_elapsed = time.time() - proc_started
-    rate = total_done / proc_elapsed if proc_elapsed > 0 and total_done > 0 else 0
     remaining = found - total_done
-    eta = round(remaining / rate) if rate > 0 else 0
+
+    check_elapsed = _scan_meta.get("check_elapsed", 0.0)
+    analyze_elapsed = _scan_meta.get("analyze_elapsed", 0.0)
+    total_proc = check_elapsed + analyze_elapsed
+    rate = total_done / total_proc if total_proc > 0 else 0
+
+    # ETA from per-type rates
+    check_rate = skipped / check_elapsed if check_elapsed > 0 else 0
+    analyze_rate = (analyzed + failed) / analyze_elapsed if analyze_elapsed > 0 else 0
+    skip_ratio = skipped / total_done if total_done > 0 else 1.0
+    eta_checks = (remaining * skip_ratio / check_rate) if check_rate > 0 else 0
+    eta_analysis = (remaining * (1 - skip_ratio) / analyze_rate) if analyze_rate > 0 else 0
+    eta = round(eta_checks + eta_analysis)
+
     eta_str = f"{eta // 60}m{eta % 60:02d}s" if eta >= 60 else f"{eta}s"
     logger.info(
         f"[Scan {scan_id}] Progress: {total_done}/{found} ({pct}%) | "
@@ -350,14 +379,16 @@ async def _process_batch(
     lock = asyncio.Lock()
 
     async def _analyze_one(fp: str):
+        t_file = time.monotonic()
         async with sem:
             cached = hash_cache.get(fp)
             try:
                 result = await pool.analyze(fp, cached)
             except Exception as exc:
                 result = exc
+            elapsed_file = time.monotonic() - t_file
             async with lock:
-                batch_results.append((fp, result))
+                batch_results.append((fp, result, elapsed_file))
 
     await asyncio.gather(*[_analyze_one(fp) for fp in file_paths])
 
@@ -365,25 +396,29 @@ async def _process_batch(
     to_upsert: list[dict] = []
     log_entries: list[ScanLog] = []
 
-    for fp, result in batch_results:
+    for fp, result, elapsed_file in batch_results:
         fname = Path(fp).name
 
         if isinstance(result, Exception):
             logger.error("[Scan %d] FAIL %s: %s", scan_id, fname, result)
             log_entries.append(ScanLog(scan_id=scan_id, level="fail", filename=fname, message=str(result)))
             counters["failed"] += 1
+            _scan_meta["analyze_elapsed"] = _scan_meta.get("analyze_elapsed", 0.0) + elapsed_file
 
         elif result is None:
             logger.debug("[Scan %d] SKIP %s", scan_id, fname)
             counters["skipped"] += 1
+            _scan_meta["check_elapsed"] = _scan_meta.get("check_elapsed", 0.0) + elapsed_file
 
         elif result.get("analysis_error"):
             logger.warning("[Scan %d] FAIL %s: %s", scan_id, fname, result["analysis_error"])
             log_entries.append(ScanLog(scan_id=scan_id, level="fail", filename=fname, message=result["analysis_error"]))
             counters["failed"] += 1
+            _scan_meta["analyze_elapsed"] = _scan_meta.get("analyze_elapsed", 0.0) + elapsed_file
 
         else:
             counters["ok"] += 1
+            _scan_meta["analyze_elapsed"] = _scan_meta.get("analyze_elapsed", 0.0) + elapsed_file
             to_upsert.append(result)
             bpm_str = str(round(result.get("bpm", 0))) if result.get("bpm") else "?"
             key_str = (result.get("key", "?") or "?") + (result.get("mode", "") or "")
