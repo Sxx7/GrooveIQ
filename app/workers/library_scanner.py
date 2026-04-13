@@ -38,6 +38,10 @@ logger = logging.getLogger(__name__)
 # Active scan tracking
 _running_scan_id: int | None = None
 
+# In-memory scan metadata (phase tracking, processing timestamps)
+# Avoids DB schema changes; lost on restart (acceptable — scan restarts anyway).
+_scan_meta: dict = {}  # {phase, processing_started_at}
+
 
 # ---------------------------------------------------------------------------
 # Public interface
@@ -121,18 +125,26 @@ async def get_scan_status(scan_id: int) -> dict | None:
         percent = round(processed / scan.files_found * 100, 1) if scan.files_found > 0 else 0.0
         elapsed = (scan.scan_ended_at or int(time.time())) - scan.scan_started_at
 
-        # Rate and ETA based on total processed files (including skips)
-        # because skip-checking (hash lookup, DB query) dominates wall-clock time
-        total_processed = processed
-        total_remaining = scan.files_found - total_processed
-        throughput = round(total_processed / elapsed, 2) if elapsed > 0 and total_processed > 0 else None
+        # Rate and ETA based on processing time only (excludes discovery
+        # and hash-preload overhead that inflated elapsed and deflated rate).
+        proc_started = _scan_meta.get("processing_started_at")
+        if proc_started and processed > 0:
+            proc_elapsed = (scan.scan_ended_at or time.time()) - proc_started
+            throughput = round(processed / proc_elapsed, 1) if proc_elapsed > 0 else None
+        else:
+            throughput = None
+
+        total_remaining = scan.files_found - processed
         eta = None
         if scan.status == "running" and throughput and throughput > 0:
             eta = int(total_remaining / throughput)
 
+        phase = _scan_meta.get("phase", "idle") if scan.status == "running" else scan.status
+
         return {
             "scan_id": scan.id,
             "status": scan.status,
+            "phase": phase,
             "files_found": scan.files_found,
             "files_analyzed": scan.files_analyzed,
             "files_skipped": skipped,
@@ -165,6 +177,9 @@ async def _run_scan(scan_id: int) -> None:
 
         logger.info(f"[Scan {scan_id}] Scanning library: {library_path}")
 
+        # Phase: discovering files on disk
+        _scan_meta.update({"phase": "discovering", "processing_started_at": None})
+
         # Collect all audio files first so we know total count
         audio_files = list(_iter_audio_files(library_path))
         counters["found"] = len(audio_files)
@@ -191,6 +206,10 @@ async def _run_scan(scan_id: int) -> None:
 
         pool = await get_worker_pool()
 
+        # Phase: processing files (checking existing + analyzing new/changed)
+        _scan_meta["phase"] = "processing"
+        _scan_meta["processing_started_at"] = time.time()
+
         # Process in batches, yielding to the event loop between batches
         batch_size = settings.ANALYSIS_BATCH_SIZE
         for i in range(0, len(audio_files), batch_size):
@@ -202,6 +221,7 @@ async def _run_scan(scan_id: int) -> None:
             await asyncio.sleep(0.05)  # yield between batches
 
         # --- Post-scan phases (each timed for diagnostics) ---
+        _scan_meta["phase"] = "finalizing"
         logger.info(f"[Scan {scan_id}] Post-scan: starting cleanup and rebuild phases")
 
         # Phase A: Prune old log entries (keep latest 500).
@@ -292,20 +312,22 @@ async def _run_scan(scan_id: int) -> None:
         )
     finally:
         _running_scan_id = None
+        _scan_meta.clear()
 
 
 def _log_progress(scan_id: int, found: int, analyzed: int, skipped: int, failed: int, start: float) -> None:
     """Log a human-readable progress line."""
-    processed = analyzed + skipped + failed
-    pct = round(processed / found * 100, 1) if found > 0 else 0
-    elapsed = time.time() - start
     total_done = analyzed + skipped + failed
-    rate = total_done / elapsed if elapsed > 0 and total_done > 0 else 0
+    pct = round(total_done / found * 100, 1) if found > 0 else 0
+    # Use processing start time for accurate rate (excludes discovery overhead)
+    proc_started = _scan_meta.get("processing_started_at") or start
+    proc_elapsed = time.time() - proc_started
+    rate = total_done / proc_elapsed if proc_elapsed > 0 and total_done > 0 else 0
     remaining = found - total_done
     eta = round(remaining / rate) if rate > 0 else 0
     eta_str = f"{eta // 60}m{eta % 60:02d}s" if eta >= 60 else f"{eta}s"
     logger.info(
-        f"[Scan {scan_id}] Progress: {processed}/{found} ({pct}%) | "
+        f"[Scan {scan_id}] Progress: {total_done}/{found} ({pct}%) | "
         f"{analyzed} analyzed, {skipped} skipped, {failed} failed | "
         f"{rate:.1f} files/s | ETA {eta_str}"
     )

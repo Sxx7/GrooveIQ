@@ -292,10 +292,35 @@ function loadDashboard() {
     .then(function(results) { renderDashboard(results[0], results[1], results[2], results[3]); });
 }
 
+function scanPhaseLabel(scan) {
+  var phase = scan.phase || scan.status;
+  if (phase === 'discovering') return 'Discovering files\u2026';
+  if (phase === 'processing') {
+    if (scan.files_analyzed > 0) return 'Analyzing new/changed files';
+    return 'Checking existing files';
+  }
+  if (phase === 'finalizing') return 'Rebuilding indexes\u2026';
+  if (phase === 'completed') return 'Completed';
+  if (phase === 'failed') return 'Failed';
+  if (phase === 'interrupted') return 'Interrupted';
+  return phase;
+}
+
 function renderScanPanel(scan) {
   if (!scan) return '<div class="empty">No scans yet. Click "Scan Now" to analyze your library.</div>';
   var cls = scan.status === 'completed' ? 'success' : scan.status === 'running' ? 'warning' : scan.status === 'interrupted' ? 'info' : 'danger';
-  var h = '<div style="display:flex;align-items:center;flex-wrap:wrap;gap:var(--space-3);padding:var(--space-3) var(--space-5)">';
+  var h = '';
+
+  // Phase indicator (prominent, only while running)
+  if (scan.status === 'running') {
+    var phaseText = scanPhaseLabel(scan);
+    h += '<div style="padding:var(--space-2) var(--space-5) var(--space-1);display:flex;align-items:center;gap:var(--space-2);font-size:0.875rem;font-weight:600" class="text-warning">';
+    h += '<span class="pulse" style="display:inline-block;width:8px;height:8px;border-radius:50%;background:currentColor"></span> ';
+    h += esc(phaseText);
+    h += '</div>';
+  }
+
+  h += '<div style="display:flex;align-items:center;flex-wrap:wrap;gap:var(--space-3);padding:var(--space-3) var(--space-5)">';
   h += '<span>Status: <span class="badge badge-' + cls + '">' + esc(scan.status).toUpperCase() + '</span></span>';
   if (scan.elapsed_seconds) h += '<span class="text-sm">Elapsed: <strong>' + fmtDuration(scan.elapsed_seconds) + '</strong></span>';
   if (scan.status === 'running' && scan.eta_seconds != null) h += '<span class="text-sm">ETA: <strong class="text-warning">' + fmtDuration(scan.eta_seconds) + '</strong></span>';

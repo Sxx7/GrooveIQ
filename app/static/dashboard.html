@@ -667,6 +667,20 @@ function loadDashboard() {
     .then(function(results) { renderDashboardWithHealth(results[0], results[1], results[2], results[3]); });
 }
 
+function scanPhaseLabel(scan) {
+  var phase = scan.phase || scan.status;
+  if (phase === 'discovering') return 'Discovering files\u2026';
+  if (phase === 'processing') {
+    if (scan.files_analyzed > 0) return 'Analyzing new/changed files';
+    return 'Checking existing files';
+  }
+  if (phase === 'finalizing') return 'Rebuilding indexes\u2026';
+  if (phase === 'completed') return 'Completed';
+  if (phase === 'failed') return 'Failed';
+  if (phase === 'interrupted') return 'Interrupted';
+  return phase;
+}
+
 function renderScanPanel(scan) {
   if (!scan) return '<div class="empty">No scans yet. Click "Scan Now" to analyze your library.</div>';
   var statusColor = 'red';
@@ -675,11 +689,21 @@ function renderScanPanel(scan) {
   else if (scan.status === 'interrupted') statusColor = 'blue';
 
   var h = '';
+
+  // Phase indicator (prominent, only while running)
+  if (scan.status === 'running') {
+    var phaseText = scanPhaseLabel(scan);
+    h += '<div style="padding:8px 20px 4px;display:flex;align-items:center;gap:8px;font-size:14px;font-weight:600;color:var(--yellow)">';
+    h += '<span class="pulse" style="display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--yellow)"></span> ';
+    h += esc(phaseText);
+    h += '</div>';
+  }
+
   h += '<div class="status-line" style="display:flex;align-items:center;flex-wrap:wrap;gap:12px">';
   h += '<span>Status: <span class="badge badge-' + statusColor + '">' + esc(scan.status).toUpperCase() + '</span></span>';
   if (scan.elapsed_seconds) h += '<span style="font-size:12px">Elapsed: <b>' + fmtDuration(scan.elapsed_seconds) + '</b></span>';
   if (scan.status === 'running' && scan.eta_seconds != null) h += '<span style="font-size:12px">ETA: <b style="color:var(--yellow)">' + fmtDuration(scan.eta_seconds) + '</b></span>';
-  if (scan.rate_per_sec) h += '<span style="font-size:12px">Analysis speed: <b>' + scan.rate_per_sec + '</b> files/s</span>';
+  if (scan.rate_per_sec) h += '<span style="font-size:12px">Speed: <b>' + scan.rate_per_sec + '</b> files/s</span>';
   h += '</div>';
 
   if (scan.files_found > 0) {
