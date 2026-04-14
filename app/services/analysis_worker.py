@@ -625,24 +625,29 @@ def _analyze_file(
 
         try:
             audio = es.MonoLoader(filename=file_path, sampleRate=sr)()
-        except RuntimeError as e:
-            if "more than 2 channels" in str(e):
-                # Essentia can't load >2 channel audio; downmix via ffmpeg
-                with tempfile.NamedTemporaryFile(suffix=".wav", delete=True) as tmp:
-                    cmd = [
-                        "ffmpeg", "-y", "-i", file_path,
-                        "-ac", "1", "-ar", str(sr),
-                        "-f", "wav", tmp.name,
-                    ]
-                    proc = subprocess.run(
-                        cmd, capture_output=True, timeout=60,
-                    )
-                    if proc.returncode != 0:
-                        raise RuntimeError(
-                            f"ffmpeg downmix failed: {proc.stderr.decode(errors='replace')}"
-                        ) from e
-                    audio = es.MonoLoader(filename=tmp.name, sampleRate=sr)()
-                logger.info("Downmixed multichannel file via ffmpeg: %s", file_path)
+        except (RuntimeError, FileNotFoundError) as e:
+            if isinstance(e, FileNotFoundError) or "more than 2 channels" in str(e):
+                # Essentia can't load this audio; downmix via ffmpeg
+                try:
+                    with tempfile.NamedTemporaryFile(suffix=".wav", delete=True) as tmp:
+                        cmd = [
+                            "ffmpeg", "-y", "-i", file_path,
+                            "-ac", "1", "-ar", str(sr),
+                            "-f", "wav", tmp.name,
+                        ]
+                        proc = subprocess.run(
+                            cmd, capture_output=True, timeout=60,
+                        )
+                        if proc.returncode != 0:
+                            raise RuntimeError(
+                                f"ffmpeg downmix failed: {proc.stderr.decode(errors='replace')}"
+                            ) from e
+                        audio = es.MonoLoader(filename=tmp.name, sampleRate=sr)()
+                    logger.info("Downmixed via ffmpeg: %s", file_path)
+                except FileNotFoundError:
+                    raise RuntimeError(
+                        "ffmpeg not found — install ffmpeg to analyse multichannel/unsupported audio"
+                    ) from e
             else:
                 raise
 
