@@ -25,7 +25,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.security import check_user_access, require_api_key
+from app.core.security import check_user_access, require_admin, require_api_key
 from app.db.session import get_session
 from app.models.db import ListenEvent, Playlist, TrackFeatures, User
 from app.models.schemas import (
@@ -266,6 +266,9 @@ async def list_radio_sessions(
 ):
     if user_id:
         check_user_access(_key, user_id)
+    else:
+        # Listing all sessions across users requires admin privileges.
+        require_admin(_key)
 
     sessions = radio_service.list_sessions(user_id=user_id)
     return {

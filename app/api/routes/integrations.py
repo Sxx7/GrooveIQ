@@ -17,6 +17,17 @@ router = APIRouter()
 _TIMEOUT = 5.0  # seconds per probe
 
 
+def _sanitize_error(error: str) -> str:
+    """Strip internal hostnames, ports, and file paths from error messages."""
+    import re
+
+    # Remove URLs (http://hostname:port/path)
+    error = re.sub(r"https?://[^\s'\"]+", "<service-url>", error)
+    # Remove file paths
+    error = re.sub(r"/[\w/.+-]+(?:\.py|\.conf|\.cfg|\.ini|\.json)", "<path>", error)
+    return error[:256]  # cap length
+
+
 async def _probe(url: str, headers: dict | None = None) -> dict[str, Any]:
     """HTTP GET with timeout; return parsed JSON or error dict."""
     try:
@@ -39,15 +50,14 @@ async def _check_spotdl() -> dict[str, Any]:
     result = await _probe(f"{url.rstrip('/')}/health")
     entry: dict[str, Any] = {
         "configured": True,
-        "url": url,
         "connected": result["ok"],
     }
     if result["ok"]:
         data = result["data"]
         entry["version"] = data.get("version")
-        entry["details"] = {k: data[k] for k in ("output_dir", "output_format", "active_tasks") if k in data}
+        entry["details"] = {k: data[k] for k in ("output_format", "active_tasks") if k in data}
     else:
-        entry["error"] = result["error"]
+        entry["error"] = _sanitize_error(result["error"])
     return entry
 
 
@@ -62,15 +72,14 @@ async def _check_lidarr() -> dict[str, Any]:
     )
     entry: dict[str, Any] = {
         "configured": True,
-        "url": url,
         "connected": result["ok"],
     }
     if result["ok"]:
         data = result["data"]
         entry["version"] = data.get("version")
-        entry["details"] = {k: data[k] for k in ("startupPath", "appData", "osName", "runtimeName") if k in data}
+        entry["details"] = {k: data[k] for k in ("osName", "runtimeName") if k in data}
     else:
-        entry["error"] = result["error"]
+        entry["error"] = _sanitize_error(result["error"])
     return entry
 
 
@@ -84,7 +93,6 @@ async def _check_slskd() -> dict[str, Any]:
     )
     entry: dict[str, Any] = {
         "configured": True,
-        "url": url,
         "connected": result["ok"],
     }
     if result["ok"]:
@@ -92,11 +100,11 @@ async def _check_slskd() -> dict[str, Any]:
         entry["state"] = data.get("state")
         entry["details"] = {
             k: data[k]
-            for k in ("version", "isConnected", "username")
+            for k in ("version", "isConnected")
             if k in data
         }
     else:
-        entry["error"] = result["error"]
+        entry["error"] = _sanitize_error(result["error"])
     return entry
 
 
@@ -108,7 +116,6 @@ async def _check_acousticbrainz() -> dict[str, Any]:
     result = await _probe(f"{url.rstrip('/')}/health")
     entry: dict[str, Any] = {
         "configured": True,
-        "url": url,
         "connected": result["ok"],
     }
     if result["ok"]:
@@ -116,7 +123,7 @@ async def _check_acousticbrainz() -> dict[str, Any]:
         entry["status"] = data.get("status")  # "ready" or "ingesting"
         entry["details"] = {k: data[k] for k in ("track_count", "ingestion_progress") if k in data}
     else:
-        entry["error"] = result["error"]
+        entry["error"] = _sanitize_error(result["error"])
     return entry
 
 
@@ -124,10 +131,23 @@ async def _check_lastfm() -> dict[str, Any]:
     api_key = settings.LASTFM_API_KEY
     if not api_key:
         return {"configured": False}
-    # Light probe: fetch a known artist to verify the API key works
-    result = await _probe(
-        f"https://ws.audioscrobbler.com/2.0/?method=artist.getinfo&artist=Radiohead&api_key={api_key}&format=json"
-    )
+    # Light probe: fetch a known artist to verify the API key works.
+    # Use httpx params= to keep the API key out of the URL string
+    # (avoids accidental logging of the key in error messages).
+    try:
+        async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
+            resp = await client.get(
+                "https://ws.audioscrobbler.com/2.0/",
+                params={"method": "artist.getinfo", "artist": "Radiohead", "api_key": api_key, "format": "json"},
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            result = {"ok": True, "data": data}
+    except httpx.TimeoutException:
+        result = {"ok": False, "error": "Connection timed out"}
+    except Exception as exc:
+        result = {"ok": False, "error": _sanitize_error(str(exc))}
+
     entry: dict[str, Any] = {
         "configured": True,
         "scrobbling": bool(settings.LASTFM_SCROBBLE_ENABLED),
@@ -137,7 +157,7 @@ async def _check_lastfm() -> dict[str, Any]:
         entry["connected"] = False
         entry["error"] = result["data"]["message"]
     elif not result["ok"]:
-        entry["error"] = result["error"]
+        entry["error"] = result.get("error", "Unknown error")
     return entry
 
 
@@ -150,7 +170,6 @@ async def _check_media_server() -> dict[str, Any]:
     entry: dict[str, Any] = {
         "configured": True,
         "type": ms_type,
-        "url": ms_url,
     }
 
     if ms_type == "navidrome":
@@ -177,7 +196,7 @@ async def _check_media_server() -> dict[str, Any]:
         )
         entry["connected"] = result["ok"] and result.get("data", {}).get("subsonic-response", {}).get("status") == "ok"
         if not result["ok"]:
-            entry["error"] = result["error"]
+            entry["error"] = _sanitize_error(result["error"])
         elif not entry["connected"]:
             sr = result.get("data", {}).get("subsonic-response", {})
             entry["error"] = sr.get("error", {}).get("message", "Auth failed")
@@ -201,9 +220,8 @@ async def _check_media_server() -> dict[str, Any]:
             data = result["data"]
             mc = data.get("MediaContainer", data)
             entry["version"] = mc.get("version")
-            entry["details"] = {"machineIdentifier": mc.get("machineIdentifier")}
         else:
-            entry["error"] = result["error"]
+            entry["error"] = _sanitize_error(result["error"])
     else:
         entry["connected"] = False
         entry["error"] = f"Unknown media server type: {ms_type}"

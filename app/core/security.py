@@ -255,7 +255,9 @@ async def require_api_key(
     Returns the raw API key on success (can be used as an identity token).
     """
     # Only skip auth when explicitly opted in via DISABLE_AUTH=true
-    if settings.DISABLE_AUTH and not settings.api_keys_list:
+    # and NOT in production (defense-in-depth — config validator also checks,
+    # but this prevents silent auth bypass if the validator is ever bypassed).
+    if settings.DISABLE_AUTH and not settings.api_keys_list and settings.APP_ENV != "production":
         return "anonymous"
 
     if credentials is None or credentials.scheme.lower() != "bearer":
@@ -354,6 +356,13 @@ def _init_admin_keys() -> None:
         logger.info(
             "Admin key enforcement enabled: %d admin key(s) configured",
             len(_admin_key_hashes),
+        )
+    elif len(_HASHED_CONFIGURED_KEYS) > 1:
+        logger.warning(
+            "SECURITY: %d API keys configured but ADMIN_API_KEYS is empty — "
+            "all keys have admin privileges (pipeline control, algorithm config, "
+            "library scans). Set ADMIN_API_KEYS to restrict admin operations.",
+            len(_HASHED_CONFIGURED_KEYS),
         )
 
 

@@ -20,7 +20,6 @@ pydantic-settings==2.7.*
 apscheduler==3.10.*
 
 # Security
-python-jose[cryptography]==3.3.*  # JWT (future auth expansion)
 redis>=5.0                        # optional: cross-process rate limiting (set REDIS_URL)
 
 # Logging

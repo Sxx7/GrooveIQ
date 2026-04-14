@@ -29,105 +29,16 @@ services:
     ports:
       - "${GROOVEIQ_PORT:-8000}:8000"
 
+    # All user settings (including secrets) are loaded from .env via env_file.
+    # This keeps secrets out of the compose file itself — important if you
+    # share or version-control docker-compose.yml.  Secrets are still visible
+    # via `docker inspect`; for full isolation use Docker Swarm secrets.
+    env_file: .env
+
     environment:
-      # Core
-      APP_ENV:              ${APP_ENV:-production}
-      SECRET_KEY:           ${SECRET_KEY:?SECRET_KEY must be set in .env}
-      ENABLE_DOCS:          ${ENABLE_DOCS:-false}
-
-      # Auth & Security
-      API_KEYS:             ${API_KEYS:?API_KEYS must be set in .env}
-      ALLOWED_HOSTS:        ${ALLOWED_HOSTS:-localhost,127.0.0.1}
-      CORS_ORIGINS:         ${CORS_ORIGINS:-}
-
-      # Database (SQLite by default; swap for Postgres below)
-      DATABASE_URL:         ${DATABASE_URL:-sqlite+aiosqlite:////data/grooveiq.db}
-
-      # Audio analysis
+      # Container-internal overrides (these differ from host values in .env)
       MUSIC_LIBRARY_PATH:   /music
-      ANALYSIS_WORKERS:     ${ANALYSIS_WORKERS:-}
-      RESCAN_INTERVAL_HOURS: ${RESCAN_INTERVAL_HOURS:-6}
-
-      # Events
-      EVENT_RETENTION_DAYS: ${EVENT_RETENTION_DAYS:-365}
-
-      # Logging
-      LOG_LEVEL:            ${LOG_LEVEL:-INFO}
-      LOG_JSON:             ${LOG_JSON:-true}
-
-      # Media server integration (Plex / Navidrome)
-      MEDIA_SERVER_TYPE:       ${MEDIA_SERVER_TYPE:-}
-      MEDIA_SERVER_URL:        ${MEDIA_SERVER_URL:-}
-      MEDIA_SERVER_TOKEN:      ${MEDIA_SERVER_TOKEN:-}
-      MEDIA_SERVER_USER:       ${MEDIA_SERVER_USER:-}
-      MEDIA_SERVER_PASSWORD:   ${MEDIA_SERVER_PASSWORD:-}
-      MEDIA_SERVER_LIBRARY_ID: ${MEDIA_SERVER_LIBRARY_ID:-1}
-      MEDIA_SERVER_MUSIC_PATH: ${MEDIA_SERVER_MUSIC_PATH:-}
-
-      # Last.fm
-      LASTFM_API_KEY:              ${LASTFM_API_KEY:-}
-      LASTFM_API_SECRET:           ${LASTFM_API_SECRET:-}
-      LASTFM_ENABLED:              ${LASTFM_ENABLED:-false}
-      LASTFM_SCROBBLE_ENABLED:     ${LASTFM_SCROBBLE_ENABLED:-false}
-      LASTFM_SESSION_ENCRYPTION_KEY: ${LASTFM_SESSION_ENCRYPTION_KEY:-}
-      LASTFM_REFRESH_HOURS:        ${LASTFM_REFRESH_HOURS:-6}
-
-      # Music discovery (Lidarr)
-      LIDARR_URL:                  ${LIDARR_URL:-}
-      LIDARR_API_KEY:              ${LIDARR_API_KEY:-}
-      LIDARR_QUALITY_PROFILE_ID:   ${LIDARR_QUALITY_PROFILE_ID:-1}
-      LIDARR_METADATA_PROFILE_ID:  ${LIDARR_METADATA_PROFILE_ID:-1}
-      LIDARR_ROOT_FOLDER:          ${LIDARR_ROOT_FOLDER:-/music}
-      DISCOVERY_CRON:              ${DISCOVERY_CRON:-0 3 * * *}
-      DISCOVERY_MAX_REQUESTS_PER_DAY: ${DISCOVERY_MAX_REQUESTS_PER_DAY:-500}
-      DISCOVERY_SIMILAR_LIMIT:     ${DISCOVERY_SIMILAR_LIMIT:-20}
-
-      # Downloads — spotdl-api (preferred), Spotizerr (legacy), slskd (Soulseek)
-      SPOTDL_API_URL:              ${SPOTDL_API_URL:-http://spotdl-api:8181}
-      SPOTIZERR_URL:               ${SPOTIZERR_URL:-}
-      SPOTIZERR_USERNAME:          ${SPOTIZERR_USERNAME:-}
-      SPOTIZERR_PASSWORD:          ${SPOTIZERR_PASSWORD:-}
-      CHARTS_SPOTIZERR_AUTO_ADD:   ${CHARTS_SPOTIZERR_AUTO_ADD:-false}
-      CHARTS_SPOTIZERR_MAX_ADDS:   ${CHARTS_SPOTIZERR_MAX_ADDS:-50}
-
-      # slskd (Soulseek peer-to-peer downloads)
-      SLSKD_URL:                   ${SLSKD_URL:-}
-      SLSKD_API_KEY:               ${SLSKD_API_KEY:-}
-      SLSKD_ENABLED:               ${SLSKD_ENABLED:-false}
-      SLSKD_SEARCH_TIMEOUT:        ${SLSKD_SEARCH_TIMEOUT:-15}
-      SLSKD_PREFER_LOSSLESS:       ${SLSKD_PREFER_LOSSLESS:-true}
-
-      # Spotify credentials (for spotdl-api)
-      SPOTIFY_CLIENT_ID:           ${SPOTIFY_CLIENT_ID:-}
-      SPOTIFY_CLIENT_SECRET:       ${SPOTIFY_CLIENT_SECRET:-}
-
-      # Charts
-      CHARTS_ENABLED:              ${CHARTS_ENABLED:-false}
-      CHARTS_INTERVAL_HOURS:       ${CHARTS_INTERVAL_HOURS:-24}
-      CHARTS_TOP_LIMIT:            ${CHARTS_TOP_LIMIT:-100}
-      CHARTS_TAGS:                 ${CHARTS_TAGS:-}
-      CHARTS_COUNTRIES:            ${CHARTS_COUNTRIES:-}
-      CHARTS_LIDARR_AUTO_ADD:      ${CHARTS_LIDARR_AUTO_ADD:-false}
-      CHARTS_LIDARR_MAX_ADDS:      ${CHARTS_LIDARR_MAX_ADDS:-50}
-
-      # AcousticBrainz Lookup
-      AB_LOOKUP_URL:               ${AB_LOOKUP_URL:-}
-      AB_LOOKUP_ENABLED:           ${AB_LOOKUP_ENABLED:-false}
-      AB_DISCOVERY_LIMIT:          ${AB_DISCOVERY_LIMIT:-50}
-
-      # Fill Library (AB taste-match → Lidarr album download)
-      FILL_LIBRARY_ENABLED:        ${FILL_LIBRARY_ENABLED:-false}
-      FILL_LIBRARY_MAX_ALBUMS:     ${FILL_LIBRARY_MAX_ALBUMS:-20}
-      FILL_LIBRARY_MAX_DISTANCE:   ${FILL_LIBRARY_MAX_DISTANCE:-0.15}
-      FILL_LIBRARY_CRON:           ${FILL_LIBRARY_CRON:-0 4 * * *}
-      FILL_LIBRARY_QUERY_LIMIT:    ${FILL_LIBRARY_QUERY_LIMIT:-500}
-
-      # News feed (Reddit)
-      NEWS_ENABLED:                ${NEWS_ENABLED:-false}
-      NEWS_INTERVAL_MINUTES:       ${NEWS_INTERVAL_MINUTES:-30}
-      NEWS_MAX_AGE_HOURS:          ${NEWS_MAX_AGE_HOURS:-48}
-      NEWS_DEFAULT_SUBREDDITS:     ${NEWS_DEFAULT_SUBREDDITS:-Music,hiphopheads,indieheads,electronicmusic,popheads,metal,rnb}
-      NEWS_MAX_POSTS_PER_SUB:      ${NEWS_MAX_POSTS_PER_SUB:-50}
+      SPOTDL_API_URL:       http://spotdl-api:8181
 
     volumes:
       # Persistent database & state
@@ -181,16 +92,17 @@ services:
     security_opt: [no-new-privileges:true]
     tmpfs:
       - /tmp:noexec,nosuid,size=128M
-    ports:
-      - "${SPOTDL_API_PORT:-8181}:8181"
+    # No host ports — reachable by grooveiq via Docker network at spotdl-api:8181.
+    # Exposing on the host would bypass GrooveIQ's auth layer (spotdl-api has no
+    # auth of its own).  For debug access: docker compose exec spotdl-api curl ...
+    env_file: .env
     environment:
+      # Container-internal overrides
       OUTPUT_DIR:        /music
       OUTPUT_FORMAT:     ${SPOTDL_FORMAT:-opus}
       BITRATE:           ${SPOTDL_BITRATE:-auto}
       OUTPUT_TEMPLATE:   ${SPOTDL_TEMPLATE:-{artist}/{album}/{artists} - {title}.{output-ext}}
       MAX_THREADS:       ${SPOTDL_THREADS:-4}
-      SPOTIFY_CLIENT_ID:     ${SPOTIFY_CLIENT_ID:-}
-      SPOTIFY_CLIENT_SECRET: ${SPOTIFY_CLIENT_SECRET:-}
       LOG_LEVEL:         ${LOG_LEVEL:-INFO}
     volumes:
       - ${MUSIC_LIBRARY_PATH:-/mnt/music}:/music
@@ -227,8 +139,8 @@ services:
     security_opt: [no-new-privileges:true]
     tmpfs:
       - /tmp:noexec,nosuid,size=64M
-    ports:
-      - "${AB_LOOKUP_PORT:-8200}:8200"
+    # No host ports — reachable by grooveiq via Docker network at
+    # acousticbrainz-lookup:8200.  No auth on this service.
     environment:
       SAMPLE_MODE: ${AB_SAMPLE_MODE:-false}
       LOG_LEVEL: ${AB_LOG_LEVEL:-INFO}

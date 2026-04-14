@@ -62,6 +62,20 @@ _ONNX_MODELS = {
     "approachability_regression-discogs-effnet-1.onnx": "classification-heads/approachability/approachability_regression-discogs-effnet-1.onnx",
 }
 
+# Expected SHA-256 digests for integrity verification after download.
+# Computed from https://essentia.upf.edu/models/ on 2026-04-14.
+_ONNX_MODEL_SHA256: dict[str, str] = {
+    "discogs-effnet-bsdynamic-1.onnx": "a280825b334797cf677939db8cd5762c0392aedd0ca6415dbc1cd083f045e43c",
+    "danceability-discogs-effnet-1.onnx": "9ce9b8c44f1dd5df5ffc124e5d41d67acf254232c1b90c7e057e079ab7cead73",
+    "mood_happy-discogs-effnet-1.onnx": "0ca322819ef137b4b87e9866bffe7370a630e6f1165184ec106326cef6f81e06",
+    "mood_sad-discogs-effnet-1.onnx": "1a50d11c23181bdfdeabc7d6032a2dad829dfc19c3776d2ee57ef1724cb08805",
+    "mood_aggressive-discogs-effnet-1.onnx": "de36550b5d1660791ad732ed6de6ebfdc3e65dcf50b928b2578ddf103dbfb400",
+    "mood_relaxed-discogs-effnet-1.onnx": "8ba6515a1e5943a72b3b475e3a25fc7a2ff04142c3eaa6aa0716fca371efdfff",
+    "mood_party-discogs-effnet-1.onnx": "c50ac2106ec2f209dd04ad48756582df0e3f3512235310d1a4a3fcc453745f04",
+    "voice_instrumental-discogs-effnet-1.onnx": "20155e4c439714b0c45c08644b73c8e12d9dccb173bd4ab9934bf1e5aee837ca",
+    "approachability_regression-discogs-effnet-1.onnx": "f783b17ee994394f30f27d05ccd3fb845e589d107802e55e0b9cf1ea041ec894",
+}
+
 # ---------------------------------------------------------------------------
 # Mel-spectrogram parameters (must match EffNet-Discogs training pipeline)
 # ---------------------------------------------------------------------------
@@ -422,12 +436,18 @@ def _download_models() -> bool:
             file_size = os.path.getsize(tmp_path)
             if file_size < 1024:
                 raise ValueError(f"Downloaded file too small ({file_size} bytes)")
-            # Compute SHA-256 for audit logging.
+            # Compute SHA-256 and verify against known-good digest.
             sha = hashlib.sha256()
             with open(tmp_path, "rb") as f:
                 for chunk in iter(lambda: f.read(65536), b""):
                     sha.update(chunk)
             digest = sha.hexdigest()
+            expected = _ONNX_MODEL_SHA256.get(filename)
+            if expected and digest != expected:
+                raise ValueError(
+                    f"SHA-256 mismatch for {filename}: "
+                    f"expected {expected[:16]}…, got {digest[:16]}…"
+                )
             # Atomic rename into place.
             os.rename(tmp_path, local_path)
             tmp_path = None  # prevent cleanup
