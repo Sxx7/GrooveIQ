@@ -128,9 +128,9 @@ video_downloads_folder = ""
 
 [database]
 downloads_enabled = true
-downloads_path = ""
+downloads_path = "/config/streamrip/downloads.db"
 failed_downloads_enabled = true
-failed_downloads_path = ""
+failed_downloads_path = "/config/streamrip/failed_downloads.db"
 
 [conversion]
 enabled = false
