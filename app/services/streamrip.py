@@ -146,12 +146,18 @@ class StreamripClient:
 
     # -- Download -----------------------------------------------------------
 
-    async def download(self, spotify_track_id: str) -> dict[str, Any]:
+    async def download(
+        self,
+        spotify_track_id: str,
+        artist: str = "",
+        title: str = "",
+    ) -> dict[str, Any]:
         """Trigger download of a track by its service ID.
 
         Accepts a service-specific track ID (Qobuz, Tidal, Deezer, etc.)
-        or a Spotify ID (for compatibility — streamrip-api resolves it
-        via its configured default service).
+        or a Spotify ID (for compatibility).  When artist + title are
+        provided, streamrip-api can fall back to search-based download
+        if the ID doesn't match the configured service.
 
         Returns dict with 'task_id' and 'status', shaped identically to
         SpotdlClient.download().
@@ -159,10 +165,16 @@ class StreamripClient:
         _validate_id(spotify_track_id, "track_id")
         await self._throttle()
 
+        body: dict[str, Any] = {"service_id": spotify_track_id}
+        if artist:
+            body["artist"] = artist
+        if title:
+            body["title"] = title
+
         try:
             resp = await self._client.post(
                 f"{self._base_url}/download",
-                json={"service_id": spotify_track_id},
+                json=body,
             )
         except Exception as exc:
             logger.warning(

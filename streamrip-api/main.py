@@ -228,10 +228,13 @@ class SearchResult(BaseModel):
 
 
 class DownloadRequest(BaseModel):
-    service_id: str
+    service_id: str = ""
     service: Optional[str] = None  # qobuz, tidal, deezer, soundcloud
     # Compatibility: accept spotify_id as alias
     spotify_id: Optional[str] = None
+    # For cross-service downloads (e.g. Deezer search → Qobuz download)
+    artist: Optional[str] = None
+    title: Optional[str] = None
 
 
 class DownloadResponse(BaseModel):
@@ -305,9 +308,11 @@ def _do_search_cli(service: str, query: str, limit: int) -> List[Dict[str, Any]]
 
 
 def _do_search_api(service: str, query: str, limit: int) -> List[Dict[str, Any]]:
-    """Search using streamrip's Python API directly.
+    """Search using streaming service APIs directly.
 
-    Supports Qobuz, Tidal, Deezer clients for search.
+    Supports Qobuz, Tidal, Deezer, SoundCloud.
+    Falls back to Deezer (free public API) if the primary service's
+    search fails (e.g. Qobuz 401, Tidal token expired).
     """
     results = []
 
@@ -324,6 +329,19 @@ def _do_search_api(service: str, query: str, limit: int) -> List[Dict[str, Any]]
             logger.warning("Unknown service for search: %s", service)
     except Exception as exc:
         logger.error("API search error on %s for %r: %s", service, query, exc, exc_info=True)
+
+    # Deezer fallback: if the primary service returned nothing and we
+    # didn't already try Deezer, use Deezer's free public API for search.
+    # The download still goes through the configured service (e.g. Qobuz).
+    if not results and service != "deezer":
+        logger.info(
+            "No results from %s search, falling back to Deezer for %r",
+            service, query,
+        )
+        try:
+            results = _search_deezer(query, limit)
+        except Exception as exc:
+            logger.error("Deezer fallback search error for %r: %s", query, exc)
 
     return results
 
@@ -525,10 +543,13 @@ def _get_qobuz_app_id() -> str:
 # ---------------------------------------------------------------------------
 
 
-def _do_download(task_id: str, service: str, service_id: str) -> None:
+def _do_download(task_id: str, service: str, service_id: str,
+                  artist: str = "", title: str = "") -> None:
     """Run streamrip download (blocking). Called in thread pool.
 
     Uses the `rip url` CLI command to download a track by its service URL.
+    When the service_id is from a different service (e.g. Deezer ID but
+    downloading via Qobuz), falls back to `rip search` by artist + title.
     """
     import subprocess
 
@@ -536,29 +557,43 @@ def _do_download(task_id: str, service: str, service_id: str) -> None:
     if not task:
         return
 
+    rip_env = {**os.environ, "XDG_CONFIG_HOME": str(_CONFIG_DIR.parent)}
+
     try:
         task.status = TaskStatus.downloading
         task.updated_at = time.time()
 
         # Build the service URL from the ID
         url = _build_service_url(service, service_id)
-        if not url:
+
+        if url:
+            # Direct download by URL
+            cmd = ["rip", "url", url]
+        elif artist and title:
+            # Cross-service fallback: search + download via the configured service
+            # e.g. Deezer search result → download from Qobuz by name
+            download_service = DEFAULT_SERVICE
+            search_query = f"{artist} {title}"
+            logger.info(
+                "Task %s: no direct URL for %s/%s, using 'rip search' on %s for %r",
+                task_id, service, service_id, download_service, search_query,
+            )
+            cmd = ["rip", "search", download_service, "track", search_query, "--first"]
+        else:
             task.status = TaskStatus.error
-            task.error = f"Cannot build URL for {service} ID {service_id}"
+            task.error = f"Cannot build URL for {service} ID {service_id} and no artist/title for search fallback"
             task.updated_at = time.time()
             return
 
-        # Run streamrip download via CLI
+        logger.info("Task %s: running %s", task_id, " ".join(cmd))
+
         proc = subprocess.run(
-            ["rip", "url", url],
+            cmd,
             capture_output=True,
             text=True,
             timeout=600,  # 10 min timeout for downloads
             cwd=OUTPUT_DIR,
-            env={
-                **os.environ,
-                "XDG_CONFIG_HOME": str(_CONFIG_DIR.parent),
-            },
+            env=rip_env,
         )
 
         if proc.returncode == 0:
@@ -669,11 +704,18 @@ async def search(
 
 @app.post("/download", response_model=DownloadResponse)
 async def download(body: DownloadRequest):
-    """Trigger a track download. Returns immediately with a task_id."""
+    """Trigger a track download. Returns immediately with a task_id.
+
+    Accepts service_id (native ID for the service) or artist+title
+    for cross-service downloads (e.g. Deezer search → Qobuz download).
+    """
     # Resolve the ID — accept either service_id or spotify_id for compatibility
     track_id = body.service_id or body.spotify_id or ""
-    if not track_id:
-        raise HTTPException(status_code=400, detail="service_id or spotify_id required")
+    if not track_id and not (body.artist and body.title):
+        raise HTTPException(
+            status_code=400,
+            detail="service_id (or spotify_id) required, or artist + title for search-based download",
+        )
 
     svc = (body.service or DEFAULT_SERVICE).lower()
 
@@ -684,6 +726,8 @@ async def download(body: DownloadRequest):
         status=TaskStatus.queued,
         service=svc,
         service_id=track_id,
+        artist=body.artist or "",
+        title=body.title or "",
         created_at=now,
         updated_at=now,
     )
@@ -691,10 +735,14 @@ async def download(body: DownloadRequest):
 
     # Fire and forget — download runs in the thread pool
     loop = asyncio.get_running_loop()
-    loop.run_in_executor(_executor, _do_download, task_id, svc, track_id)
+    loop.run_in_executor(
+        _executor, _do_download, task_id, svc, track_id,
+        body.artist or "", body.title or "",
+    )
 
     logger.info(
-        "Download queued: task=%s service=%s id=%s", task_id, svc, track_id
+        "Download queued: task=%s service=%s id=%s artist=%r title=%r",
+        task_id, svc, track_id, body.artist, body.title,
     )
     return DownloadResponse(task_id=task_id, status=task.status.value)
 

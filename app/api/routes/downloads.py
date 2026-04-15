@@ -135,7 +135,18 @@ async def create_download(
     _require_download_backend()
     client = _get_client()
     try:
-        dl_result = await client.download(body.spotify_id)
+        # StreamripClient accepts artist/title for cross-service fallback
+        # (e.g. Deezer search result → Qobuz download by name)
+        from app.services.streamrip import StreamripClient
+
+        if isinstance(client, StreamripClient):
+            dl_result = await client.download(
+                body.spotify_id,
+                artist=body.artist_name or "",
+                title=body.track_title or "",
+            )
+        else:
+            dl_result = await client.download(body.spotify_id)
     except Exception as exc:
         logger.error("Download service error for %s: %s", body.spotify_id, exc)
         raise HTTPException(status_code=502, detail="Download service temporarily unavailable")
