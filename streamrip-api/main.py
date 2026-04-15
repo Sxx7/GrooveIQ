@@ -5,26 +5,22 @@ Provides search, download, and status endpoints so GrooveIQ (or any
 HTTP client) can trigger high-quality downloads from Qobuz, Tidal,
 Deezer, or SoundCloud without embedding streamrip as a direct dependency.
 
-All search and download operations go through streamrip's `rip` CLI,
-which handles authentication with the configured streaming service.
+Uses streamrip as a Python library (not CLI) to avoid interactive
+prompt issues and get structured results directly.
 """
 
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import os
-import re
-import subprocess
 import time
-import urllib.parse
 import uuid
-from concurrent.futures import ThreadPoolExecutor
 from enum import Enum
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+import tomlkit
 from fastapi import FastAPI, HTTPException, Query
 from pydantic import BaseModel
 
@@ -34,13 +30,12 @@ from pydantic import BaseModel
 
 OUTPUT_DIR = os.environ.get("OUTPUT_DIR", "/music")
 DOWNLOAD_QUALITY = int(os.environ.get("DOWNLOAD_QUALITY", "3"))
-# Quality levels: 0=128kbps, 1=320kbps, 2=16bit/44.1k, 3=24bit/96k, 4=24bit/192k
 DOWNLOAD_CODEC = os.environ.get("DOWNLOAD_CODEC", "FLAC")
 MAX_CONNECTIONS = int(os.environ.get("MAX_CONNECTIONS", "6"))
 MAX_THREADS = int(os.environ.get("MAX_THREADS", "4"))
 LOG_LEVEL = os.environ.get("LOG_LEVEL", "INFO").upper()
 
-# Service credentials (at least one service required)
+# Service credentials
 QOBUZ_EMAIL = os.environ.get("QOBUZ_EMAIL", "")
 QOBUZ_PASSWORD = os.environ.get("QOBUZ_PASSWORD", "")
 TIDAL_EMAIL = os.environ.get("TIDAL_EMAIL", "")
@@ -48,7 +43,6 @@ TIDAL_PASSWORD = os.environ.get("TIDAL_PASSWORD", "")
 DEEZER_ARL = os.environ.get("DEEZER_ARL", "")
 SOUNDCLOUD_CLIENT_ID = os.environ.get("SOUNDCLOUD_CLIENT_ID", "")
 
-# Default service for search/download when not specified
 DEFAULT_SERVICE = os.environ.get("DEFAULT_SERVICE", "qobuz")
 
 logging.basicConfig(
@@ -63,8 +57,6 @@ logger = logging.getLogger("streamrip-api")
 
 app = FastAPI(title="streamrip-api", version="1.0.0")
 
-_executor = ThreadPoolExecutor(max_workers=MAX_THREADS)
-
 # ---------------------------------------------------------------------------
 # streamrip config management
 # ---------------------------------------------------------------------------
@@ -74,134 +66,272 @@ _CONFIG_PATH = _CONFIG_DIR / "config.toml"
 
 _available_services: list[str] = []
 
-# Env dict for all rip subprocess calls
-_RIP_ENV: dict[str, str] = {}
-
 
 def _write_config():
-    """Generate streamrip config.toml from environment variables."""
+    """Generate streamrip config.toml from environment variables.
+
+    Uses `rip config reset` to get a valid default, then patches in
+    credentials and settings via tomlkit so we never have schema mismatches.
+    """
+    import subprocess
+
     _CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    env = {**os.environ, "XDG_CONFIG_HOME": str(_CONFIG_DIR.parent)}
 
-    config = f"""
-[downloads]
-folder = "{OUTPUT_DIR}"
-source_subdirectories = false
-disc_subdirectories = true
-concurrency = true
-max_connections = {MAX_CONNECTIONS}
-requests_per_minute = 60
-verify_ssl = true
+    # Generate default config via streamrip itself — guaranteed correct schema
+    subprocess.run(
+        ["rip", "config", "reset"],
+        capture_output=True, text=True, timeout=15,
+        input="y\n",  # confirm if prompted
+        env=env,
+    )
 
-[qobuz]
-use_auth_token = false
-email_or_userid = "{QOBUZ_EMAIL}"
-password_or_token = "{QOBUZ_PASSWORD}"
-app_id = ""
-quality = {DOWNLOAD_QUALITY}
-download_booklets = false
-secrets = []
+    if not _CONFIG_PATH.exists():
+        logger.error("rip config reset did not create %s", _CONFIG_PATH)
+        return
 
-[tidal]
-user_id = ""
-country_code = ""
-access_token = ""
-refresh_token = ""
-token_expiry = ""
-quality = {min(DOWNLOAD_QUALITY, 3)}
-download_videos = false
+    # Patch in our settings
+    doc = tomlkit.parse(_CONFIG_PATH.read_text())
 
-[deezer]
-arl = "{DEEZER_ARL}"
-quality = {min(DOWNLOAD_QUALITY, 2)}
-use_deezloader = true
-deezloader_warnings = true
+    # Downloads
+    doc["downloads"]["folder"] = OUTPUT_DIR
+    doc["downloads"]["max_connections"] = MAX_CONNECTIONS
 
-[soundcloud]
-client_id = "{SOUNDCLOUD_CLIENT_ID}"
-app_version = ""
-quality = 0
+    # Qobuz
+    if QOBUZ_EMAIL and QOBUZ_PASSWORD:
+        doc["qobuz"]["email_or_userid"] = QOBUZ_EMAIL
+        doc["qobuz"]["password_or_token"] = QOBUZ_PASSWORD
+        doc["qobuz"]["quality"] = DOWNLOAD_QUALITY
 
-[youtube]
-quality = 0
-download_videos = false
-video_downloads_folder = ""
+    # Tidal (uses OAuth, email/password not directly supported in v2)
+    # Users must authenticate via `rip config tidal` interactively once
 
-[database]
-downloads_enabled = true
-downloads_path = "/config/streamrip/downloads.db"
-failed_downloads_enabled = true
-failed_downloads_path = "/config/streamrip/failed_downloads.db"
+    # Deezer
+    if DEEZER_ARL:
+        doc["deezer"]["arl"] = DEEZER_ARL
+        doc["deezer"]["quality"] = min(DOWNLOAD_QUALITY, 2)
 
-[conversion]
-enabled = false
-codec = "ALAC"
-sampling_rate = 48000
-bit_depth = 24
-lossy_bitrate = 320
+    # SoundCloud
+    if SOUNDCLOUD_CLIENT_ID:
+        doc["soundcloud"]["client_id"] = SOUNDCLOUD_CLIENT_ID
 
-[qobuz_filters]
-extras = false
-repeats = false
-non_albums = false
-features = false
-non_studio_albums = false
-non_remaster = false
+    # Database paths (must be non-empty or streamrip asserts)
+    if "database" in doc:
+        doc["database"]["downloads_path"] = str(_CONFIG_DIR / "downloads.db")
+        doc["database"]["failed_downloads_path"] = str(_CONFIG_DIR / "failed_downloads.db")
 
-[artwork]
-embed = true
-embed_size = "large"
-embed_max_width = -1
-save_artwork = true
-saved_max_width = -1
+    # Filepaths
+    if "filepaths" in doc:
+        doc["filepaths"]["folder_format"] = "{albumartist}/{album} ({year})"
+        doc["filepaths"]["track_format"] = "{tracknumber:02}. {artist} - {title}"
 
-[metadata]
-set_playlist_to_album = true
-renumber_playlist_tracks = true
-exclude = []
+    # Disable update checks
+    if "misc" in doc:
+        doc["misc"]["check_for_updates"] = False
 
-[filepaths]
-add_singles_to_folder = false
-folder_format = "{{albumartist}} - {{title}} ({{year}}) [{{container}}] [{{bit_depth}}B-{{sampling_rate}}kHz]"
-track_format = "{{tracknumber:02}}. {{artist}} - {{title}}{{explicit}}"
-restrict_characters = false
-truncate_to = 120
+    if "cli" in doc:
+        doc["cli"]["max_search_results"] = 100
 
-[lastfm]
-source = "qobuz"
-fallback_source = ""
-
-[cli]
-text_output = true
-progress_bars = true
-max_search_results = 100
-
-[misc]
-version = "2.0.6"
-check_for_updates = false
-"""
-    _CONFIG_PATH.write_text(config.strip())
-    logger.info("Wrote streamrip config to %s", _CONFIG_PATH)
+    _CONFIG_PATH.write_text(tomlkit.dumps(doc))
+    logger.info("Patched streamrip config at %s", _CONFIG_PATH)
 
 
 def _detect_available_services():
     """Detect which streaming services have credentials configured."""
-    global _available_services, _RIP_ENV
+    global _available_services
     services = []
     if QOBUZ_EMAIL and QOBUZ_PASSWORD:
         services.append("qobuz")
-    if TIDAL_EMAIL and TIDAL_PASSWORD:
-        services.append("tidal")
     if DEEZER_ARL:
         services.append("deezer")
     if SOUNDCLOUD_CLIENT_ID:
         services.append("soundcloud")
+    # Tidal requires OAuth flow, detect from config if tokens exist
+    if _CONFIG_PATH.exists():
+        try:
+            doc = tomlkit.parse(_CONFIG_PATH.read_text())
+            if doc.get("tidal", {}).get("access_token"):
+                services.append("tidal")
+        except Exception:
+            pass
     _available_services = services
-    _RIP_ENV = {**os.environ, "XDG_CONFIG_HOME": str(_CONFIG_DIR.parent)}
     logger.info("Available services: %s", services or ["none"])
 
 
 # ---------------------------------------------------------------------------
-# Task registry (in-memory, ephemeral)
+# streamrip Python API helpers
+# ---------------------------------------------------------------------------
+
+async def _get_main():
+    """Create a configured streamrip Main instance."""
+    from streamrip.config import Config
+    from streamrip.rip.main import Main
+
+    config = Config(_CONFIG_PATH)
+    cfg_data = config.__enter__()
+    main = Main(cfg_data)
+    await main.__aenter__()
+    return main, config
+
+
+async def _close_main(main, config):
+    """Clean up a Main instance."""
+    try:
+        await main.__aexit__(None, None, None)
+    except Exception:
+        pass
+    try:
+        config.__exit__(None, None, None)
+    except Exception:
+        pass
+
+
+async def _do_search(service: str, query: str, limit: int) -> List[Dict[str, Any]]:
+    """Search using streamrip's Python API directly."""
+    main = None
+    config = None
+    try:
+        main, config = await _get_main()
+        client = await main.get_logged_in_client(service)
+
+        # client.search() returns raw API response pages
+        pages = await client.search("track", query, limit=limit)
+
+        results = []
+        for page in pages:
+            items = _extract_tracks_from_page(page, service)
+            results.extend(items)
+            if len(results) >= limit:
+                break
+
+        return results[:limit]
+
+    except Exception as exc:
+        logger.error("Search failed for %r on %s: %s", query, service, exc, exc_info=True)
+        return []
+    finally:
+        if main and config:
+            await _close_main(main, config)
+
+
+def _extract_tracks_from_page(page: Any, service: str) -> List[Dict[str, Any]]:
+    """Extract track data from a streamrip search result page.
+
+    The page format varies by service. For Qobuz it's the raw API JSON.
+    """
+    results = []
+
+    # Handle different page formats
+    if isinstance(page, dict):
+        # Qobuz returns {"tracks": {"items": [...]}}
+        items = []
+        if "tracks" in page:
+            tracks = page["tracks"]
+            items = tracks.get("items", []) if isinstance(tracks, dict) else []
+        elif "items" in page:
+            items = page["items"]
+        elif "data" in page:
+            items = page["data"]
+        else:
+            # Might be a single track result
+            if "id" in page and "title" in page:
+                items = [page]
+
+        for item in items:
+            track = _normalize_track(item, service)
+            if track:
+                results.append(track)
+
+    elif isinstance(page, list):
+        for item in page:
+            track = _normalize_track(item, service)
+            if track:
+                results.append(track)
+
+    return results
+
+
+def _normalize_track(item: dict, service: str) -> Optional[Dict[str, Any]]:
+    """Normalize a raw track dict from any service into our SearchResult shape."""
+    if not isinstance(item, dict):
+        return None
+
+    track_id = str(item.get("id", ""))
+    title = item.get("title", "") or item.get("name", "")
+    if not title:
+        return None
+
+    # Artist extraction (varies by service)
+    artist = ""
+    artists_list = []
+    if "performer" in item and isinstance(item["performer"], dict):
+        # Qobuz format
+        artist = item["performer"].get("name", "")
+    elif "artist" in item:
+        a = item["artist"]
+        artist = a.get("name", "") if isinstance(a, dict) else str(a)
+    elif "artists" in item:
+        arts = item["artists"]
+        if isinstance(arts, list) and arts:
+            artist = arts[0].get("name", "") if isinstance(arts[0], dict) else str(arts[0])
+            artists_list = [a.get("name", "") if isinstance(a, dict) else str(a) for a in arts]
+
+    if not artists_list:
+        artists_list = [artist] if artist else []
+
+    # Album
+    album = ""
+    album_obj = item.get("album", {})
+    if isinstance(album_obj, dict):
+        album = album_obj.get("title", "") or album_obj.get("name", "")
+    elif isinstance(album_obj, str):
+        album = album_obj
+
+    # Cover art
+    cover_url = ""
+    if isinstance(album_obj, dict):
+        image = album_obj.get("image", {})
+        if isinstance(image, dict):
+            cover_url = (
+                image.get("large", "")
+                or image.get("small", "")
+                or image.get("thumbnail", "")
+            )
+    if not cover_url and isinstance(item.get("image"), dict):
+        image = item["image"]
+        cover_url = image.get("large", "") or image.get("small", "")
+
+    # Duration
+    duration = item.get("duration")
+
+    return {
+        "service_id": track_id,
+        "service": service,
+        "title": title,
+        "artist": artist,
+        "artists": artists_list,
+        "album": album,
+        "duration": duration,
+        "cover_url": cover_url,
+        "quality": _quality_label(),
+        "spotify_id": track_id,
+        "url": "",
+    }
+
+
+def _quality_label() -> str:
+    labels = {
+        0: "MP3 128kbps",
+        1: "MP3 320kbps",
+        2: "CD 16bit/44.1kHz",
+        3: "Hi-Res 24bit/96kHz",
+        4: "Hi-Res 24bit/192kHz",
+    }
+    return labels.get(DOWNLOAD_QUALITY, f"Quality {DOWNLOAD_QUALITY}")
+
+
+# ---------------------------------------------------------------------------
+# Download
 # ---------------------------------------------------------------------------
 
 class TaskStatus(str, Enum):
@@ -228,6 +358,71 @@ class TaskState(BaseModel):
 
 _tasks: Dict[str, TaskState] = {}
 
+# Global lock to serialize streamrip operations (it's not concurrency-safe)
+_streamrip_lock = asyncio.Lock()
+
+
+async def _do_download(task_id: str, service: str, service_id: str,
+                       artist: str = "", title: str = "") -> None:
+    """Download a track using streamrip's Python API."""
+    task = _tasks.get(task_id)
+    if not task:
+        return
+
+    main = None
+    config = None
+
+    try:
+        task.status = TaskStatus.downloading
+        task.updated_at = time.time()
+
+        async with _streamrip_lock:
+            main, config = await _get_main()
+
+            # Build a URL for direct download if we have a numeric service ID
+            url = _build_service_url(service, service_id)
+
+            if url:
+                # Direct URL download
+                logger.info("Task %s: downloading URL %s", task_id, url)
+                await main.handle_urls(url)
+            else:
+                # Search-based download
+                search_query = f"{artist} {title}".strip() if artist and title else service_id
+                if not search_query:
+                    task.status = TaskStatus.error
+                    task.error = "No track ID or artist/title provided"
+                    task.updated_at = time.time()
+                    return
+
+                download_service = service if service in _available_services else DEFAULT_SERVICE
+                logger.info("Task %s: search download %r on %s", task_id, search_query, download_service)
+                await main.search_take_first(download_service, "track", search_query)
+
+        task.status = TaskStatus.complete
+        task.progress = 100.0
+        task.updated_at = time.time()
+
+    except Exception as exc:
+        logger.exception("Download failed for task %s: %s", task_id, exc)
+        task.status = TaskStatus.error
+        task.error = str(exc)[:1024]
+        task.updated_at = time.time()
+    finally:
+        if main and config:
+            await _close_main(main, config)
+
+
+def _build_service_url(service: str, service_id: str) -> str | None:
+    if not service_id or not service_id.isdigit():
+        return None
+    urls = {
+        "qobuz": f"https://www.qobuz.com/track/{service_id}",
+        "tidal": f"https://tidal.com/browse/track/{service_id}",
+        "deezer": f"https://www.deezer.com/track/{service_id}",
+    }
+    return urls.get(service)
+
 
 # ---------------------------------------------------------------------------
 # Schemas
@@ -247,7 +442,7 @@ class SearchResult(BaseModel):
     url: str = ""
 
 
-class DownloadRequest(BaseModel):
+class DownloadRequestBody(BaseModel):
     service_id: str = ""
     service: Optional[str] = None
     spotify_id: Optional[str] = None
@@ -261,243 +456,13 @@ class DownloadResponse(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# Search via `rip search`
-# ---------------------------------------------------------------------------
-
-def _do_search(service: str, query: str, limit: int) -> List[Dict[str, Any]]:
-    """Search using streamrip's `rip search` CLI.
-
-    streamrip handles all authentication via config.toml — no need
-    for manual API calls or app_ids.
-    """
-    try:
-        # rip search <service> track <query>
-        # The CLI outputs interactive results; we capture stdout.
-        proc = subprocess.run(
-            ["rip", "search", service, "track", query],
-            capture_output=True,
-            text=True,
-            timeout=30,
-            env=_RIP_ENV,
-            input="1\n",  # auto-select first result group if prompted
-        )
-
-        logger.debug(
-            "rip search %s track %r → rc=%d stdout=%d bytes stderr=%d bytes",
-            service, query, proc.returncode,
-            len(proc.stdout), len(proc.stderr),
-        )
-
-        if proc.returncode != 0 and not proc.stdout.strip():
-            logger.warning(
-                "rip search failed (rc=%d): %s",
-                proc.returncode,
-                (proc.stderr or "")[:500],
-            )
-            return []
-
-        return _parse_rip_search_output(proc.stdout, service, limit)
-
-    except subprocess.TimeoutExpired:
-        logger.warning("rip search timed out for %r on %s", query, service)
-        return []
-    except FileNotFoundError:
-        logger.error("rip CLI not found in PATH")
-        return []
-    except Exception as exc:
-        logger.error("rip search error on %s for %r: %s", service, query, exc)
-        return []
-
-
-def _parse_rip_search_output(
-    stdout: str, service: str, limit: int,
-) -> List[Dict[str, Any]]:
-    """Parse the output of `rip search <service> track <query>`.
-
-    streamrip outputs results in a numbered list format like:
-        1. Artist - Title (Album)
-    or sometimes with extra metadata. The exact format varies by
-    version and service, so we're flexible in parsing.
-    """
-    results = []
-    lines = stdout.strip().split("\n")
-
-    # Pattern: "N. Artist - Title" or "N) Artist - Title"
-    numbered_re = re.compile(
-        r"^\s*(\d+)[.\)]\s+(.+?)\s*[-–—]\s*(.+?)(?:\s*\(([^)]+)\))?\s*$"
-    )
-    # Simpler pattern: just "Artist - Title"
-    simple_re = re.compile(
-        r"^\s*(.+?)\s*[-–—]\s*(.+?)(?:\s*\(([^)]+)\))?\s*$"
-    )
-
-    for line in lines:
-        line = line.strip()
-        if not line:
-            continue
-
-        m = numbered_re.match(line)
-        if m:
-            idx, artist, title, album = m.group(1), m.group(2), m.group(3), m.group(4)
-            results.append({
-                "service_id": f"{service}_{idx}",
-                "service": service,
-                "title": title.strip(),
-                "artist": artist.strip(),
-                "artists": [artist.strip()],
-                "album": (album or "").strip(),
-                "cover_url": "",
-                "quality": _quality_label(),
-                "spotify_id": f"{service}_{idx}",
-                "url": "",
-            })
-            if len(results) >= limit:
-                break
-            continue
-
-        # Skip header/separator lines
-        if line.startswith(("=", "-", "Search", "Found", "Select")):
-            continue
-
-        m = simple_re.match(line)
-        if m:
-            artist, title, album = m.group(1), m.group(2), m.group(3)
-            idx = len(results) + 1
-            results.append({
-                "service_id": f"{service}_{idx}",
-                "service": service,
-                "title": title.strip(),
-                "artist": artist.strip(),
-                "artists": [artist.strip()],
-                "album": (album or "").strip(),
-                "cover_url": "",
-                "quality": _quality_label(),
-                "spotify_id": f"{service}_{idx}",
-                "url": "",
-            })
-            if len(results) >= limit:
-                break
-
-    return results
-
-
-def _quality_label() -> str:
-    """Human-readable quality label from DOWNLOAD_QUALITY setting."""
-    labels = {
-        0: "MP3 128kbps",
-        1: "MP3 320kbps",
-        2: "CD 16bit/44.1kHz",
-        3: "Hi-Res 24bit/96kHz",
-        4: "Hi-Res 24bit/192kHz",
-    }
-    return labels.get(DOWNLOAD_QUALITY, f"Quality {DOWNLOAD_QUALITY}")
-
-
-# ---------------------------------------------------------------------------
-# Download via `rip search --first` or `rip url`
-# ---------------------------------------------------------------------------
-
-def _build_service_url(service: str, service_id: str) -> str | None:
-    """Build the streaming service URL from a service name and track ID."""
-    if not service_id or not service_id.isdigit():
-        return None
-    urls = {
-        "qobuz": f"https://www.qobuz.com/track/{service_id}",
-        "tidal": f"https://tidal.com/browse/track/{service_id}",
-        "deezer": f"https://www.deezer.com/track/{service_id}",
-    }
-    return urls.get(service)
-
-
-def _do_download(task_id: str, service: str, service_id: str,
-                 artist: str = "", title: str = "") -> None:
-    """Run streamrip download (blocking). Called in thread pool.
-
-    Strategy:
-    1. If we have a numeric service_id matching the configured service,
-       try `rip url <service_url>` (direct, fastest).
-    2. Otherwise use `rip search <service> track "artist title" --first`
-       which searches and auto-downloads the top result.
-    """
-    task = _tasks.get(task_id)
-    if not task:
-        return
-
-    try:
-        task.status = TaskStatus.downloading
-        task.updated_at = time.time()
-
-        # Try direct URL download if we have a native service ID
-        url = _build_service_url(service, service_id)
-
-        if url:
-            cmd = ["rip", "url", url]
-        else:
-            # Search-based download: use artist + title, or service_id as query
-            search_query = f"{artist} {title}".strip() if artist and title else service_id
-            if not search_query:
-                task.status = TaskStatus.error
-                task.error = "No track ID or artist/title provided"
-                task.updated_at = time.time()
-                return
-
-            download_service = service if service in _available_services else DEFAULT_SERVICE
-            cmd = ["rip", "search", download_service, "track", search_query, "--first"]
-
-        logger.info("Task %s: running %s", task_id, " ".join(cmd))
-
-        proc = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=600,
-            cwd=OUTPUT_DIR,
-            env=_RIP_ENV,
-        )
-
-        stdout = proc.stdout.strip() if proc.stdout else ""
-        stderr = proc.stderr.strip() if proc.stderr else ""
-
-        logger.debug("Task %s: rc=%d stdout=%s stderr=%s",
-                      task_id, proc.returncode, stdout[:200], stderr[:200])
-
-        if proc.returncode == 0:
-            task.status = TaskStatus.complete
-            task.progress = 100.0
-            # Try to extract file path from output
-            for line in stdout.split("\n"):
-                if ".flac" in line.lower() or ".mp3" in line.lower() or ".opus" in line.lower():
-                    task.file_path = line.strip()
-                    break
-        else:
-            error_msg = stderr or stdout or f"streamrip exited with code {proc.returncode}"
-            task.status = TaskStatus.error
-            task.error = error_msg[:1024]
-
-        task.updated_at = time.time()
-
-    except subprocess.TimeoutExpired:
-        logger.error("Download timed out for task %s", task_id)
-        task.status = TaskStatus.error
-        task.error = "Download timed out after 10 minutes"
-        task.updated_at = time.time()
-    except Exception as exc:
-        logger.exception("Download failed for task %s: %s", task_id, exc)
-        task.status = TaskStatus.error
-        task.error = str(exc)[:1024]
-        task.updated_at = time.time()
-
-
-# ---------------------------------------------------------------------------
 # Routes
 # ---------------------------------------------------------------------------
-
 
 @app.get("/health")
 async def health():
     active_tasks = sum(
-        1
-        for t in _tasks.values()
+        1 for t in _tasks.values()
         if t.status in (TaskStatus.queued, TaskStatus.downloading)
     )
     return {
@@ -514,50 +479,28 @@ async def health():
 @app.get("/search", response_model=List[SearchResult])
 async def search(
     q: str = Query(..., min_length=1, description="Search query"),
-    limit: int = Query(10, ge=1, le=50, description="Max results"),
-    service: str = Query(
-        None,
-        description="Streaming service: qobuz, tidal, deezer, soundcloud. Defaults to DEFAULT_SERVICE.",
-    ),
+    limit: int = Query(10, ge=1, le=50),
+    service: str = Query(None, description="qobuz, tidal, deezer, soundcloud"),
 ):
-    """Search a streaming service for tracks via `rip search`."""
+    """Search a streaming service for tracks."""
     svc = (service or DEFAULT_SERVICE).lower()
     if svc not in ("qobuz", "tidal", "deezer", "soundcloud"):
-        raise HTTPException(
-            status_code=400,
-            detail=f"Unknown service '{svc}'. Use: qobuz, tidal, deezer, soundcloud",
-        )
+        raise HTTPException(400, f"Unknown service '{svc}'")
     if svc not in _available_services:
-        raise HTTPException(
-            status_code=503,
-            detail=f"Service '{svc}' not configured. Set credentials via env vars.",
-        )
+        raise HTTPException(503, f"Service '{svc}' not configured")
 
-    loop = asyncio.get_running_loop()
-    try:
-        results = await loop.run_in_executor(
-            _executor, _do_search, svc, q, limit
-        )
-    except Exception as exc:
-        logger.error("Search failed for %r on %s: %s", q, svc, exc)
-        raise HTTPException(status_code=502, detail=str(exc))
+    async with _streamrip_lock:
+        results = await _do_search(svc, q, limit)
 
     return results
 
 
 @app.post("/download", response_model=DownloadResponse)
-async def download(body: DownloadRequest):
-    """Trigger a track download. Returns immediately with a task_id.
-
-    Pass artist + title for search-based download (recommended), or a
-    native service_id for direct URL download.
-    """
+async def download(body: DownloadRequestBody):
+    """Trigger a track download. Returns immediately with a task_id."""
     track_id = body.service_id or body.spotify_id or ""
     if not track_id and not (body.artist and body.title):
-        raise HTTPException(
-            status_code=400,
-            detail="Provide service_id, or artist + title for search-based download",
-        )
+        raise HTTPException(400, "Provide service_id, or artist + title")
 
     svc = (body.service or DEFAULT_SERVICE).lower()
 
@@ -575,34 +518,27 @@ async def download(body: DownloadRequest):
     )
     _tasks[task_id] = task
 
-    loop = asyncio.get_running_loop()
-    loop.run_in_executor(
-        _executor, _do_download, task_id, svc, track_id,
-        body.artist or "", body.title or "",
+    # Run download in background
+    asyncio.create_task(
+        _do_download(task_id, svc, track_id, body.artist or "", body.title or "")
     )
 
-    logger.info(
-        "Download queued: task=%s service=%s id=%s artist=%r title=%r",
-        task_id, svc, track_id, body.artist, body.title,
-    )
     return DownloadResponse(task_id=task_id, status=task.status.value)
 
 
 @app.get("/status/{task_id}")
 async def get_status(task_id: str):
-    """Check download progress for a task."""
     task = _tasks.get(task_id)
     if not task:
-        raise HTTPException(status_code=404, detail="Task not found")
+        raise HTTPException(404, "Task not found")
     return task.model_dump()
 
 
 @app.get("/tasks")
 async def list_tasks(
-    status: Optional[str] = Query(None, description="Filter by status"),
+    status: Optional[str] = Query(None),
     limit: int = Query(50, ge=1, le=200),
 ):
-    """List recent tasks (newest first)."""
     tasks = sorted(_tasks.values(), key=lambda t: t.created_at, reverse=True)
     if status:
         tasks = [t for t in tasks if t.status.value == status]
@@ -616,39 +552,27 @@ async def list_tasks(
 @app.on_event("startup")
 async def startup():
     logger.info(
-        "streamrip-api starting: quality=%d, codec=%s, output=%s, threads=%d",
-        DOWNLOAD_QUALITY, DOWNLOAD_CODEC, OUTPUT_DIR, MAX_THREADS,
+        "streamrip-api starting: quality=%d, codec=%s, output=%s",
+        DOWNLOAD_QUALITY, DOWNLOAD_CODEC, OUTPUT_DIR,
     )
-    _detect_available_services()
     _write_config()
+    _detect_available_services()
 
     if not _available_services:
         logger.warning(
             "No streaming service credentials configured. "
-            "Set QOBUZ_EMAIL/QOBUZ_PASSWORD, TIDAL_EMAIL/TIDAL_PASSWORD, "
-            "DEEZER_ARL, or SOUNDCLOUD_CLIENT_ID."
+            "Set QOBUZ_EMAIL/QOBUZ_PASSWORD, DEEZER_ARL, or SOUNDCLOUD_CLIENT_ID."
         )
 
-    # Verify rip CLI is available and get version
+    # Verify streamrip can load the config
     try:
-        proc = subprocess.run(
-            ["rip", "--version"], capture_output=True, text=True, timeout=10,
-        )
-        rip_version = proc.stdout.strip()
-        logger.info("streamrip CLI: %s", rip_version or "available")
-
-        # Run a harmless command to trigger any config auto-update prompt
-        # (streamrip may prompt "Need to update config" interactively)
-        subprocess.run(
-            ["rip", "config", "path"],
-            capture_output=True, text=True, timeout=10,
-            input="y\n", env=_RIP_ENV,
-        )
-    except FileNotFoundError:
-        logger.error("rip CLI not found! pip install streamrip may have failed.")
+        main, config = await _get_main()
+        await _close_main(main, config)
+        logger.info("streamrip config loaded and validated successfully")
+    except Exception as exc:
+        logger.error("streamrip config validation failed: %s", exc)
 
 
 @app.on_event("shutdown")
 async def shutdown():
-    _executor.shutdown(wait=False)
     logger.info("streamrip-api shutting down")
