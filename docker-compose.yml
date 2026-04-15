@@ -309,7 +309,7 @@ volumes:
   grooveiq_data:
   grooveiq_models:
   ablookup_data:
-  # streamrip_config:
+  streamrip_config:
   # slskd_data:
   # grooveiq_pg:
   # caddy_data:
