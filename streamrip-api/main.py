@@ -133,7 +133,7 @@ restrict_characters = false
 truncate_to = 120
 
 [misc]
-version = "2.0.5"
+version = "2.0.6"
 check_for_updates = false
 """
     _CONFIG_PATH.write_text(config.strip())
@@ -586,12 +586,21 @@ async def startup():
             "DEEZER_ARL, or SOUNDCLOUD_CLIENT_ID."
         )
 
-    # Verify rip CLI is available
+    # Verify rip CLI is available and get version
     try:
         proc = subprocess.run(
             ["rip", "--version"], capture_output=True, text=True, timeout=10,
         )
-        logger.info("streamrip CLI: %s", proc.stdout.strip() or "available")
+        rip_version = proc.stdout.strip()
+        logger.info("streamrip CLI: %s", rip_version or "available")
+
+        # Run a harmless command to trigger any config auto-update prompt
+        # (streamrip may prompt "Need to update config" interactively)
+        subprocess.run(
+            ["rip", "config", "path"],
+            capture_output=True, text=True, timeout=10,
+            input="y\n", env=_RIP_ENV,
+        )
     except FileNotFoundError:
         logger.error("rip CLI not found! pip install streamrip may have failed.")
 
