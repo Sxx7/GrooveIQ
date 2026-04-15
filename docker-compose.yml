@@ -1,3 +1,19 @@
+
+
+    Infra Admin
+    grooveIQ
+
+    grooveiq
+    docker-compose.yml
+
+docker-compose.yml
+user avatar
+Fix: don't hardcode STREAMRIP_API_URL when service is commented out
+Simon authored 16 minutes ago
+6dd2f05e
+docker-compose.yml
+10.03 KiB
+
 # GrooveIQ – docker-compose.yml
 #
 # Usage:
@@ -8,9 +24,7 @@
 #
 # To use PostgreSQL instead of SQLite, uncomment the `db` service and
 # update DATABASE_URL in your .env file.
-
 services:
-
   grooveiq:
     build:
       context: .
@@ -25,23 +39,19 @@ services:
     read_only: true
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]
-
     ports:
       - "${GROOVEIQ_PORT:-8000}:8000"
-
     # All user settings (including secrets) are loaded from .env via env_file.
     # This keeps secrets out of the compose file itself — important if you
     # share or version-control docker-compose.yml.  Secrets are still visible
     # via `docker inspect`; for full isolation use Docker Swarm secrets.
     env_file: .env
-
     environment:
       # Container-internal overrides (these differ from host values in .env)
       MUSIC_LIBRARY_PATH:   /music
       SPOTDL_API_URL:       http://spotdl-api:8181
       # Uncomment when streamrip-api service is enabled:
       # STREAMRIP_API_URL:  http://streamrip-api:8282
-
     volumes:
       # Persistent database & state
       - grooveiq_data:/data
@@ -51,7 +61,6 @@ services:
       - ${MUSIC_LIBRARY_PATH:-/mnt/music}:/music:ro
     tmpfs:
       - /tmp:noexec,nosuid,size=64M
-
     healthcheck:
       test: ["CMD", "python", "-c",
              "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
@@ -59,7 +68,6 @@ services:
       timeout:  10s
       retries:  3
       start_period: 20s
-
     # Limit CPU/RAM so analysis jobs don't starve other containers
     deploy:
       resources:
@@ -72,13 +80,11 @@ services:
     networks:
       - default
       - apps_default
-
     logging:
       driver: "json-file"
       options:
         max-size: "20m"
         max-file: "5"
-
   # ---------------------------------------------------------------------------
   # spotdl-api (Spotify-matched downloads via YouTube Music)
   # ---------------------------------------------------------------------------
@@ -125,56 +131,55 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
-
   # ---------------------------------------------------------------------------
   # streamrip-api (Qobuz/Tidal/Deezer/SoundCloud lossless downloads)
   # ---------------------------------------------------------------------------
   # Uncomment to enable. Also uncomment STREAMRIP_API_URL on the grooveiq service
   # above, and configure at least one service's credentials in .env.
   #
-  # streamrip-api:
-  #   build:
-  #     context: ./streamrip-api
-  #     dockerfile: Dockerfile
-  #   image: streamrip-api:latest
-  #   container_name: streamrip-api
-  #   restart: unless-stopped
-  #   read_only: true
-  #   cap_drop: [ALL]
-  #   security_opt: [no-new-privileges:true]
-  #   tmpfs:
-  #     - /tmp:noexec,nosuid,size=128M
-  #   # No host ports — reachable by grooveiq via Docker network at streamrip-api:8282.
-  #   env_file: .env
-  #   environment:
-  #     OUTPUT_DIR:          /music
-  #     DOWNLOAD_QUALITY:    ${STREAMRIP_QUALITY:-3}
-  #     DOWNLOAD_CODEC:      ${STREAMRIP_CODEC:-FLAC}
-  #     MAX_CONNECTIONS:     ${STREAMRIP_CONNECTIONS:-6}
-  #     MAX_THREADS:         ${STREAMRIP_THREADS:-4}
-  #     DEFAULT_SERVICE:     ${STREAMRIP_DEFAULT_SERVICE:-qobuz}
-  #     LOG_LEVEL:           ${LOG_LEVEL:-INFO}
-  #   volumes:
-  #     - ${MUSIC_LIBRARY_PATH:-/mnt/music}:/music
-  #     - streamrip_config:/config
-  #   healthcheck:
-  #     test: ["CMD", "python", "-c",
-  #            "import urllib.request; urllib.request.urlopen('http://localhost:8282/health')"]
-  #     interval: 30s
-  #     timeout:  10s
-  #     retries:  3
-  #     start_period: 30s
-  #   deploy:
-  #     resources:
-  #       limits:
-  #         cpus: "${STREAMRIP_CPU_LIMIT:-1.0}"
-  #         memory: "${STREAMRIP_MEM_LIMIT:-1G}"
-  #   logging:
-  #     driver: "json-file"
-  #     options:
-  #       max-size: "10m"
-  #       max-file: "3"
+  streamrip-api:
+    build:
+      context: ./streamrip-api
+      dockerfile: Dockerfile
+    image: streamrip-api:latest
+    container_name: streamrip-api
 
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    tmpfs:
+      - /tmp:noexec,nosuid,size=128M
+    # No host ports — reachable by grooveiq via Docker network at streamrip-api:8282.
+    env_file: .env
+    environment:
+      OUTPUT_DIR:          /music
+      DOWNLOAD_QUALITY:    ${STREAMRIP_QUALITY:-3}
+      DOWNLOAD_CODEC:      ${STREAMRIP_CODEC:-FLAC}
+      MAX_CONNECTIONS:     ${STREAMRIP_CONNECTIONS:-6}
+      MAX_THREADS:         ${STREAMRIP_THREADS:-4}
+      DEFAULT_SERVICE:     ${STREAMRIP_DEFAULT_SERVICE:-qobuz}
+      LOG_LEVEL:           ${LOG_LEVEL:-INFO}
+    volumes:
+      - ${MUSIC_LIBRARY_PATH:-/mnt/music}:/music
+      - streamrip_config:/config
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request; urllib.request.urlopen('http://localhost:8282/health')"]
+      interval: 30s
+      timeout:  10s
+      retries:  3
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          cpus: "${STREAMRIP_CPU_LIMIT:-1.0}"
+          memory: "${STREAMRIP_MEM_LIMIT:-1G}"
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
   # ---------------------------------------------------------------------------
   # Optional: AcousticBrainz Lookup (audio-feature discovery from 29.5M tracks)
   # ---------------------------------------------------------------------------
@@ -208,6 +213,7 @@ services:
         limits:
           cpus: "${AB_CPU_LIMIT:-1.0}"
           memory: "${AB_MEM_LIMIT:-2G}"
+
     logging:
       driver: "json-file"
       options:
@@ -220,39 +226,39 @@ services:
   # Uncomment to enable. Set SLSKD_ENABLED=true and SLSKD_URL=http://slskd:5030
   # in .env on the grooveiq container.  Requires a Soulseek account.
   #
-  # slskd:
-  #   image: slskd/slskd:latest
-  #   container_name: slskd
-  #   user: "1001:1001"
-  #   restart: unless-stopped
-  #   ports:
-  #     - "${SLSKD_PORT:-5030}:5030"
-  #     - "50300:50300"
-  #   environment:
-  #     SLSKD_SLSK_USERNAME:          ${SOULSEEK_USERNAME}
-  #     SLSKD_SLSK_PASSWORD:          ${SOULSEEK_PASSWORD}
-  #     SLSKD_API_KEY:                ${SLSKD_API_KEY}
-  #     SLSKD_DOWNLOADS_DIR:          /music/_soulseek_incoming
-  #     SLSKD_REMOTE_CONFIGURATION:   "true"
-  #   volumes:
-  #     - slskd_data:/app
-  #     - ${MUSIC_LIBRARY_PATH:-/mnt/music}:/music:rw
-  #   healthcheck:
-  #     test: ["CMD", "curl", "-sf", "http://localhost:5030/api/v0/server", "-H", "X-API-Key: ${SLSKD_API_KEY}"]
-  #     interval: 30s
-  #     timeout: 10s
-  #     retries: 3
-  #     start_period: 15s
-  #   deploy:
-  #     resources:
-  #       limits:
-  #         cpus: "${SLSKD_CPU_LIMIT:-1.0}"
-  #         memory: "${SLSKD_MEM_LIMIT:-512M}"
-  #   logging:
-  #     driver: "json-file"
-  #     options:
-  #       max-size: "10m"
-  #       max-file: "3"
+  slskd:
+    image: slskd/slskd:latest
+    container_name: slskd
+    user: "1001:1001"
+    restart: unless-stopped
+    ports:
+      - "${SLSKD_PORT:-5030}:5030"
+      - "50300:50300"
+    environment:
+      SLSKD_SLSK_USERNAME:          ${SOULSEEK_USERNAME}
+      SLSKD_SLSK_PASSWORD:          ${SOULSEEK_PASSWORD}
+      SLSKD_API_KEY:                ${SLSKD_API_KEY}
+      SLSKD_DOWNLOADS_DIR:          /music/_soulseek_incoming
+      SLSKD_REMOTE_CONFIGURATION:   "true"
+    volumes:
+      - slskd_data:/app
+      - ${MUSIC_LIBRARY_PATH:-/mnt/music}:/music:rw
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:5030/api/v0/server", "-H", "X-API-Key: ${SLSKD_API_KEY}"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+    deploy:
+      resources:
+        limits:
+          cpus: "${SLSKD_CPU_LIMIT:-1.0}"
+          memory: "${SLSKD_MEM_LIMIT:-512M}"
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
 
   # ---------------------------------------------------------------------------
   # Optional: PostgreSQL (uncomment for multi-user / production deployments)
@@ -278,6 +284,7 @@ services:
   # ---------------------------------------------------------------------------
   # caddy:
   #   image: caddy:2-alpine
+
   #   container_name: grooveiq_caddy
   #   restart: unless-stopped
   #   ports:
@@ -307,3 +314,4 @@ volumes:
   # grooveiq_pg:
   # caddy_data:
   # caddy_config:
+
