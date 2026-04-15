@@ -61,6 +61,27 @@ async def _check_spotdl() -> dict[str, Any]:
     return entry
 
 
+async def _check_streamrip() -> dict[str, Any]:
+    url = settings.STREAMRIP_API_URL
+    if not url:
+        return {"configured": False}
+    result = await _probe(f"{url.rstrip('/')}/health")
+    entry: dict[str, Any] = {
+        "configured": True,
+        "connected": result["ok"],
+    }
+    if result["ok"]:
+        data = result["data"]
+        entry["details"] = {
+            k: data[k]
+            for k in ("available_services", "default_service", "download_quality", "active_tasks")
+            if k in data
+        }
+    else:
+        entry["error"] = _sanitize_error(result["error"])
+    return entry
+
+
 async def _check_lidarr() -> dict[str, Any]:
     url = settings.LIDARR_URL
     api_key = settings.LIDARR_API_KEY
@@ -237,6 +258,7 @@ async def integrations_status(
 
     results = await asyncio.gather(
         _check_spotdl(),
+        _check_streamrip(),
         _check_lidarr(),
         _check_slskd(),
         _check_acousticbrainz(),
@@ -248,10 +270,11 @@ async def integrations_status(
         "checked_at": int(time.time()),
         "integrations": {
             "spotdl_api": results[0],
-            "lidarr": results[1],
-            "slskd": results[2],
-            "acousticbrainz_lookup": results[3],
-            "lastfm": results[4],
-            "media_server": results[5],
+            "streamrip_api": results[1],
+            "lidarr": results[2],
+            "slskd": results[3],
+            "acousticbrainz_lookup": results[4],
+            "lastfm": results[5],
+            "media_server": results[6],
         },
     }

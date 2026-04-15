@@ -1,15 +1,13 @@
 """
-GrooveIQ -- spotdl-api integration client.
+GrooveIQ -- streamrip-api integration client.
 
-Talks to a self-hosted spotdl-api instance (thin REST wrapper around spotDL).
-spotDL searches Spotify for metadata and downloads audio from YouTube Music.
+Talks to a self-hosted streamrip-api instance (thin REST wrapper around
+streamrip).  streamrip downloads from Qobuz, Tidal, Deezer, or SoundCloud
+in lossless / hi-res quality.
 
-GrooveIQ never downloads anything itself -- it sends requests to the external
-spotdl-api service, same pattern as the Spotizerr integration.
-
-The client exposes the same interface as SpotizerrClient so the download
-routes, charts service, and download watcher can use either backend
-transparently.
+The client exposes the same interface as SpotdlClient and SpotizerrClient
+so the download routes, charts service, and download watcher can use any
+backend transparently.
 """
 
 from __future__ import annotations
@@ -35,12 +33,12 @@ def _validate_id(value: str, label: str = "ID") -> None:
 logger = logging.getLogger(__name__)
 
 
-class SpotdlClient:
-    """Async HTTP client for the spotdl-api REST API.
+class StreamripClient:
+    """Async HTTP client for the streamrip-api REST API.
 
-    API-compatible with SpotizerrClient -- same method signatures and
-    return shapes so callers (downloads.py, charts.py, download_watcher.py)
-    can use either backend without changes.
+    API-compatible with SpotdlClient / SpotizerrClient — same method
+    signatures and return shapes so callers (downloads.py, charts.py,
+    download_watcher.py) can use any backend without changes.
     """
 
     _MIN_REQUEST_GAP = 0.3  # 300ms between requests
@@ -66,11 +64,11 @@ class SpotdlClient:
     # -- Search -------------------------------------------------------------
 
     async def search(self, query: str, limit: int = 10) -> list[dict[str, Any]]:
-        """Search spotdl-api for tracks matching a query string.
+        """Search streamrip-api for tracks matching a query string.
 
         Returns a list of track dicts shaped like Spotify search results
         (with keys: id, name, artists, album, etc.) so callers that
-        already understand Spotizerr responses work without changes.
+        already understand Spotizerr/SpotdlClient responses work unchanged.
         """
         await self._throttle()
         try:
@@ -81,25 +79,32 @@ class SpotdlClient:
             resp.raise_for_status()
             data = resp.json()
         except Exception as exc:
-            logger.warning("spotdl-api search failed for %r: %s", query, exc)
+            logger.warning("streamrip-api search failed for %r: %s", query, exc)
             return []
 
-        # Reshape spotdl-api results to match Spotizerr/Spotify format
+        # Reshape streamrip-api results to match Spotify-like format
         # so _pick_best_match, _flatten_track, etc. work unchanged.
         items = []
         for entry in data:
+            cover_url = entry.get("cover_url") or ""
             items.append(
                 {
-                    "id": entry.get("spotify_id", ""),
+                    "id": entry.get("service_id") or entry.get("spotify_id", ""),
                     "name": entry.get("title", ""),
                     "artists": [{"name": a} for a in (entry.get("artists") or [])],
                     "album": {
                         "name": entry.get("album"),
                         "images": (
-                            [{"url": entry["cover_url"], "width": 300, "height": 300}] if entry.get("cover_url") else []
+                            [{"url": cover_url, "width": 300, "height": 300}]
+                            if cover_url
+                            else []
                         ),
                     },
                     "type": "track",
+                    # Preserve streamrip-specific fields
+                    "_service": entry.get("service", ""),
+                    "_service_id": entry.get("service_id", ""),
+                    "_quality": entry.get("quality", ""),
                 }
             )
         return items
@@ -111,7 +116,7 @@ class SpotdlClient:
         artist: str,
         title: str,
     ) -> str | None:
-        """Look up an album cover URL for a track via Spotify (through spotdl-api)."""
+        """Look up an album cover URL for a track via streamrip-api search."""
         from app.services.spotizerr import _pick_best_match, _pick_image
 
         query = f"{artist} {title}"
@@ -125,10 +130,9 @@ class SpotdlClient:
         return _pick_image(images)
 
     async def resolve_artist_image(self, artist: str) -> str | None:
-        """Look up an artist image via a track search (spotdl-api has no artist search).
+        """Look up an artist image via a track search.
 
-        Falls back to album art from the top track result, same as
-        SpotizerrClient's fallback path.
+        Falls back to album art from the top track result.
         """
         from app.services.spotizerr import _pick_image
 
@@ -143,22 +147,26 @@ class SpotdlClient:
     # -- Download -----------------------------------------------------------
 
     async def download(self, spotify_track_id: str) -> dict[str, Any]:
-        """Trigger download of a track by Spotify ID.
+        """Trigger download of a track by its service ID.
+
+        Accepts a service-specific track ID (Qobuz, Tidal, Deezer, etc.)
+        or a Spotify ID (for compatibility — streamrip-api resolves it
+        via its configured default service).
 
         Returns dict with 'task_id' and 'status', shaped identically to
-        SpotizerrClient.download() so callers work unchanged.
+        SpotdlClient.download().
         """
-        _validate_id(spotify_track_id, "spotify_track_id")
+        _validate_id(spotify_track_id, "track_id")
         await self._throttle()
 
         try:
             resp = await self._client.post(
                 f"{self._base_url}/download",
-                json={"spotify_id": spotify_track_id},
+                json={"service_id": spotify_track_id},
             )
         except Exception as exc:
             logger.warning(
-                "spotdl-api download transport error for %s: %s",
+                "streamrip-api download transport error for %s: %s",
                 spotify_track_id,
                 exc,
             )
@@ -170,9 +178,13 @@ class SpotdlClient:
             data = {}
 
         if resp.status_code >= 400:
-            err_msg = data.get("error") or data.get("detail") or f"spotdl-api HTTP {resp.status_code}"
+            err_msg = (
+                data.get("error")
+                or data.get("detail")
+                or f"streamrip-api HTTP {resp.status_code}"
+            )
             logger.warning(
-                "spotdl-api download failed for %s: %s",
+                "streamrip-api download failed for %s: %s",
                 spotify_track_id,
                 err_msg,
             )
@@ -192,7 +204,7 @@ class SpotdlClient:
     async def get_status(self, task_id: str) -> dict[str, Any]:
         """Check the status of a download task.
 
-        Returns the same shape as SpotizerrClient.get_status():
+        Returns the same shape as SpotdlClient.get_status():
             {"status", "progress", "error", "raw"}
         """
         _validate_id(task_id, "task_id")
@@ -204,7 +216,7 @@ class SpotdlClient:
             resp.raise_for_status()
             raw = resp.json()
         except Exception as exc:
-            logger.warning("spotdl-api status check failed for %s: %s", task_id, exc)
+            logger.warning("streamrip-api status check failed for %s: %s", task_id, exc)
             return {
                 "status": "error",
                 "progress": None,
@@ -213,12 +225,12 @@ class SpotdlClient:
             }
 
         status = raw.get("status", "unknown")
-        # Map spotdl-api statuses to the same terminal states Spotizerr uses
+        # Map streamrip-api statuses to the same terminal states
         # so download_watcher.py's terminal-state classification works.
         if status == "complete":
-            status = "complete"  # already matches _TERMINAL_SUCCESS
+            status = "complete"  # matches _TERMINAL_SUCCESS
         elif status == "error":
-            status = "error"  # already matches _TERMINAL_ERROR
+            status = "error"  # matches _TERMINAL_ERROR
 
         return {
             "status": status,
@@ -226,62 +238,3 @@ class SpotdlClient:
             "error": raw.get("error"),
             "raw": raw,
         }
-
-
-# ---------------------------------------------------------------------------
-# Factory — returns the right client based on config
-# ---------------------------------------------------------------------------
-
-
-def _make_spotdl_client():
-    return SpotdlClient(settings.SPOTDL_API_URL)
-
-
-def _make_streamrip_client():
-    from app.services.streamrip import StreamripClient
-
-    return StreamripClient(settings.STREAMRIP_API_URL)
-
-
-def _make_spotizerr_client():
-    from app.services.spotizerr import SpotizerrClient
-
-    return SpotizerrClient(
-        settings.SPOTIZERR_URL,
-        settings.SPOTIZERR_USERNAME,
-        settings.SPOTIZERR_PASSWORD,
-    )
-
-
-def get_download_client():
-    """Return the appropriate download client based on configuration.
-
-    Uses DEFAULT_DOWNLOAD_CLIENT to pick the preferred backend when
-    multiple are configured.  Falls back through available backends
-    if the preferred one isn't configured.
-
-    Priority when DEFAULT_DOWNLOAD_CLIENT is set:
-      1. The explicitly chosen default (if configured)
-      2. spotdl-api
-      3. streamrip-api
-      4. Spotizerr
-    """
-    default = settings.DEFAULT_DOWNLOAD_CLIENT.lower()
-
-    # If the user explicitly chose a default and it's configured, use it.
-    if default == "streamrip" and settings.streamrip_enabled:
-        return _make_streamrip_client()
-    if default == "spotdl" and settings.spotdl_enabled:
-        return _make_spotdl_client()
-    if default == "spotizerr" and settings.spotizerr_enabled:
-        return _make_spotizerr_client()
-
-    # Fallback: try each backend in order.
-    if settings.spotdl_enabled:
-        return _make_spotdl_client()
-    if settings.streamrip_enabled:
-        return _make_streamrip_client()
-    if settings.spotizerr_enabled:
-        return _make_spotizerr_client()
-
-    return None

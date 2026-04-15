@@ -39,6 +39,7 @@ services:
       # Container-internal overrides (these differ from host values in .env)
       MUSIC_LIBRARY_PATH:   /music
       SPOTDL_API_URL:       http://spotdl-api:8181
+      STREAMRIP_API_URL:    http://streamrip-api:8282
 
     volumes:
       # Persistent database & state
@@ -123,6 +124,55 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
+
+  # ---------------------------------------------------------------------------
+  # streamrip-api (Qobuz/Tidal/Deezer/SoundCloud lossless downloads)
+  # ---------------------------------------------------------------------------
+  # Uncomment to enable. Set STREAMRIP_API_URL=http://streamrip-api:8282 in .env
+  # and configure at least one service's credentials.
+  #
+  # streamrip-api:
+  #   build:
+  #     context: ./streamrip-api
+  #     dockerfile: Dockerfile
+  #   image: streamrip-api:latest
+  #   container_name: streamrip-api
+  #   restart: unless-stopped
+  #   read_only: true
+  #   cap_drop: [ALL]
+  #   security_opt: [no-new-privileges:true]
+  #   tmpfs:
+  #     - /tmp:noexec,nosuid,size=128M
+  #   # No host ports — reachable by grooveiq via Docker network at streamrip-api:8282.
+  #   env_file: .env
+  #   environment:
+  #     OUTPUT_DIR:          /music
+  #     DOWNLOAD_QUALITY:    ${STREAMRIP_QUALITY:-3}
+  #     DOWNLOAD_CODEC:      ${STREAMRIP_CODEC:-FLAC}
+  #     MAX_CONNECTIONS:     ${STREAMRIP_CONNECTIONS:-6}
+  #     MAX_THREADS:         ${STREAMRIP_THREADS:-4}
+  #     DEFAULT_SERVICE:     ${STREAMRIP_DEFAULT_SERVICE:-qobuz}
+  #     LOG_LEVEL:           ${LOG_LEVEL:-INFO}
+  #   volumes:
+  #     - ${MUSIC_LIBRARY_PATH:-/mnt/music}:/music
+  #     - streamrip_config:/config
+  #   healthcheck:
+  #     test: ["CMD", "python", "-c",
+  #            "import urllib.request; urllib.request.urlopen('http://localhost:8282/health')"]
+  #     interval: 30s
+  #     timeout:  10s
+  #     retries:  3
+  #     start_period: 30s
+  #   deploy:
+  #     resources:
+  #       limits:
+  #         cpus: "${STREAMRIP_CPU_LIMIT:-1.0}"
+  #         memory: "${STREAMRIP_MEM_LIMIT:-1G}"
+  #   logging:
+  #     driver: "json-file"
+  #     options:
+  #       max-size: "10m"
+  #       max-file: "3"
 
   # ---------------------------------------------------------------------------
   # Optional: AcousticBrainz Lookup (audio-feature discovery from 29.5M tracks)
@@ -251,6 +301,7 @@ volumes:
   grooveiq_data:
   grooveiq_models:
   ablookup_data:
+  # streamrip_config:
   # slskd_data:
   # grooveiq_pg:
   # caddy_data:

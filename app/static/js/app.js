@@ -1891,6 +1891,7 @@ function renderConnections(data) {
     { key: 'media_server', label: 'Media Server', icon: '\uD83C\uDFB5', desc: 'Navidrome or Plex — source of track IDs and library metadata' },
     { key: 'lidarr', label: 'Lidarr', icon: '\uD83D\uDCE5', desc: 'Automatic music discovery and download management' },
     { key: 'spotdl_api', label: 'spotdl-api', icon: '\u2B07', desc: 'YouTube Music downloads matched via Spotify metadata' },
+    { key: 'streamrip_api', label: 'streamrip-api', icon: '\uD83C\uDFA7', desc: 'Qobuz/Tidal/Deezer/SoundCloud lossless downloads' },
     { key: 'slskd', label: 'Soulseek (slskd)', icon: '\uD83D\uDD17', desc: 'Peer-to-peer music downloads via Soulseek network' },
     { key: 'lastfm', label: 'Last.fm', icon: '\uD83C\uDFB6', desc: 'Scrobbling, taste enrichment, similar tracks, charts' },
     { key: 'acousticbrainz_lookup', label: 'AcousticBrainz Lookup', icon: '\uD83E\uDDE0', desc: 'Audio-feature similarity search across 29.5M tracks' }

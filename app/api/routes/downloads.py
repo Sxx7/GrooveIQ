@@ -30,21 +30,34 @@ router = APIRouter()
 
 
 def _get_client():
-    """Return the configured download client (spotdl-api or Spotizerr)."""
+    """Return the configured download client (spotdl-api, streamrip-api, or Spotizerr)."""
     client = get_download_client()
     if client is None:
         raise HTTPException(
             status_code=503,
-            detail="No download backend configured. Set SPOTDL_API_URL or SPOTIZERR_URL.",
+            detail="No download backend configured. Set SPOTDL_API_URL, STREAMRIP_API_URL, or SPOTIZERR_URL.",
         )
     return client
+
+
+def _client_source_name(client) -> str:
+    """Return the DB source name for the active download client."""
+    from app.services.streamrip import StreamripClient
+
+    if isinstance(client, StreamripClient):
+        return "streamrip"
+    # SpotizerrClient check
+    cls_name = type(client).__name__
+    if cls_name == "SpotizerrClient":
+        return "spotizerr"
+    return "spotdl"
 
 
 def _require_download_backend() -> None:
     if not settings.download_enabled:
         raise HTTPException(
             status_code=503,
-            detail="No download backend configured. Set SPOTDL_API_URL or SPOTIZERR_URL.",
+            detail="No download backend configured. Set SPOTDL_API_URL, STREAMRIP_API_URL, or SPOTIZERR_URL.",
         )
 
 
@@ -133,6 +146,7 @@ async def create_download(
         spotify_id=body.spotify_id,
         task_id=dl_result.get("task_id") or None,
         status=dl_result.get("status", "unknown"),
+        source=_client_source_name(client),
         track_title=body.track_title,
         artist_name=body.artist_name,
         album_name=body.album_name,

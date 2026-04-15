@@ -199,10 +199,19 @@ class Settings(BaseSettings):
     CHARTS_LIDARR_MAX_ADDS: int = 50  # max artists to add to Lidarr per build
 
     # ------------------------------------------------------------------
-    # Downloads — spotdl-api (preferred) or Spotizerr (legacy)
+    # Downloads — spotdl-api, streamrip-api, or Spotizerr (legacy)
     # ------------------------------------------------------------------
+    # Toggle: which download backend to use by default.
+    # Values: "spotdl" (default), "streamrip", "spotizerr"
+    # Only relevant when multiple backends are configured.
+    DEFAULT_DOWNLOAD_CLIENT: str = "spotdl"
+
     # spotdl-api: lightweight REST wrapper around spotDL (YouTube Music audio)
     SPOTDL_API_URL: str = ""  # e.g. http://spotdl-api:8181
+
+    # streamrip-api: REST wrapper around streamrip (Qobuz/Tidal/Deezer lossless)
+    STREAMRIP_API_URL: str = ""  # e.g. http://streamrip-api:8282
+
     # Spotizerr (legacy, librespot-based — kept for backwards compat)
     SPOTIZERR_URL: str = ""  # e.g. http://spotizerr:7171
     SPOTIZERR_USERNAME: str = ""  # only needed if Spotizerr ENABLE_AUTH=true
@@ -294,6 +303,10 @@ class Settings(BaseSettings):
         return bool(self.SPOTDL_API_URL)
 
     @property
+    def streamrip_enabled(self) -> bool:
+        return bool(self.STREAMRIP_API_URL)
+
+    @property
     def spotizerr_enabled(self) -> bool:
         return bool(self.SPOTIZERR_URL)
 
@@ -303,8 +316,8 @@ class Settings(BaseSettings):
 
     @property
     def download_enabled(self) -> bool:
-        """True if any download backend (spotdl-api, Spotizerr, or slskd) is configured."""
-        return self.spotdl_enabled or self.spotizerr_enabled or self.slskd_enabled
+        """True if any download backend (spotdl-api, streamrip-api, Spotizerr, or slskd) is configured."""
+        return self.spotdl_enabled or self.streamrip_enabled or self.spotizerr_enabled or self.slskd_enabled
 
     @property
     def ab_lookup_enabled(self) -> bool:
@@ -416,6 +429,7 @@ class Settings(BaseSettings):
         _validate_service_url(self.MEDIA_SERVER_URL, "MEDIA_SERVER_URL")
         _validate_service_url(self.LIDARR_URL, "LIDARR_URL")
         _validate_service_url(self.SPOTDL_API_URL, "SPOTDL_API_URL")
+        _validate_service_url(self.STREAMRIP_API_URL, "STREAMRIP_API_URL")
         _validate_service_url(self.SPOTIZERR_URL, "SPOTIZERR_URL")
         _validate_service_url(self.SLSKD_URL, "SLSKD_URL")
         _validate_service_url(self.AB_LOOKUP_URL, "AB_LOOKUP_URL")
