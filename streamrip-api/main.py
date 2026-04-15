@@ -90,47 +90,90 @@ disc_subdirectories = true
 concurrency = true
 max_connections = {MAX_CONNECTIONS}
 requests_per_minute = 60
-
-[downloads.artwork]
-embed = true
-embed_max_width = 1200
-save_artwork = true
-saved_max_width = 1200
+verify_ssl = true
 
 [qobuz]
-enabled = {str(bool(QOBUZ_EMAIL and QOBUZ_PASSWORD)).lower()}
-email = "{QOBUZ_EMAIL}"
-password = "{QOBUZ_PASSWORD}"
+use_auth_token = false
+email_or_userid = "{QOBUZ_EMAIL}"
+password_or_token = "{QOBUZ_PASSWORD}"
+app_id = ""
 quality = {DOWNLOAD_QUALITY}
 download_booklets = false
+secrets = []
 
 [tidal]
-enabled = {str(bool(TIDAL_EMAIL and TIDAL_PASSWORD)).lower()}
-email = "{TIDAL_EMAIL}"
-password = "{TIDAL_PASSWORD}"
+user_id = ""
+country_code = ""
+access_token = ""
+refresh_token = ""
+token_expiry = ""
 quality = {min(DOWNLOAD_QUALITY, 3)}
+download_videos = false
 
 [deezer]
-enabled = {str(bool(DEEZER_ARL)).lower()}
 arl = "{DEEZER_ARL}"
 quality = {min(DOWNLOAD_QUALITY, 2)}
 use_deezloader = true
+deezloader_warnings = true
 
 [soundcloud]
-enabled = {str(bool(SOUNDCLOUD_CLIENT_ID)).lower()}
 client_id = "{SOUNDCLOUD_CLIENT_ID}"
+app_version = ""
 quality = 0
+
+[youtube]
+quality = 0
+download_videos = false
+video_downloads_folder = ""
+
+[database]
+downloads_enabled = true
+downloads_path = ""
+failed_downloads_enabled = true
+failed_downloads_path = ""
+
+[conversion]
+enabled = false
+codec = "ALAC"
+sampling_rate = 48000
+bit_depth = 24
+lossy_bitrate = 320
+
+[qobuz_filters]
+extras = false
+repeats = false
+non_albums = false
+features = false
+non_studio_albums = false
+non_remaster = false
+
+[artwork]
+embed = true
+embed_size = "large"
+embed_max_width = -1
+save_artwork = true
+saved_max_width = -1
 
 [metadata]
 set_playlist_to_album = true
+renumber_playlist_tracks = true
 exclude = []
 
 [filepaths]
 add_singles_to_folder = false
-folder_format = "{{albumartist}}/{{album}} ({{year}})"
-track_format = "{{tracknumber}}. {{artist}} - {{title}}"
+folder_format = "{{albumartist}} - {{title}} ({{year}}) [{{container}}] [{{bit_depth}}B-{{sampling_rate}}kHz]"
+track_format = "{{tracknumber:02}}. {{artist}} - {{title}}{{explicit}}"
 restrict_characters = false
 truncate_to = 120
+
+[lastfm]
+source = "qobuz"
+fallback_source = ""
+
+[cli]
+text_output = true
+progress_bars = true
+max_search_results = 100
 
 [misc]
 version = "2.0.6"
