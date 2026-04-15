@@ -8,6 +8,7 @@ track IDs.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 
@@ -16,7 +17,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
-from app.core.security import hash_key, require_api_key
+from app.core.security import hash_key, require_admin, require_api_key
 from app.db.session import get_session
 from app.models.db import DownloadRequest
 from app.models.schemas import (
@@ -231,3 +232,90 @@ async def list_soulseek_downloads(
         "total": total,
         "downloads": [DownloadResponse.model_validate(r) for r in records],
     }
+
+
+# ---------------------------------------------------------------------------
+# Bulk download (Last.fm top artists → Soulseek)
+# ---------------------------------------------------------------------------
+
+
+@router.post(
+    "/soulseek/bulk-download",
+    summary="Bulk download top artists from Last.fm via Soulseek",
+    status_code=202,
+)
+async def start_bulk_download(
+    max_artists: int = Query(500, ge=1, le=1000, description="Number of top artists to fetch from Last.fm"),
+    tracks_per_artist: int = Query(20, ge=1, le=50, description="Top tracks to download per artist"),
+    _key: str = Depends(require_api_key),
+):
+    """Fetch the top N artists from Last.fm global charts, get each artist's
+    top tracks, and download them all via Soulseek (slskd).
+
+    This is a long-running background job. Use ``GET /v1/soulseek/bulk-download/status``
+    to monitor progress.
+    """
+    _require_slskd()
+    require_admin(_key)
+
+    if not settings.LASTFM_API_KEY:
+        raise HTTPException(status_code=503, detail="LASTFM_API_KEY not configured")
+
+    from app.services.bulk_download import get_current_job, run_bulk_download
+
+    current = get_current_job()
+    if current and current.status == "running":
+        raise HTTPException(status_code=409, detail="A bulk download job is already running")
+
+    requester = hash_key(_key)[:16] if _key != "anonymous" else None
+
+    # Run in background so the request returns immediately.
+    asyncio.ensure_future(
+        run_bulk_download(
+            max_artists=max_artists,
+            tracks_per_artist=tracks_per_artist,
+            requested_by=requester,
+        )
+    )
+
+    return {
+        "status": "started",
+        "max_artists": max_artists,
+        "tracks_per_artist": tracks_per_artist,
+        "message": f"Bulk download started: fetching top {max_artists} artists, {tracks_per_artist} tracks each. "
+        "Monitor progress at GET /v1/soulseek/bulk-download/status",
+    }
+
+
+@router.get(
+    "/soulseek/bulk-download/status",
+    summary="Check bulk download progress",
+)
+async def bulk_download_status(
+    _key: str = Depends(require_api_key),
+):
+    """Returns the current or most recent bulk download job status."""
+    from app.services.bulk_download import get_current_job
+
+    job = get_current_job()
+    if not job:
+        return {"status": "no_job", "message": "No bulk download job has been started"}
+    return job.to_dict()
+
+
+@router.post(
+    "/soulseek/bulk-download/cancel",
+    summary="Cancel a running bulk download",
+)
+async def cancel_bulk_download(
+    _key: str = Depends(require_api_key),
+):
+    """Cancel the currently running bulk download job."""
+    require_admin(_key)
+
+    from app.services.bulk_download import cancel_job
+
+    cancelled = await cancel_job()
+    if cancelled:
+        return {"status": "cancelled", "message": "Bulk download job cancelled"}
+    return {"status": "no_job", "message": "No running bulk download job to cancel"}
