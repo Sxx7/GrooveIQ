@@ -39,7 +39,8 @@ services:
       # Container-internal overrides (these differ from host values in .env)
       MUSIC_LIBRARY_PATH:   /music
       SPOTDL_API_URL:       http://spotdl-api:8181
-      STREAMRIP_API_URL:    http://streamrip-api:8282
+      # Uncomment when streamrip-api service is enabled:
+      # STREAMRIP_API_URL:  http://streamrip-api:8282
 
     volumes:
       # Persistent database & state
@@ -128,8 +129,8 @@ services:
   # ---------------------------------------------------------------------------
   # streamrip-api (Qobuz/Tidal/Deezer/SoundCloud lossless downloads)
   # ---------------------------------------------------------------------------
-  # Uncomment to enable. Set STREAMRIP_API_URL=http://streamrip-api:8282 in .env
-  # and configure at least one service's credentials.
+  # Uncomment to enable. Also uncomment STREAMRIP_API_URL on the grooveiq service
+  # above, and configure at least one service's credentials in .env.
   #
   # streamrip-api:
   #   build:
