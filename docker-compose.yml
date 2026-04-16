@@ -221,6 +221,8 @@ services:
     environment:
       SLSKD_SLSK_USERNAME:          ${SOULSEEK_USERNAME}
       SLSKD_SLSK_PASSWORD:          ${SOULSEEK_PASSWORD}
+      SLSKD_USERNAME:               ${SLSKD_WEB_USERNAME:-slskd}
+      SLSKD_PASSWORD:               ${SLSKD_WEB_PASSWORD:-slskd}
       SLSKD_API_KEY:                ${SLSKD_API_KEY}
       SLSKD_DOWNLOADS_DIR:          /music/_soulseek_incoming
       SLSKD_REMOTE_CONFIGURATION:   "true"
