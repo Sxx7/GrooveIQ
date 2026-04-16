@@ -91,6 +91,11 @@ async def _apply_column_migrations(conn) -> None:
         ("chart_entries", "image_url", "VARCHAR(1024)"),
         # User onboarding preferences
         ("users", "onboarding_preferences", "TEXT"),
+        # Soulseek (slskd) download backend — added by commit 77de205
+        ("download_requests", "source", "VARCHAR(32)"),
+        ("download_requests", "slskd_username", "VARCHAR(256)"),
+        ("download_requests", "slskd_filename", "VARCHAR(1024)"),
+        ("download_requests", "slskd_transfer_id", "VARCHAR(128)"),
     ]
     for table, column, col_type in migrations:
         # Validate identifiers to prevent SQL injection via migration list.
@@ -105,6 +110,86 @@ async def _apply_column_migrations(conn) -> None:
             logger.info(f"Migration: added {table}.{column}")
         except Exception:
             pass  # Column already exists
+
+    # Backfill: any pre-existing download_requests rows have source IS NULL
+    # because the column was added without a default. Treat them as spotdl.
+    try:
+        await conn.exec_driver_sql(
+            "UPDATE download_requests SET source = 'spotdl' WHERE source IS NULL"
+        )
+    except Exception:
+        pass
+
+    # Soulseek inserts have no spotify_id; relax the legacy NOT NULL on SQLite
+    # by rebuilding the table when the constraint is still present.
+    if "sqlite" in settings.DATABASE_URL:
+        try:
+            await _relax_download_requests_spotify_id_sqlite(conn)
+        except Exception as e:
+            logger.warning("Failed to relax download_requests.spotify_id NOT NULL: %s", e)
+
+
+async def _relax_download_requests_spotify_id_sqlite(conn) -> None:
+    """SQLite can't ALTER COLUMN; rebuild the table only if spotify_id is still NOT NULL."""
+    rows = (await conn.exec_driver_sql("PRAGMA table_info(download_requests)")).fetchall()
+    if not rows:
+        return  # table doesn't exist yet (init_db will create it via metadata)
+    spotify_id_row = next((r for r in rows if r[1] == "spotify_id"), None)
+    if spotify_id_row is None or spotify_id_row[3] != 1:
+        return  # column missing or already nullable
+    logger.info("Migration: relaxing download_requests.spotify_id NOT NULL (table rebuild)")
+    await conn.exec_driver_sql(
+        """
+        CREATE TABLE download_requests__new (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            spotify_id VARCHAR(64),
+            task_id VARCHAR(128),
+            status VARCHAR(32) NOT NULL DEFAULT 'pending',
+            source VARCHAR(32),
+            track_title VARCHAR(512),
+            artist_name VARCHAR(512),
+            album_name VARCHAR(512),
+            cover_url VARCHAR(1024),
+            slskd_username VARCHAR(256),
+            slskd_filename VARCHAR(1024),
+            slskd_transfer_id VARCHAR(128),
+            requested_by VARCHAR(128),
+            error_message TEXT,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER
+        )
+        """
+    )
+    await conn.exec_driver_sql(
+        """
+        INSERT INTO download_requests__new (
+            id, spotify_id, task_id, status, source,
+            track_title, artist_name, album_name, cover_url,
+            slskd_username, slskd_filename, slskd_transfer_id,
+            requested_by, error_message, created_at, updated_at
+        )
+        SELECT
+            id, spotify_id, task_id, status, source,
+            track_title, artist_name, album_name, cover_url,
+            slskd_username, slskd_filename, slskd_transfer_id,
+            requested_by, error_message, created_at, updated_at
+        FROM download_requests
+        """
+    )
+    await conn.exec_driver_sql("DROP TABLE download_requests")
+    await conn.exec_driver_sql("ALTER TABLE download_requests__new RENAME TO download_requests")
+    await conn.exec_driver_sql(
+        "CREATE INDEX IF NOT EXISTS ix_download_requests_spotify_id ON download_requests (spotify_id)"
+    )
+    await conn.exec_driver_sql(
+        "CREATE INDEX IF NOT EXISTS ix_download_requests_task_id ON download_requests (task_id)"
+    )
+    await conn.exec_driver_sql(
+        "CREATE INDEX IF NOT EXISTS ix_download_status ON download_requests (status)"
+    )
+    await conn.exec_driver_sql(
+        "CREATE INDEX IF NOT EXISTS ix_download_created ON download_requests (created_at)"
+    )
 
 
 async def get_session() -> AsyncSession:
