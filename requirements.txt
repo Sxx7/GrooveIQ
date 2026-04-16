@@ -52,6 +52,9 @@ scikit-learn>=1.3.0
 # Session skip-gram embeddings
 gensim>=4.3.0
 
+# 2D music-map projection (UMAP over EffNet embeddings)
+umap-learn>=0.5.5
+
 # HTTP client (used by discovery pipeline + tests)
 httpx==0.28.*
 

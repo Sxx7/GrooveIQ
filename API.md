@@ -384,6 +384,111 @@ Uses FAISS embedding similarity + SQL pre-filter (BPM/energy/mode).
 
 ---
 
+### `GET /v1/tracks/map` — 2D music map coordinates
+
+Returns every track that has UMAP-projected `(x, y)` coordinates from the `music_map` pipeline step. Intended for dashboard visualisation (scatter plot where nearby dots sound similar).
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `limit` | 5000 | 100-20000 |
+
+**Response**
+
+```json
+{
+  "count": 1842,
+  "tracks": [
+    {
+      "track_id": "nav-uuid-001",
+      "title": "Strobe",
+      "artist": "deadmau5",
+      "genre": "electronic",
+      "bpm": 128.0,
+      "energy": 0.72,
+      "mood": "party",
+      "x": 0.51,
+      "y": 0.33
+    }
+  ]
+}
+```
+
+Tracks without coordinates (not yet mapped) are excluded. The step requires `umap-learn` installed and at least 50 analysed tracks.
+
+---
+
+### `GET /v1/tracks/text-search` — Natural-language track search (CLAP)
+
+Encodes a text prompt via the LAION-CLAP text tower and returns the `k` closest tracks in the joint CLAP embedding space.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `q` | string (1-256) | Required. Natural-language prompt, e.g. `"melancholic rainy-night jazz"` |
+| `limit` | int (1-200) | Default 50 |
+
+**Response**
+
+```json
+{
+  "query": "melancholic rainy-night jazz",
+  "count": 37,
+  "tracks": [
+    {
+      "track_id": "nav-uuid-042",
+      "title": "Blue in Green",
+      "artist": "Miles Davis",
+      "album": "Kind of Blue",
+      "bpm": 74.0,
+      "energy": 0.22,
+      "mood_tags": [{"label": "relaxed", "confidence": 0.81}],
+      "similarity": 0.417
+    }
+  ]
+}
+```
+
+**Errors**
+
+- `503` — `CLAP_ENABLED=false` or the CLAP FAISS index hasn't been built (no tracks have `clap_embedding` yet).
+
+---
+
+### `POST /v1/tracks/clap/backfill` — Backfill CLAP embeddings (admin)
+
+Queues a background task that computes CLAP audio embeddings for every track missing one. Useful after first enabling CLAP on a library scanned before CLAP was available.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `limit` | int (1-50000) | Optional. Cap the number of tracks processed in this call for chunked runs. |
+
+**Response** `202 Accepted`
+
+```json
+{"status": "accepted", "pending": 8421, "limit": null}
+```
+
+**Errors**
+
+- `400` — `CLAP_ENABLED=false`. Enable CLAP and provide model files first.
+- `403` — Not an admin API key.
+
+After the job completes, the CLAP FAISS index is rebuilt automatically.
+
+---
+
+### `GET /v1/tracks/clap/stats` — CLAP coverage
+
+```json
+{
+  "enabled": true,
+  "total_tracks": 9203,
+  "with_clap_embedding": 782,
+  "coverage": 0.085
+}
+```
+
+---
+
 ### `POST /v1/library/scan` — Trigger library scan
 
 Starts async audio analysis. One scan at a time.
@@ -716,6 +821,37 @@ curl -X POST http://localhost:8000/v1/playlists \
 | `mood` | `params.mood` | Filter by mood tag + energy arc |
 | `energy_curve` | `params.curve` | Match target energy profile (`ramp_up`, `cool_down`, `ramp_up_cool_down`, `steady_high`, `steady_low`) |
 | `key_compatible` | `seed_track_id` | Camelot wheel harmonic chaining |
+| `path` | `seed_track_id` + `params.target_track_id` | **Song Path** — sonic bridge between two tracks. Slerp-interpolates between their 64-dim audio embeddings and picks the nearest unused library track at each waypoint. Both IDs must exist in `track_features` and have an `embedding`. |
+| `text` | `params.prompt` | **CLAP Text Prompt** — encodes the prompt via the CLAP text tower and ranks tracks by cosine similarity in joint embedding space. Requires `CLAP_ENABLED=true` and at least some tracks with `clap_embedding` populated. Fails with `503` otherwise. |
+
+**Example — Song Path**
+
+```bash
+curl -X POST http://localhost:8000/v1/playlists \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "From Deadmau5 to Chet Baker",
+    "strategy": "path",
+    "seed_track_id": "nav-uuid-strobe",
+    "max_tracks": 15,
+    "params": {"target_track_id": "nav-uuid-baker"}
+  }'
+```
+
+**Example — CLAP Text**
+
+```bash
+curl -X POST http://localhost:8000/v1/playlists \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "Rainy Coffee Shop Jazz",
+    "strategy": "text",
+    "max_tracks": 20,
+    "params": {"prompt": "melancholic piano at 2am with light rain"}
+  }'
+```
 
 **Response** `201 Created` — includes `tracks` array with position, audio features, and metadata.
 
@@ -1076,6 +1212,21 @@ All settings via environment variables or `.env` file. See [`.env.example`](.env
 | `ANALYSIS_BATCH_SIZE` | 10 | Tracks per batch |
 | `ANALYSIS_TIMEOUT` | 120 | Per-file timeout (seconds) |
 | `RESCAN_INTERVAL_HOURS` | 6 | Auto-rescan interval |
+
+### CLAP Text-Audio Embeddings (optional)
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `CLAP_ENABLED` | `false` | Enable CLAP audio + text encoders |
+| `CLAP_MODEL_DIR` | `/data/models/clap` | Directory containing exported ONNX models |
+| `CLAP_AUDIO_MODEL_FILE` | `clap_audio.onnx` | Audio tower ONNX file (runs in analysis worker) |
+| `CLAP_TEXT_MODEL_FILE` | `clap_text.onnx` | Text tower ONNX file (runs in main process) |
+| `CLAP_TOKENIZER_FILE` | `clap_tokenizer.json` | HuggingFace tokenizers JSON |
+| `CLAP_EMBEDDING_DIM` | `512` | Embedding dimension (must match exported models) |
+| `CLAP_AUDIO_SR` | `48000` | Sample rate the audio tower was exported with |
+| `CLAP_AUDIO_CLIP_SECONDS` | `10.0` | Clip length fed into the audio tower |
+
+When enabled, the analysis worker computes a 512-dim `clap_embedding` per track (stored base64 on `track_features`) and the main process lazily loads the text tower on first `GET /v1/tracks/text-search`. Both indices are rebuilt by `POST /v1/pipeline/run`. See `POST /v1/tracks/clap/backfill` to populate existing tracks.
 
 ### Recommendation Pipeline
 

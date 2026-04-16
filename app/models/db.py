@@ -184,7 +184,18 @@ class TrackFeatures(Base):
     mood_tags = Column(JSON, nullable=True)  # [{"label": "happy", "confidence": 0.82}]
 
     # --- Full feature vector for FAISS (serialized numpy array as bytes) ---
-    embedding = Column(Text, nullable=True)  # base64-encoded float32 array
+    embedding = Column(Text, nullable=True)  # base64-encoded float32 array (64-dim EffNet projection)
+
+    # --- CLAP text-audio joint embedding (optional, 512-dim, L2-normalised) ---
+    # When populated (CLAP_ENABLED=true), enables natural-language track search
+    # and text-seeded playlists/radio. Stored separately from `embedding` so
+    # existing FAISS/ranker code is untouched.
+    clap_embedding = Column(Text, nullable=True)  # base64-encoded float32 array (512-dim)
+
+    # --- 2D music-map coordinates (UMAP projection of `embedding`) ---
+    # Populated by the music-map pipeline step; both null until first build.
+    map_x = Column(Float, nullable=True)
+    map_y = Column(Float, nullable=True)
 
     # --- Raw Essentia output (for future re-analysis without re-running) ---
     raw_features = Column(JSON, nullable=True)

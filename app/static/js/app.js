@@ -144,7 +144,7 @@ function eventBadge(type) {
 }
 
 function strategyBadge(s) {
-  var colors = { flow: 'primary', mood: 'success', energy_curve: 'warning', key_compatible: 'info' };
+  var colors = { flow: 'primary', mood: 'success', energy_curve: 'warning', key_compatible: 'info', path: 'warning', text: 'info' };
   return '<span class="badge badge-' + (colors[s] || 'primary') + '">' + esc(s).replace('_', ' ') + '</span>';
 }
 
@@ -206,7 +206,7 @@ var contentSubTab = 'recommendations';
 
 function switchTab(view) {
   // Map legacy tab names to content sub-tabs
-  var contentSubs = { recommendations:1, tracks:1, playlists:1, radio:1, charts:1, discovery:1, news:1 };
+  var contentSubs = { recommendations:1, tracks:1, playlists:1, radio:1, charts:1, discovery:1, news:1, 'music-map':1, search:1 };
   if (contentSubs[view]) { contentSubTab = view; view = 'content'; }
 
   currentView = view;
@@ -231,6 +231,8 @@ function contentSubTabBar() {
     { id: 'tracks', label: 'Tracks' },
     { id: 'playlists', label: 'Playlists' },
     { id: 'radio', label: 'Radio' },
+    { id: 'search', label: 'Text Search' },
+    { id: 'music-map', label: 'Music Map' },
     { id: 'charts', label: 'Charts' },
     { id: 'discovery', label: 'Discovery' },
     { id: 'news', label: 'News' }
@@ -248,6 +250,8 @@ function loadContent(sub) {
   else if (contentSubTab === 'tracks') loadTracks();
   else if (contentSubTab === 'playlists') loadPlaylists();
   else if (contentSubTab === 'radio') loadRadio();
+  else if (contentSubTab === 'search') loadTextSearch();
+  else if (contentSubTab === 'music-map') loadMusicMap();
   else if (contentSubTab === 'charts') loadCharts();
   else if (contentSubTab === 'discovery') loadDiscovery();
   else if (contentSubTab === 'news') loadNews();
@@ -805,25 +809,292 @@ function renderPlaylistDetail(p) {
 function deletePlaylist(id) { if (!confirm('Delete this playlist?')) return; apiDelete('/v1/playlists/' + id).then(function() { loadPlaylists(); }); }
 
 // =========================================================================
+// Music Map (UMAP 2D projection of 64-dim audio embeddings)
+// =========================================================================
+var mapState = { tracks: [], colorBy: 'energy', selectedA: null, selectedB: null, hover: null };
+
+function loadMusicMap() {
+  var h = '<div class="page-header"><h1 class="page-title">Music Map</h1>'
+    + '<div class="page-actions"><select id="map-color" onchange="mapRecolor()" class="form-input">'
+    + '<option value="energy">Color by Energy</option>'
+    + '<option value="valence">Color by Valence</option>'
+    + '<option value="danceability">Color by Danceability</option>'
+    + '<option value="bpm">Color by BPM</option>'
+    + '<option value="mood">Color by Top Mood</option>'
+    + '</select>'
+    + '<button class="btn btn-secondary btn-sm" onclick="loadMusicMap()">Reload</button></div></div>';
+  h += '<div class="card"><div class="card-body">'
+    + '<p class="text-xs text-muted">Each dot is one track projected into 2D via UMAP on its 64-dim audio embedding. Nearby dots sound similar. Click two tracks to build a Song Path between them.</p>'
+    + '<div id="map-info" class="text-xs text-muted" style="margin-top:var(--space-2);min-height:20px"></div>'
+    + '<div style="position:relative;margin-top:var(--space-3)">'
+    + '<canvas id="map-canvas" width="900" height="600" style="width:100%;max-width:900px;background:#0a0a0a;border:1px solid var(--border);border-radius:6px;cursor:crosshair"></canvas>'
+    + '<div id="map-tooltip" style="position:absolute;display:none;background:#111;border:1px solid var(--border);border-radius:4px;padding:6px 8px;font-size:11px;pointer-events:none;z-index:10"></div>'
+    + '</div>'
+    + '<div id="map-selection" style="margin-top:var(--space-3);min-height:32px"></div>'
+    + '</div></div>';
+  setAppContent(h);
+  api('/v1/tracks/map?limit=10000').then(function(data) {
+    mapState.tracks = (data && data.tracks) || [];
+    mapState.selectedA = null; mapState.selectedB = null;
+    document.getElementById('map-info').textContent = mapState.tracks.length + ' tracks plotted.';
+    if (!mapState.tracks.length) {
+      document.getElementById('map-info').innerHTML = 'No tracks mapped yet. Run the pipeline and wait for the <strong>music_map</strong> step to complete, or check that <code>umap-learn</code> is installed.';
+      return;
+    }
+    renderMusicMap();
+    var canvas = document.getElementById('map-canvas');
+    canvas.onclick = onMapClick;
+    canvas.onmousemove = onMapMove;
+    canvas.onmouseleave = function() { document.getElementById('map-tooltip').style.display = 'none'; };
+  }).catch(function(e) {
+    document.getElementById('map-info').innerHTML = '<span style="color:var(--color-danger)">Failed: ' + esc(e.message) + '</span>';
+  });
+}
+
+function mapRecolor() {
+  var sel = document.getElementById('map-color');
+  mapState.colorBy = sel ? sel.value : 'energy';
+  renderMusicMap();
+}
+
+function _mapXY(t, bounds, w, h) {
+  var pad = 20;
+  var fx = (t.x - bounds.xmin) / (bounds.xmax - bounds.xmin || 1);
+  var fy = (t.y - bounds.ymin) / (bounds.ymax - bounds.ymin || 1);
+  return [pad + fx * (w - 2*pad), h - pad - fy * (h - 2*pad)];
+}
+
+function _mapColor(t, mode) {
+  var v = null;
+  if (mode === 'mood') {
+    var map = { happy: '#facc15', sad: '#60a5fa', aggressive: '#ef4444', relaxed: '#34d399', party: '#f472b6', acoustic: '#a78bfa', electronic: '#22d3ee' };
+    return map[t.mood] || '#64748b';
+  }
+  if (mode === 'bpm') v = t.bpm != null ? Math.min(1, Math.max(0, (t.bpm - 60) / 120)) : null;
+  else v = t[mode];
+  if (v == null) return '#475569';
+  var r = Math.round(30 + 220*v), g = Math.round(80 + 100*(1-Math.abs(v-0.5)*2)), b = Math.round(220 - 200*v);
+  return 'rgb(' + r + ',' + g + ',' + b + ')';
+}
+
+function _mapBounds() {
+  var xs = mapState.tracks.map(function(t) { return t.x; });
+  var ys = mapState.tracks.map(function(t) { return t.y; });
+  return { xmin: Math.min.apply(null, xs), xmax: Math.max.apply(null, xs), ymin: Math.min.apply(null, ys), ymax: Math.max.apply(null, ys) };
+}
+
+function renderMusicMap() {
+  var canvas = document.getElementById('map-canvas'); if (!canvas) return;
+  var ctx = canvas.getContext('2d');
+  var w = canvas.width, h = canvas.height;
+  ctx.clearRect(0, 0, w, h);
+  if (!mapState.tracks.length) return;
+  var bounds = _mapBounds();
+  for (var i = 0; i < mapState.tracks.length; i++) {
+    var t = mapState.tracks[i];
+    var xy = _mapXY(t, bounds, w, h);
+    ctx.fillStyle = _mapColor(t, mapState.colorBy);
+    ctx.globalAlpha = 0.7;
+    ctx.beginPath(); ctx.arc(xy[0], xy[1], 2.5, 0, 6.283); ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+  // Highlight selected
+  var sel = [mapState.selectedA, mapState.selectedB];
+  for (var s = 0; s < sel.length; s++) {
+    if (!sel[s]) continue;
+    var sxy = _mapXY(sel[s], bounds, w, h);
+    ctx.strokeStyle = s === 0 ? '#22d3ee' : '#f472b6';
+    ctx.lineWidth = 2.5;
+    ctx.beginPath(); ctx.arc(sxy[0], sxy[1], 8, 0, 6.283); ctx.stroke();
+  }
+  if (mapState.selectedA && mapState.selectedB) {
+    var a = _mapXY(mapState.selectedA, bounds, w, h), b = _mapXY(mapState.selectedB, bounds, w, h);
+    ctx.strokeStyle = '#f472b6';
+    ctx.setLineDash([5, 4]);
+    ctx.lineWidth = 1.5;
+    ctx.beginPath(); ctx.moveTo(a[0], a[1]); ctx.lineTo(b[0], b[1]); ctx.stroke();
+    ctx.setLineDash([]);
+  }
+  mapRenderSelection();
+}
+
+function _mapNearest(canvas, ev) {
+  var rect = canvas.getBoundingClientRect();
+  var scale = canvas.width / rect.width;
+  var mx = (ev.clientX - rect.left) * scale;
+  var my = (ev.clientY - rect.top) * scale;
+  var w = canvas.width, h = canvas.height;
+  var bounds = _mapBounds();
+  var best = null, bestD = 400;
+  for (var i = 0; i < mapState.tracks.length; i++) {
+    var t = mapState.tracks[i];
+    var xy = _mapXY(t, bounds, w, h);
+    var dx = xy[0] - mx, dy = xy[1] - my, d = dx*dx + dy*dy;
+    if (d < bestD) { bestD = d; best = { track: t, x: xy[0], y: xy[1] }; }
+  }
+  return best;
+}
+
+function onMapMove(ev) {
+  var canvas = document.getElementById('map-canvas');
+  var hit = _mapNearest(canvas, ev);
+  var tip = document.getElementById('map-tooltip');
+  if (!hit) { tip.style.display = 'none'; return; }
+  var t = hit.track;
+  tip.style.display = 'block';
+  var rect = canvas.getBoundingClientRect();
+  var scale = canvas.width / rect.width;
+  tip.style.left = ((hit.x / scale) + 12) + 'px';
+  tip.style.top = ((hit.y / scale) + 12) + 'px';
+  tip.innerHTML = '<strong>' + esc(t.title || t.track_id) + '</strong><br>'
+    + '<span class="text-muted">' + esc(t.artist || '') + '</span><br>'
+    + (t.bpm ? t.bpm.toFixed(0) + ' BPM \u00B7 ' : '')
+    + (t.energy != null ? 'E=' + t.energy.toFixed(2) : '');
+}
+
+function onMapClick(ev) {
+  var canvas = document.getElementById('map-canvas');
+  var hit = _mapNearest(canvas, ev);
+  if (!hit) return;
+  if (!mapState.selectedA) mapState.selectedA = hit.track;
+  else if (!mapState.selectedB && hit.track.track_id !== mapState.selectedA.track_id) mapState.selectedB = hit.track;
+  else { mapState.selectedA = hit.track; mapState.selectedB = null; }
+  renderMusicMap();
+}
+
+function mapClearSelection() { mapState.selectedA = null; mapState.selectedB = null; renderMusicMap(); }
+
+function mapRenderSelection() {
+  var el = document.getElementById('map-selection'); if (!el) return;
+  var h = '';
+  if (mapState.selectedA) {
+    h += '<div style="display:flex;gap:var(--space-2);align-items:center;flex-wrap:wrap">'
+      + '<span class="badge badge-info">A</span> <strong>' + esc(mapState.selectedA.title || mapState.selectedA.track_id) + '</strong>'
+      + ' <span class="text-muted">' + esc(mapState.selectedA.artist || '') + '</span>';
+    if (mapState.selectedB) {
+      h += '&nbsp; \u2192 &nbsp;<span class="badge badge-warning">B</span> <strong>' + esc(mapState.selectedB.title || mapState.selectedB.track_id) + '</strong>'
+        + ' <span class="text-muted">' + esc(mapState.selectedB.artist || '') + '</span>'
+        + '&nbsp; <button class="btn btn-primary btn-sm" onclick="mapBuildPath()">Build Path</button>';
+    } else {
+      h += '&nbsp; <span class="text-muted">\u2014 click a second track to build a path</span>';
+    }
+    h += ' <button class="btn btn-secondary btn-sm" onclick="mapClearSelection()">Clear</button></div>';
+  }
+  el.innerHTML = h;
+}
+
+function mapBuildPath() {
+  if (!mapState.selectedA || !mapState.selectedB) return;
+  showGenerateModal({
+    strategy: 'path',
+    name: 'Path: ' + (mapState.selectedA.title || 'A') + ' \u2192 ' + (mapState.selectedB.title || 'B'),
+    seed_track_id: mapState.selectedA.track_id,
+    target_track_id: mapState.selectedB.track_id
+  });
+}
+
+// =========================================================================
+// Text Search (CLAP natural-language prompt \u2192 matching tracks)
+// =========================================================================
+function loadTextSearch() {
+  var h = '<div class="page-header"><h1 class="page-title">Text Search (CLAP)</h1></div>';
+  h += '<div class="card"><div class="card-body">'
+    + '<p class="text-xs text-muted">Describe what you want to hear in natural language. CLAP maps the prompt into the same embedding space as the audio analysis, then finds tracks whose sound matches. Requires <code>CLAP_ENABLED=true</code> and a backfilled CLAP index.</p>'
+    + '<div style="display:flex;gap:var(--space-2);margin-top:var(--space-3)">'
+    + '<input id="clap-prompt" class="form-input" placeholder="e.g. melancholic piano at 2am" style="flex:1" onkeydown="if(event.key===\'Enter\')runTextSearch()">'
+    + '<input id="clap-limit" class="form-input" type="number" value="50" min="5" max="200" style="width:80px">'
+    + '<button class="btn btn-primary btn-sm" onclick="runTextSearch()">Search</button>'
+    + '</div>'
+    + '<div id="clap-examples" style="margin-top:var(--space-2);font-size:12px">'
+    + '<span class="text-muted">Try: </span>'
+    + '<a href="#" onclick="clapExample(\'upbeat summer night driving\');return false">upbeat summer night driving</a> \u00B7 '
+    + '<a href="#" onclick="clapExample(\'chill lofi study session\');return false">chill lofi study session</a> \u00B7 '
+    + '<a href="#" onclick="clapExample(\'aggressive workout metal\');return false">aggressive workout metal</a> \u00B7 '
+    + '<a href="#" onclick="clapExample(\'rainy coffee shop jazz\');return false">rainy coffee shop jazz</a>'
+    + '</div>'
+    + '<div id="clap-results" style="margin-top:var(--space-3)"></div>'
+    + '</div></div>';
+  setAppContent(h);
+  api('/v1/tracks/clap/stats').then(function(s) {
+    var el = document.getElementById('clap-examples');
+    if (!s.enabled) { el.innerHTML = '<span style="color:var(--color-warning)">CLAP is disabled. Set CLAP_ENABLED=true and export the ONNX models to /data/models/clap/.</span>'; return; }
+    if (!s.with_clap_embedding) { el.innerHTML = '<span style="color:var(--color-warning)">No CLAP embeddings yet. Run <code>POST /v1/tracks/clap/backfill</code> or wait for the next scan.</span>'; return; }
+    el.innerHTML += ' <span class="text-muted" style="margin-left:var(--space-2)">\u00B7 ' + s.with_clap_embedding + '/' + s.total_tracks + ' (' + Math.round(s.coverage*100) + '%) indexed</span>';
+  }).catch(function() {});
+}
+
+function clapExample(q) {
+  document.getElementById('clap-prompt').value = q;
+  runTextSearch();
+}
+
+function runTextSearch() {
+  var q = (document.getElementById('clap-prompt').value || '').trim();
+  if (!q) return;
+  var limit = parseInt(document.getElementById('clap-limit').value) || 50;
+  var out = document.getElementById('clap-results');
+  out.innerHTML = '<div class="text-muted">Searching\u2026</div>';
+  api('/v1/tracks/text-search?q=' + encodeURIComponent(q) + '&limit=' + limit).then(function(data) {
+    var tracks = data.tracks || [];
+    if (!tracks.length) { out.innerHTML = '<div class="empty">No matches.</div>'; return; }
+    var h = '<div class="card-header" style="padding:var(--space-2) 0"><span>' + tracks.length + ' results for &ldquo;' + esc(q) + '&rdquo;</span>';
+    h += '<button class="btn btn-primary btn-sm" onclick="showGenerateModal({strategy:\'text\',name:&quot;Prompt: ' + esc(q).replace(/"/g,'&quot;') + '&quot;,prompt:&quot;' + esc(q).replace(/"/g,'&quot;') + '&quot;})">Generate Playlist from Prompt</button></div>';
+    h += '<table style="margin-top:var(--space-2)"><tr><th>#</th><th>Sim</th><th>Title</th><th>Artist</th><th>BPM</th><th>Energy</th><th>Mood</th></tr>';
+    for (var i = 0; i < tracks.length; i++) {
+      var t = tracks[i];
+      h += '<tr><td>' + (i+1) + '</td><td>' + (t.similarity != null ? t.similarity.toFixed(3) : '\u2014') + '</td>'
+        + '<td class="truncate" title="' + trackTooltip(t) + '">' + (esc(t.title || '') || esc(t.track_id)) + '</td>'
+        + '<td class="truncate" style="max-width:180px">' + esc(t.artist || '\u2014') + '</td>'
+        + '<td>' + (t.bpm ? t.bpm.toFixed(0) : '\u2014') + '</td>'
+        + '<td>' + (t.energy != null ? t.energy.toFixed(2) : '\u2014') + '</td>'
+        + '<td>' + topMood(t.mood_tags) + '</td></tr>';
+    }
+    h += '</table>';
+    out.innerHTML = h;
+  }).catch(function(e) {
+    out.innerHTML = '<div class="empty" style="color:var(--color-danger)">Failed: ' + esc(e.message) + '</div>';
+  });
+}
+
+// =========================================================================
 // Generate Playlist Modal
 // =========================================================================
-function showGenerateModal() {
+function showGenerateModal(prefill) {
   var overlay = document.createElement('div'); overlay.className = 'modal-overlay';
   overlay.onclick = function(e) { if (e.target === overlay) overlay.remove(); };
   var m = '<div class="modal"><h2>Generate Playlist</h2>';
   m += '<div class="field"><label>Name</label><input id="gen-name" value="My Playlist"></div>';
-  m += '<div class="field"><label>Strategy</label><select id="gen-strategy" onchange="onStrategyChange()"><option value="flow">Flow (smooth transitions)</option><option value="mood">Mood (by feeling)</option><option value="energy_curve">Energy Curve (shape)</option><option value="key_compatible">Key Compatible (harmonic)</option></select></div>';
+  m += '<div class="field"><label>Strategy</label><select id="gen-strategy" onchange="onStrategyChange()">'
+    + '<option value="flow">Flow (smooth transitions)</option>'
+    + '<option value="mood">Mood (by feeling)</option>'
+    + '<option value="energy_curve">Energy Curve (shape)</option>'
+    + '<option value="key_compatible">Key Compatible (harmonic)</option>'
+    + '<option value="path">Song Path (A \u2192 B sonic bridge)</option>'
+    + '<option value="text">Text Prompt (CLAP)</option>'
+    + '</select></div>';
   m += '<div class="field" id="gen-seed-wrap"><label>Seed Track ID</label><input id="gen-seed" placeholder="paste a track_id"></div>';
+  m += '<div class="field" id="gen-target-wrap" style="display:none"><label>Target Track ID (destination)</label><input id="gen-target" placeholder="paste a different track_id"></div>';
+  m += '<div class="field" id="gen-prompt-wrap" style="display:none"><label>Text Prompt</label><input id="gen-prompt" placeholder="e.g. upbeat summer night driving"><p class="text-xs text-muted">Requires CLAP enabled and backfilled.</p></div>';
   m += '<div class="field" id="gen-mood-wrap" style="display:none"><label>Mood</label><select id="gen-mood"><option value="happy">Happy</option><option value="sad">Sad</option><option value="aggressive">Aggressive</option><option value="relaxed">Relaxed</option><option value="party">Party</option></select></div>';
   m += '<div class="field" id="gen-curve-wrap" style="display:none"><label>Curve</label><select id="gen-curve"><option value="ramp_up_cool_down">Ramp Up + Cool Down</option><option value="ramp_up">Ramp Up</option><option value="cool_down">Cool Down</option><option value="steady_high">Steady High</option><option value="steady_low">Steady Low</option></select></div>';
   m += '<div class="field"><label>Max Tracks</label><input id="gen-max" type="number" value="25" min="5" max="100"></div>';
   m += '<div class="actions"><button class="btn btn-secondary" onclick="this.closest(\'.modal-overlay\').remove()">Cancel</button><button class="btn btn-primary" onclick="submitPlaylist()">Generate</button></div></div>';
   overlay.innerHTML = m; document.body.appendChild(overlay);
+  if (prefill) {
+    if (prefill.strategy) document.getElementById('gen-strategy').value = prefill.strategy;
+    if (prefill.name) document.getElementById('gen-name').value = prefill.name;
+    if (prefill.seed_track_id) document.getElementById('gen-seed').value = prefill.seed_track_id;
+    if (prefill.target_track_id) document.getElementById('gen-target').value = prefill.target_track_id;
+    if (prefill.prompt) document.getElementById('gen-prompt').value = prefill.prompt;
+    onStrategyChange();
+  }
 }
 
 function onStrategyChange() {
   var s = document.getElementById('gen-strategy').value;
-  document.getElementById('gen-seed-wrap').style.display = (s === 'flow' || s === 'key_compatible') ? '' : 'none';
+  document.getElementById('gen-seed-wrap').style.display = (s === 'flow' || s === 'key_compatible' || s === 'path') ? '' : 'none';
+  document.getElementById('gen-target-wrap').style.display = (s === 'path') ? '' : 'none';
+  document.getElementById('gen-prompt-wrap').style.display = (s === 'text') ? '' : 'none';
   document.getElementById('gen-mood-wrap').style.display = s === 'mood' ? '' : 'none';
   document.getElementById('gen-curve-wrap').style.display = s === 'energy_curve' ? '' : 'none';
 }
@@ -831,7 +1102,9 @@ function onStrategyChange() {
 function submitPlaylist() {
   var strategy = document.getElementById('gen-strategy').value;
   var body = { name: document.getElementById('gen-name').value || 'Playlist', strategy: strategy, max_tracks: parseInt(document.getElementById('gen-max').value) || 25 };
-  if (strategy === 'flow' || strategy === 'key_compatible') body.seed_track_id = document.getElementById('gen-seed').value.trim();
+  if (strategy === 'flow' || strategy === 'key_compatible' || strategy === 'path') body.seed_track_id = document.getElementById('gen-seed').value.trim();
+  if (strategy === 'path') body.params = { target_track_id: document.getElementById('gen-target').value.trim() };
+  if (strategy === 'text') body.params = { prompt: document.getElementById('gen-prompt').value.trim() };
   if (strategy === 'mood') body.params = { mood: document.getElementById('gen-mood').value };
   if (strategy === 'energy_curve') body.params = { curve: document.getElementById('gen-curve').value };
   var overlay = document.querySelector('.modal-overlay');

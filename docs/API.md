@@ -202,6 +202,63 @@ Get acoustically similar tracks via FAISS + SQL fallback.
 
 **Response** `200`: Array of similar track objects with similarity scores.
 
+### `GET /v1/tracks/map`
+
+Returns the 2D UMAP projection of every mapped track for the dashboard's music-map view. Powered by the `music_map` pipeline step.
+
+| Param | Type | Default | Description |
+|-------|------|---------|-------------|
+| `limit` | int | 5000 | 100-20000 |
+
+**Response** `200`:
+
+```json
+{
+  "count": 1842,
+  "tracks": [
+    {"track_id": "nav-uuid-001", "title": "Strobe", "artist": "deadmau5",
+     "bpm": 128.0, "energy": 0.72, "mood": "party", "x": 0.51, "y": 0.33}
+  ]
+}
+```
+
+Tracks without computed coordinates are excluded. Requires `umap-learn` installed and at least 50 analysed tracks.
+
+### `GET /v1/tracks/text-search`
+
+Natural-language track search via the CLAP text tower. Encodes the prompt into the joint 512-dim CLAP embedding space and returns the `k` closest tracks.
+
+| Param | Type | Default | Description |
+|-------|------|---------|-------------|
+| `q` | string | *(required)* | Prompt, 1-256 chars, e.g. `"melancholic piano at 2am"` |
+| `limit` | int | 50 | 1-200 |
+
+**Response** `200`: `{"query": ..., "count": ..., "tracks": [{..., "similarity": 0.417}]}`
+
+**Errors**: `503` if `CLAP_ENABLED=false` or the CLAP FAISS index isn't ready (no tracks have `clap_embedding` yet).
+
+### `POST /v1/tracks/clap/backfill`
+
+Queues a background job that computes CLAP audio embeddings for every track missing one. Admin only.
+
+| Param | Type | Default | Description |
+|-------|------|---------|-------------|
+| `limit` | int | - | Optional cap on tracks processed in this call |
+
+**Response** `202`: `{"status": "accepted", "pending": 8421, "limit": null}`
+
+**Errors**: `400` if `CLAP_ENABLED=false`. After completion, the CLAP FAISS index is rebuilt automatically.
+
+### `GET /v1/tracks/clap/stats`
+
+Coverage stats for CLAP embeddings.
+
+**Response** `200`:
+
+```json
+{"enabled": true, "total_tracks": 9203, "with_clap_embedding": 782, "coverage": 0.085}
+```
+
 ---
 
 ## Users
@@ -566,7 +623,14 @@ Generate a new playlist.
 }
 ```
 
-Strategies: `flow` (BPM/energy chain), `mood` (mood tag + energy arc), `energy_curve` (shaped energy profile: ramp_up, cool_down, steady), `key_compatible` (Camelot wheel harmonic mixing).
+Strategies:
+
+- `flow` — BPM/energy chain from `seed_track_id`
+- `mood` — filter by `params.mood` + energy arc
+- `energy_curve` — shaped profile via `params.curve` (`ramp_up`, `cool_down`, `ramp_up_cool_down`, `steady_high`, `steady_low`)
+- `key_compatible` — Camelot wheel harmonic mixing from `seed_track_id`
+- `path` — **Song Path**: sonic bridge between `seed_track_id` and `params.target_track_id`. Slerp-interpolates between the two 64-dim embeddings and picks the nearest unused library track at each waypoint.
+- `text` — **CLAP Text Prompt**: `params.prompt` is encoded by the CLAP text tower; tracks are ranked by cosine similarity to the prompt in joint embedding space. Requires `CLAP_ENABLED=true` with at least some tracks having `clap_embedding`.
 
 **Response** `201`: Playlist object with tracks.
 

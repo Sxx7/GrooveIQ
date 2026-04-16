@@ -316,16 +316,18 @@ def _worker_main(
         es = None
 
     onnx_sessions = _init_onnx_sessions()
+    clap_audio_session = _init_clap_audio_session()
 
     # Pre-compute projection matrix (deterministic, same across all workers)
     rng = np.random.RandomState(seed=20240101)
     proj_matrix = (rng.randn(_EFFNET_DIM, _EMBEDDING_DIM) / np.sqrt(_EMBEDDING_DIM)).astype(np.float32)
 
     logger.info(
-        "Analysis worker %d ready: essentia=%s, onnx_models=%d",
+        "Analysis worker %d ready: essentia=%s, onnx_models=%d, clap_audio=%s",
         worker_id,
         has_essentia,
         len(onnx_sessions),
+        clap_audio_session is not None,
     )
 
     while True:
@@ -343,7 +345,14 @@ def _worker_main(
                     "analysis_version": _get_version(),
                 }
             else:
-                result = _analyze_file(file_path, cached, es, onnx_sessions, proj_matrix)
+                result = _analyze_file(
+                    file_path,
+                    cached,
+                    es,
+                    onnx_sessions,
+                    proj_matrix,
+                    clap_audio_session,
+                )
         except Exception as e:
             result = {
                 "file_path": file_path,
@@ -486,6 +495,53 @@ def _detect_onnx_backend() -> str:
     return "cpu"
 
 
+def _init_clap_audio_session() -> object | None:
+    """
+    Load the CLAP audio tower ONNX session, if CLAP is enabled and the model
+    file exists. Returns an ``onnxruntime.InferenceSession`` or ``None``.
+
+    Unlike the EffNet models, CLAP models are **not auto-downloaded** — they
+    have to be exported by the operator (LAION-CLAP's export_onnx.py) and
+    dropped into ``CLAP_MODEL_DIR``. We fail soft here so workers still boot
+    for non-CLAP deployments.
+    """
+    from app.core.config import settings
+
+    if not settings.CLAP_ENABLED:
+        return None
+
+    try:
+        import onnxruntime as ort
+    except ImportError:
+        logger.warning("onnxruntime missing — CLAP audio encoding disabled")
+        return None
+
+    model_path = os.path.join(settings.CLAP_MODEL_DIR, settings.CLAP_AUDIO_MODEL_FILE)
+    if not os.path.exists(model_path):
+        logger.warning(
+            "CLAP_ENABLED=true but audio model not found at %s — CLAP embeddings will be skipped",
+            model_path,
+        )
+        return None
+
+    opts = ort.SessionOptions()
+    opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+    opts.intra_op_num_threads = settings.ANALYSIS_ONNX_INTRA_THREADS
+    opts.inter_op_num_threads = settings.ANALYSIS_ONNX_INTER_THREADS
+
+    try:
+        session = ort.InferenceSession(
+            model_path,
+            sess_options=opts,
+            providers=["CPUExecutionProvider"],
+        )
+        logger.info("CLAP audio encoder loaded: %s", os.path.basename(model_path))
+        return session
+    except Exception as e:
+        logger.warning("Failed to load CLAP audio model: %s", e)
+        return None
+
+
 def _init_onnx_sessions() -> dict:
     """Initialise ONNX Runtime sessions for all models.  Returns {filename: session}."""
     try:
@@ -570,6 +626,7 @@ def _analyze_file(
     es,
     onnx_sessions: dict,
     proj_matrix: np.ndarray,
+    clap_audio_session: object | None = None,
 ) -> dict | None:
     """
     Full single-pass analysis for one audio file.
@@ -677,6 +734,19 @@ def _analyze_file(
             hpcp_frames,
             proj_matrix,
         )
+
+        # --- CLAP audio embedding (optional, 512-dim) ---
+        if clap_audio_session is not None:
+            try:
+                t0 = time.monotonic()
+                clap_vec = _compute_clap_embedding(audio, sr, clap_audio_session, es)
+                timings["clap"] = time.monotonic() - t0
+                if clap_vec is not None:
+                    result["clap_embedding"] = base64.b64encode(
+                        clap_vec.astype(np.float32).tobytes()
+                    ).decode("ascii")
+            except Exception as e:
+                logger.debug("CLAP audio embedding failed for %s: %s", file_path, e)
 
         total = sum(timings.values())
         timing_str = " | ".join(f"{k}={v:.1f}s" for k, v in timings.items())
@@ -1028,3 +1098,93 @@ def _build_embedding(
     except Exception as e:
         logger.debug("Embedding build failed: %s", e)
         return None
+
+
+# ---------------------------------------------------------------------------
+# CLAP audio embedding
+# ---------------------------------------------------------------------------
+
+
+def _compute_clap_embedding(
+    audio: np.ndarray,
+    sr: int,
+    clap_session: object,
+    es,
+) -> np.ndarray | None:
+    """
+    Encode the central clip of ``audio`` (loaded at 16 kHz for EffNet) into a
+    512-dim CLAP embedding. Returns an L2-normalised float32 vector, or None
+    on failure.
+
+    Steps:
+      1. Slice the central ``CLAP_AUDIO_CLIP_SECONDS`` of audio.
+      2. Resample from 16 kHz → ``CLAP_AUDIO_SR`` (default 48 kHz) via
+         Essentia's Resample (no new dep).
+      3. Run through the CLAP audio encoder ONNX session.
+      4. L2-normalise.
+
+    The exact input layout (raw waveform vs mel-spectrogram) depends on how
+    the CLAP ONNX was exported. LAION-CLAP's ``export_onnx.py`` produces a
+    model that takes raw ``float32`` audio at 48 kHz, padded to exactly
+    ``CLAP_AUDIO_CLIP_SECONDS`` seconds. If your export differs, adapt the
+    pre-processing here — the model input/output shapes are logged on first
+    call for easy debugging.
+    """
+    from app.core.config import settings
+
+    clip_seconds = float(settings.CLAP_AUDIO_CLIP_SECONDS)
+    target_sr = int(settings.CLAP_AUDIO_SR)
+    target_len = int(clip_seconds * target_sr)
+
+    # 1. Central slice at the current sample rate.
+    src_clip_samples = int(clip_seconds * sr)
+    if len(audio) > src_clip_samples:
+        start = (len(audio) - src_clip_samples) // 2
+        clip = audio[start : start + src_clip_samples]
+    else:
+        clip = audio
+
+    # 2. Resample 16k → 48k (if needed).
+    if sr != target_sr:
+        try:
+            resample = es.Resample(inputSampleRate=sr, outputSampleRate=target_sr, quality=1)
+            clip = resample(clip.astype(np.float32))
+        except Exception as e:
+            logger.debug("Resample to %d Hz failed, using raw: %s", target_sr, e)
+
+    # 3. Pad / truncate to exactly target_len samples (model expects fixed shape).
+    if len(clip) < target_len:
+        padded = np.zeros(target_len, dtype=np.float32)
+        padded[: len(clip)] = clip
+        clip = padded
+    else:
+        clip = clip[:target_len]
+
+    # 4. Run model. Handle both (1, N) and (N,) input layouts.
+    inputs = clap_session.get_inputs()
+    if not inputs:
+        return None
+    input_meta = inputs[0]
+    input_name = input_meta.name
+
+    batched = clip.astype(np.float32).reshape(1, -1)
+
+    try:
+        outputs = clap_session.run(None, {input_name: batched})
+    except Exception as e:
+        # Log shape on first failure so operators can diagnose export mismatches.
+        if not hasattr(_compute_clap_embedding, "_logged_shape"):
+            _compute_clap_embedding._logged_shape = True
+            logger.warning(
+                "CLAP inference failed: input_shape=%s, model_expects=%s, err=%s",
+                batched.shape,
+                input_meta.shape,
+                e,
+            )
+        return None
+
+    vec = np.asarray(outputs[0], dtype=np.float32).reshape(-1)
+    norm = float(np.linalg.norm(vec))
+    if norm < 1e-9:
+        return None
+    return (vec / norm).astype(np.float32)

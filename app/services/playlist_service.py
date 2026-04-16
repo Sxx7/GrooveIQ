@@ -171,6 +171,160 @@ def _generate_flow(tracks: list[TrackFeatures], seed_id: str, max_tracks: int) -
 
 
 # ---------------------------------------------------------------------------
+# Strategy: Path (sonic bridge between two tracks)
+# ---------------------------------------------------------------------------
+
+
+def _slerp(a: np.ndarray, b: np.ndarray, t: float) -> np.ndarray:
+    """
+    Spherical linear interpolation between two unit-norm vectors.
+
+    Embeddings live on the unit sphere (L2-normalised) so linear interpolation
+    pulls waypoints toward the origin and distorts similarity. Slerp walks the
+    great-circle arc between ``a`` and ``b`` instead, keeping every waypoint
+    on the sphere.
+    """
+    a_n = a / (np.linalg.norm(a) + 1e-9)
+    b_n = b / (np.linalg.norm(b) + 1e-9)
+    dot = float(np.clip(np.dot(a_n, b_n), -1.0, 1.0))
+    # If vectors are almost colinear, fall back to linear interp (slerp degenerate).
+    if abs(dot) > 0.9995:
+        return (1.0 - t) * a_n + t * b_n
+    omega = np.arccos(dot)
+    sin_omega = np.sin(omega)
+    return (np.sin((1.0 - t) * omega) / sin_omega) * a_n + (np.sin(t * omega) / sin_omega) * b_n
+
+
+def _generate_path(
+    tracks: list[TrackFeatures],
+    from_id: str,
+    to_id: str,
+    max_tracks: int,
+) -> list[str]:
+    """
+    Build a sonic bridge from ``from_id`` to ``to_id``.
+
+    Walks the great-circle arc between the two tracks' embeddings in
+    ``max_tracks - 2`` equal steps. At each waypoint, picks the nearest
+    not-yet-used library track by cosine similarity. The endpoints of the
+    returned list are always the seed and target tracks themselves.
+
+    Returns ``[from_id, waypoint_1, ..., waypoint_{N-2}, to_id]``.
+    """
+    from_track = next((t for t in tracks if t.track_id == from_id), None)
+    to_track = next((t for t in tracks if t.track_id == to_id), None)
+    if from_track is None:
+        raise ValueError(f"Seed track '{from_id}' not found in analyzed tracks")
+    if to_track is None:
+        raise ValueError(f"Target track '{to_id}' not found in analyzed tracks")
+    if from_id == to_id:
+        raise ValueError("seed_track_id and target_track_id must differ")
+    if not from_track.embedding or not to_track.embedding:
+        raise ValueError("Both seed and target tracks need an embedding")
+    if max_tracks < 3:
+        # With <3 we'd only have endpoints — no "path" to speak of.
+        raise ValueError("'path' strategy requires max_tracks >= 3")
+
+    # Pre-decode every candidate embedding once.
+    embeddings: dict[str, np.ndarray] = {}
+    for t in tracks:
+        if t.embedding:
+            try:
+                vec = _decode_embedding(t.embedding)
+                norm = np.linalg.norm(vec)
+                if norm > 1e-9:
+                    embeddings[t.track_id] = vec / norm
+            except Exception:
+                pass
+
+    a = embeddings.get(from_id)
+    b = embeddings.get(to_id)
+    if a is None or b is None:
+        raise ValueError("Failed to decode embedding for seed or target")
+
+    # N intermediate waypoints evenly spaced on the arc (endpoints excluded).
+    n_waypoints = max_tracks - 2
+    waypoints = [_slerp(a, b, (i + 1) / (n_waypoints + 1)) for i in range(n_waypoints)]
+
+    used: set[str] = {from_id, to_id}
+    picks: list[str] = []
+
+    for wp in waypoints:
+        best_id = None
+        best_score = -2.0
+        for tid, vec in embeddings.items():
+            if tid in used:
+                continue
+            score = float(np.dot(wp, vec))  # both unit-norm → cosine
+            if score > best_score:
+                best_score = score
+                best_id = tid
+        if best_id is None:
+            break  # ran out of candidates
+        used.add(best_id)
+        picks.append(best_id)
+
+    return [from_id, *picks, to_id]
+
+
+# ---------------------------------------------------------------------------
+# Strategy: Text (natural-language prompt → CLAP similarity ranking)
+# ---------------------------------------------------------------------------
+
+
+def _generate_text(
+    tracks: list[TrackFeatures],
+    prompt: str,
+    max_tracks: int,
+) -> list[str]:
+    """
+    Rank every CLAP-embedded track by cosine similarity to the prompt.
+
+    Requires ``CLAP_ENABLED=true`` and CLAP embeddings populated on tracks.
+    Raises ``ValueError`` (→ 400) when CLAP isn't available so the API
+    surfaces the misconfiguration cleanly.
+    """
+    from app.core.config import settings
+
+    if not settings.CLAP_ENABLED:
+        raise ValueError("'text' strategy requires CLAP_ENABLED=true")
+    if not prompt or not prompt.strip():
+        raise ValueError("params.prompt is required for 'text' strategy")
+
+    from app.services import clap_text
+
+    try:
+        query_vec = clap_text.encode_text(prompt)
+    except Exception as e:
+        raise ValueError(f"CLAP text encoding failed: {e}") from e
+
+    scored: list[tuple[float, str]] = []
+    for t in tracks:
+        if not t.clap_embedding:
+            continue
+        try:
+            vec = np.frombuffer(base64.b64decode(t.clap_embedding), dtype=np.float32)
+            if vec.size != query_vec.size:
+                continue
+            norm = np.linalg.norm(vec)
+            if norm < 1e-9:
+                continue
+            cos = float(np.dot(query_vec, vec / norm))
+            scored.append((cos, t.track_id))
+        except Exception:
+            continue
+
+    if not scored:
+        raise ValueError(
+            "No tracks have CLAP embeddings yet. Populate them by rescanning "
+            "with CLAP_ENABLED=true, then rebuild the index."
+        )
+
+    scored.sort(key=lambda x: x[0], reverse=True)
+    return [tid for _, tid in scored[:max_tracks]]
+
+
+# ---------------------------------------------------------------------------
 # Strategy: Mood
 # ---------------------------------------------------------------------------
 
@@ -374,6 +528,12 @@ async def generate_playlist(
         track_ids = _generate_energy_curve(tracks, curve, max_tracks)
     elif strategy == "key_compatible":
         track_ids = _generate_key_compatible(tracks, seed_track_id, max_tracks)
+    elif strategy == "path":
+        target = (params or {}).get("target_track_id")
+        track_ids = _generate_path(tracks, seed_track_id, target, max_tracks)
+    elif strategy == "text":
+        prompt = (params or {}).get("prompt", "")
+        track_ids = _generate_text(tracks, prompt, max_tracks)
     else:
         raise ValueError(f"Unknown strategy: {strategy}")
 

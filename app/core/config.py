@@ -129,6 +129,29 @@ class Settings(BaseSettings):
     ANALYSIS_ONNX_INTER_THREADS: int = 1  # ONNX inter_op_num_threads per worker
     ANALYSIS_OMP_THREADS: int = 2  # OMP/BLAS thread count per worker subprocess
 
+    # ------------------------------------------------------------------
+    # CLAP text-audio joint embeddings (optional, off by default)
+    #
+    # When enabled, each analysed track gets a second 512-dim embedding in
+    # the CLAP audio/text joint space. This unlocks natural-language track
+    # search ("melancholic rainy-night jazz"), text-seeded playlists/radio,
+    # and text filters on recommendations.
+    #
+    # Operators must provide two ONNX files: an audio encoder (48 kHz mono
+    # audio → 512-dim vector) and a text encoder (tokenised prompt →
+    # 512-dim vector). The recommended model is LAION-CLAP's music variant
+    # (`music_audioset_epoch_15_esc_90.14`) exported via the
+    # `laion-clap` repo's `export_onnx.py` utility.
+    # ------------------------------------------------------------------
+    CLAP_ENABLED: bool = False
+    CLAP_MODEL_DIR: str = "/data/models/clap"  # where clap_audio.onnx, clap_text.onnx, tokenizer.json live
+    CLAP_AUDIO_MODEL_FILE: str = "clap_audio.onnx"
+    CLAP_TEXT_MODEL_FILE: str = "clap_text.onnx"
+    CLAP_TOKENIZER_FILE: str = "clap_tokenizer.json"  # HF tokenizers JSON (RoBERTa BPE)
+    CLAP_EMBEDDING_DIM: int = 512
+    CLAP_AUDIO_SR: int = 48000           # LAION-CLAP expects 48 kHz mono
+    CLAP_AUDIO_CLIP_SECONDS: float = 10.0  # length of central slice fed to the audio encoder
+
     # Supported audio extensions (comma-separated)
     AUDIO_EXTENSIONS: str = ".mp3,.flac,.ogg,.m4a,.wav,.aac,.opus,.wv"
 

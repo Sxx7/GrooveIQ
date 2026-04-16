@@ -349,6 +349,8 @@ class PlaylistStrategy(str, Enum):
     MOOD = "mood"
     ENERGY_CURVE = "energy_curve"
     KEY_COMPATIBLE = "key_compatible"
+    PATH = "path"          # sonic bridge between two tracks (embedding slerp)
+    TEXT = "text"          # natural-language prompt → CLAP similarity
 
 
 class PlaylistCreate(BaseModel):
@@ -360,7 +362,11 @@ class PlaylistCreate(BaseModel):
 
     @model_validator(mode="after")
     def validate_strategy_params(self):
-        if self.strategy in (PlaylistStrategy.FLOW, PlaylistStrategy.KEY_COMPATIBLE):
+        if self.strategy in (
+            PlaylistStrategy.FLOW,
+            PlaylistStrategy.KEY_COMPATIBLE,
+            PlaylistStrategy.PATH,
+        ):
             if not self.seed_track_id:
                 raise ValueError(f"seed_track_id is required for '{self.strategy}' strategy")
         if self.strategy == PlaylistStrategy.MOOD:
@@ -372,6 +378,18 @@ class PlaylistCreate(BaseModel):
             valid = ("ramp_up", "cool_down", "ramp_up_cool_down", "steady_high", "steady_low")
             if curve not in valid:
                 raise ValueError(f"params.curve must be one of {valid}")
+        if self.strategy == PlaylistStrategy.PATH:
+            target = (self.params or {}).get("target_track_id")
+            if not target:
+                raise ValueError("params.target_track_id is required for 'path' strategy")
+            if target == self.seed_track_id:
+                raise ValueError("params.target_track_id must differ from seed_track_id")
+            if self.max_tracks < 3:
+                raise ValueError("'path' strategy requires max_tracks >= 3")
+        if self.strategy == PlaylistStrategy.TEXT:
+            prompt = (self.params or {}).get("prompt")
+            if not prompt or not str(prompt).strip():
+                raise ValueError("params.prompt is required for 'text' strategy")
         return self
 
     model_config = {"use_enum_values": True}

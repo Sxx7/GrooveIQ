@@ -96,6 +96,11 @@ async def _apply_column_migrations(conn) -> None:
         ("download_requests", "slskd_username", "VARCHAR(256)"),
         ("download_requests", "slskd_filename", "VARCHAR(1024)"),
         ("download_requests", "slskd_transfer_id", "VARCHAR(128)"),
+        # CLAP text-audio joint embedding (optional, 512-dim)
+        ("track_features", "clap_embedding", "TEXT"),
+        # 2D music-map coordinates (UMAP projection)
+        ("track_features", "map_x", "REAL"),
+        ("track_features", "map_y", "REAL"),
     ]
     for table, column, col_type in migrations:
         # Validate identifiers to prevent SQL injection via migration list.

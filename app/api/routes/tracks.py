@@ -440,3 +440,226 @@ async def get_similar_tracks(
         }
         for c in candidates
     ]
+
+
+# ---------------------------------------------------------------------------
+# 2D music map (UMAP projection of EffNet embeddings)
+# ---------------------------------------------------------------------------
+
+
+@router.get(
+    "/tracks/map",
+    summary="2D music map coordinates",
+    description="""
+Returns a flat list of tracks with their 2D coordinates (``x``, ``y`` in
+``[0, 1]``) for the dashboard music-map visualisation.
+
+Coordinates are computed offline by the pipeline's ``music_map`` step, which
+runs UMAP over the 64-dim EffNet embeddings. Tracks that haven't been
+analysed (or where the step hasn't run yet) are excluded.
+
+Use ``limit`` to cap the payload; useful when rendering on low-power devices.
+""",
+)
+async def get_music_map(
+    limit: int = Query(5000, ge=100, le=20000),
+    session: AsyncSession = Depends(get_session),
+    _key: str = Depends(require_api_key),
+):
+    q = (
+        select(
+            TrackFeatures.track_id,
+            TrackFeatures.title,
+            TrackFeatures.artist,
+            TrackFeatures.genre,
+            TrackFeatures.bpm,
+            TrackFeatures.energy,
+            TrackFeatures.mood_tags,
+            TrackFeatures.map_x,
+            TrackFeatures.map_y,
+        )
+        .where(TrackFeatures.map_x.isnot(None))
+        .where(TrackFeatures.map_y.isnot(None))
+        .limit(limit)
+    )
+    rows = (await session.execute(q)).all()
+
+    def _dominant_mood(tags):
+        if not tags:
+            return None
+        try:
+            return max(tags, key=lambda t: t.get("confidence", 0)).get("label")
+        except Exception:
+            return None
+
+    return {
+        "count": len(rows),
+        "tracks": [
+            {
+                "track_id": r.track_id,
+                "title": r.title,
+                "artist": r.artist,
+                "genre": r.genre,
+                "bpm": r.bpm,
+                "energy": r.energy,
+                "mood": _dominant_mood(r.mood_tags),
+                "x": r.map_x,
+                "y": r.map_y,
+            }
+            for r in rows
+        ],
+    }
+
+
+# ---------------------------------------------------------------------------
+# CLAP backfill (admin): populate clap_embedding for existing tracks
+# ---------------------------------------------------------------------------
+
+
+@router.post(
+    "/tracks/clap/backfill",
+    status_code=202,
+    summary="Backfill CLAP embeddings for existing tracks",
+    description="""
+Fires a background task that computes the CLAP audio embedding for every
+track missing one. Useful after first enabling ``CLAP_ENABLED=true`` on a
+library that was scanned beforehand.
+
+Admin-only. Returns immediately with ``{status: "accepted", pending: <count>}``;
+progress is visible through the normal logs and by polling
+``GET /v1/tracks/clap/stats`` (count of tracks with / without ``clap_embedding``).
+""",
+)
+async def trigger_clap_backfill(
+    limit: int | None = Query(None, ge=1, le=50000),
+    session: AsyncSession = Depends(get_session),
+    _key: str = Depends(require_api_key),
+):
+    require_admin(_key)
+
+    from app.core.config import settings
+
+    if not settings.CLAP_ENABLED:
+        raise HTTPException(
+            status_code=400,
+            detail="CLAP_ENABLED=false; enable CLAP and provide model files before backfilling.",
+        )
+
+    from sqlalchemy import func as sqlfunc
+
+    pending = await session.scalar(
+        select(sqlfunc.count())
+        .select_from(TrackFeatures)
+        .where(TrackFeatures.clap_embedding.is_(None))
+        .where(TrackFeatures.analysis_error.is_(None))
+    )
+
+    import asyncio as _asyncio
+
+    from app.services.clap_backfill import backfill_clap_embeddings
+
+    # Run in the background so the HTTP call returns quickly.
+    _asyncio.create_task(backfill_clap_embeddings(limit=limit))
+
+    return {"status": "accepted", "pending": pending, "limit": limit}
+
+
+@router.get(
+    "/tracks/clap/stats",
+    summary="CLAP embedding coverage stats",
+)
+async def get_clap_stats(
+    session: AsyncSession = Depends(get_session),
+    _key: str = Depends(require_api_key),
+):
+    from sqlalchemy import func as sqlfunc
+
+    from app.core.config import settings
+
+    total = await session.scalar(select(sqlfunc.count()).select_from(TrackFeatures))
+    with_clap = await session.scalar(
+        select(sqlfunc.count())
+        .select_from(TrackFeatures)
+        .where(TrackFeatures.clap_embedding.isnot(None))
+    )
+    return {
+        "enabled": settings.CLAP_ENABLED,
+        "total_tracks": total or 0,
+        "with_clap_embedding": with_clap or 0,
+        "coverage": round((with_clap or 0) / max(1, total or 1), 4),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Natural-language track search (CLAP text embedding)
+# ---------------------------------------------------------------------------
+
+
+@router.get(
+    "/tracks/text-search",
+    summary="Search tracks by a natural-language prompt (CLAP)",
+    description="""
+Encodes the given text prompt via CLAP and returns the k closest tracks in
+CLAP embedding space. Enables queries like ``"melancholic rainy-night jazz"``
+or ``"high-energy gym rap"``.
+
+Returns **503** if CLAP is disabled (``CLAP_ENABLED=false``) or the CLAP
+FAISS index has not been built yet.
+""",
+)
+async def text_search_tracks(
+    q: str = Query(..., min_length=1, max_length=256, description="Natural-language prompt"),
+    limit: int = Query(50, ge=1, le=200),
+    session: AsyncSession = Depends(get_session),
+    _key: str = Depends(require_api_key),
+):
+    from app.core.config import settings
+
+    if not settings.CLAP_ENABLED:
+        raise HTTPException(
+            status_code=503,
+            detail="CLAP text search is disabled. Set CLAP_ENABLED=true to enable.",
+        )
+
+    from app.services import clap_text
+    from app.services.faiss_index import clap_index
+
+    if not clap_index.is_ready():
+        raise HTTPException(
+            status_code=503,
+            detail="CLAP index not built yet. Run the pipeline after CLAP embeddings are populated.",
+        )
+
+    try:
+        query_vec = clap_text.encode_text(q)
+    except Exception as e:
+        logger.warning("CLAP text encoding failed: %s", e)
+        raise HTTPException(status_code=503, detail="CLAP text encoder unavailable.") from e
+
+    hits = clap_index.search(query_vec, k=limit)
+    if not hits:
+        return {"query": q, "count": 0, "tracks": []}
+
+    ids = [tid for tid, _ in hits]
+    scores_map = {tid: score for tid, score in hits}
+    feat_result = await session.execute(select(TrackFeatures).where(TrackFeatures.track_id.in_(ids)))
+    feat_map = {t.track_id: t for t in feat_result.scalars().all()}
+    candidates = [feat_map[tid] for tid in ids if tid in feat_map]
+
+    return {
+        "query": q,
+        "count": len(candidates),
+        "tracks": [
+            {
+                "track_id": c.track_id,
+                "title": c.title,
+                "artist": c.artist,
+                "album": c.album,
+                "bpm": c.bpm,
+                "energy": c.energy,
+                "mood_tags": c.mood_tags,
+                "similarity": round(scores_map.get(c.track_id, 0.0), 4),
+            }
+            for c in candidates
+        ],
+    }

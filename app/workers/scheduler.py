@@ -276,6 +276,7 @@ async def _periodic_recommendation_pipeline(trigger: str = "scheduled") -> None:
         ("lastfm_cache", "Last.fm cache", "app.services.lastfm_candidates", "build_cache"),
         ("sasrec", "SASRec training", "app.services.sasrec", "train"),
         ("session_gru", "Session GRU", "app.services.session_gru", "train"),
+        ("music_map", "2D music map (UMAP)", "app.services.music_map", "build_map"),
     ]
 
     for step_name, display, module_path, func_name in _steps:
