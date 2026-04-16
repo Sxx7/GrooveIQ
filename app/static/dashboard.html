@@ -2307,40 +2307,15 @@ function buildCharts(btn) {
 }
 
 // ---------------------------------------------------------------------------
-// Discovery tab (sub-tabs: Similar Artists, Soulseek)
+// Discovery tab
 // ---------------------------------------------------------------------------
 
-var discoverySubTab = 'similar';  // 'similar' | 'soulseek'
-var _bulkPollTimer = null;
-
 function loadDiscovery() {
-  if (discoverySubTab === 'soulseek') {
-    loadDiscoverySoulseek();
-  } else {
-    loadDiscoverySimilar();
-  }
-}
-
-function switchDiscoverySubTab(sub) {
-  discoverySubTab = sub;
-  loadDiscovery();
-}
-
-function _discoverySubTabBar() {
-  return '<div style="display:flex;gap:4px;margin-bottom:16px;border-bottom:1px solid var(--border);padding-bottom:8px">'
-    + '<button class="' + (discoverySubTab === 'similar' ? '' : 'secondary') + '" onclick="switchDiscoverySubTab(\'similar\')" style="font-size:13px;padding:6px 16px">Similar Artists</button>'
-    + '<button class="' + (discoverySubTab === 'soulseek' ? '' : 'secondary') + '" onclick="switchDiscoverySubTab(\'soulseek\')" style="font-size:13px;padding:6px 16px">Soulseek</button>'
-    + '</div>';
-}
-
-// --- Sub-tab: Similar Artists (Lidarr discovery) ---
-
-function loadDiscoverySimilar() {
   return Promise.all([
     api('/v1/discovery/stats'),
     api('/v1/discovery?limit=50')
   ]).then(function(results) {
-    renderDiscoverySimilar(results[0], results[1]);
+    renderDiscovery(results[0], results[1]);
   });
 }
 
@@ -2355,15 +2330,12 @@ function discoveryStatusBadge(status) {
 function discoverySourceBadge(source) {
   if (source === 'lastfm_similar') return '<span class="badge badge-purple">similar</span>';
   if (source === 'lastfm_genre') return '<span class="badge badge-blue">genre</span>';
-  if (source === 'chart') return '<span class="badge badge-blue">chart</span>';
   return '<span class="badge">' + esc(source) + '</span>';
 }
 
-function renderDiscoverySimilar(stats, data) {
-  var h = _discoverySubTabBar();
-
-  h += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">'
-    + '<h2 style="font-size:18px">Similar Artist Discovery</h2>';
+function renderDiscovery(stats, data) {
+  var h = '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">'
+    + '<h2 style="font-size:18px">Music Discovery</h2>';
 
   if (stats.enabled) {
     h += '<button onclick="runDiscovery(this)">Run Discovery</button>';
@@ -2371,7 +2343,7 @@ function renderDiscoverySimilar(stats, data) {
   h += '</div>';
 
   if (!stats.enabled) {
-    h += '<div class="empty">Similar Artist Discovery is not configured.<br>Set <code>LASTFM_API_KEY</code>, <code>LIDARR_URL</code>, and <code>LIDARR_API_KEY</code> in your .env file.</div>';
+    h += '<div class="empty">Music Discovery is not configured.<br>Set <code>LASTFM_API_KEY</code>, <code>LIDARR_URL</code>, and <code>LIDARR_API_KEY</code> in your .env file.</div>';
     $('#app').innerHTML = h;
     return;
   }
@@ -2432,218 +2404,6 @@ function runDiscovery(btn) {
     btn.disabled = false;
     btn.textContent = 'Run Discovery';
   });
-}
-
-// --- Sub-tab: Soulseek (bulk download top artists) ---
-
-function loadDiscoverySoulseek() {
-  api('/v1/soulseek/bulk-download/status').then(function(job) {
-    renderDiscoverySoulseek(job);
-  }).catch(function() {
-    renderDiscoverySoulseek(null);
-  });
-}
-
-function renderDiscoverySoulseek(job) {
-  var h = _discoverySubTabBar();
-
-  h += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">'
-    + '<h2 style="font-size:18px">Soulseek Bulk Download</h2>'
-    + '</div>';
-
-  h += '<p style="color:var(--text-dim);font-size:13px;margin-bottom:20px">'
-    + 'Fetch the top artists from Last.fm global charts and download their top tracks via Soulseek (slskd). '
-    + 'Prefers lossless (FLAC) when available. Skips tracks already downloaded.</p>';
-
-  // --- Start form ---
-  var isRunning = job && job.status === 'running';
-
-  h += '<div class="panel full-width" style="margin-bottom:20px"><div class="panel-header">Start Bulk Download</div>'
-    + '<div class="panel-body" style="padding:20px">';
-
-  h += '<div style="display:flex;gap:16px;align-items:flex-end;flex-wrap:wrap">';
-
-  h += '<div style="flex:1;min-width:150px">'
-    + '<label style="display:block;font-size:12px;color:var(--text-dim);margin-bottom:4px">Top Artists</label>'
-    + '<input type="number" id="bulk-max-artists" value="500" min="1" max="1000" '
-    + 'style="width:100%;padding:8px 12px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:14px" '
-    + (isRunning ? 'disabled' : '') + '>'
-    + '</div>';
-
-  h += '<div style="flex:1;min-width:150px">'
-    + '<label style="display:block;font-size:12px;color:var(--text-dim);margin-bottom:4px">Tracks per Artist</label>'
-    + '<input type="number" id="bulk-tracks-per" value="20" min="1" max="50" '
-    + 'style="width:100%;padding:8px 12px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:14px" '
-    + (isRunning ? 'disabled' : '') + '>'
-    + '</div>';
-
-  h += '<div style="display:flex;gap:8px">';
-  if (isRunning) {
-    h += '<button class="danger" onclick="cancelBulkDownload(this)">Cancel</button>';
-  } else {
-    h += '<button onclick="startBulkDownload(this)">Start Download</button>';
-  }
-  h += '</div>';
-  h += '</div>';
-
-  // Estimated total
-  h += '<div style="margin-top:12px;font-size:12px;color:var(--text-dim)" id="bulk-estimate">'
-    + 'Up to <b>10,000</b> tracks (500 artists x 20 tracks each)</div>';
-
-  h += '</div></div>';
-
-  // --- Progress panel (shown when job exists) ---
-  if (job && job.status !== 'no_job') {
-    h += _renderBulkProgress(job);
-  }
-
-  $('#app').innerHTML = h;
-
-  // Wire up estimate calculator
-  var artistsInput = document.getElementById('bulk-max-artists');
-  var tracksInput = document.getElementById('bulk-tracks-per');
-  if (artistsInput && tracksInput) {
-    var updateEstimate = function() {
-      var a = parseInt(artistsInput.value) || 0;
-      var t = parseInt(tracksInput.value) || 0;
-      var total = a * t;
-      var el = document.getElementById('bulk-estimate');
-      if (el) el.innerHTML = 'Up to <b>' + total.toLocaleString() + '</b> tracks (' + a + ' artists x ' + t + ' tracks each)';
-    };
-    artistsInput.addEventListener('input', updateEstimate);
-    tracksInput.addEventListener('input', updateEstimate);
-  }
-
-  // Auto-poll if running
-  if (isRunning) {
-    _startBulkPoll();
-  } else {
-    _stopBulkPoll();
-  }
-}
-
-function _renderBulkProgress(job) {
-  var h = '<div class="panel full-width"><div class="panel-header">'
-    + 'Job Progress '
-    + _bulkStatusBadge(job.status)
-    + '</div>';
-
-  h += '<div class="panel-body" style="padding:20px">';
-
-  // Progress bar
-  var pct = job.total_artists > 0 ? Math.round((job.artists_processed / job.total_artists) * 100) : 0;
-  var barColor = job.status === 'running' ? 'var(--accent)' : (job.status === 'completed' ? 'var(--green)' : (job.status === 'failed' ? 'var(--red)' : 'var(--yellow)'));
-
-  h += '<div style="margin-bottom:16px">';
-  h += '<div style="display:flex;justify-content:space-between;font-size:12px;color:var(--text-dim);margin-bottom:4px">'
-    + '<span>Artists: ' + job.artists_processed + ' / ' + job.total_artists + '</span>'
-    + '<span>' + pct + '%</span>'
-    + '</div>';
-  h += '<div style="height:8px;background:var(--bg);border-radius:4px;overflow:hidden">'
-    + '<div style="height:100%;width:' + pct + '%;background:' + barColor + ';border-radius:4px;transition:width 0.5s ease"></div>'
-    + '</div>';
-  if (job.current_artist && job.status === 'running') {
-    h += '<div style="font-size:12px;color:var(--text-dim);margin-top:4px">Currently: <b style="color:var(--text)">' + esc(job.current_artist) + '</b></div>';
-  }
-  h += '</div>';
-
-  // Stats grid
-  h += '<div class="stats-grid">'
-    + '<div class="stat-card"><div class="stat-value">' + job.total_tracks + '</div><div class="stat-label">Total Tracks Found</div></div>'
-    + '<div class="stat-card"><div class="stat-value" style="color:var(--green)">' + job.tracks_queued + '</div><div class="stat-label">Queued</div></div>'
-    + '<div class="stat-card"><div class="stat-value" style="color:var(--blue)">' + job.tracks_searched + '</div><div class="stat-label">Searched</div></div>'
-    + '<div class="stat-card"><div class="stat-value" style="color:var(--yellow)">' + job.tracks_skipped + '</div><div class="stat-label">Skipped (exists)</div></div>'
-    + '<div class="stat-card"><div class="stat-value" style="color:var(--red)">' + job.tracks_failed + '</div><div class="stat-label">Failed</div></div>';
-
-  // Duration
-  if (job.started_at) {
-    var elapsed = (job.finished_at || Math.floor(Date.now() / 1000)) - job.started_at;
-    var mins = Math.floor(elapsed / 60);
-    var secs = elapsed % 60;
-    h += '<div class="stat-card"><div class="stat-value">' + mins + '<span style="font-size:14px">m </span>' + secs + '<span style="font-size:14px">s</span></div><div class="stat-label">Elapsed</div></div>';
-  }
-  h += '</div>';
-
-  // Recent errors
-  if (job.errors && job.errors.length > 0) {
-    h += '<details style="margin-top:12px"><summary style="cursor:pointer;font-size:13px;color:var(--red);font-weight:500">'
-      + job.errors.length + ' recent error(s)</summary>'
-      + '<div style="margin-top:8px;max-height:200px;overflow:auto;background:var(--bg);border-radius:6px;padding:12px;font-family:monospace;font-size:11px;color:var(--text-dim)">';
-    for (var i = job.errors.length - 1; i >= 0; i--) {
-      h += '<div style="margin-bottom:4px">' + esc(job.errors[i]) + '</div>';
-    }
-    h += '</div></details>';
-  }
-
-  h += '</div></div>';
-  return h;
-}
-
-function _bulkStatusBadge(status) {
-  var cls = 'badge-yellow';
-  if (status === 'running') cls = 'badge-blue';
-  else if (status === 'completed') cls = 'badge-green';
-  else if (status === 'failed') cls = 'badge-red';
-  else if (status === 'cancelled') cls = 'badge-yellow';
-  return '<span class="badge ' + cls + '">' + esc(status) + '</span>';
-}
-
-function startBulkDownload(btn) {
-  var artists = parseInt(document.getElementById('bulk-max-artists').value) || 500;
-  var tracks = parseInt(document.getElementById('bulk-tracks-per').value) || 20;
-
-  if (artists > 1000) artists = 1000;
-  if (tracks > 50) tracks = 50;
-
-  if (!confirm('Download top tracks for ' + artists + ' artists (' + (artists * tracks).toLocaleString() + ' tracks max) via Soulseek?\n\nThis will run in the background.')) return;
-
-  btn.disabled = true;
-  btn.textContent = 'Starting...';
-
-  fetch(BASE + '/v1/soulseek/bulk-download?max_artists=' + artists + '&tracks_per_artist=' + tracks, {
-    method: 'POST',
-    headers: headers()
-  }).then(function(res) {
-    if (!res.ok) return res.json().then(function(d) { throw new Error(d.detail || res.statusText); });
-    return res.json();
-  }).then(function() {
-    setTimeout(function() { loadDiscoverySoulseek(); }, 1500);
-  }).catch(function(e) {
-    alert('Failed to start: ' + e.message);
-    btn.disabled = false;
-    btn.textContent = 'Start Download';
-  });
-}
-
-function cancelBulkDownload(btn) {
-  btn.disabled = true;
-  btn.textContent = 'Cancelling...';
-  fetch(BASE + '/v1/soulseek/bulk-download/cancel', {
-    method: 'POST',
-    headers: headers()
-  }).then(function(res) { return res.json(); })
-  .then(function() {
-    setTimeout(function() { loadDiscoverySoulseek(); }, 1000);
-  }).catch(function(e) {
-    alert('Cancel failed: ' + e.message);
-    btn.disabled = false;
-    btn.textContent = 'Cancel';
-  });
-}
-
-function _startBulkPoll() {
-  _stopBulkPoll();
-  _bulkPollTimer = setInterval(function() {
-    if (currentView !== 'discovery' || discoverySubTab !== 'soulseek') { _stopBulkPoll(); return; }
-    api('/v1/soulseek/bulk-download/status').then(function(job) {
-      if (!job || job.status !== 'running') _stopBulkPoll();
-      if (currentView === 'discovery' && discoverySubTab === 'soulseek') renderDiscoverySoulseek(job);
-    }).catch(function() { _stopBulkPoll(); });
-  }, 3000);
-}
-
-function _stopBulkPoll() {
-  if (_bulkPollTimer) { clearInterval(_bulkPollTimer); _bulkPollTimer = null; }
 }
 
 // ---------------------------------------------------------------------------

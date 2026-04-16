@@ -1417,83 +1417,123 @@ function buildCharts(btn) {
 }
 
 // =========================================================================
-// Discovery View
+// Discovery View (sub-tabs: Lidarr, Fill Library, Soulseek)
 // =========================================================================
+var discoverySubTab = 'lidarr';  // 'lidarr' | 'fill' | 'soulseek'
+var _bulkPollTimer = null;
+
 function loadDiscovery() {
-  return Promise.all([
-    api('/v1/discovery/stats'), api('/v1/discovery?limit=50'),
-    api('/v1/fill-library/stats').catch(function() { return null; }),
-    api('/v1/fill-library?limit=50').catch(function() { return null; })
-  ]).then(function(r) { renderDiscovery(r[0], r[1], r[2], r[3]); });
+  if (discoverySubTab === 'soulseek') return loadDiscoverySoulseek();
+  if (discoverySubTab === 'fill') return loadDiscoveryFill();
+  return loadDiscoveryLidarr();
 }
 
-function renderDiscovery(stats, data, flStats, flData) {
-  var h = '<div class="page-header"><h1 class="page-title">Music Discovery</h1>';
+function switchDiscoverySubTab(sub) {
+  discoverySubTab = sub;
+  loadDiscovery();
+}
+
+function _discoverySubTabBar() {
+  var subs = [
+    { id: 'lidarr', label: 'Similar Artists' },
+    { id: 'fill', label: 'Fill Library' },
+    { id: 'soulseek', label: 'Soulseek' }
+  ];
+  var bar = '<div class="subtab-bar" style="margin-bottom:1rem">';
+  for (var i = 0; i < subs.length; i++) {
+    bar += '<button class="subtab' + (subs[i].id === discoverySubTab ? ' active' : '') + '" onclick="switchDiscoverySubTab(\'' + subs[i].id + '\')">' + subs[i].label + '</button>';
+  }
+  return bar + '</div>';
+}
+
+// --- Sub-tab: Lidarr Similar Artists ---
+function loadDiscoveryLidarr() {
+  return Promise.all([
+    api('/v1/discovery/stats'),
+    api('/v1/discovery?limit=50')
+  ]).then(function(r) { renderDiscoveryLidarr(r[0], r[1]); });
+}
+
+function renderDiscoveryLidarr(stats, data) {
+  var h = _discoverySubTabBar();
+  h += '<div class="page-header"><h1 class="page-title">Similar Artist Discovery</h1>';
   if (stats.enabled) h += '<div class="page-actions"><button class="btn btn-primary btn-sm" onclick="runDiscovery(this)">Run Discovery</button></div>';
   h += '</div>';
-  if (!stats.enabled) { h += '<div class="empty">Music Discovery is not configured.<br>Set <code>LASTFM_API_KEY</code>, <code>LIDARR_URL</code>, and <code>LIDARR_API_KEY</code> in your .env file.</div>'; }
-  else {
-    var sent = (stats.by_status.sent||0) + (stats.by_status.in_lidarr||0);
-    h += '<div class="stats-grid"><div class="stat-card"><div class="stat-label">Total Discovered</div><div class="stat-value">' + stats.total + '</div></div><div class="stat-card"><div class="stat-label">Sent to Lidarr</div><div class="stat-value text-success">' + sent + '</div></div><div class="stat-card"><div class="stat-label">Pending</div><div class="stat-value text-warning">' + (stats.by_status.pending||0) + '</div></div><div class="stat-card"><div class="stat-label">Today</div><div class="stat-value">' + stats.today_count + ' <span style="font-size:0.875rem" class="text-muted">/ ' + stats.daily_limit + '</span></div></div></div>';
-    var requests = data.requests || [];
-    if (!requests.length) { h += '<div class="empty">No discovery requests yet. Click "Run Discovery" to start finding new music.</div>'; }
-    else {
-      h += '<div class="card"><div class="card-header">Recent Discoveries <span class="subtitle">' + data.total + ' total</span></div>';
-      h += '<div class="card-body" style="overflow-x:auto"><table><tr><th>Artist</th><th>Source</th><th>Seed</th><th>Similarity</th><th>Status</th><th>When</th></tr>';
-      for (var i = 0; i < requests.length; i++) {
-        var r = requests[i];
-        var seed = r.seed_artist ? esc(r.seed_artist) : (r.seed_genre ? '<span class="text-muted">' + esc(r.seed_genre) + '</span>' : '\u2014');
-        var srcBadge = r.source === 'lastfm_similar' ? '<span class="badge badge-purple">similar</span>' : r.source === 'lastfm_genre' ? '<span class="badge badge-info">genre</span>' : '<span class="badge">' + esc(r.source) + '</span>';
-        var statusCls = r.status === 'sent' ? 'info' : r.status === 'in_lidarr' ? 'success' : r.status === 'failed' ? 'danger' : 'warning';
-        var err = r.error_message ? ' title="' + esc(r.error_message) + '"' : '';
-        h += '<tr' + err + '><td><strong>' + esc(r.artist_name) + '</strong>' + (r.artist_mbid ? '<br><span class="mono text-xs text-muted">' + esc(r.artist_mbid).substring(0, 16) + '...</span>' : '') + '</td><td>' + srcBadge + '</td><td>' + seed + '</td><td style="min-width:80px">' + (r.similarity_score != null ? '<div class="bar-track" style="height:14px"><div class="bar-fill" style="width:' + (r.similarity_score * 100).toFixed(0) + '%"></div></div>' : '\u2014') + '</td><td><span class="badge badge-' + statusCls + '">' + esc(r.status) + '</span></td><td>' + timeAgo(r.created_at) + '</td></tr>';
-      }
-      h += '</table></div></div>';
-    }
+  if (!stats.enabled) {
+    h += '<div class="empty">Music Discovery is not configured.<br>Set <code>LASTFM_API_KEY</code>, <code>LIDARR_URL</code>, and <code>LIDARR_API_KEY</code> in your .env file.</div>';
+    setAppContent(h);
+    return;
   }
+  var sent = (stats.by_status.sent||0) + (stats.by_status.in_lidarr||0);
+  h += '<div class="stats-grid"><div class="stat-card"><div class="stat-label">Total Discovered</div><div class="stat-value">' + stats.total + '</div></div><div class="stat-card"><div class="stat-label">Sent to Lidarr</div><div class="stat-value text-success">' + sent + '</div></div><div class="stat-card"><div class="stat-label">Pending</div><div class="stat-value text-warning">' + (stats.by_status.pending||0) + '</div></div><div class="stat-card"><div class="stat-label">Today</div><div class="stat-value">' + stats.today_count + ' <span style="font-size:0.875rem" class="text-muted">/ ' + stats.daily_limit + '</span></div></div></div>';
+  var requests = data.requests || [];
+  if (!requests.length) {
+    h += '<div class="empty">No discovery requests yet. Click "Run Discovery" to start finding new music.</div>';
+  } else {
+    h += '<div class="card"><div class="card-header">Recent Discoveries <span class="subtitle">' + data.total + ' total</span></div>';
+    h += '<div class="card-body" style="overflow-x:auto"><table><tr><th>Artist</th><th>Source</th><th>Seed</th><th>Similarity</th><th>Status</th><th>When</th></tr>';
+    for (var i = 0; i < requests.length; i++) {
+      var r = requests[i];
+      var seed = r.seed_artist ? esc(r.seed_artist) : (r.seed_genre ? '<span class="text-muted">' + esc(r.seed_genre) + '</span>' : '\u2014');
+      var srcBadge = r.source === 'lastfm_similar' ? '<span class="badge badge-purple">similar</span>' : r.source === 'lastfm_genre' ? '<span class="badge badge-info">genre</span>' : '<span class="badge">' + esc(r.source) + '</span>';
+      var statusCls = r.status === 'sent' ? 'info' : r.status === 'in_lidarr' ? 'success' : r.status === 'failed' ? 'danger' : 'warning';
+      var err = r.error_message ? ' title="' + esc(r.error_message) + '"' : '';
+      h += '<tr' + err + '><td><strong>' + esc(r.artist_name) + '</strong>' + (r.artist_mbid ? '<br><span class="mono text-xs text-muted">' + esc(r.artist_mbid).substring(0, 16) + '...</span>' : '') + '</td><td>' + srcBadge + '</td><td>' + seed + '</td><td style="min-width:80px">' + (r.similarity_score != null ? '<div class="bar-track" style="height:14px"><div class="bar-fill" style="width:' + (r.similarity_score * 100).toFixed(0) + '%"></div></div>' : '\u2014') + '</td><td><span class="badge badge-' + statusCls + '">' + esc(r.status) + '</span></td><td>' + timeAgo(r.created_at) + '</td></tr>';
+    }
+    h += '</table></div></div>';
+  }
+  setAppContent(h);
+}
 
-  // Fill Library section
-  h += '<div style="margin-top:2rem"><div class="page-header"><h1 class="page-title">Fill Library</h1>';
+// --- Sub-tab: Fill Library ---
+function loadDiscoveryFill() {
+  return Promise.all([
+    api('/v1/fill-library/stats').catch(function() { return null; }),
+    api('/v1/fill-library?limit=50').catch(function() { return null; })
+  ]).then(function(r) { renderDiscoveryFill(r[0], r[1]); });
+}
+
+function renderDiscoveryFill(flStats, flData) {
+  var h = _discoverySubTabBar();
+  h += '<div class="page-header"><h1 class="page-title">Fill Library</h1>';
   if (flStats && flStats.enabled) h += '<div class="page-actions"><button class="btn btn-primary btn-sm" onclick="runFillLibrary(this)">Run Fill Library</button></div>';
   h += '</div>';
   if (!flStats || !flStats.enabled) {
     h += '<div class="empty">Fill Library is not configured.<br>Set <code>FILL_LIBRARY_ENABLED=true</code>, <code>AB_LOOKUP_URL</code>, <code>LIDARR_URL</code>, and <code>LIDARR_API_KEY</code> in your .env file.</div>';
-  } else {
-    var flSent = flStats.by_status.sent || 0;
-    var flFailed = flStats.by_status.failed || 0;
-    var avgMatch = flStats.avg_distance_sent != null ? ((1 - flStats.avg_distance_sent) * 100).toFixed(0) + '%' : '\u2014';
-    h += '<div class="stats-grid">';
-    h += '<div class="stat-card"><div class="stat-label">Albums Queued</div><div class="stat-value text-success">' + flSent + '</div></div>';
-    h += '<div class="stat-card"><div class="stat-label">Total Processed</div><div class="stat-value">' + flStats.total + '</div></div>';
-    h += '<div class="stat-card"><div class="stat-label">Avg Match</div><div class="stat-value">' + avgMatch + '</div></div>';
-    h += '<div class="stat-card"><div class="stat-label">Today</div><div class="stat-value">' + flStats.today_count + ' <span style="font-size:0.875rem" class="text-muted">/ ' + flStats.max_per_run + ' max</span></div></div>';
-    h += '</div>';
-
-    var flRequests = (flData && flData.requests) || [];
-    if (!flRequests.length) {
-      h += '<div class="empty">No fill-library requests yet. Click "Run Fill Library" to find taste-matched albums.</div>';
-    } else {
-      h += '<div class="card"><div class="card-header">Recent Fill Library Albums <span class="subtitle">' + flData.total + ' total</span></div>';
-      h += '<div class="card-body" style="overflow-x:auto"><table><tr><th>Artist</th><th>Album</th><th>Tracks</th><th>Match</th><th>Status</th><th>When</th></tr>';
-      for (var j = 0; j < flRequests.length; j++) {
-        var fl = flRequests[j];
-        var matchPct = fl.avg_distance != null ? ((1 - fl.avg_distance) * 100).toFixed(0) : '\u2014';
-        var bestPct = fl.best_distance != null ? ((1 - fl.best_distance) * 100).toFixed(0) : null;
-        var matchBar = fl.avg_distance != null ? '<div class="bar-track" style="height:14px"><div class="bar-fill" style="width:' + matchPct + '%"></div></div><span class="text-xs text-muted">' + matchPct + '%' + (bestPct ? ' (best ' + bestPct + '%)' : '') + '</span>' : '\u2014';
-        var flStatusCls = fl.status === 'sent' ? 'success' : fl.status === 'album_monitored' ? 'info' : fl.status === 'artist_added' ? 'info' : fl.status === 'failed' ? 'danger' : fl.status === 'skipped' ? 'warning' : 'warning';
-        var flErr = fl.error_message ? ' title="' + esc(fl.error_message) + '"' : '';
-        h += '<tr' + flErr + '><td><strong>' + esc(fl.artist_name) + '</strong></td>';
-        h += '<td>' + (fl.album_name ? esc(fl.album_name) : '<span class="text-muted">' + (fl.album_mbid ? esc(fl.album_mbid).substring(0, 16) + '...' : '\u2014') + '</span>') + '</td>';
-        h += '<td>' + (fl.matched_tracks || '\u2014') + '</td>';
-        h += '<td style="min-width:100px">' + matchBar + '</td>';
-        h += '<td><span class="badge badge-' + flStatusCls + '">' + esc(fl.status) + '</span></td>';
-        h += '<td>' + timeAgo(fl.created_at) + '</td></tr>';
-      }
-      h += '</table></div></div>';
-    }
+    setAppContent(h);
+    return;
   }
+  var flSent = flStats.by_status.sent || 0;
+  var avgMatch = flStats.avg_distance_sent != null ? ((1 - flStats.avg_distance_sent) * 100).toFixed(0) + '%' : '\u2014';
+  h += '<div class="stats-grid">';
+  h += '<div class="stat-card"><div class="stat-label">Albums Queued</div><div class="stat-value text-success">' + flSent + '</div></div>';
+  h += '<div class="stat-card"><div class="stat-label">Total Processed</div><div class="stat-value">' + flStats.total + '</div></div>';
+  h += '<div class="stat-card"><div class="stat-label">Avg Match</div><div class="stat-value">' + avgMatch + '</div></div>';
+  h += '<div class="stat-card"><div class="stat-label">Today</div><div class="stat-value">' + flStats.today_count + ' <span style="font-size:0.875rem" class="text-muted">/ ' + flStats.max_per_run + ' max</span></div></div>';
   h += '</div>';
 
+  var flRequests = (flData && flData.requests) || [];
+  if (!flRequests.length) {
+    h += '<div class="empty">No fill-library requests yet. Click "Run Fill Library" to find taste-matched albums.</div>';
+  } else {
+    h += '<div class="card"><div class="card-header">Recent Fill Library Albums <span class="subtitle">' + flData.total + ' total</span></div>';
+    h += '<div class="card-body" style="overflow-x:auto"><table><tr><th>Artist</th><th>Album</th><th>Tracks</th><th>Match</th><th>Status</th><th>When</th></tr>';
+    for (var j = 0; j < flRequests.length; j++) {
+      var fl = flRequests[j];
+      var matchPct = fl.avg_distance != null ? ((1 - fl.avg_distance) * 100).toFixed(0) : '\u2014';
+      var bestPct = fl.best_distance != null ? ((1 - fl.best_distance) * 100).toFixed(0) : null;
+      var matchBar = fl.avg_distance != null ? '<div class="bar-track" style="height:14px"><div class="bar-fill" style="width:' + matchPct + '%"></div></div><span class="text-xs text-muted">' + matchPct + '%' + (bestPct ? ' (best ' + bestPct + '%)' : '') + '</span>' : '\u2014';
+      var flStatusCls = fl.status === 'sent' ? 'success' : fl.status === 'album_monitored' ? 'info' : fl.status === 'artist_added' ? 'info' : fl.status === 'failed' ? 'danger' : fl.status === 'skipped' ? 'warning' : 'warning';
+      var flErr = fl.error_message ? ' title="' + esc(fl.error_message) + '"' : '';
+      h += '<tr' + flErr + '><td><strong>' + esc(fl.artist_name) + '</strong></td>';
+      h += '<td>' + (fl.album_name ? esc(fl.album_name) : '<span class="text-muted">' + (fl.album_mbid ? esc(fl.album_mbid).substring(0, 16) + '...' : '\u2014') + '</span>') + '</td>';
+      h += '<td>' + (fl.matched_tracks || '\u2014') + '</td>';
+      h += '<td style="min-width:100px">' + matchBar + '</td>';
+      h += '<td><span class="badge badge-' + flStatusCls + '">' + esc(fl.status) + '</span></td>';
+      h += '<td>' + timeAgo(fl.created_at) + '</td></tr>';
+    }
+    h += '</table></div></div>';
+  }
   setAppContent(h);
 }
 
@@ -1505,6 +1545,157 @@ function runDiscovery(btn) {
 function runFillLibrary(btn) {
   btn.disabled = true; btn.textContent = 'Running...';
   apiPost('/v1/fill-library/run', {}).then(function() { btn.textContent = 'Started'; setTimeout(function() { loadDiscovery(); }, 5000); setTimeout(function() { loadDiscovery(); }, 15000); }).catch(function(e) { alert('Fill Library failed: ' + e.message); btn.disabled = false; btn.textContent = 'Run Fill Library'; });
+}
+
+// --- Sub-tab: Soulseek bulk download (Last.fm top artists -> Soulseek) ---
+function loadDiscoverySoulseek() {
+  api('/v1/soulseek/bulk-download/status')
+    .then(renderDiscoverySoulseek)
+    .catch(function() { renderDiscoverySoulseek(null); });
+}
+
+function renderDiscoverySoulseek(job) {
+  var h = _discoverySubTabBar();
+  h += '<div class="page-header"><h1 class="page-title">Soulseek Bulk Download</h1></div>';
+  h += '<p class="text-muted text-sm" style="margin-bottom:1.25rem">Fetch the top artists from Last.fm global charts and download their top tracks via Soulseek (slskd). Prefers lossless (FLAC). Skips tracks already downloaded.</p>';
+
+  var isRunning = job && job.status === 'running';
+
+  // Start form
+  h += '<div class="card" style="margin-bottom:1.25rem"><div class="card-header">Start Bulk Download</div>';
+  h += '<div class="card-body">';
+  h += '<div style="display:flex;gap:1rem;align-items:flex-end;flex-wrap:wrap">';
+  h += '<div style="flex:1;min-width:140px"><label class="text-xs text-muted" style="display:block;margin-bottom:0.25rem">Top Artists</label>'
+    + '<input type="number" id="bulk-max-artists" class="form-input" value="500" min="1" max="1000"' + (isRunning ? ' disabled' : '') + '></div>';
+  h += '<div style="flex:1;min-width:140px"><label class="text-xs text-muted" style="display:block;margin-bottom:0.25rem">Tracks per Artist</label>'
+    + '<input type="number" id="bulk-tracks-per" class="form-input" value="20" min="1" max="50"' + (isRunning ? ' disabled' : '') + '></div>';
+  h += '<div>';
+  if (isRunning) {
+    h += '<button class="btn btn-danger btn-sm" onclick="cancelBulkDownload(this)">Cancel</button>';
+  } else {
+    h += '<button class="btn btn-primary btn-sm" onclick="startBulkDownload(this)">Start Download</button>';
+  }
+  h += '</div></div>';
+  h += '<div class="text-xs text-muted" style="margin-top:0.5rem" id="bulk-estimate">Up to <strong>10,000</strong> tracks (500 artists \u00d7 20 tracks each)</div>';
+  h += '</div></div>';
+
+  // Progress
+  if (job && job.status && job.status !== 'no_job') {
+    h += _renderBulkProgress(job);
+  }
+
+  setAppContent(h);
+
+  // Wire up live estimate
+  var ai = document.getElementById('bulk-max-artists');
+  var ti = document.getElementById('bulk-tracks-per');
+  if (ai && ti) {
+    var upd = function() {
+      var a = parseInt(ai.value) || 0;
+      var t = parseInt(ti.value) || 0;
+      var el = document.getElementById('bulk-estimate');
+      if (el) el.innerHTML = 'Up to <strong>' + (a * t).toLocaleString() + '</strong> tracks (' + a + ' artists \u00d7 ' + t + ' tracks each)';
+    };
+    ai.addEventListener('input', upd);
+    ti.addEventListener('input', upd);
+  }
+
+  if (isRunning) _startBulkPoll(); else _stopBulkPoll();
+}
+
+function _renderBulkProgress(job) {
+  var pct = job.total_artists > 0 ? Math.round((job.artists_processed / job.total_artists) * 100) : 0;
+  var statusCls = job.status === 'running' ? 'info' : (job.status === 'completed' ? 'success' : (job.status === 'failed' ? 'danger' : 'warning'));
+
+  var h = '<div class="card"><div class="card-header">Job Progress <span class="badge badge-' + statusCls + '">' + esc(job.status) + '</span></div>';
+  h += '<div class="card-body">';
+
+  // Progress bar
+  h += '<div style="margin-bottom:1rem">';
+  h += '<div style="display:flex;justify-content:space-between" class="text-xs text-muted"><span>Artists: ' + job.artists_processed + ' / ' + job.total_artists + '</span><span>' + pct + '%</span></div>';
+  h += '<div class="bar-track" style="height:8px;margin-top:0.25rem"><div class="bar-fill" style="width:' + pct + '%"></div></div>';
+  if (job.current_artist && job.status === 'running') {
+    h += '<div class="text-xs text-muted" style="margin-top:0.25rem">Currently: <strong style="color:var(--text-primary)">' + esc(job.current_artist) + '</strong></div>';
+  }
+  h += '</div>';
+
+  // Stats grid
+  h += '<div class="stats-grid">';
+  h += '<div class="stat-card"><div class="stat-label">Total Tracks Found</div><div class="stat-value">' + job.total_tracks + '</div></div>';
+  h += '<div class="stat-card"><div class="stat-label">Queued</div><div class="stat-value text-success">' + job.tracks_queued + '</div></div>';
+  h += '<div class="stat-card"><div class="stat-label">Searched</div><div class="stat-value text-info">' + job.tracks_searched + '</div></div>';
+  h += '<div class="stat-card"><div class="stat-label">Skipped</div><div class="stat-value text-warning">' + job.tracks_skipped + '</div></div>';
+  h += '<div class="stat-card"><div class="stat-label">Failed</div><div class="stat-value text-danger">' + job.tracks_failed + '</div></div>';
+  if (job.started_at) {
+    var elapsed = (job.finished_at || Math.floor(Date.now() / 1000)) - job.started_at;
+    var mins = Math.floor(elapsed / 60);
+    var secs = elapsed % 60;
+    h += '<div class="stat-card"><div class="stat-label">Elapsed</div><div class="stat-value">' + mins + '<span style="font-size:0.875rem">m </span>' + secs + '<span style="font-size:0.875rem">s</span></div></div>';
+  }
+  h += '</div>';
+
+  // Errors
+  if (job.errors && job.errors.length > 0) {
+    h += '<details style="margin-top:1rem"><summary class="text-sm text-danger" style="cursor:pointer;font-weight:600">' + job.errors.length + ' recent error(s)</summary>';
+    h += '<div class="mono text-xs text-muted" style="margin-top:0.5rem;max-height:200px;overflow:auto;background:var(--bg);border-radius:6px;padding:0.75rem">';
+    for (var i = job.errors.length - 1; i >= 0; i--) {
+      h += '<div style="margin-bottom:0.25rem">' + esc(job.errors[i]) + '</div>';
+    }
+    h += '</div></details>';
+  }
+
+  h += '</div></div>';
+  return h;
+}
+
+function startBulkDownload(btn) {
+  var artists = parseInt(document.getElementById('bulk-max-artists').value) || 500;
+  var tracks = parseInt(document.getElementById('bulk-tracks-per').value) || 20;
+  if (artists > 1000) artists = 1000;
+  if (tracks > 50) tracks = 50;
+  if (!confirm('Download top tracks for ' + artists + ' artists (' + (artists * tracks).toLocaleString() + ' tracks max) via Soulseek?\n\nThis will run in the background.')) return;
+
+  btn.disabled = true; btn.textContent = 'Starting...';
+  fetch(BASE + '/v1/soulseek/bulk-download?max_artists=' + artists + '&tracks_per_artist=' + tracks, {
+    method: 'POST', headers: headers()
+  }).then(function(res) {
+    if (!res.ok) return res.json().then(function(d) { throw new Error(d.detail || res.statusText); });
+    return res.json();
+  }).then(function() {
+    setTimeout(function() { loadDiscoverySoulseek(); }, 1500);
+  }).catch(function(e) {
+    alert('Failed to start: ' + e.message);
+    btn.disabled = false; btn.textContent = 'Start Download';
+  });
+}
+
+function cancelBulkDownload(btn) {
+  btn.disabled = true; btn.textContent = 'Cancelling...';
+  fetch(BASE + '/v1/soulseek/bulk-download/cancel', {
+    method: 'POST', headers: headers()
+  }).then(function(r) { return r.json(); })
+   .then(function() { setTimeout(loadDiscoverySoulseek, 1000); })
+   .catch(function(e) { alert('Cancel failed: ' + e.message); btn.disabled = false; btn.textContent = 'Cancel'; });
+}
+
+function _startBulkPoll() {
+  _stopBulkPoll();
+  _bulkPollTimer = setInterval(function() {
+    if (currentView !== 'content' || contentSubTab !== 'discovery' || discoverySubTab !== 'soulseek') {
+      _stopBulkPoll();
+      return;
+    }
+    api('/v1/soulseek/bulk-download/status').then(function(job) {
+      if (!job || job.status !== 'running') _stopBulkPoll();
+      if (currentView === 'content' && contentSubTab === 'discovery' && discoverySubTab === 'soulseek') {
+        renderDiscoverySoulseek(job);
+      }
+    }).catch(function() { _stopBulkPoll(); });
+  }, 3000);
+}
+
+function _stopBulkPoll() {
+  if (_bulkPollTimer) { clearInterval(_bulkPollTimer); _bulkPollTimer = null; }
 }
 
 // =========================================================================
