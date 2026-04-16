@@ -269,6 +269,7 @@ async def _search_and_download(
     results = await slskd.search(query, limit=5)
     if not results:
         job.tracks_failed += 1
+        job.errors.append(f"No Soulseek results: {artist} - {title}")
         return
 
     best = results[0]

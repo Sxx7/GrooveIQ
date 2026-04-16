@@ -117,6 +117,32 @@ class SlskdClient:
             await self._wait_for_search(search_id, timeout_s)
             responses = await self._get_search_responses(search_id)
             results = self._flatten_and_rank(responses, query)
+            if not results:
+                # Diagnose: show raw counts so we can see whether peers responded
+                # at all vs whether everything was filtered out.
+                total_files = sum(len(r.get("files") or []) for r in responses)
+                total_locked = sum(
+                    1
+                    for r in responses
+                    for f in r.get("files") or []
+                    if f.get("isLocked")
+                )
+                total_audio = sum(
+                    1
+                    for r in responses
+                    for f in r.get("files") or []
+                    if not f.get("isLocked") and _ext(f.get("filename", "")) in _AUDIO_EXTENSIONS
+                )
+                logger.info(
+                    "slskd search %r empty after filtering: %d responses, %d files, "
+                    "%d locked, %d audio (rejected by min-size %d B)",
+                    query,
+                    len(responses),
+                    total_files,
+                    total_locked,
+                    total_audio,
+                    _MIN_FILE_SIZE,
+                )
             return results[:limit]
         finally:
             # Cleanup the search on slskd side.
