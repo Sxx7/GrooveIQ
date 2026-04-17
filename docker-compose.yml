@@ -225,13 +225,20 @@ services:
       - "${SLSKD_PORT:-5030}:5030"
       - "50300:50300"
     environment:
-      SLSKD_SLSK_USERNAME:          ${SOULSEEK_USERNAME}
-      SLSKD_SLSK_PASSWORD:          ${SOULSEEK_PASSWORD}
-      SLSKD_USERNAME:               ${SLSKD_WEB_USERNAME:-slskd}
-      SLSKD_PASSWORD:               ${SLSKD_WEB_PASSWORD:-slskd}
-      SLSKD_API_KEY:                ${SLSKD_API_KEY}
-      SLSKD_DOWNLOADS_DIR:          /music/_soulseek_incoming
-      SLSKD_REMOTE_CONFIGURATION:   "true"
+      SLSKD_SLSK_USERNAME:              ${SOULSEEK_USERNAME}
+      SLSKD_SLSK_PASSWORD:              ${SOULSEEK_PASSWORD}
+      SLSKD_USERNAME:                   ${SLSKD_WEB_USERNAME:-slskd}
+      SLSKD_PASSWORD:                   ${SLSKD_WEB_PASSWORD:-slskd}
+      SLSKD_API_KEY:                    ${SLSKD_API_KEY}
+      SLSKD_DOWNLOADS_DIR:              /music/_soulseek_incoming
+      # Share the mounted library read-only. Many Soulseek peers refuse to
+      # answer searches from users with empty shares (anti-leech). The
+      # [ReadOnly] prefix prevents uploaders from touching your files.
+      # Multiple paths separated with ';'.
+      SLSKD_SHARED_DIR:                 "[ReadOnly]/music"
+      SLSKD_REMOTE_CONFIGURATION:       "true"
+      # Required for the web-UI folder picker in Options -> Shares.
+      SLSKD_REMOTE_FILE_MANAGEMENT:     "true"
     volumes:
       - slskd_data:/app
       - ${MUSIC_LIBRARY_PATH:-/mnt/music}:/music:rw
