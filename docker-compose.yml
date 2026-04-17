@@ -243,6 +243,12 @@ services:
       # (10k+ files) otherwise consume hundreds of MB and cause .NET GC
       # thrashing during the initial scan, which can stall the web UI.
       SLSKD_SHARES_CACHE_STORAGE_MODE:  disk
+      # Default slskd search timeout is 15s, which is too tight for popular
+      # queries on leaf-level branches: peers lose the race before any
+      # response reaches us. 45s gives the distributed tree time to fan out
+      # and peers time to reply.
+      SLSKD_SEARCH_RESPONSE_LIMIT:      250
+      SLSKD_SEARCH_SEARCH_TIMEOUT:      45000
     volumes:
       - slskd_data:/app
       - ${MUSIC_LIBRARY_PATH:-/mnt/music}:/music:rw
