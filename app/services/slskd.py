@@ -109,14 +109,27 @@ class SlskdClient:
         if timeout_s is None:
             timeout_s = settings.SLSKD_SEARCH_TIMEOUT
 
-        search_id = await self._submit_search(query)
+        # Soulseek peer matchers require every token in searchText to appear
+        # in the remote filename. Parenthetical suffixes like "(Remastered 2019)"
+        # or "(feat. X)", apostrophes, exclamation marks, ampersands, smart
+        # quotes, etc. almost never appear verbatim in peers' filenames, so
+        # passing them through returns zero results even when the track is
+        # widely available. Sanitize before submitting.
+        sanitized = _sanitize_query(query)
+        if not sanitized:
+            logger.info("slskd search query %r became empty after sanitize, skipping", query)
+            return []
+        if sanitized != query:
+            logger.debug("slskd search sanitized %r -> %r", query, sanitized)
+
+        search_id = await self._submit_search(sanitized)
         if not search_id:
             return []
 
         try:
             await self._wait_for_search(search_id, timeout_s)
             responses = await self._get_search_responses(search_id)
-            results = self._flatten_and_rank(responses, query)
+            results = self._flatten_and_rank(responses, sanitized)
             if not results:
                 # Diagnose: show raw counts so we can see whether peers responded
                 # at all vs whether everything was filtered out.
@@ -134,9 +147,10 @@ class SlskdClient:
                     if not f.get("isLocked") and _ext(f.get("filename", "")) in _AUDIO_EXTENSIONS
                 )
                 logger.info(
-                    "slskd search %r empty after filtering: %d responses, %d files, "
-                    "%d locked, %d audio (rejected by min-size %d B)",
+                    "slskd search %r (sanitized %r) empty after filtering: %d responses, "
+                    "%d files, %d locked, %d audio (rejected by min-size %d B)",
                     query,
+                    sanitized,
                     len(responses),
                     total_files,
                     total_locked,
@@ -413,6 +427,106 @@ _NON_ALNUM_RE = re.compile(r"[^a-z0-9\s]")
 
 def _normalize(s: str) -> str:
     return _NON_ALNUM_RE.sub("", s.lower()).strip()
+
+
+# Parenthetical / bracketed suffixes that Last.fm and Spotify attach to titles
+# but almost never appear in actual filenames on Soulseek peers. If the
+# bracketed content matches one of these tokens, strip the whole group.
+_NOISE_TOKENS = (
+    "remaster", "remastered", "remix", "mix", "edit", "radio edit",
+    "version", "re-recorded", "rerecorded", "re recorded",
+    "live", "acoustic", "instrumental", "a cappella", "acapella",
+    "demo", "mono", "stereo", "extended", "single version",
+    "album version", "original version", "original mix",
+    "feat", "ft", "featuring", "with",
+    "bonus track", "bonus", "deluxe", "explicit", "clean",
+    "anniversary", "expanded", "special edition",
+)
+
+_BRACKET_GROUP_RE = re.compile(r"[\(\[\{][^\(\)\[\]\{\}]*[\)\]\}]")
+_FEAT_TRAILING_RE = re.compile(
+    r"\s+(?:feat\.?|ft\.?|featuring|with)\s+.*$",
+    re.IGNORECASE,
+)
+# Only strip dash-suffixes whose very first word (optionally preceded by a
+# 4-digit year) is an unambiguous production-annotation keyword. This catches
+# Spotify/Last.fm style "Song - Remastered 2009" / "Song - 2013 Remaster" but
+# leaves genuine title suffixes like "Oasis - Live Forever" intact.
+_DASH_SUFFIX_RE = re.compile(
+    r"\s+-\s+(?:\d{4}\s+)?"
+    r"(?:remaster(?:ed)?|remix(?:es|ed)?|re[\- ]?recorded|"
+    r"radio edit|single version|album version|"
+    r"original version|original mix|"
+    r"extended (?:mix|version)|bonus track|"
+    r"deluxe(?:\s+edition)?|anniversary(?:\s+edition)?|"
+    r"expanded(?:\s+edition)?|special edition|"
+    r"mono version|stereo version|explicit|clean)\b.*$",
+    re.IGNORECASE,
+)
+
+# Apostrophes sit inside words ("Don't", "Rock'n'Roll"). Removing them keeps
+# the word as a single token that substring-matches most peer filenames.
+_APOSTROPHE_RE = re.compile(r"[''`’‘]")
+# Other punctuation is better turned into whitespace so tokens split cleanly
+# and the Soulseek matcher can match each on its own.
+_BAD_CHARS_RE = re.compile(r'[!?"”“*<>|\\/:;,&@#$%^=+~]')
+# Dashes and dots that sit inside tokens: replace with space too.
+_DASH_DOT_RE = re.compile(r"[\-–—.·]")
+_MULTI_SPACE_RE = re.compile(r"\s+")
+
+
+def _sanitize_query(query: str) -> str:
+    """Sanitize a Soulseek searchText for peer-side matchers.
+
+    Soulseek peers require every token to appear verbatim in the remote
+    filename. Strip parenthetical annotations, featuring credits, and
+    punctuation that peers' filenames won't contain. Falls back to a
+    whitespace-collapsed original if sanitisation empties the string.
+    """
+    if not query:
+        return ""
+
+    s = query.strip()
+
+    # Strip bracketed groups whose content is a "noise" annotation like
+    # "(Remastered 2019)", "(feat. X)", "[Deluxe Edition]".
+    def _drop_noise_group(match: re.Match[str]) -> str:
+        inner = match.group(0)[1:-1].lower()
+        return "" if any(tok in inner for tok in _NOISE_TOKENS) else match.group(0)
+
+    # Run twice to catch nested-ish "(feat. X) (Remastered)" patterns.
+    for _ in range(2):
+        new_s = _BRACKET_GROUP_RE.sub(_drop_noise_group, s)
+        if new_s == s:
+            break
+        s = new_s
+
+    # Strip trailing "feat. X" / "ft. X" / "featuring X" outside brackets.
+    s = _FEAT_TRAILING_RE.sub("", s)
+
+    # Strip trailing " - Remastered 2019" style production suffixes.
+    s = _DASH_SUFFIX_RE.sub("", s)
+
+    # Remove apostrophes without splitting the word ("Don't" -> "Dont").
+    s = _APOSTROPHE_RE.sub("", s)
+
+    # Replace other problematic punctuation with spaces so tokens split cleanly.
+    s = _BAD_CHARS_RE.sub(" ", s)
+    s = _DASH_DOT_RE.sub(" ", s)
+
+    # Any remaining brackets (empty or non-noise) are just noise -- drop.
+    s = s.replace("(", " ").replace(")", " ")
+    s = s.replace("[", " ").replace("]", " ")
+    s = s.replace("{", " ").replace("}", " ")
+
+    s = _MULTI_SPACE_RE.sub(" ", s).strip()
+
+    if not s:
+        # Sanitisation nuked everything (query was pure punctuation). Fall
+        # back to the whitespace-collapsed original as a last resort.
+        return _MULTI_SPACE_RE.sub(" ", query).strip()
+
+    return s
 
 
 def _score_file(
