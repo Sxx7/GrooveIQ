@@ -647,7 +647,13 @@ async def get_download_status(
 # ---------------------------------------------------------------------------
 
 
-_IN_FLIGHT_STATUSES = ("pending", "downloading")
+# Initial status set by ``_persist_cascade_request`` is whatever the cascade
+# returned — for streamrip-api / spotdl-api / spotizerr that's "queued"; for
+# the slskd path it can be "queued" too. The watcher only writes the terminal
+# status (completed/duplicate/error), so a row sits at "queued" for the
+# entirety of its in-flight lifetime. Including "pending"/"downloading" too
+# in case a future watcher revision starts emitting them.
+_IN_FLIGHT_STATUSES = ("queued", "pending", "downloading")
 _TERMINAL_SUCCESS_DB = ("completed", "duplicate")
 _TERMINAL_FAILED_DB = ("error", "failed", "stalled", "cancelled")
 

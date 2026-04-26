@@ -3727,22 +3727,60 @@ function dlDownloadAllAlbums(queueKey, btn, sectionLabel) {
   btn.disabled = true;
   var done = 0;
   var failed = 0;
+  console.log('[Download all] starting', { queueKey: queueKey, count: queue.length });
+
+  function postWithTimeout(item, timeoutMs) {
+    // The chain previously stalled silently if a POST hung — fetch has no
+    // built-in timeout. AbortController gives us a timed promise rejection
+    // we can catch and continue past.
+    var ctrl = new AbortController();
+    var killer = setTimeout(function() { ctrl.abort(); }, timeoutMs);
+    return fetch(BASE + '/v1/downloads/from-handle', {
+      method: 'POST',
+      headers: headers(),
+      body: JSON.stringify(item),
+      signal: ctrl.signal
+    }).then(function(res) {
+      clearTimeout(killer);
+      if (!res.ok) {
+        return res.text().then(function(t) {
+          var msg = t || (res.status + ' ' + res.statusText);
+          throw new Error(res.status + ': ' + msg);
+        });
+      }
+      return res.json();
+    }, function(err) {
+      clearTimeout(killer);
+      if (err && err.name === 'AbortError') throw new Error('client timeout after ' + timeoutMs + 'ms');
+      throw err;
+    });
+  }
+
   function step() {
     var idx = done + failed;
     if (idx >= queue.length) {
       btn.disabled = false;
       btn.textContent = origText;
       var summary = 'Queued ' + done + ' of ' + queue.length + ' ' + label;
-      if (failed > 0) summary += ' (' + failed + ' failed)';
+      if (failed > 0) summary += ' (' + failed + ' failed \u2014 see browser console)';
       notify(summary, failed > 0 ? 'warning' : 'success');
+      console.log('[Download all] finished', { done: done, failed: failed, total: queue.length });
       return;
     }
     btn.textContent = 'Queueing ' + (idx + 1) + '/' + queue.length + '\u2026';
-    apiPost('/v1/downloads/from-handle', queue[idx]).then(function() {
+    var item = queue[idx];
+    var albumLabel = (item.artist_name || '') + ' / ' + (item.album_name || item.track_title || '?');
+    console.log('[Download all] POST ' + (idx + 1) + '/' + queue.length, albumLabel, item.handle);
+    postWithTimeout(item, 30000).then(function(rec) {
       done++;
+      console.log('[Download all] OK ' + (idx + 1) + '/' + queue.length, albumLabel, rec && rec.task_id);
       step();
-    }).catch(function() {
+    }).catch(function(err) {
       failed++;
+      console.error('[Download all] FAIL ' + (idx + 1) + '/' + queue.length, albumLabel, err && err.message);
+      // First few failures get a toast so the user notices something is wrong
+      // immediately. Cap at 3 toasts to avoid spamming if the backend is dead.
+      if (failed <= 3) notify('Failed to queue ' + albumLabel + ': ' + (err && err.message), 'error');
       step();
     });
   }
