@@ -88,6 +88,39 @@ function timeAgo(ts) {
 
 function fmtTime(ts) { return ts ? new Date(ts * 1000).toLocaleString() : '\u2014'; }
 
+// In-dashboard toast notifier — replaces alert() popups that interrupt the
+// user. Stacks bottom-right, auto-dismisses after `duration` ms (default 4s),
+// closeable manually. Kinds: 'success' | 'error' | 'warning' | 'info'.
+function notify(message, kind, duration) {
+  if (kind == null) kind = 'info';
+  if (duration == null) duration = (kind === 'error' ? 7000 : 4000);
+  var stack = document.getElementById('toast-stack');
+  if (!stack) {
+    stack = document.createElement('div');
+    stack.id = 'toast-stack';
+    document.body.appendChild(stack);
+  }
+  var icons = { success: '\u2713', error: '!', warning: '\u26A0', info: 'i' };
+  var t = document.createElement('div');
+  t.className = 'toast toast-' + kind;
+  t.innerHTML = '<span class="toast-icon">' + (icons[kind] || icons.info) + '</span>'
+              + '<div class="toast-body"></div>'
+              + '<button class="toast-close" type="button" aria-label="Dismiss">\u00D7</button>';
+  t.querySelector('.toast-body').textContent = String(message);
+  t.querySelector('.toast-close').addEventListener('click', function() { _dismissToast(t); });
+  stack.appendChild(t);
+  if (duration > 0) {
+    setTimeout(function() { _dismissToast(t); }, duration);
+  }
+  return t;
+}
+
+function _dismissToast(t) {
+  if (!t || !t.parentNode || t.classList.contains('toast-out')) return;
+  t.classList.add('toast-out');
+  setTimeout(function() { if (t.parentNode) t.parentNode.removeChild(t); }, 240);
+}
+
 function fmtDuration(secs) {
   if (secs == null) return '\u2014';
   if (secs < 60) return Math.round(secs) + 's';
@@ -223,6 +256,7 @@ function switchTab(view) {
   else if (view === 'users') loadUsers();
   else if (view === 'connections') loadConnections();
   else if (view === 'algorithm') loadAlgorithm();
+  else if (view === 'downloads') loadDownloads();
 }
 
 function contentSubTabBar() {
@@ -2850,6 +2884,994 @@ function algoDiffAgainst(compareConfig, compareLabel) {
   h += '</div>';
   overlay.innerHTML = h;
   document.body.appendChild(overlay);
+}
+
+// =========================================================================
+// Downloads tab — routing config + telemetry + multi-agent search
+// =========================================================================
+
+var dlDefaults = null;       // { config, groups }
+var dlCurrent = null;        // active routing config row
+var dlEdited = null;         // working copy of config
+var dlHistory = null;        // version list
+var dlStats = null;          // /v1/downloads/stats response
+var dlMultiSearch = null;    // last multi-search response (track-search)
+var dlArtistSearch = null;   // last artist-search response (artist + discography)
+var dlAlbumTracks = {};      // service-native album_id -> {tracks, loading, error}
+var dlArtistDownloadQueues = {};  // queueKey -> [{handle, track_title, artist_name, album_name}, ...]
+var dlMultiQuery = '';
+var dlSearchMode = 'tracks'; // 'tracks' | 'artist'
+var dlOpenSection = 'individual';
+
+var DL_CHAIN_KEYS = ['individual', 'bulk_per_track', 'bulk_album'];
+var DL_QUALITY_TIERS = [
+  { value: '', label: 'No threshold' },
+  { value: 'lossy_low', label: 'Lossy (\u2264192 kbps)' },
+  { value: 'lossy_high', label: 'Lossy (256-320 kbps)' },
+  { value: 'lossless', label: 'Lossless (16-bit/44.1)' },
+  { value: 'hires', label: 'Hi-Res (24-bit/96+)' }
+];
+
+function loadDownloads() {
+  $('#app').innerHTML = '<div class="empty">Loading download routing\u2026</div>';
+  Promise.all([
+    api('/v1/downloads/routing/defaults'),
+    api('/v1/downloads/routing'),
+    api('/v1/downloads/routing/history?limit=50'),
+    api('/v1/downloads/stats?days=30').catch(function() { return null; })
+  ]).then(function(results) {
+    dlDefaults = results[0];
+    dlCurrent = results[1];
+    dlEdited = JSON.parse(JSON.stringify(dlCurrent.config));
+    dlHistory = results[2];
+    dlStats = results[3];
+    renderDownloads();
+  }).catch(function(e) {
+    $('#app').innerHTML = '<div class="empty">Failed to load download routing config: ' + esc(e.message) + '</div>';
+  });
+}
+
+function dlHasChanges() { return JSON.stringify(dlEdited) !== JSON.stringify(dlCurrent.config); }
+
+function dlGroupMeta(key) {
+  for (var i = 0; i < dlDefaults.groups.length; i++) {
+    if (dlDefaults.groups[i].key === key) return dlDefaults.groups[i];
+  }
+  return { label: key, description: '', backends_eligible: [] };
+}
+
+function dlBackendDot(name) {
+  var colors = {
+    spotdl: '#4ade80', streamrip: '#fbbf24', spotizerr: '#60a5fa',
+    slskd: '#c084fc', lidarr: '#f87171'
+  };
+  var color = colors[name] || '#64748b';
+  return '<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:' + color + ';margin-right:6px;vertical-align:middle"></span>';
+}
+
+function renderDownloads() {
+  var hasChanges = dlHasChanges();
+  var h = '';
+
+  // Page header
+  h += '<div class="page-header"><div>';
+  h += '<h2 class="page-title">Download Routing</h2>';
+  h += '<span class="subtitle">Version ' + dlCurrent.version + (dlCurrent.name ? ' \u2014 ' + esc(dlCurrent.name) : '') + ' \u2014 priority chains, quality fallback, multi-agent search</span>';
+  h += '</div><div class="page-actions">';
+  h += '<button class="btn btn-secondary btn-sm" onclick="dlExport()">Export</button>';
+  h += '<button class="btn btn-secondary btn-sm" onclick="dlShowImport()">Import</button>';
+  h += '<button class="btn btn-secondary btn-sm" onclick="dlShowHistory()">History</button>';
+  h += '<span class="divider-v"></span>';
+  h += '<button class="btn btn-secondary btn-sm" style="color:var(--color-warning)" onclick="dlResetToDefaults()">Reset to Defaults</button>';
+  if (hasChanges) h += '<button class="btn btn-secondary btn-sm" onclick="dlDiscardChanges()">Discard</button>';
+  h += '<button class="btn btn-primary btn-sm"' + (hasChanges ? '' : ' disabled') + ' onclick="dlSaveAndApply()">Save & Apply</button>';
+  h += '</div></div>';
+
+  if (hasChanges) {
+    h += '<div class="alert" style="margin-bottom:var(--space-4);background:rgba(96,165,250,0.12);border:1px solid #60a5fa;color:#60a5fa">';
+    h += 'Unsaved changes \u2014 click Save & Apply to bump the version and update the active routing.';
+    h += '</div>';
+  }
+
+  for (var i = 0; i < DL_CHAIN_KEYS.length; i++) h += dlRenderChainCard(DL_CHAIN_KEYS[i]);
+  h += dlRenderParallelCard();
+  h += dlRenderTelemetryCard();
+  h += dlRenderMultiSearchCard();
+
+  $('#app').innerHTML = h;
+}
+
+function dlRenderChainCard(key) {
+  var meta = dlGroupMeta(key);
+  var chain = dlEdited[key] || [];
+  var current = dlCurrent.config[key] || [];
+  var changed = JSON.stringify(chain) !== JSON.stringify(current);
+  var open = dlOpenSection === key;
+
+  var h = '<div class="card" style="margin-bottom:var(--space-3)">';
+  h += '<div class="card-header" style="cursor:pointer;user-select:none" onclick="dlToggleSection(\'' + key + '\')">';
+  h += '<div style="display:flex;align-items:center;gap:var(--space-2)">';
+  h += '<span style="display:inline-block;width:14px;text-align:center">' + (open ? '\u25BC' : '\u25B6') + '</span>';
+  h += '<span>' + esc(meta.label) + '</span>';
+  if (changed) h += ' <span class="badge badge-primary" style="font-size:10px">MODIFIED</span>';
+  h += '</div>';
+  h += '<span class="text-xs text-muted" style="font-weight:400;text-align:right;max-width:60%">' + esc(meta.description) + '</span>';
+  h += '</div>';
+  if (!open) { h += '</div>'; return h; }
+
+  h += '<div class="card-body" style="padding:var(--space-3) var(--space-4)">';
+  if (chain.length === 0) {
+    h += '<div class="empty" style="padding:var(--space-3) 0">No backends in this chain. Add one below.</div>';
+  } else {
+    h += '<div style="display:flex;flex-direction:column;gap:var(--space-2)">';
+    for (var idx = 0; idx < chain.length; idx++) h += dlRenderChainRow(key, idx, chain[idx]);
+    h += '</div>';
+  }
+
+  var eligible = meta.backends_eligible || [];
+  var existing = chain.map(function(e) { return e.backend; });
+  var available = eligible.filter(function(b) { return existing.indexOf(b) === -1; });
+  if (available.length > 0) {
+    h += '<div style="margin-top:var(--space-3);display:flex;gap:var(--space-2);align-items:center">';
+    h += '<select id="dl-add-' + key + '" class="input-sm" style="max-width:200px">';
+    for (var j = 0; j < available.length; j++) h += '<option value="' + available[j] + '">' + available[j] + '</option>';
+    h += '</select>';
+    h += '<button class="btn btn-secondary btn-sm" onclick="dlAddBackend(\'' + key + '\')">+ Add backend</button>';
+    h += '</div>';
+  }
+  h += '</div></div>';
+  return h;
+}
+
+function dlRenderChainRow(key, idx, entry) {
+  var canUp = idx > 0;
+  var canDown = idx < (dlEdited[key].length - 1);
+  var h = '<div style="display:flex;align-items:center;gap:var(--space-2);padding:var(--space-2) var(--space-3);background:var(--color-bg);border:1px solid var(--color-border);border-radius:var(--radius-md);flex-wrap:wrap">';
+  h += '<span class="text-xs text-muted" style="font-family:var(--font-mono);min-width:24px;text-align:center">' + (idx + 1) + '</span>';
+  h += '<div style="display:flex;flex-direction:column;gap:1px">';
+  h += '<button class="btn btn-secondary btn-sm" style="padding:1px 6px;font-size:10px;line-height:1"' + (canUp ? '' : ' disabled') + ' onclick="dlMoveBackend(\'' + key + '\',' + idx + ',-1)" title="Move up">\u25B2</button>';
+  h += '<button class="btn btn-secondary btn-sm" style="padding:1px 6px;font-size:10px;line-height:1"' + (canDown ? '' : ' disabled') + ' onclick="dlMoveBackend(\'' + key + '\',' + idx + ',1)" title="Move down">\u25BC</button>';
+  h += '</div>';
+  h += '<div style="min-width:120px;font-weight:600">' + dlBackendDot(entry.backend) + esc(entry.backend) + '</div>';
+  h += '<label style="display:flex;align-items:center;gap:6px;font-size:12px;cursor:pointer">';
+  h += '<input type="checkbox"' + (entry.enabled ? ' checked' : '') + ' onchange="dlSetEnabled(\'' + key + '\',' + idx + ',this.checked)">';
+  h += '<span class="text-muted">enabled</span>';
+  h += '</label>';
+  h += '<label style="display:flex;align-items:center;gap:6px;font-size:12px">';
+  h += '<span class="text-muted">min quality:</span>';
+  h += '<select class="input-sm" style="padding:3px 8px;font-size:12px;max-width:200px" onchange="dlSetMinQuality(\'' + key + '\',' + idx + ',this.value)">';
+  for (var q = 0; q < DL_QUALITY_TIERS.length; q++) {
+    var qt = DL_QUALITY_TIERS[q];
+    var sel = ((entry.min_quality || '') === qt.value) ? ' selected' : '';
+    h += '<option value="' + qt.value + '"' + sel + '>' + esc(qt.label) + '</option>';
+  }
+  h += '</select>';
+  h += '</label>';
+  h += '<label style="display:flex;align-items:center;gap:6px;font-size:12px">';
+  h += '<span class="text-muted">timeout:</span>';
+  h += '<input type="number" min="5" max="600" step="5" value="' + (entry.timeout_s || 60) + '" style="width:64px;padding:3px 6px" onchange="dlSetTimeout(\'' + key + '\',' + idx + ',this.value)">';
+  h += '<span class="text-muted">s</span>';
+  h += '</label>';
+  h += '<div style="flex:1"></div>';
+  h += '<button class="btn btn-secondary btn-sm" style="padding:3px 10px;color:var(--color-danger)" onclick="dlRemoveBackend(\'' + key + '\',' + idx + ')" title="Remove">\u2715</button>';
+  h += '</div>';
+  return h;
+}
+
+function dlRenderParallelCard() {
+  var enabledList = dlEdited.parallel_search_backends || [];
+  var allEligible = (dlGroupMeta('parallel_search').backends_eligible || []);
+  var changed = JSON.stringify(dlEdited.parallel_search_backends) !== JSON.stringify(dlCurrent.config.parallel_search_backends)
+    || dlEdited.parallel_search_timeout_ms !== dlCurrent.config.parallel_search_timeout_ms;
+
+  var h = '<div class="card" style="margin-bottom:var(--space-3)">';
+  h += '<div class="card-header"><div>Parallel Search';
+  if (changed) h += ' <span class="badge badge-primary" style="font-size:10px;margin-left:8px">MODIFIED</span>';
+  h += '</div>';
+  h += '<span class="text-xs text-muted" style="font-weight:400">Concurrent multi-agent search via /v1/downloads/search/multi</span>';
+  h += '</div>';
+  h += '<div class="card-body" style="padding:var(--space-3) var(--space-4);display:flex;gap:var(--space-4);flex-wrap:wrap;align-items:center">';
+  h += '<div><span class="text-xs text-muted" style="margin-right:8px">backends:</span>';
+  for (var i = 0; i < allEligible.length; i++) {
+    var b = allEligible[i];
+    var checked = enabledList.indexOf(b) !== -1;
+    h += '<label style="display:inline-flex;align-items:center;gap:4px;margin-right:12px;font-size:13px;cursor:pointer">';
+    h += '<input type="checkbox"' + (checked ? ' checked' : '') + ' onchange="dlToggleParallelBackend(\'' + b + '\',this.checked)">';
+    h += dlBackendDot(b) + esc(b);
+    h += '</label>';
+  }
+  h += '</div>';
+  h += '<label style="display:flex;align-items:center;gap:6px;font-size:13px">';
+  h += '<span class="text-muted">timeout:</span>';
+  h += '<input type="number" min="500" max="30000" step="500" value="' + (dlEdited.parallel_search_timeout_ms || 5000) + '" style="width:80px;padding:3px 6px" onchange="dlSetParallelTimeout(this.value)">';
+  h += '<span class="text-muted">ms</span>';
+  h += '</label>';
+  h += '</div></div>';
+  return h;
+}
+
+function dlRenderTelemetryCard() {
+  var h = '<div class="card" style="margin-bottom:var(--space-3)">';
+  h += '<div class="card-header"><div>Backend Telemetry <span class="text-xs text-muted" style="margin-left:8px">last 30 days</span></div>';
+  h += '<button class="btn btn-secondary btn-sm" onclick="dlReloadStats()">Refresh</button>';
+  h += '</div>';
+  h += '<div class="card-body" id="dl-stats-body" style="padding:0">';
+  if (!dlStats || !dlStats.backends || dlStats.backends.length === 0) {
+    h += '<div class="empty" style="padding:var(--space-4)">No download history yet \u2014 success rates appear here once downloads have run.</div>';
+  } else {
+    h += '<table style="width:100%;font-size:13px"><tr><th>Backend</th><th style="text-align:right">Total</th><th style="text-align:right">Success</th><th style="text-align:right">Failure</th><th style="text-align:right">In-flight</th><th>Success rate</th></tr>';
+    for (var i = 0; i < dlStats.backends.length; i++) {
+      var b = dlStats.backends[i];
+      var pct = b.success_rate == null ? null : Math.round(b.success_rate * 100);
+      h += '<tr>';
+      h += '<td>' + dlBackendDot(b.backend) + esc(b.backend) + '</td>';
+      h += '<td style="text-align:right">' + b.total + '</td>';
+      h += '<td style="text-align:right;color:var(--color-success)">' + b.success + '</td>';
+      h += '<td style="text-align:right;color:var(--color-danger)">' + b.failure + '</td>';
+      h += '<td style="text-align:right" class="text-muted">' + b.in_flight + '</td>';
+      h += '<td>';
+      if (pct == null) {
+        h += '<span class="text-xs text-muted">no terminal results yet</span>';
+      } else {
+        var color = pct >= 80 ? 'var(--color-success)' : (pct >= 50 ? 'var(--color-warning)' : 'var(--color-danger)');
+        h += '<div style="display:flex;align-items:center;gap:8px"><div style="width:120px;height:10px;background:var(--color-bg);border-radius:4px;overflow:hidden"><div style="height:100%;width:' + pct + '%;background:' + color + ';border-radius:4px"></div></div><span style="color:' + color + ';font-weight:600;min-width:40px">' + pct + '%</span></div>';
+      }
+      h += '</td></tr>';
+    }
+    h += '</table>';
+  }
+  h += '</div></div>';
+  return h;
+}
+
+function dlRenderMultiSearchCard() {
+  var modeTracks = dlSearchMode === 'tracks';
+  var modeArtist = dlSearchMode === 'artist';
+  var placeholder = modeArtist ? 'Artist name (e.g. Daft Punk)' : 'Search query (e.g. Radiohead Creep)';
+  var h = '<div class="card" style="margin-bottom:var(--space-3)">';
+  h += '<div class="card-header"><div>Multi-Agent Search <span class="text-xs text-muted" style="margin-left:8px">test the cascade</span></div>';
+  h += '<span class="text-xs text-muted" style="font-weight:400">Queries every parallel-search backend at once. Click a result to download via that specific backend.</span>';
+  h += '</div>';
+  h += '<div class="card-body" style="padding:var(--space-3) var(--space-4)">';
+  // Mode toggle: Tracks (default) vs Artist (streamrip-only, returns full discographies)
+  h += '<div style="display:flex;gap:4px;margin-bottom:var(--space-2);font-size:12px">';
+  h += '<button type="button" class="btn ' + (modeTracks ? 'btn-primary' : 'btn-secondary') + ' btn-sm" onclick="dlSetSearchMode(\'tracks\')">Tracks</button>';
+  h += '<button type="button" class="btn ' + (modeArtist ? 'btn-primary' : 'btn-secondary') + ' btn-sm" onclick="dlSetSearchMode(\'artist\')">Artist <span class="text-xs text-muted" style="margin-left:4px">(streamrip)</span></button>';
+  h += '</div>';
+  h += '<form onsubmit="dlRunMultiSearch(event)" style="display:flex;gap:var(--space-2);margin-bottom:var(--space-3)">';
+  h += '<input id="dl-multi-q" placeholder="' + esc(placeholder) + '" value="' + esc(dlMultiQuery || '') + '" style="flex:1;padding:6px 10px">';
+  h += '<button type="submit" class="btn btn-primary btn-sm">Search</button>';
+  h += '</form>';
+  h += '<div id="dl-multi-results">' + (modeArtist ? dlRenderArtistResults() : dlRenderMultiResults()) + '</div>';
+  h += '</div></div>';
+  return h;
+}
+
+function dlSetSearchMode(mode) {
+  if (mode !== 'tracks' && mode !== 'artist') return;
+  if (dlSearchMode === mode) return;
+  dlSearchMode = mode;
+  // Don't drop the user's current query — let them re-submit in the new mode.
+  renderDownloads();
+}
+
+// Group threshold: this many tracks sharing (artist, album_id) renders as
+// an album-group card instead of N individual track cards.
+var DL_ALBUM_GROUP_MIN = 3;
+
+function dlRenderMultiResults() {
+  if (!dlMultiSearch) return '<div class="empty" style="padding:var(--space-4) 0">Enter a query and hit Search to query all configured backends in parallel.</div>';
+  var groups = dlMultiSearch.groups || [];
+  if (groups.length === 0) return '<div class="empty">No backends responded.</div>';
+  var h = '';
+  for (var g = 0; g < groups.length; g++) {
+    var grp = groups[g];
+
+    // Per-backend header line
+    h += '<div style="margin-bottom:var(--space-3)">';
+    h += '<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">';
+    h += dlBackendDot(grp.backend) + '<b style="font-size:13px">' + esc(grp.backend) + '</b>';
+    if (grp.ok) {
+      h += '<span class="text-xs text-muted">(' + (grp.results || []).length + ' results)</span>';
+    } else {
+      h += ' <span class="badge badge-danger" style="font-size:10px">' + esc(grp.error || 'failed') + '</span>';
+    }
+    h += '</div>';
+
+    if (!grp.ok || !grp.results || grp.results.length === 0) {
+      h += '</div>';
+      continue;
+    }
+
+    // Bucket results into album-groups (≥ DL_ALBUM_GROUP_MIN tracks sharing
+    // the same artist + album_id) vs. loose singles. Tracks without an
+    // album_id (e.g. spotdl results) always go to singles.
+    var albums = {};
+    var singles = [];
+    for (var r = 0; r < grp.results.length; r++) {
+      var item = grp.results[r];
+      if (item.album_id) {
+        var key = (item.artist || '') + '\u0000' + item.album_id;
+        (albums[key] = albums[key] || []).push(item);
+      } else {
+        singles.push(item);
+      }
+    }
+    // Push under-threshold album buckets back to singles list, preserving
+    // the search's original ordering.
+    var albumKeys = [];
+    for (var k in albums) {
+      if (Object.prototype.hasOwnProperty.call(albums, k)) {
+        if (albums[k].length >= DL_ALBUM_GROUP_MIN) {
+          albumKeys.push(k);
+        } else {
+          for (var s = 0; s < albums[k].length; s++) singles.push(albums[k][s]);
+          delete albums[k];
+        }
+      }
+    }
+
+    // Render album groups first, then any loose singles in the regular grid.
+    for (var ak = 0; ak < albumKeys.length; ak++) {
+      h += dlRenderAlbumGroup(grp.backend, albums[albumKeys[ak]]);
+    }
+    if (singles.length > 0) {
+      h += '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:var(--space-2)">';
+      for (var i = 0; i < singles.length; i++) {
+        h += dlRenderTrackCard(grp.backend, singles[i]);
+      }
+      h += '</div>';
+    }
+
+    h += '</div>';
+  }
+  return h;
+}
+
+function dlRenderAlbumGroup(backend, tracks) {
+  // Sort by track_number (nulls last) so the expanded list reads top-to-bottom.
+  tracks.sort(function(a, b) {
+    var na = a.track_number == null ? 9999 : a.track_number;
+    var nb = b.track_number == null ? 9999 : b.track_number;
+    return na - nb;
+  });
+  var first = tracks[0];
+  var albumId = first.album_id;
+  var year = first.album_year;
+  var totalKnown = first.album_track_count;
+  var inLibCount = tracks.filter(function(t) { return t.in_library; }).length;
+
+  // Build the album-level handle (kind=album) so the "Download album"
+  // button hits the same /v1/downloads/from-handle endpoint as singles.
+  var albumHandle = {
+    backend: backend,
+    kind: 'album',
+    service: (first.download_handle || {}).service,
+    album_id: albumId,
+    artist: first.artist,
+    title: first.album
+  };
+  var albumPayload = encodeURIComponent(JSON.stringify({
+    handle: albumHandle,
+    track_title: first.album,
+    artist_name: first.artist,
+    album_name: first.album
+  }));
+
+  var collapseId = 'dl-alb-' + Math.random().toString(36).slice(2, 10);
+  var h = '<div style="background:var(--color-bg);border:1px solid var(--color-border);border-radius:var(--radius-md);margin-bottom:var(--space-2);overflow:hidden">';
+
+  // Header row (cover · meta · actions)
+  h += '<div style="display:flex;gap:var(--space-3);padding:var(--space-3);align-items:center">';
+  if (first.image_url) {
+    h += '<img src="' + esc(first.image_url) + '" style="width:60px;height:60px;border-radius:var(--radius-sm);flex-shrink:0;object-fit:cover" alt="">';
+  } else {
+    h += '<div style="width:60px;height:60px;background:var(--color-border);border-radius:var(--radius-sm);flex-shrink:0;display:flex;align-items:center;justify-content:center;font-size:22px">\u266B</div>';
+  }
+  h += '<div style="flex:1;min-width:0">';
+  h += '<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap"><b style="font-size:14px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:340px" title="' + esc(first.album || '') + '">' + esc(first.album || '(unknown album)') + '</b>';
+  if (year) h += '<span class="text-xs text-muted">(' + year + ')</span>';
+  if (inLibCount === tracks.length) {
+    h += '<span class="badge badge-success" style="font-size:9px">all in library</span>';
+  } else if (inLibCount > 0) {
+    h += '<span class="badge badge-warning" style="font-size:9px">' + inLibCount + '/' + tracks.length + ' in library</span>';
+  }
+  h += '</div>';
+  var countLabel = totalKnown && totalKnown !== tracks.length ? (tracks.length + ' of ' + totalKnown + ' tracks') : (tracks.length + ' tracks');
+  h += '<div class="text-xs text-muted" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(first.artist || '') + ' \u2014 ' + countLabel + '</div>';
+  h += '</div>';
+  // Actions column
+  h += '<div style="display:flex;flex-direction:column;gap:4px;flex-shrink:0">';
+  h += '<button class="btn btn-primary btn-sm" style="font-size:12px" onclick="dlDownloadEncoded(\'' + albumPayload + '\')" title="Queue every track on this album via ' + esc(backend) + '">Download album</button>';
+  h += '<button class="btn btn-secondary btn-sm" style="font-size:11px" onclick="dlToggleAlbumExpand(\'' + collapseId + '\', this, ' + tracks.length + ')">\u25B8 Show ' + tracks.length + ' tracks</button>';
+  h += '</div>';
+  h += '</div>';
+
+  // Collapsible track list
+  h += '<div id="' + collapseId + '" style="display:none;border-top:1px solid var(--color-border)">';
+  for (var t = 0; t < tracks.length; t++) {
+    h += dlRenderAlbumTrackRow(backend, tracks[t]);
+  }
+  h += '</div>';
+
+  h += '</div>';
+  return h;
+}
+
+function dlRenderAlbumTrackRow(backend, item) {
+  var inLib = !!item.in_library;
+  var trackNo = item.track_number != null ? String(item.track_number).padStart(2, '0') : '\u2014';
+  var dur = '';
+  if (item.duration_ms) {
+    var sec = Math.round(item.duration_ms / 1000);
+    dur = Math.floor(sec / 60) + ':' + String(sec % 60).padStart(2, '0');
+  }
+  var payload = encodeURIComponent(JSON.stringify({
+    handle: item.download_handle || {},
+    track_title: item.title || null,
+    artist_name: item.artist || null,
+    album_name: item.album || null,
+    in_library: inLib
+  }));
+  var btnLabel = inLib ? 'Re-download' : 'Download';
+  var rowStyle = 'display:flex;align-items:center;gap:var(--space-2);padding:6px var(--space-3);font-size:13px;border-bottom:1px solid var(--color-border)'
+    + (inLib ? ';opacity:0.7' : '');
+  var h = '<div style="' + rowStyle + '">';
+  h += '<span class="text-muted" style="font-family:var(--font-mono);font-size:11px;min-width:24px;text-align:right">' + esc(trackNo) + '</span>';
+  h += '<span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + esc(item.title || '') + '">' + esc(item.title || '(no title)') + '</span>';
+  if (inLib) {
+    var fmt = item.library_format ? ' ' + esc(item.library_format) : '';
+    h += '<span class="badge badge-success" style="font-size:9px">in lib' + fmt + '</span>';
+  }
+  h += '<span class="text-xs text-muted" style="min-width:36px;text-align:right">' + esc(dur) + '</span>';
+  h += '<button class="btn btn-secondary btn-sm" style="font-size:11px;padding:2px 8px" onclick="dlDownloadEncoded(\'' + payload + '\')">' + btnLabel + '</button>';
+  h += '</div>';
+  return h;
+}
+
+function dlRenderTrackCard(backend, item) {
+  // Single-track card — same layout as before the album-grouping refactor.
+  var inLib = !!item.in_library;
+  var cardStyle = 'background:var(--color-bg);border:1px solid var(--color-border);border-radius:var(--radius-md);padding:var(--space-2) var(--space-3);display:flex;flex-direction:column;gap:4px;'
+    + (inLib ? 'opacity:0.78' : '');
+  var h = '<div style="' + cardStyle + '">';
+  h += '<div style="display:flex;align-items:center;gap:6px">';
+  h += '<div style="font-weight:600;font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1" title="' + esc(item.title || '') + '">' + esc(item.title || '(no title)') + '</div>';
+  if (inLib) {
+    var fmt = item.library_format ? ' ' + esc(item.library_format) : '';
+    h += '<span class="badge badge-success" style="font-size:9px;flex-shrink:0" title="Already in your library' + (item.library_album ? ': ' + esc(item.library_album).replace(/"/g, '\u201D') : '') + '">in library' + fmt + '</span>';
+  }
+  h += '</div>';
+  h += '<div class="text-xs text-muted" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(item.artist || '') + (item.album ? ' \u2014 ' + esc(item.album) : '') + '</div>';
+  var meta = [];
+  if (item.quality) meta.push(item.quality);
+  if (item.bitrate_kbps) meta.push(item.bitrate_kbps + ' kbps');
+  if (item.duration_ms) meta.push(Math.round(item.duration_ms / 1000) + 's');
+  if (meta.length > 0) h += '<div class="text-xs text-muted">' + esc(meta.join(' \u2022 ')) + '</div>';
+  var payload = encodeURIComponent(JSON.stringify({
+    handle: item.download_handle || {},
+    track_title: item.title || null,
+    artist_name: item.artist || null,
+    album_name: item.album || null,
+    in_library: inLib
+  }));
+  var btnLabel = inLib ? ('Re-download via ' + esc(backend)) : ('Download via ' + esc(backend));
+  var btnTitle = inLib ? 'You already have this — clicking will queue another copy.' : '';
+  h += '<button class="btn btn-secondary btn-sm" style="margin-top:4px;padding:4px 8px;font-size:12px" title="' + btnTitle + '" onclick="dlDownloadEncoded(\'' + payload + '\')">' + btnLabel + '</button>';
+  h += '</div>';
+  return h;
+}
+
+function dlToggleAlbumExpand(panelId, btn, totalTracks) {
+  var el = document.getElementById(panelId);
+  if (!el) return;
+  var nowOpen = el.style.display === 'none';
+  el.style.display = nowOpen ? 'block' : 'none';
+  if (btn) btn.textContent = nowOpen ? '\u25BE Hide tracks' : '\u25B8 Show ' + totalTracks + ' tracks';
+}
+
+// ---------------------------------------------------------------------------
+// Artist-mode rendering — top-N artists with their full discography. Tracks
+// per album lazy-load on expand to keep the initial response light.
+// ---------------------------------------------------------------------------
+
+function dlRenderArtistResults() {
+  if (!dlArtistSearch) {
+    return '<div class="empty" style="padding:var(--space-4) 0">Enter an artist name and hit Search to fetch their discography from streamrip.</div>';
+  }
+  var groups = dlArtistSearch.groups || [];
+  if (groups.length === 0) return '<div class="empty">No backends responded.</div>';
+
+  var h = '';
+  for (var g = 0; g < groups.length; g++) {
+    var grp = groups[g];
+    h += '<div style="margin-bottom:var(--space-3)">';
+    h += '<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">';
+    h += dlBackendDot(grp.backend) + '<b style="font-size:13px">' + esc(grp.backend) + '</b>';
+    if (!grp.ok) {
+      h += ' <span class="badge badge-danger" style="font-size:10px">' + esc(grp.error || 'failed') + '</span>';
+    } else {
+      h += '<span class="text-xs text-muted">(' + (grp.artists || []).length + ' artists)</span>';
+    }
+    h += '</div>';
+    if (grp.ok && grp.artists && grp.artists.length > 0) {
+      for (var a = 0; a < grp.artists.length; a++) {
+        h += dlRenderArtistCard(grp.backend, grp.artists[a]);
+      }
+    }
+    h += '</div>';
+  }
+  return h;
+}
+
+function dlRenderArtistCard(backend, artist) {
+  var albums = (artist.albums || []).slice();
+  // Newest releases first — usually most useful.
+  albums.sort(function(a, b) { return (b.year || 0) - (a.year || 0); });
+  var totalShown = albums.length;
+  var totalKnown = artist.albums_total;
+
+  // Qobuz's `albums_count` is inflated by guest appearances and compilations,
+  // so we don't render it as "X of Y" (it makes the difference look like
+  // missing data when it's actually unrelated entries). We do hint at the
+  // gap via tooltip for curious users.
+  var hasGap = totalKnown && totalKnown > totalShown;
+  var labelTitle = hasGap
+    ? "Primary albums released by this artist. Qobuz's catalog also lists "
+      + (totalKnown - totalShown) + " additional entries (compilations, features, guest appearances)."
+    : "Albums released by this artist.";
+
+  // Stash queues for the per-section "Download all" buttons. Keyed by
+  // (backend|artist_id|section) so primary and others don't collide.
+  var artistKey = backend + '|' + (artist.artist_id || artist.name || Math.random().toString(36).slice(2, 8));
+  var primaryQueueKey = artistKey + '|primary';
+  dlArtistDownloadQueues[primaryQueueKey] = albums.map(function(album) {
+    return dlBuildAlbumDownloadEntry(backend, artist, album);
+  });
+
+  var h = '<div style="background:var(--color-bg);border:1px solid var(--color-border);border-radius:var(--radius-md);margin-bottom:var(--space-3);overflow:hidden">';
+  // Artist header
+  h += '<div style="display:flex;gap:var(--space-3);padding:var(--space-3);align-items:center;background:var(--color-surface)">';
+  if (artist.image_url) {
+    h += '<img src="' + esc(artist.image_url) + '" alt="" style="width:56px;height:56px;border-radius:50%;object-fit:cover;flex-shrink:0">';
+  } else {
+    h += '<div style="width:56px;height:56px;border-radius:50%;background:var(--color-border);display:flex;align-items:center;justify-content:center;font-size:22px;flex-shrink:0">\u266B</div>';
+  }
+  h += '<div style="flex:1;min-width:0">';
+  h += '<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap"><b style="font-size:15px">' + esc(artist.name || '(unknown)') + '</b>';
+  h += '<span class="text-xs text-muted" title="' + esc(labelTitle) + '" style="cursor:help">\u2014 ' + totalShown + ' albums' + (hasGap ? ' \u24D8' : '') + '</span>';
+  if (albums.length > 0) {
+    h += '<button class="btn btn-primary btn-sm" style="font-size:11px;padding:3px 8px;margin-left:auto"';
+    h += ' onclick="dlDownloadAllAlbums(\'' + esc(primaryQueueKey) + '\', this, \'primary\')"';
+    h += ' title="Queue every primary album for download (covers/tributes are not included)">';
+    h += 'Download all ' + albums.length + ' albums</button>';
+  }
+  h += '</div>';
+  h += '</div></div>';
+
+  // Album grid (primary releases)
+  h += '<div style="padding:var(--space-3);display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:var(--space-2)">';
+  for (var i = 0; i < albums.length; i++) {
+    h += dlRenderArtistAlbumCard(backend, artist, albums[i]);
+  }
+  h += '</div>';
+
+  // Other releases (covers, tributes, features) — collapsed by default. These
+  // come from Qobuz's release_type=other and tend to be a mixed bag: some
+  // genuine guest features, but many are AI/cover-artist tributes. We label
+  // it accordingly so users aren't surprised.
+  var others = artist.other_releases || [];
+  if (others.length > 0) {
+    others.sort(function(a, b) { return (b.year || 0) - (a.year || 0); });
+    var otherPanelId = 'dl-art-other-' + esc(artist.artist_id || Math.random().toString(36).slice(2, 8));
+    var otherQueueKey = artistKey + '|other';
+    dlArtistDownloadQueues[otherQueueKey] = others.map(function(album) {
+      return dlBuildAlbumDownloadEntry(backend, artist, album);
+    });
+    h += '<div style="border-top:1px solid var(--color-border);padding:var(--space-2) var(--space-3);background:var(--color-surface);font-size:12px">';
+    h += '<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">';
+    h += '<button class="btn btn-secondary btn-sm" style="font-size:11px;padding:3px 8px" onclick="dlToggleArtistOthers(\'' + otherPanelId + '\', this, ' + others.length + ')">';
+    h += '\u25B8 Show ' + others.length + ' other releases';
+    h += '</button>';
+    h += ' <span class="text-xs text-muted" title="Releases where this artist appears as a contributor or where another artist has covered their material — e.g. compilations, tributes, AI/cover versions, occasional guest spots." style="cursor:help">covers, tributes, features \u24D8</span>';
+    h += '<button class="btn btn-secondary btn-sm" style="font-size:11px;padding:3px 8px;margin-left:auto"';
+    h += ' onclick="dlDownloadAllAlbums(\'' + esc(otherQueueKey) + '\', this, \'other\')"';
+    h += ' title="Queue every other release (covers, tributes, features) for download">';
+    h += 'Download all ' + others.length + ' others</button>';
+    h += '</div>';
+    h += '<div id="' + otherPanelId + '" style="display:none;padding-top:var(--space-2)">';
+    h += '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:var(--space-2)">';
+    for (var j = 0; j < others.length; j++) {
+      h += dlRenderArtistAlbumCard(backend, artist, others[j]);
+    }
+    h += '</div></div></div>';
+  }
+
+  h += '</div>';
+  return h;
+}
+
+function dlBuildAlbumDownloadEntry(backend, artist, album) {
+  return {
+    handle: {
+      backend: backend,
+      kind: 'album',
+      service: artist.service || 'qobuz',
+      album_id: album.album_id,
+      artist: artist.name,
+      title: album.title
+    },
+    track_title: album.title,
+    artist_name: artist.name,
+    album_name: album.title
+  };
+}
+
+function dlDownloadAllAlbums(queueKey, btn, sectionLabel) {
+  var queue = dlArtistDownloadQueues[queueKey];
+  if (!queue || queue.length === 0) {
+    notify('No albums to queue', 'error');
+    return;
+  }
+  var label = sectionLabel === 'other' ? 'other releases' : 'albums';
+  if (!confirm('Queue ' + queue.length + ' ' + label + ' for download? Each one will be downloaded sequentially in the background.')) {
+    return;
+  }
+  btn.disabled = true;
+  var origText = btn.textContent;
+  var done = 0;
+  var failed = 0;
+  function step() {
+    var idx = done + failed;
+    if (idx >= queue.length) {
+      btn.disabled = false;
+      btn.textContent = origText;
+      var summary = 'Queued ' + done + ' of ' + queue.length + ' ' + label;
+      if (failed > 0) summary += ' (' + failed + ' failed)';
+      notify(summary, failed > 0 ? 'warning' : 'success');
+      return;
+    }
+    btn.textContent = 'Queueing ' + (idx + 1) + '/' + queue.length + '\u2026';
+    apiPost('/v1/downloads/from-handle', queue[idx]).then(function() {
+      done++;
+      step();
+    }).catch(function() {
+      failed++;
+      step();
+    });
+  }
+  step();
+}
+
+function dlToggleArtistOthers(panelId, btn, count) {
+  var el = document.getElementById(panelId);
+  if (!el) return;
+  var nowOpen = el.style.display === 'none';
+  el.style.display = nowOpen ? 'block' : 'none';
+  if (btn) btn.textContent = nowOpen ? '\u25BE Hide other releases' : '\u25B8 Show ' + count + ' other releases';
+}
+
+function dlRenderArtistAlbumCard(backend, artist, album) {
+  var collapseId = 'dl-art-alb-' + album.album_id;
+  var albumHandle = {
+    backend: backend,
+    kind: 'album',
+    service: artist.service || 'qobuz',
+    album_id: album.album_id,
+    artist: artist.name,
+    title: album.title
+  };
+  var albumPayload = encodeURIComponent(JSON.stringify({
+    handle: albumHandle,
+    track_title: album.title,
+    artist_name: artist.name,
+    album_name: album.title
+  }));
+
+  var h = '<div style="background:var(--color-surface);border:1px solid var(--color-border);border-radius:var(--radius-md);overflow:hidden">';
+  // Header (cover + title + actions)
+  h += '<div style="display:flex;gap:var(--space-2);padding:var(--space-2)">';
+  if (album.cover_url) {
+    h += '<img src="' + esc(album.cover_url) + '" alt="" style="width:56px;height:56px;border-radius:var(--radius-sm);object-fit:cover;flex-shrink:0">';
+  } else {
+    h += '<div style="width:56px;height:56px;border-radius:var(--radius-sm);background:var(--color-border);display:flex;align-items:center;justify-content:center;font-size:18px;flex-shrink:0">\u266B</div>';
+  }
+  h += '<div style="flex:1;min-width:0;display:flex;flex-direction:column;gap:2px">';
+  h += '<div style="font-weight:600;font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + esc(album.title || '') + '">' + esc(album.title || '(untitled)') + '</div>';
+  var meta = [];
+  if (album.year) meta.push(album.year);
+  if (album.track_count) meta.push(album.track_count + ' tracks');
+  h += '<div class="text-xs text-muted">' + esc(meta.join(' \u2022 ')) + '</div>';
+  h += '<div style="display:flex;gap:4px;margin-top:auto">';
+  h += '<button class="btn btn-primary btn-sm" style="font-size:11px;padding:3px 8px" onclick="dlDownloadEncoded(\'' + albumPayload + '\')" title="Queue every track on this album">Download album</button>';
+  h += '<button class="btn btn-secondary btn-sm" style="font-size:11px;padding:3px 8px" onclick="dlToggleArtistAlbumTracks(\'' + collapseId + '\', this, \'' + esc(artist.service || 'qobuz') + '\', \'' + esc(album.album_id) + '\', \'' + esc(artist.name || '') + '\', \'' + esc(album.title || '') + '\')">\u25B8 Tracks</button>';
+  h += '</div>';
+  h += '</div>';
+  h += '</div>';
+  // Track list panel (lazy-populated)
+  h += '<div id="' + collapseId + '" style="display:none;border-top:1px solid var(--color-border)"></div>';
+  h += '</div>';
+  return h;
+}
+
+function dlToggleArtistAlbumTracks(panelId, btn, service, albumId, artistName, albumTitle) {
+  var panel = document.getElementById(panelId);
+  if (!panel) return;
+  var nowOpen = panel.style.display === 'none';
+  panel.style.display = nowOpen ? 'block' : 'none';
+  if (btn) btn.textContent = nowOpen ? '\u25BE Hide' : '\u25B8 Tracks';
+  if (!nowOpen) return;
+  var cached = dlAlbumTracks[albumId];
+  if (cached && cached.tracks) {
+    panel.innerHTML = dlRenderAlbumTrackPanel(service, albumId, artistName, albumTitle, cached.tracks);
+    return;
+  }
+  panel.innerHTML = '<div style="padding:var(--space-3);font-size:12px;color:var(--color-text-dim)">Loading tracks\u2026</div>';
+  dlAlbumTracks[albumId] = { loading: true };
+  api('/v1/downloads/album-tracks?service=' + encodeURIComponent(service) + '&album_id=' + encodeURIComponent(albumId))
+    .then(function(data) {
+      var tracks = data.tracks || [];
+      dlAlbumTracks[albumId] = { tracks: tracks };
+      panel.innerHTML = dlRenderAlbumTrackPanel(service, albumId, artistName, albumTitle, tracks);
+    })
+    .catch(function(e) {
+      dlAlbumTracks[albumId] = { error: e.message };
+      panel.innerHTML = '<div style="padding:var(--space-3);font-size:12px;color:var(--color-danger)">Failed to load tracks: ' + esc(e.message) + '</div>';
+    });
+}
+
+function dlRenderAlbumTrackPanel(service, albumId, artistName, albumTitle, tracks) {
+  if (!tracks.length) return '<div style="padding:var(--space-3);font-size:12px" class="text-muted">No tracks returned.</div>';
+  var h = '';
+  for (var i = 0; i < tracks.length; i++) {
+    var t = tracks[i];
+    var trackNo = t.track_number != null ? String(t.track_number).padStart(2, '0') : '\u2014';
+    var dur = '';
+    if (t.duration_ms || t.duration) {
+      var sec = t.duration_ms ? Math.round(t.duration_ms / 1000) : t.duration;
+      dur = Math.floor(sec / 60) + ':' + String(sec % 60).padStart(2, '0');
+    }
+    var handle = {
+      backend: 'streamrip',
+      kind: 'track',
+      service: service,
+      service_id: t.service_id || '',
+      album_id: albumId,
+      artist: artistName,
+      title: t.title || ''
+    };
+    var payload = encodeURIComponent(JSON.stringify({
+      handle: handle,
+      track_title: t.title || null,
+      artist_name: artistName,
+      album_name: albumTitle
+    }));
+    h += '<div style="display:flex;align-items:center;gap:var(--space-2);padding:6px var(--space-3);font-size:13px;border-bottom:1px solid var(--color-border)">';
+    h += '<span class="text-muted" style="font-family:var(--font-mono);font-size:11px;min-width:24px;text-align:right">' + esc(trackNo) + '</span>';
+    h += '<span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + esc(t.title || '') + '">' + esc(t.title || '(no title)') + '</span>';
+    h += '<span class="text-xs text-muted" style="min-width:36px;text-align:right">' + esc(dur) + '</span>';
+    h += '<button class="btn btn-secondary btn-sm" style="font-size:11px;padding:2px 8px" onclick="dlDownloadEncoded(\'' + payload + '\')">Download</button>';
+    h += '</div>';
+  }
+  return h;
+}
+
+// -- Downloads tab — interactions ---------------------------------------
+
+function dlToggleSection(key) { dlOpenSection = (dlOpenSection === key) ? '' : key; renderDownloads(); }
+function dlSetEnabled(key, idx, val) { dlEdited[key][idx].enabled = !!val; renderDownloads(); }
+function dlSetMinQuality(key, idx, val) { dlEdited[key][idx].min_quality = val || null; renderDownloads(); }
+function dlSetTimeout(key, idx, val) {
+  var n = parseInt(val, 10); if (!isFinite(n) || n < 5) n = 5; if (n > 600) n = 600;
+  dlEdited[key][idx].timeout_s = n; renderDownloads();
+}
+function dlMoveBackend(key, idx, delta) {
+  var arr = dlEdited[key], newIdx = idx + delta;
+  if (newIdx < 0 || newIdx >= arr.length) return;
+  var tmp = arr[idx]; arr[idx] = arr[newIdx]; arr[newIdx] = tmp;
+  renderDownloads();
+}
+function dlRemoveBackend(key, idx) { dlEdited[key].splice(idx, 1); renderDownloads(); }
+function dlAddBackend(key) {
+  var sel = document.getElementById('dl-add-' + key);
+  if (!sel || !sel.value) return;
+  var backend = sel.value;
+  var defChain = dlDefaults.config[key] || [], defEntry = null;
+  for (var i = 0; i < defChain.length; i++) if (defChain[i].backend === backend) { defEntry = defChain[i]; break; }
+  var entry = defEntry ? JSON.parse(JSON.stringify(defEntry)) : { backend: backend, enabled: true, min_quality: null, timeout_s: 60 };
+  dlEdited[key].push(entry); renderDownloads();
+}
+function dlToggleParallelBackend(backend, on) {
+  var list = dlEdited.parallel_search_backends || [];
+  var idx = list.indexOf(backend);
+  if (on && idx === -1) list.push(backend);
+  if (!on && idx !== -1) list.splice(idx, 1);
+  dlEdited.parallel_search_backends = list; renderDownloads();
+}
+function dlSetParallelTimeout(val) {
+  var n = parseInt(val, 10); if (!isFinite(n) || n < 500) n = 500; if (n > 30000) n = 30000;
+  dlEdited.parallel_search_timeout_ms = n; renderDownloads();
+}
+function dlDiscardChanges() { dlEdited = JSON.parse(JSON.stringify(dlCurrent.config)); renderDownloads(); }
+
+function dlSaveAndApply() {
+  var name = prompt('Version name (optional):', '');
+  apiPut('/v1/downloads/routing', { name: name || null, config: dlEdited }).then(function(saved) {
+    dlCurrent = saved;
+    dlEdited = JSON.parse(JSON.stringify(saved.config));
+    return api('/v1/downloads/routing/history?limit=50');
+  }).then(function(hist) {
+    dlHistory = hist; renderDownloads();
+    notify('Routing config saved as v' + dlCurrent.version, 'success');
+  }).catch(function(e) { notify('Save failed: ' + e.message, 'error'); });
+}
+
+function dlResetToDefaults() {
+  if (!confirm('Reset routing config to defaults? This creates a new version.')) return;
+  apiPost('/v1/downloads/routing/reset', {}).then(function(saved) {
+    dlCurrent = saved;
+    dlEdited = JSON.parse(JSON.stringify(saved.config));
+    return api('/v1/downloads/routing/history?limit=50');
+  }).then(function(hist) {
+    dlHistory = hist; renderDownloads();
+    notify('Reset to defaults (v' + dlCurrent.version + ')', 'success');
+  }).catch(function(e) { notify('Reset failed: ' + e.message, 'error'); });
+}
+
+function dlExport() {
+  fetch(BASE + '/v1/downloads/routing/export', { headers: headers() }).then(function(res) {
+    if (!res.ok) throw new Error(res.statusText);
+    return res.blob().then(function(blob) {
+      var a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = 'grooveiq-routing-v' + dlCurrent.version + '.json';
+      a.click();
+      URL.revokeObjectURL(a.href);
+      notify('Exported routing-v' + dlCurrent.version + '.json', 'success');
+    });
+  }).catch(function(e) { notify('Export failed: ' + e.message, 'error'); });
+}
+
+function dlShowImport() {
+  var overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.innerHTML = '<div class="modal"><h2>Import Routing Configuration</h2>'
+    + '<div class="field"><label>JSON file</label><input type="file" id="dl-import-file" accept=".json"></div>'
+    + '<div class="field"><label>Name (optional)</label><input type="text" id="dl-import-name" placeholder="e.g., Imported from backup"></div>'
+    + '<div class="actions">'
+    + '<button class="btn btn-secondary btn-sm" onclick="this.closest(\'.modal-overlay\').remove()">Cancel</button>'
+    + '<button class="btn btn-primary btn-sm" onclick="dlDoImport()">Import</button>'
+    + '</div></div>';
+  document.body.appendChild(overlay);
+}
+
+function dlDoImport() {
+  var fileInput = document.getElementById('dl-import-file');
+  var nameInput = document.getElementById('dl-import-name');
+  if (!fileInput || !fileInput.files.length) { notify('Select a JSON file first', 'warning'); return; }
+  var reader = new FileReader();
+  reader.onload = function(e) {
+    try {
+      var data = JSON.parse(e.target.result);
+      var config = data.config || data;
+      var name = (nameInput && nameInput.value) || data.name || 'Imported';
+      apiPost('/v1/downloads/routing/import', { name: name, config: config }).then(function(saved) {
+        var overlay = document.querySelector('.modal-overlay');
+        if (overlay) overlay.remove();
+        dlCurrent = saved;
+        dlEdited = JSON.parse(JSON.stringify(saved.config));
+        api('/v1/downloads/routing/history?limit=50').then(function(h) { dlHistory = h; });
+        renderDownloads();
+        notify('Imported as v' + saved.version, 'success');
+      }).catch(function(err) { notify('Import failed: ' + err.message, 'error'); });
+    } catch (ex) { notify('Invalid JSON: ' + ex.message, 'error'); }
+  };
+  reader.readAsText(fileInput.files[0]);
+}
+
+function dlShowHistory() {
+  var overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  var h = '<div class="modal" style="min-width:600px;max-width:760px;max-height:80vh;overflow:auto">';
+  h += '<h2>Routing config version history</h2>';
+  h += '<table style="width:100%;font-size:13px"><tr><th>Version</th><th>Name</th><th>Active</th><th>Created</th><th>Actions</th></tr>';
+  for (var i = 0; i < (dlHistory || []).length; i++) {
+    var v = dlHistory[i];
+    h += '<tr><td>v' + v.version + '</td>';
+    h += '<td>' + esc(v.name || '\u2014') + '</td>';
+    h += '<td>' + (v.is_active ? '<span class="badge badge-success">active</span>' : '') + '</td>';
+    h += '<td class="text-xs text-muted">' + fmtTime(v.created_at) + '</td>';
+    h += '<td>';
+    if (!v.is_active) h += '<button class="btn btn-secondary btn-sm" style="font-size:11px;padding:2px 8px" onclick="dlActivateVersion(' + v.version + ')">Activate</button>';
+    h += '</td></tr>';
+  }
+  h += '</table>';
+  h += '<div style="display:flex;justify-content:flex-end;margin-top:var(--space-4)"><button class="btn btn-secondary btn-sm" onclick="this.closest(\'.modal-overlay\').remove()">Close</button></div>';
+  h += '</div>';
+  overlay.innerHTML = h;
+  document.body.appendChild(overlay);
+}
+
+function dlActivateVersion(version) {
+  if (!confirm('Activate routing config v' + version + '?')) return;
+  apiPost('/v1/downloads/routing/activate/' + version, {}).then(function(saved) {
+    var overlay = document.querySelector('.modal-overlay');
+    if (overlay) overlay.remove();
+    dlCurrent = saved;
+    dlEdited = JSON.parse(JSON.stringify(saved.config));
+    return api('/v1/downloads/routing/history?limit=50');
+  }).then(function(hist) {
+    dlHistory = hist; renderDownloads();
+    notify('Activated routing v' + dlCurrent.version, 'success');
+  }).catch(function(e) { notify('Activate failed: ' + e.message, 'error'); });
+}
+
+function dlReloadStats() {
+  api('/v1/downloads/stats?days=30').then(function(s) {
+    dlStats = s;
+    renderDownloads();
+  }).catch(function(e) { notify('Stats reload failed: ' + e.message, 'error'); });
+}
+
+function dlRunMultiSearch(ev) {
+  if (ev) ev.preventDefault();
+  var input = document.getElementById('dl-multi-q');
+  var q = input ? input.value.trim() : '';
+  if (!q) return;
+  dlMultiQuery = q;
+  var results = document.getElementById('dl-multi-results');
+
+  if (dlSearchMode === 'artist') {
+    if (results) results.innerHTML = '<div class="empty" style="padding:var(--space-3) 0">Looking up artists\u2026</div>';
+    // Reset cached album tracks so a fresh artist query doesn't show stale rows.
+    dlAlbumTracks = {};
+    api('/v1/downloads/search/artist?q=' + encodeURIComponent(q) + '&limit=2&albums_per_artist=100').then(function(res) {
+      dlArtistSearch = res;
+      var r2 = document.getElementById('dl-multi-results');
+      if (r2) r2.innerHTML = dlRenderArtistResults();
+    }).catch(function(e) {
+      var r2 = document.getElementById('dl-multi-results');
+      if (r2) r2.innerHTML = '<div class="empty" style="padding:var(--space-3);color:var(--color-danger)">Artist search failed: ' + esc(e.message) + '</div>';
+    });
+    return;
+  }
+
+  if (results) results.innerHTML = '<div class="empty" style="padding:var(--space-3) 0">Querying configured backends in parallel\u2026</div>';
+  api('/v1/downloads/search/multi?q=' + encodeURIComponent(q) + '&limit=25').then(function(res) {
+    dlMultiSearch = res;
+    var r2 = document.getElementById('dl-multi-results');
+    if (r2) r2.innerHTML = dlRenderMultiResults();
+  }).catch(function(e) {
+    var r2 = document.getElementById('dl-multi-results');
+    if (r2) r2.innerHTML = '<div class="empty" style="padding:var(--space-3);color:var(--color-danger)">Multi-search failed: ' + esc(e.message) + '</div>';
+  });
+}
+
+function dlDownloadEncoded(payloadEnc) {
+  // Single URL-encoded payload from dlRenderMultiResults — avoids any quote
+  // escaping headaches in the onclick attribute. The decoded payload matches
+  // the POST /v1/downloads/from-handle request body shape (with an extra
+  // ``in_library`` hint we keep client-side only).
+  var data;
+  try { data = JSON.parse(decodeURIComponent(payloadEnc)); }
+  catch (e) { notify('Invalid download handle', 'error'); return; }
+  var backend = (data.handle || {}).backend || 'backend';
+  var label = [data.artist_name, data.track_title].filter(Boolean).join(' — ') || 'track';
+  var alreadyInLib = !!data.in_library;
+  // The server endpoint doesn't accept `in_library` — strip it before sending.
+  var body = { handle: data.handle, track_title: data.track_title, artist_name: data.artist_name, album_name: data.album_name };
+  apiPost('/v1/downloads/from-handle', body).then(function(rec) {
+    var status = rec && rec.status;
+    if (status === 'duplicate') {
+      notify('Already downloaded via ' + backend + ' — no new file written: ' + label, 'info');
+    } else if (alreadyInLib) {
+      notify('Re-downloading via ' + backend + ' (was in library): ' + label, 'warning');
+    } else {
+      notify('Queued via ' + backend + ': ' + label, 'success');
+    }
+  }).catch(function(e) {
+    notify('Download via ' + backend + ' failed: ' + e.message, 'error');
+  });
 }
 
 // =========================================================================
