@@ -3514,13 +3514,42 @@ function dlDownloadAllAlbums(queueKey, btn, sectionLabel) {
     return;
   }
   var label = sectionLabel === 'other' ? 'other releases' : 'albums';
-  if (!confirm('Queue ' + queue.length + ' ' + label + ' for download? Each one will be downloaded sequentially in the background.')) {
-    notify('Cancelled — nothing queued', 'info');
+  // Two-step confirm via the button itself — Chrome's "Prevent this page from
+  // creating additional dialogs" silently kills native confirm(), so we keep
+  // safety against misclicks entirely in-page.
+  if (btn.dataset.dlConfirming !== '1') {
+    var origText = btn.textContent;
+    var origClasses = btn.className;
+    btn.dataset.dlConfirming = '1';
+    btn.dataset.dlOrigText = origText;
+    btn.dataset.dlOrigClasses = origClasses;
+    btn.className = 'btn btn-danger btn-sm';
+    btn.style.fontSize = '11px';
+    btn.style.padding = '3px 8px';
+    btn.textContent = 'Click again to queue ' + queue.length + ' ' + label;
+    var resetTimer = setTimeout(function() {
+      btn.textContent = origText;
+      btn.className = origClasses;
+      delete btn.dataset.dlConfirming;
+      delete btn.dataset.dlOrigText;
+      delete btn.dataset.dlOrigClasses;
+      delete btn.dataset.dlResetTimer;
+    }, 5000);
+    btn.dataset.dlResetTimer = String(resetTimer);
     return;
   }
+  // Confirmed second click — clear the pending state and start queueing.
+  clearTimeout(parseInt(btn.dataset.dlResetTimer, 10));
+  var origText = btn.dataset.dlOrigText;
+  var origClasses = btn.dataset.dlOrigClasses;
+  btn.className = origClasses;
+  delete btn.dataset.dlConfirming;
+  delete btn.dataset.dlOrigText;
+  delete btn.dataset.dlOrigClasses;
+  delete btn.dataset.dlResetTimer;
+
   notify('Queueing ' + queue.length + ' ' + label + '\u2026', 'info');
   btn.disabled = true;
-  var origText = btn.textContent;
   var done = 0;
   var failed = 0;
   function step() {
