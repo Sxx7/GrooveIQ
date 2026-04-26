@@ -249,6 +249,8 @@ function switchTab(view) {
   }
   // Disconnect pipeline SSE when leaving pipeline tab
   if (view !== 'pipeline') pipelineDisconnectSSE();
+  // Stop the live download-queue poller when leaving the downloads tab.
+  if (view !== 'downloads') dlStopQueuePolling();
 
   if (view === 'dashboard') loadDashboard();
   else if (view === 'pipeline') loadPipeline();
@@ -2899,6 +2901,9 @@ var dlMultiSearch = null;    // last multi-search response (track-search)
 var dlArtistSearch = null;   // last artist-search response (artist + discography)
 var dlAlbumTracks = {};      // service-native album_id -> {tracks, loading, error}
 var dlArtistDownloadQueues = {};  // queueKey -> [{handle, track_title, artist_name, album_name}, ...]
+var dlQueueTimer = null;     // setInterval handle for the live queue panel
+var dlQueueData = null;      // last response from /v1/downloads/queue
+var dlQueueRecentOpen = false; // whether the "Recent" subsection is expanded
 var dlMultiQuery = '';
 var dlSearchMode = 'tracks'; // 'tracks' | 'artist'
 var dlOpenSection = 'individual';
@@ -2973,12 +2978,182 @@ function renderDownloads() {
     h += '</div>';
   }
 
+  // Live queue panel — populated asynchronously by dlLoadQueue() so the rest
+  // of the tab renders immediately on first paint, and so polling updates can
+  // replace this container without re-rendering the whole tab (which would
+  // discard any open dropdowns / focused inputs in the routing editor below).
+  h += '<div id="dl-queue-panel">' + dlRenderQueuePanel(dlQueueData) + '</div>';
+
   for (var i = 0; i < DL_CHAIN_KEYS.length; i++) h += dlRenderChainCard(DL_CHAIN_KEYS[i]);
   h += dlRenderParallelCard();
   h += dlRenderTelemetryCard();
   h += dlRenderMultiSearchCard();
 
   $('#app').innerHTML = h;
+  dlStartQueuePolling();
+}
+
+// =========================================================================
+// Live download queue (in-flight + recent terminal rows)
+// =========================================================================
+
+function dlStartQueuePolling() {
+  // Idempotent — clear any prior interval before scheduling a fresh one.
+  dlStopQueuePolling();
+  dlLoadQueue();  // immediate fetch so the panel populates without a 3s wait
+  dlQueueTimer = setInterval(dlLoadQueue, 3000);
+}
+
+function dlStopQueuePolling() {
+  if (dlQueueTimer) {
+    clearInterval(dlQueueTimer);
+    dlQueueTimer = null;
+  }
+}
+
+function dlLoadQueue() {
+  // Bail if the user has navigated away — switchTab() also cancels via
+  // dlStopQueuePolling, but a stale request in flight could still land here.
+  if (currentView !== 'downloads') { dlStopQueuePolling(); return; }
+  api('/v1/downloads/queue?recent_limit=10').then(function(data) {
+    dlQueueData = data;
+    var panel = document.getElementById('dl-queue-panel');
+    if (panel) panel.innerHTML = dlRenderQueuePanel(data);
+  }).catch(function(e) {
+    // Don't spam the user with notifications on transient errors during polling.
+    var panel = document.getElementById('dl-queue-panel');
+    if (panel && !dlQueueData) {
+      panel.innerHTML = '<div class="card" style="margin-bottom:var(--space-3)"><div class="card-body" style="padding:var(--space-3)"><div class="empty">Queue unavailable: ' + esc(e.message) + '</div></div></div>';
+    }
+  });
+}
+
+function dlRenderQueuePanel(data) {
+  if (!data) {
+    return '<div class="card" style="margin-bottom:var(--space-3)"><div class="card-body" style="padding:var(--space-3)"><div class="empty">Loading queue\u2026</div></div></div>';
+  }
+  var inFlight = data.in_flight || [];
+  var completed = data.recent_completed || [];
+  var failed = data.recent_failed || [];
+
+  var h = '<div class="card" style="margin-bottom:var(--space-3)">';
+  h += '<div class="card-header"><div>Live Queue';
+  if (inFlight.length > 0) {
+    h += ' <span class="badge badge-primary" style="font-size:10px;margin-left:8px">' + inFlight.length + ' in-flight</span>';
+  }
+  h += '</div>';
+  h += '<span class="text-xs text-muted" style="font-weight:400">Auto-refresh every 3s \u2014 last update ' + dlFormatRelative(data.now) + '</span>';
+  h += '</div>';
+  h += '<div class="card-body" style="padding:0">';
+
+  if (inFlight.length === 0) {
+    h += '<div class="empty" style="padding:var(--space-3)">No downloads in flight.</div>';
+  } else {
+    h += '<div style="display:flex;flex-direction:column">';
+    for (var i = 0; i < inFlight.length; i++) h += dlRenderQueueRow(inFlight[i], 'in_flight');
+    h += '</div>';
+  }
+
+  // Recent activity — always rendered so the user can see what just finished
+  // even when the queue is idle. Collapsible so it doesn't dominate the panel.
+  var recentTotal = completed.length + failed.length;
+  if (recentTotal > 0) {
+    h += '<div style="border-top:1px solid var(--color-border);padding:var(--space-2) var(--space-3);background:var(--color-surface);font-size:12px">';
+    h += '<button class="btn btn-secondary btn-sm" style="font-size:11px;padding:3px 8px" onclick="dlToggleQueueRecent()">';
+    h += (dlQueueRecentOpen ? '\u25BE Hide' : '\u25B8 Show') + ' recent (' + completed.length + ' \u2713 / ' + failed.length + ' \u2717)';
+    h += '</button>';
+    if (dlQueueRecentOpen) {
+      h += '<div style="margin-top:var(--space-2);display:flex;flex-direction:column">';
+      // Interleave by updated_at desc so the most recent shows first regardless of outcome.
+      var recent = completed.concat(failed).sort(function(a, b) { return (b.updated_at || 0) - (a.updated_at || 0); });
+      for (var j = 0; j < recent.length; j++) {
+        var bucket = (recent[j].status === 'error' || recent[j].status === 'failed' || recent[j].status === 'stalled' || recent[j].status === 'cancelled') ? 'failed' : 'completed';
+        h += dlRenderQueueRow(recent[j], bucket);
+      }
+      h += '</div>';
+    }
+    h += '</div>';
+  }
+
+  h += '</div></div>';
+  return h;
+}
+
+function dlToggleQueueRecent() {
+  dlQueueRecentOpen = !dlQueueRecentOpen;
+  var panel = document.getElementById('dl-queue-panel');
+  if (panel) panel.innerHTML = dlRenderQueuePanel(dlQueueData);
+}
+
+function dlRenderQueueRow(row, bucket) {
+  var leftPad = '0 var(--space-3)';
+  var bgColor = (bucket === 'failed') ? 'rgba(248,113,113,0.04)'
+              : (bucket === 'completed') ? 'rgba(74,222,128,0.04)'
+              : 'transparent';
+  var statusBadge = dlQueueStatusBadge(row, bucket);
+  var elapsed = dlFormatElapsed(row.elapsed_s);
+  var progressBar = dlRenderProgressBar(row, bucket);
+  var label = (row.artist_name || '') + (row.artist_name && row.track_title ? ' \u2014 ' : '') + (row.track_title || '(unnamed)');
+  var error = row.error_message ? ' \u2014 ' + row.error_message : '';
+
+  var h = '<div style="display:flex;align-items:center;gap:var(--space-2);padding:var(--space-2) var(--space-3);border-bottom:1px solid var(--color-border);background:' + bgColor + ';font-size:13px;flex-wrap:wrap">';
+  h += '<div style="min-width:90px;display:flex;align-items:center">' + dlBackendDot(row.source || 'unknown') + '<span class="text-xs text-muted">' + esc(row.source || 'unknown') + '</span></div>';
+  h += '<div style="flex:1;min-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + esc(label + error) + '">' + esc(label);
+  if (bucket === 'failed' && row.error_message) {
+    h += '<span class="text-xs" style="color:var(--color-danger);margin-left:8px">\u2014 ' + esc(row.error_message) + '</span>';
+  }
+  h += '</div>';
+  if (progressBar) h += '<div style="min-width:120px">' + progressBar + '</div>';
+  h += '<div style="min-width:60px;text-align:right">' + statusBadge + '</div>';
+  h += '<div style="min-width:64px;text-align:right" class="text-xs text-muted" title="elapsed since queued">' + esc(elapsed) + '</div>';
+  h += '</div>';
+  return h;
+}
+
+function dlQueueStatusBadge(row, bucket) {
+  // Prefer the live status from the backend probe (fresher than the DB row).
+  var status = row.live_status || row.status || 'unknown';
+  var color, label = status;
+  if (bucket === 'completed' || status === 'completed' || status === 'complete' || status === 'done') {
+    color = 'var(--color-success)'; label = '\u2713 done';
+  } else if (status === 'duplicate') {
+    color = 'var(--color-warning)'; label = 'duplicate';
+  } else if (bucket === 'failed' || status === 'error' || status === 'failed' || status === 'cancelled' || status === 'stalled') {
+    color = 'var(--color-danger)'; label = '\u2717 ' + status;
+  } else if (status === 'downloading' || status === 'progress' || status === 'processing') {
+    color = '#60a5fa'; label = 'downloading';
+  } else {
+    color = 'var(--color-text-dim)';
+  }
+  return '<span class="badge" style="font-size:10px;background:transparent;color:' + color + ';border:1px solid ' + color + '">' + esc(label) + '</span>';
+}
+
+function dlRenderProgressBar(row, bucket) {
+  if (bucket !== 'in_flight') return '';
+  var p = row.progress;
+  if (typeof p === 'number' && p >= 0) {
+    var pct = Math.max(0, Math.min(100, Math.round(p * 100)));
+    return '<div style="display:flex;align-items:center;gap:6px"><div style="flex:1;height:6px;background:var(--color-bg);border-radius:3px;overflow:hidden"><div style="height:100%;width:' + pct + '%;background:#60a5fa;transition:width 0.3s ease"></div></div><span class="text-xs text-muted" style="min-width:30px;text-align:right">' + pct + '%</span></div>';
+  }
+  // No live progress (streamrip + slskd today) — show an indeterminate
+  // shimmer so the user knows something is happening even without a %.
+  return '<div style="height:6px;background:var(--color-bg);border-radius:3px;background-image:linear-gradient(90deg,transparent 0%,#60a5fa 50%,transparent 100%);background-size:50% 100%;background-repeat:no-repeat;animation:dlPulse 1.4s linear infinite"></div>';
+}
+
+function dlFormatElapsed(seconds) {
+  if (typeof seconds !== 'number' || seconds < 0) return '';
+  if (seconds < 60) return seconds + 's';
+  if (seconds < 3600) return Math.floor(seconds / 60) + 'm ' + (seconds % 60) + 's';
+  return Math.floor(seconds / 3600) + 'h ' + Math.floor((seconds % 3600) / 60) + 'm';
+}
+
+function dlFormatRelative(unixTs) {
+  if (!unixTs) return '';
+  var diff = Math.max(0, Math.floor(Date.now() / 1000) - unixTs);
+  if (diff < 5) return 'just now';
+  if (diff < 60) return diff + 's ago';
+  if (diff < 3600) return Math.floor(diff / 60) + 'm ago';
+  return Math.floor(diff / 3600) + 'h ago';
 }
 
 function dlRenderChainCard(key) {

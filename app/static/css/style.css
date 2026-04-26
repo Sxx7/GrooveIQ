@@ -272,6 +272,16 @@ body {
   50% { opacity: 0.3; }
 }
 
+/* Live-queue indeterminate progress bar (used when the backend doesn't
+   report a percentage, e.g. streamrip / slskd). The bar element sets
+   `background-size: 50% 100%` so the gradient is half the bar's width;
+   shifting `background-position-x` from 0 to 200% slides one shimmer
+   across the entire bar each cycle. */
+@keyframes dlPulse {
+  0%   { background-position-x: 0%; }
+  100% { background-position-x: 200%; }
+}
+
 /* --- Main Content Area --- */
 .main-content {
   margin-top: 56px;
@@ -1734,4 +1744,73 @@ td.truncate {
 .news-score {
   margin-left: auto;
   color: var(--text-muted);
+}
+
+/* ---------------------------------------------------------------------------
+ * Toast notifications — in-dashboard replacement for alert() popups.
+ * Stacked, auto-dismissing, color-coded by kind (success/error/info/warning).
+ * --------------------------------------------------------------------------- */
+#toast-stack {
+  position: fixed;
+  bottom: 20px;
+  right: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  z-index: 9999;
+  pointer-events: none;
+}
+.toast {
+  pointer-events: auto;
+  min-width: 280px;
+  max-width: 420px;
+  padding: 10px 14px 10px 12px;
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-left: 4px solid var(--color-primary);
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.4;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.4);
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  animation: toast-in 180ms ease-out;
+}
+.toast.toast-success { border-left-color: var(--color-success); }
+.toast.toast-error   { border-left-color: var(--color-danger);  }
+.toast.toast-warning { border-left-color: var(--color-warning); }
+.toast.toast-out { animation: toast-out 220ms ease-in forwards; }
+.toast-icon {
+  font-weight: 700;
+  font-size: 14px;
+  flex-shrink: 0;
+  width: 18px;
+  text-align: center;
+}
+.toast-success .toast-icon { color: var(--color-success); }
+.toast-error   .toast-icon { color: var(--color-danger);  }
+.toast-warning .toast-icon { color: var(--color-warning); }
+.toast-info    .toast-icon { color: var(--color-primary); }
+.toast-body { flex: 1; min-width: 0; word-wrap: break-word; }
+.toast-close {
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 16px;
+  line-height: 1;
+  padding: 0 4px;
+  margin-left: 4px;
+  flex-shrink: 0;
+}
+.toast-close:hover { color: var(--text); }
+@keyframes toast-in {
+  from { opacity: 0; transform: translateX(20px); }
+  to   { opacity: 1; transform: translateX(0); }
+}
+@keyframes toast-out {
+  from { opacity: 1; transform: translateX(0); }
+  to   { opacity: 0; transform: translateX(20px); }
 }
