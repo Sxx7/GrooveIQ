@@ -3515,8 +3515,10 @@ function dlDownloadAllAlbums(queueKey, btn, sectionLabel) {
   }
   var label = sectionLabel === 'other' ? 'other releases' : 'albums';
   if (!confirm('Queue ' + queue.length + ' ' + label + ' for download? Each one will be downloaded sequentially in the background.')) {
+    notify('Cancelled — nothing queued', 'info');
     return;
   }
+  notify('Queueing ' + queue.length + ' ' + label + '\u2026', 'info');
   btn.disabled = true;
   var origText = btn.textContent;
   var done = 0;
