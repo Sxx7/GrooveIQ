@@ -3106,8 +3106,28 @@ function dlRenderQueueRow(row, bucket) {
   if (progressBar) h += '<div style="min-width:120px">' + progressBar + '</div>';
   h += '<div style="min-width:60px;text-align:right">' + statusBadge + '</div>';
   h += '<div style="min-width:64px;text-align:right" class="text-xs text-muted" title="elapsed since queued">' + esc(elapsed) + '</div>';
+  // Cancel button on in-flight rows. Marks the DB row as cancelled — the
+  // upstream rip may still complete in the background but the row drops
+  // out of the queue immediately.
+  if (bucket === 'in_flight' && row.id) {
+    h += '<button class="btn btn-secondary btn-sm" style="padding:1px 8px;font-size:14px;line-height:1;color:var(--color-danger)" title="Dismiss this download" onclick="dlCancelDownload(' + row.id + ', this)">\u2715</button>';
+  }
   h += '</div>';
   return h;
+}
+
+function dlCancelDownload(id, btn) {
+  if (btn) { btn.disabled = true; btn.textContent = '\u2026'; }
+  fetch(BASE + '/v1/downloads/' + id, { method: 'DELETE', headers: headers() }).then(function(res) {
+    if (!res.ok) return res.json().then(function(d) { throw new Error(d.detail || res.statusText); });
+    return res.json();
+  }).then(function(rec) {
+    notify('Cancelled download #' + id, 'info');
+    dlLoadQueue();  // refresh the panel immediately so the row disappears
+  }).catch(function(e) {
+    notify('Cancel failed: ' + e.message, 'error');
+    if (btn) { btn.disabled = false; btn.textContent = '\u2715'; }
+  });
 }
 
 function dlQueueStatusBadge(row, bucket) {

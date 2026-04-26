@@ -49,13 +49,14 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 _TERMINAL_SUCCESS = {"complete", "done"}
+_TERMINAL_DUPLICATE = {"duplicate"}
 _TERMINAL_ERROR = {
     "error",
     "cancelled",
     "error_retried",
     "error_auto_cleaned",
 }
-_TERMINAL_STATES = _TERMINAL_SUCCESS | _TERMINAL_ERROR
+_TERMINAL_STATES = _TERMINAL_SUCCESS | _TERMINAL_DUPLICATE | _TERMINAL_ERROR
 
 # Poll schedule (seconds): tight at the start, loose once we know the
 # download is in flight.  Small tracks land in 10-30s on a decent pipe;
@@ -91,8 +92,15 @@ def active_watcher_count() -> int:
 async def start_watcher(
     task_id: str,
     timeout_s: int = _DEFAULT_TIMEOUT_S,
+    source: str | None = None,
 ) -> bool:
-    """Spawn a background watcher for a Spotizerr task.
+    """Spawn a background watcher for an HTTP-task download backend
+    (spotdl-api / streamrip-api / Spotizerr).
+
+    ``source`` ties the watcher to the backend that owns ``task_id`` —
+    a streamrip task ID is meaningless to spotdl-api and vice versa.
+    When omitted, the source is looked up from the ``download_requests``
+    row at start time.
 
     Safe to call multiple times for the same ``task_id`` — only one
     watcher runs at a time.  Returns True if a new watcher was
@@ -106,7 +114,7 @@ async def start_watcher(
             return False
         _active_watchers.add(task_id)
 
-    asyncio.create_task(_watch_loop(task_id, timeout_s))
+    asyncio.create_task(_watch_loop(task_id, timeout_s, source))
     return True
 
 
@@ -115,13 +123,50 @@ async def start_watcher(
 # ---------------------------------------------------------------------------
 
 
-async def _watch_loop(task_id: str, timeout_s: int) -> None:
-    logger.info("Download watcher started for task %s", task_id)
+def _client_for_source(source: str | None):
+    """Construct the right backend client for the given DownloadRequest.source.
+
+    Returns ``None`` if the source's infra isn't configured. Falls back to
+    the legacy default-backend factory only when ``source`` is missing.
+    """
+    from app.core.config import settings
+
+    if source == "streamrip" and settings.streamrip_enabled:
+        from app.services.streamrip import StreamripClient
+        return StreamripClient(settings.STREAMRIP_API_URL)
+    if source == "spotdl" and settings.spotdl_enabled:
+        from app.services.spotdl import SpotdlClient
+        return SpotdlClient(settings.SPOTDL_API_URL)
+    if source == "spotizerr" and settings.spotizerr_enabled:
+        from app.services.spotizerr import SpotizerrClient
+        return SpotizerrClient(
+            settings.SPOTIZERR_URL, settings.SPOTIZERR_USERNAME, settings.SPOTIZERR_PASSWORD
+        )
+    # Unknown / legacy rows with no source — fall back to whatever the env
+    # default picks. Logged so we notice when it happens.
+    if source:
+        logger.warning("Watcher: no client constructor for source=%r, falling back to default", source)
+    return get_download_client()
+
+
+async def _watch_loop(task_id: str, timeout_s: int, source: str | None = None) -> None:
+    logger.info("Download watcher started for task %s (source=%s)", task_id, source or "?")
     started_at = time.monotonic()
 
-    client = get_download_client()
+    # Resolve source from DB if the caller didn't supply one. Avoids the
+    # historical bug where every watcher used the env-default backend.
+    if source is None:
+        async with AsyncSessionLocal() as session:
+            row = (
+                await session.execute(
+                    select(DownloadRequest.source).where(DownloadRequest.task_id == task_id)
+                )
+            ).scalar_one_or_none()
+            source = row
+
+    client = _client_for_source(source)
     if client is None:
-        logger.warning("Watcher %s: no download backend configured", task_id)
+        logger.warning("Watcher %s: no download backend configured for source=%s", task_id, source)
         async with _watchers_lock:
             _active_watchers.discard(task_id)
         return
@@ -207,11 +252,14 @@ async def _mark_download_done(
     error_message: str,
 ) -> None:
     """Update the download_requests row for a finished task."""
-    final_status = (
-        "completed"
-        if terminal_status in _TERMINAL_SUCCESS
-        else ("error" if terminal_status in _TERMINAL_ERROR else terminal_status)
-    )
+    if terminal_status in _TERMINAL_SUCCESS:
+        final_status = "completed"
+    elif terminal_status in _TERMINAL_DUPLICATE:
+        final_status = "duplicate"
+    elif terminal_status in _TERMINAL_ERROR:
+        final_status = "error"
+    else:
+        final_status = terminal_status
     now = int(time.time())
     async with AsyncSessionLocal() as session:
         record = (
@@ -222,6 +270,12 @@ async def _mark_download_done(
                 "Watcher %s: no download_requests row to update",
                 task_id,
             )
+            return
+        # Respect manual cancellation — if the user dismissed the row via
+        # DELETE /v1/downloads/{id} while we were polling, don't silently
+        # overwrite that decision when the upstream eventually terminates.
+        if record.status == "cancelled":
+            logger.info("Watcher %s: row was cancelled by user; not overwriting", task_id)
             return
         record.status = final_status
         record.updated_at = now

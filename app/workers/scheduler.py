@@ -90,10 +90,13 @@ async def start_scheduler() -> None:
         )
 
     # Download watcher reaper — periodically re-attaches watchers to
-    # Spotizerr downloads that were left in-flight by a previous
-    # process (e.g. container restart).  Also expires rows that have
-    # been "downloading" for >2h without reaching a terminal state.
-    if settings.spotizerr_enabled:
+    # downloads that were left in-flight by a previous process (e.g.
+    # container restart). Also expires rows that have been in flight
+    # for >2h without reaching a terminal state. The reaper is backend-
+    # agnostic, so gate it on *any* download backend being configured —
+    # earlier this only triggered when Spotizerr was enabled, which
+    # silently broke cleanup for streamrip-only / spotdl-only setups.
+    if settings.download_enabled:
         _scheduler.add_job(
             _reap_stuck_downloads,
             trigger=IntervalTrigger(minutes=5),

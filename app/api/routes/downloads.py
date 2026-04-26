@@ -655,7 +655,7 @@ async def get_download_status(
 # in case a future watcher revision starts emitting them.
 _IN_FLIGHT_STATUSES = ("queued", "pending", "downloading")
 _TERMINAL_SUCCESS_DB = ("completed", "duplicate")
-_TERMINAL_FAILED_DB = ("error", "failed", "stalled", "cancelled")
+_TERMINAL_FAILED_DB = ("error", "failed", "stalled", "cancelled")  # noqa: F841 — kept in sync with _TERMINAL_FAILURE_STATUSES below
 
 # Cache live backend status probes briefly so the queue panel can poll at 3s
 # without thrashing the upstream APIs when there are many in-flight rows.
@@ -822,7 +822,7 @@ async def get_download_queue(
 
 
 _TERMINAL_SUCCESS_STATUSES = ("completed", "complete", "duplicate")
-_TERMINAL_FAILURE_STATUSES = ("error", "failed", "cancelled")
+_TERMINAL_FAILURE_STATUSES = ("error", "failed", "stalled", "cancelled")
 
 
 @router.get(
@@ -882,6 +882,46 @@ async def download_stats(
         "since_unix": cutoff,
         "backends": backends,
     }
+
+
+# ---------------------------------------------------------------------------
+# Manual cancel
+# ---------------------------------------------------------------------------
+
+
+@router.delete(
+    "/downloads/{download_id}",
+    summary="Cancel / dismiss a download row",
+)
+async def cancel_download(
+    download_id: int,
+    session: AsyncSession = Depends(get_session),
+    _key: str = Depends(require_api_key),
+):
+    """Manual escape hatch for stuck rows.
+
+    The cascade backends don't all expose a real "cancel this task" RPC, so
+    we don't try to abort the upstream rip — we just mark the DB row as
+    ``cancelled`` and let any active watcher exit naturally on its next
+    terminal poll. The ``_mark_download_done`` writer respects an existing
+    ``cancelled`` status so it won't be silently overwritten back to
+    completed/error if the upstream finishes after the user dismissed it.
+    """
+    record = (
+        await session.execute(
+            select(DownloadRequest).where(DownloadRequest.id == download_id)
+        )
+    ).scalar_one_or_none()
+    if record is None:
+        raise HTTPException(status_code=404, detail=f"Download {download_id} not found")
+    if record.status in _TERMINAL_SUCCESS_STATUSES + _TERMINAL_FAILURE_STATUSES:
+        # Already terminal — return current state without touching it.
+        return {"id": record.id, "status": record.status, "message": "already terminal"}
+    record.status = "cancelled"
+    record.error_message = "Cancelled by user"
+    record.updated_at = int(time.time())
+    await session.commit()
+    return {"id": record.id, "status": record.status, "message": "cancelled"}
 
 
 # ---------------------------------------------------------------------------
