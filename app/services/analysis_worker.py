@@ -439,10 +439,9 @@ def _download_models() -> bool:
             fd, tmp_path = tempfile.mkstemp(dir=models_dir, prefix=f".{filename}.", suffix=".tmp")
             os.close(fd)
             fd = None
-            # nosemgrep: python.lang.security.audit.dynamic-urllib-use-detected.dynamic-urllib-use-detected
             # `url` comes from the hardcoded _ONNX_MODELS dict (Essentia model zoo);
             # downloads are SHA-256 verified after fetch.
-            urllib.request.urlretrieve(url, tmp_path)
+            urllib.request.urlretrieve(url, tmp_path)  # nosemgrep: python.lang.security.audit.dynamic-urllib-use-detected.dynamic-urllib-use-detected
             # Validate: must be a plausible ONNX file (starts with protobuf magic
             # bytes and is at least 1 KB).
             file_size = os.path.getsize(tmp_path)

@@ -40,9 +40,8 @@ def _media_server_auth_params() -> str | None:
         import secrets as _secrets
 
         salt = _secrets.token_hex(8)
-        # nosemgrep: python.lang.security.audit.md5-used-as-password.md5-used-as-password
         # MD5(password + salt) is mandated by the Subsonic API spec for auth tokens.
-        token = hashlib.md5((password + salt).encode()).hexdigest()
+        token = hashlib.md5((password + salt).encode()).hexdigest()  # nosemgrep: python.lang.security.audit.md5-used-as-password.md5-used-as-password
         return f"u={user}&t={token}&s={salt}&v=1.16.1&c=grooveiq"
     elif server_type == "plex":
         token = settings.MEDIA_SERVER_TOKEN or ""

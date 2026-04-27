@@ -205,9 +205,8 @@ async def _check_media_server() -> dict[str, Any]:
             except Exception:
                 pass
         salt = secrets.token_hex(8)
-        # nosemgrep: python.lang.security.audit.md5-used-as-password.md5-used-as-password
         # MD5(password + salt) is mandated by the Subsonic API spec for auth tokens.
-        token = hashlib.md5((password + salt).encode()).hexdigest()
+        token = hashlib.md5((password + salt).encode()).hexdigest()  # nosemgrep: python.lang.security.audit.md5-used-as-password.md5-used-as-password
         result = await _probe(
             f"{ms_url.rstrip('/')}/rest/ping.view"
             f"?u={settings.MEDIA_SERVER_USER}&t={token}&s={salt}"

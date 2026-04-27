@@ -287,9 +287,8 @@ async def _periodic_recommendation_pipeline(trigger: str = "scheduled") -> None:
         try:
             import importlib
 
-            # nosemgrep: python.lang.security.audit.non-literal-import.non-literal-import
             # `module_path` comes from the hardcoded `_steps` list above; never user input.
-            mod = importlib.import_module(module_path)
+            mod = importlib.import_module(module_path)  # nosemgrep: python.lang.security.audit.non-literal-import.non-literal-import
             func = getattr(mod, func_name)
             result = await func()
             metrics = result if isinstance(result, dict) else {}
