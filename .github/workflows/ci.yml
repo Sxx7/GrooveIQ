@@ -71,7 +71,6 @@ jobs:
   pip-audit:
     name: Security (pip-audit)
     runs-on: ubuntu-latest
-    continue-on-error: true  # alert but don't block on upstream CVEs
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -84,7 +83,6 @@ jobs:
   semgrep:
     name: Security (semgrep)
     runs-on: ubuntu-latest
-    continue-on-error: true
     container:
       image: semgrep/semgrep:latest
     steps:
@@ -149,10 +147,10 @@ jobs:
     name: Security (trivy image scan)
     runs-on: ubuntu-latest
     needs: build-image
-    continue-on-error: true
     permissions:
       contents: read
       packages: read
+      security-events: write
     steps:
       - name: Log in to GHCR
         uses: docker/login-action@v3
@@ -162,12 +160,14 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Run Trivy on built image
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@0.36.0
         with:
           image-ref: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ needs.build-image.outputs.image-digest }}
           severity: CRITICAL,HIGH
           ignore-unfixed: true
-          exit-code: '1'
+          # Don't fail the job — findings are reported via SARIF in the
+          # Security tab. Treat the scan as a report, not a gate.
+          exit-code: '0'
           format: sarif
           output: trivy-results.sarif
 
