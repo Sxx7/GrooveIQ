@@ -101,9 +101,15 @@ class StreamripClient:
                         ),
                     },
                     "type": "track",
-                    # Preserve streamrip-specific fields
+                    # Preserve streamrip-specific fields. ``_album_id`` lets
+                    # downstream callers group tracks by album and request
+                    # whole-album downloads via download_album().
                     "_service": entry.get("service", ""),
                     "_service_id": entry.get("service_id", ""),
+                    "_album_id": entry.get("album_id", ""),
+                    "_album_year": entry.get("album_year"),
+                    "_album_track_count": entry.get("album_track_count"),
+                    "_track_number": entry.get("track_number"),
                     "_quality": entry.get("quality", ""),
                 }
             )
@@ -205,6 +211,85 @@ class StreamripClient:
                 "status": "error",
                 "error": err_msg,
             }
+
+        return {
+            "task_id": data.get("task_id", ""),
+            "status": data.get("status", "downloading"),
+        }
+
+    # -- Artist search ------------------------------------------------------
+
+    async def search_artist(
+        self, query: str, limit: int = 2, albums_per_artist: int = 50
+    ) -> dict[str, Any]:
+        """Return top-N artist matches plus each artist's discography (no
+        tracks). Tracks are lazy-loaded per-album via :meth:`get_album_tracks`.
+        """
+        await self._throttle()
+        try:
+            resp = await self._client.get(
+                f"{self._base_url}/search/artist",
+                params={"q": query, "limit": limit, "albums_per_artist": albums_per_artist},
+            )
+            resp.raise_for_status()
+            return resp.json()
+        except Exception as exc:
+            logger.warning("streamrip-api artist-search failed for %r: %s", query, exc)
+            return {"query": query, "artists": [], "error": str(exc)}
+
+    async def get_album_tracks(self, service: str, album_id: str) -> dict[str, Any]:
+        """Fetch the full track list for an album."""
+        _validate_id(album_id, "album_id")
+        if service not in ("qobuz", "tidal", "deezer", "soundcloud"):
+            return {"album_id": album_id, "tracks": [], "error": f"unknown service {service!r}"}
+        await self._throttle()
+        try:
+            resp = await self._client.get(
+                f"{self._base_url}/album/{album_id}/tracks",
+                params={"service": service},
+            )
+            resp.raise_for_status()
+            return resp.json()
+        except Exception as exc:
+            logger.warning("streamrip-api get_album_tracks failed for %s/%s: %s", service, album_id, exc)
+            return {"album_id": album_id, "tracks": [], "error": str(exc)}
+
+    # -- Album download -----------------------------------------------------
+
+    async def download_album(self, service: str, album_id: str) -> dict[str, Any]:
+        """Download a whole album by service + service-native album ID.
+
+        ``service`` is one of ``qobuz`` / ``tidal`` / ``deezer``. ``album_id``
+        is the numeric ID streamrip-api can build into an album URL. Requires
+        streamrip-api ≥ the entity_type-aware revision (post-Phase 4e).
+        """
+        _validate_id(album_id, "album_id")
+        if service not in ("qobuz", "tidal", "deezer", "soundcloud"):
+            return {"task_id": "", "status": "error", "error": f"unknown service {service!r}"}
+        await self._throttle()
+
+        try:
+            resp = await self._client.post(
+                f"{self._base_url}/download",
+                json={"service_id": album_id, "service": service, "entity_type": "album"},
+            )
+        except Exception as exc:
+            logger.warning(
+                "streamrip-api album download transport error for %s/%s: %s",
+                service,
+                album_id,
+                exc,
+            )
+            return {"task_id": "", "status": "error", "error": str(exc)}
+
+        try:
+            data = resp.json()
+        except Exception:
+            data = {}
+
+        if resp.status_code >= 400:
+            err_msg = data.get("error") or data.get("detail") or f"streamrip-api HTTP {resp.status_code}"
+            return {"task_id": data.get("task_id", ""), "status": "error", "error": err_msg}
 
         return {
             "task_id": data.get("task_id", ""),

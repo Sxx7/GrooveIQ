@@ -717,11 +717,27 @@ class DownloadResponse(BaseModel):
     slskd_username: str | None = None
     slskd_filename: str | None = None
     slskd_transfer_id: str | None = None
+    attempts: list[dict[str, Any]] | None = None
     error_message: str | None = None
     created_at: int
     updated_at: int | None = None
 
     model_config = {"from_attributes": True}
+
+
+class DownloadFromHandleRequest(BaseModel):
+    """POST /v1/downloads/from-handle — pick a specific multi-search result.
+
+    The handle is the opaque dict returned in each search result. It carries
+    the backend identifier plus whatever fields that backend needs to
+    download (Spotify ID, slskd peer+filename, etc.).
+    """
+
+    handle: dict[str, Any] = Field(..., description="Opaque handle from /v1/downloads/search/multi")
+    track_title: str | None = Field(None, max_length=512)
+    artist_name: str | None = Field(None, max_length=512)
+    album_name: str | None = Field(None, max_length=512)
+    cover_url: str | None = Field(None, max_length=1024)
 
 
 class DownloadStatusResponse(BaseModel):

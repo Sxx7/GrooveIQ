@@ -298,9 +298,17 @@ async def run_discovery_pipeline() -> dict[str, Any]:
     4. Send new discoveries to Lidarr
     5. Record in discovery_requests table
     """
+    from app.services.download_chain import lidarr_enabled_in_chain
+
     if not settings.discovery_enabled:
         logger.warning("Discovery pipeline skipped: not configured (set LASTFM_API_KEY, LIDARR_URL, LIDARR_API_KEY)")
         return {"status": "skipped", "reason": "not_configured"}
+
+    # Allow operators to disable discovery from the routing GUI without
+    # tearing down the underlying Lidarr config.
+    if not lidarr_enabled_in_chain("bulk_album"):
+        logger.info("Discovery pipeline skipped: Lidarr disabled in bulk_album routing chain")
+        return {"status": "skipped", "reason": "lidarr_disabled_in_routing"}
 
     summary = {
         "users_processed": 0,

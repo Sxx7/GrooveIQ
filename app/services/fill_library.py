@@ -123,10 +123,19 @@ async def run_fill_library(max_albums: int | None = None) -> dict[str, Any]:
     Returns:
         Summary dict with counts and status.
     """
+    from app.services.download_chain import lidarr_enabled_in_chain
+
     if not settings.fill_library_enabled:
         return {
             "status": "not_configured",
             "message": "Set FILL_LIBRARY_ENABLED, AB_LOOKUP_URL, LIDARR_URL, LIDARR_API_KEY",
+        }
+
+    if not lidarr_enabled_in_chain("bulk_album"):
+        return {
+            "status": "skipped",
+            "reason": "lidarr_disabled_in_routing",
+            "message": "Lidarr is disabled in the bulk_album routing chain — re-enable it in the Downloads settings.",
         }
 
     album_limit = max_albums or settings.FILL_LIBRARY_MAX_ALBUMS

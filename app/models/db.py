@@ -625,6 +625,11 @@ class DownloadRequest(Base):
     slskd_filename = Column(String(1024), nullable=True)  # Remote file path on peer
     slskd_transfer_id = Column(String(128), nullable=True)  # slskd transfer GUID
 
+    # Cascade attempt log: list of {backend, success, status, task_id, error, ...}
+    # Records every backend that was tried for this request, in order, so users
+    # can see *why* a download landed on a particular backend (or why it failed).
+    attempts = Column(JSON, nullable=True)
+
     # Who requested it
     requested_by = Column(String(128), nullable=True)  # API key identity
 
@@ -664,6 +669,38 @@ class AlgorithmConfig(Base):
     __table_args__ = (
         Index("ix_algo_config_active", "is_active"),
         Index("ix_algo_config_version", "version"),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Download routing config  (priority chains + quality fallback policy)
+# ---------------------------------------------------------------------------
+
+
+class DownloadRoutingConfig(Base):
+    """
+    A versioned snapshot of download backend routing policy.
+
+    Controls which backends are tried, in what order, for which purpose
+    (individual on-demand downloads, per-track bulk, album-level bulk),
+    plus quality fallback thresholds and parallel-search opt-ins.
+
+    Same versioning + active-row semantics as AlgorithmConfig.
+    """
+
+    __tablename__ = "download_routing_configs"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    version = Column(Integer, nullable=False)
+    name = Column(String(256), nullable=True)
+    config = Column(JSON, nullable=False)
+    is_active = Column(Boolean, nullable=False, default=False)
+    created_at = Column(Integer, nullable=False, default=lambda: int(time.time()))
+    created_by = Column(String(128), nullable=True)
+
+    __table_args__ = (
+        Index("ix_dl_routing_active", "is_active"),
+        Index("ix_dl_routing_version", "version"),
     )
 
 

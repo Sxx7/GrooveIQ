@@ -101,6 +101,8 @@ async def _apply_column_migrations(conn) -> None:
         # 2D music-map coordinates (UMAP projection)
         ("track_features", "map_x", "REAL"),
         ("track_features", "map_y", "REAL"),
+        # Cascade attempt log for download-routing chain (Phase 2)
+        ("download_requests", "attempts", "TEXT"),
     ]
     for table, column, col_type in migrations:
         # Validate identifiers to prevent SQL injection via migration list.

@@ -19,6 +19,7 @@ from app.api.routes import (
     artists,
     charts,
     discovery,
+    download_routing as download_routing_routes,
     downloads,
     events,
     health,
@@ -55,6 +56,14 @@ async def lifespan(app: FastAPI):
         await load_active_config()
     except Exception as e:
         logger.warning(f"Algorithm config load failed on startup: {e}")
+
+    # Load download-routing config from DB (seeds defaults on first run).
+    try:
+        from app.services.download_routing import load_active_routing
+
+        await load_active_routing()
+    except Exception as e:
+        logger.warning(f"Download routing config load failed on startup: {e}")
 
     # Build FAISS index from existing embeddings (non-blocking if empty).
     try:
@@ -169,6 +178,7 @@ app.include_router(recommend.router, prefix="/v1", tags=["recommendations"])
 app.include_router(discovery.router, prefix="/v1", tags=["discovery"])
 app.include_router(charts.router, prefix="/v1", tags=["charts"])
 app.include_router(downloads.router, prefix="/v1", tags=["downloads"])
+app.include_router(download_routing_routes.router, prefix="/v1", tags=["downloads"])
 app.include_router(lastfm.router, prefix="/v1", tags=["lastfm"])
 app.include_router(artists.router, prefix="/v1", tags=["artists"])
 app.include_router(radio.router, prefix="/v1", tags=["radio"])

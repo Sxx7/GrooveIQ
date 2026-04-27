@@ -21,9 +21,10 @@
 11. [Last.fm](#lastfm)
 12. [Charts](#charts)
 13. [Downloads](#downloads)
-14. [Artists](#artists)
-15. [Pipeline & Stats](#pipeline--stats)
-16. [Configuration Reference](#configuration-reference)
+14. [Download Routing Configuration](#download-routing-configuration)
+15. [Artists](#artists)
+16. [Pipeline & Stats](#pipeline--stats)
+17. [Configuration Reference](#configuration-reference)
 
 ---
 
@@ -1051,16 +1052,89 @@ Requires `SPOTDL_API_URL` or `SPOTIZERR_URL`. **Error** `503` if neither configu
 
 ## Downloads
 
-Download proxy via spotdl-api (primary) or Spotizerr (legacy fallback). Requires `SPOTDL_API_URL` or `SPOTIZERR_URL`.
+Download proxy across multiple backends. `POST /v1/downloads` walks the
+configured **`individual` priority chain** (see [Download Routing Configuration](#download-routing-configuration))
+and returns the first backend that successfully queues the track. Every backend
+attempt — successful or not — is appended to the request's `attempts` log.
 
-### `GET /v1/downloads/search` — Search for tracks
+Backends: **spotdl-api** (YouTube Music), **streamrip-api** (Qobuz/Tidal/Deezer/SoundCloud lossless), **Spotizerr** (legacy fallback), **slskd** (Soulseek). Requires at least one of `SPOTDL_API_URL`, `STREAMRIP_API_URL`, `SPOTIZERR_URL`, or `SLSKD_URL`+`SLSKD_API_KEY`.
+
+### `GET /v1/downloads/search` — Search a single backend (legacy)
+
+Hits the single backend selected by `DEFAULT_DOWNLOAD_CLIENT`. For multi-backend
+search, prefer `/v1/downloads/search/multi` below.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `q` | string | yes | Search query |
-| `limit` | int | no | 1-50, default 10 |
+| `limit` | int | no | 1-100, default 25 |
 
-### `POST /v1/downloads` — Download a track
+### `GET /v1/downloads/search/multi` — Multi-agent parallel search
+
+Runs `search` against every backend in `parallel_search_backends` concurrently
+(per the active routing config), with a per-backend timeout. Each result
+carries an opaque `download_handle` you can POST back to
+`/v1/downloads/from-handle` to download that specific result.
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `q` | string | required | Search query |
+| `limit` | int | 25 | 1-100, hits per backend (a full album fits in 25–30) |
+| `backends` | string | from config | Comma-separated override (`spotdl,streamrip,slskd`) |
+| `timeout_ms` | int | from config | Per-backend timeout, 500-30000 |
+
+```bash
+curl "http://localhost:8000/v1/downloads/search/multi?q=Radiohead+Creep&limit=5" \
+  -H "Authorization: Bearer YOUR_API_KEY"
+```
+
+**Response** `200`:
+```json
+{
+  "query": "Radiohead Creep",
+  "limit": 5,
+  "timeout_ms": 5000,
+  "groups": [
+    {
+      "backend": "streamrip",
+      "ok": true,
+      "results": [
+        {
+          "backend": "streamrip",
+          "title": "Creep",
+          "artist": "Radiohead",
+          "album": "Pablo Honey",
+          "image_url": "https://…",
+          "quality": "hires",
+          "bitrate_kbps": null,
+          "duration_ms": 238000,
+          "download_handle": {
+            "backend": "streamrip",
+            "spotify_id": "33933680",
+            "service": "qobuz",
+            "service_id": "33933680",
+            "artist": "Radiohead",
+            "title": "Creep"
+          },
+          "extra": {"_service": "qobuz", "_quality": "Hi-Res 24bit/96kHz"}
+        }
+      ]
+    },
+    {"backend": "spotdl", "ok": false, "error": "not configured", "results": []},
+    {"backend": "spotizerr", "ok": false, "error": "timeout after 5.0s", "results": []}
+  ]
+}
+```
+
+Each group has `ok` (bool), `error` (string when `ok=false`), and `results`
+(possibly empty). Results from different backends use different
+`download_handle` shapes — always pass the handle back verbatim.
+
+### `POST /v1/downloads` — Download a track via the cascade
+
+Walks the active `individual` chain. The track ref accepts a `spotify_id`
+(spotdl/spotizerr key directly), or just `artist_name` + `track_title` (each
+adapter does an internal search to resolve to its native ID).
 
 ```bash
 curl -X POST http://localhost:8000/v1/downloads \
@@ -1073,7 +1147,52 @@ curl -X POST http://localhost:8000/v1/downloads \
   }'
 ```
 
-Status values: `pending`, `downloading`, `duplicate`, `completed`, `error`.
+**Response** `200`:
+```json
+{
+  "id": 42,
+  "spotify_id": "70LcF31zb1H0PyJoS1Sx3y",
+  "task_id": "abc123",
+  "status": "downloading",
+  "source": "streamrip",
+  "track_title": "Creep",
+  "artist_name": "Radiohead",
+  "attempts": [
+    {"backend": "spotdl", "success": false, "status": "error", "task_id": null,
+     "error": "spotdl-api HTTP 503", "quality": null, "duration_ms": 1240, "extra": {}},
+    {"backend": "streamrip", "success": true, "status": "downloading", "task_id": "abc123",
+     "error": null, "quality": "hires", "duration_ms": 890, "extra": {}}
+  ],
+  "created_at": 1714128050,
+  "updated_at": 1714128052
+}
+```
+
+If every backend in the chain fails, returns `502` with the last attempted
+backend's error message. The DB row is still persisted (with `status=error`
+and the full attempts log) so the failure shows up in stats and the history
+endpoint.
+
+Status values: `pending`, `downloading`, `queued`, `duplicate`, `completed`, `error`.
+
+### `POST /v1/downloads/from-handle` — Download a specific multi-search result
+
+Bypass the cascade — the user already chose a backend via `/search/multi`.
+The `handle` field is the opaque dict returned in each result.
+
+```bash
+curl -X POST http://localhost:8000/v1/downloads/from-handle \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "handle": {"backend":"slskd","username":"peer123","filename":"Radiohead/Creep.flac","size":42118921},
+    "track_title": "Creep",
+    "artist_name": "Radiohead"
+  }'
+```
+
+Same response shape as `POST /v1/downloads`. The `attempts` array always has a
+single entry — the chosen backend.
 
 ### `GET /v1/downloads/status/{task_id}` — Check progress
 
@@ -1081,9 +1200,145 @@ Status values: `pending`, `downloading`, `duplicate`, `completed`, `error`.
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| `status` | - | Filter: `pending`, `downloading`, `duplicate`, `completed`, `error` |
+| `status` | - | Filter: `pending`, `downloading`, `queued`, `duplicate`, `completed`, `error` |
 | `limit` | 50 | 1-200 |
 | `offset` | 0 | - |
+
+Each row includes the cascade `attempts` log (older rows pre-dating Phase 2
+have `attempts: null`).
+
+### `GET /v1/downloads/stats` — Per-backend telemetry
+
+Aggregates `download_requests` over a look-back window into per-backend
+counts. Drives the routing-policy GUI's reliability panel.
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `days` | 30 | 1-365, look-back window |
+
+```json
+{
+  "window_days": 30,
+  "since_unix": 1711450000,
+  "backends": [
+    {"backend": "spotdl", "total": 73, "success": 58, "failure": 12, "in_flight": 3, "success_rate": 0.829},
+    {"backend": "streamrip", "total": 41, "success": 39, "failure": 2, "in_flight": 0, "success_rate": 0.951},
+    {"backend": "soulseek", "total": 6, "success": 4, "failure": 1, "in_flight": 1, "success_rate": 0.8}
+  ]
+}
+```
+
+`success_rate` is `null` when no terminal results are in the window.
+
+---
+
+## Download Routing Configuration
+
+Versioned, DB-persisted policy that decides **which** download backends are
+tried, **in what order**, for **which purpose**, and with what quality
+threshold. Defaults are seeded on first boot and match the prior env-var-driven
+behaviour. Changes take effect on the next request — no restart needed.
+
+Three independent priority chains:
+
+| Purpose | Used by | Default order |
+|---------|---------|---------------|
+| `individual` | `POST /v1/downloads` (single tracks on demand) | spotdl → streamrip → spotizerr → slskd (slskd disabled) |
+| `bulk_per_track` | `charts` auto-add, `bulk_download` (top-tracks) | streamrip → spotdl → spotizerr → slskd (slskd disabled) |
+| `bulk_album` | `discovery`, `fill_library` (album-level) | lidarr → streamrip (streamrip disabled) |
+
+Plus `parallel_search_backends` — which backends are queried concurrently by
+`/v1/downloads/search/multi` — and `parallel_search_timeout_ms` for the
+per-backend timeout.
+
+Each chain entry has:
+- `backend`: `spotdl` | `streamrip` | `spotizerr` | `slskd` | `lidarr`
+- `enabled`: bool (default true)
+- `min_quality`: optional `"lossy_low"` | `"lossy_high"` | `"lossless"` | `"hires"` — backends below the tier are skipped
+- `timeout_s`: per-backend timeout for the cascade attempt (5-600s, default 60)
+
+Quality tiers are ordinal (lossy_low < lossy_high < lossless < hires). Each
+backend declares an expected quality (spotdl=lossy_high, streamrip=hires,
+spotizerr=lossy_high, slskd=lossy_high — variable, evaluated post-search,
+lidarr=lossless). Pre-flight gate uses the declared quality; slskd's actual
+file quality is also re-checked after the search picks a winner.
+
+**All routing endpoints require admin privileges** (when `ADMIN_API_KEYS` is set).
+
+### `GET /v1/downloads/routing` — Active routing config
+
+```json
+{
+  "id": 3,
+  "version": 3,
+  "name": "Bumped slskd ahead of spotizerr",
+  "config": {
+    "individual": [
+      {"backend": "spotdl", "enabled": true, "min_quality": null, "timeout_s": 60},
+      {"backend": "streamrip", "enabled": true, "min_quality": "lossless", "timeout_s": 60},
+      {"backend": "spotizerr", "enabled": true, "min_quality": null, "timeout_s": 60},
+      {"backend": "slskd", "enabled": false, "min_quality": null, "timeout_s": 60}
+    ],
+    "bulk_per_track": [...],
+    "bulk_album": [...],
+    "parallel_search_backends": ["spotdl", "streamrip", "spotizerr"],
+    "parallel_search_timeout_ms": 5000
+  },
+  "is_active": true,
+  "created_at": 1714128000,
+  "created_by": "abc..."
+}
+```
+
+### `GET /v1/downloads/routing/defaults` — Defaults + group metadata
+
+Returns the default `config` plus `groups` describing the four UI sections
+(`individual`, `bulk_per_track`, `bulk_album`, `parallel_search`) — `label`,
+`description`, and `backends_eligible`. The dashboard renders the routing GUI
+from this response.
+
+### `GET /v1/downloads/routing/history` — Version history
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `limit` | 20 | 1-100 |
+| `offset` | 0 | - |
+
+### `GET /v1/downloads/routing/{version}` — Specific historical version
+
+### `PUT /v1/downloads/routing` — Save a new version (becomes active)
+
+```bash
+curl -X PUT http://localhost:8000/v1/downloads/routing \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "Prefer lossless for everything",
+    "config": { "individual": [...], "bulk_per_track": [...], "bulk_album": [...], "parallel_search_backends": [...], "parallel_search_timeout_ms": 5000 }
+  }'
+```
+
+The previous version is deactivated; the new one becomes active immediately.
+Validation errors (e.g. unknown backend, out-of-range timeout) return `422`.
+
+### `POST /v1/downloads/routing/reset` — Reset to defaults (creates new version)
+
+### `POST /v1/downloads/routing/activate/{version}` — Roll back to a historical version
+
+### `GET /v1/downloads/routing/export` — JSON download of active config
+
+Sets `Content-Disposition: attachment; filename="grooveiq-routing-v{N}.json"`.
+
+### `POST /v1/downloads/routing/import` — Upload a JSON config
+
+```bash
+curl -X POST http://localhost:8000/v1/downloads/routing/import \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d @grooveiq-routing-v3.json
+```
+
+Validates against the schema; missing keys get defaults; out-of-range values return `422`.
 
 ---
 

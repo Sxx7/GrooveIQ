@@ -298,28 +298,31 @@ async def _send_artists_to_lidarr(
 # ---------------------------------------------------------------------------
 
 
-async def _send_tracks_to_spotizerr(
+async def _send_tracks_via_cascade(
     tracks: list[tuple[str, str]],
     max_adds: int = 50,
 ) -> dict[str, int]:
-    """Send unmatched chart tracks to Spotizerr for individual download.
+    """Send unmatched chart tracks through the bulk_per_track download cascade.
+
+    The cascade walks the configured priority chain (streamrip → spotdl →
+    spotizerr → slskd by default) and stops at the first backend that
+    successfully queues the track. Each attempt — successful or not — is
+    recorded on the persisted ``DownloadRequest.attempts`` log.
 
     For each successfully-queued download:
-      1. Persists a ``download_requests`` row so the download shows up
-         in ``GET /v1/downloads`` history alongside user-initiated ones.
-      2. Spawns a ``download_watcher`` so once the download finishes
-         the media server refresh + GrooveIQ library scan fire
-         automatically (same chain as user-initiated downloads).
+      1. Persists a ``download_requests`` row visible in
+         ``GET /v1/downloads`` alongside user-initiated requests.
+      2. Spawns the appropriate watcher so completion triggers the
+         media-server refresh + GrooveIQ library scan.
     """
     from app.models.db import DownloadRequest
-    from app.services.download_watcher import start_watcher
-    from app.services.spotdl import get_download_client
-    from app.services.spotizerr import _pick_best_match
+    from app.models.download_routing_schema import BackendName
+    from app.services.download_chain import TrackRef, try_download_chain
 
-    client = get_download_client()
-    if client is None:
+    if not settings.download_enabled:
         logger.warning("Charts: no download backend configured, skipping track downloads")
         return {"sent": 0, "not_found": 0, "duplicate": 0, "errors": 0}
+
     stats = {"sent": 0, "not_found": 0, "duplicate": 0, "errors": 0}
 
     # Deduplicate by normalised artist+title.
@@ -331,78 +334,92 @@ async def _send_tracks_to_spotizerr(
             seen.add(key)
             unique.append((artist, title))
 
-    try:
-        sent = 0
-        for artist, title in unique:
-            if sent >= max_adds:
-                break
+    sent = 0
+    for artist, title in unique:
+        if sent >= max_adds:
+            break
 
-            query = f"{artist} {title}"
-            results = await client.search(query, limit=5)
-            match = _pick_best_match(results, artist, title)
+        track_ref = TrackRef(artist=artist, title=title)
+        try:
+            cascade = await try_download_chain(track_ref, purpose="bulk_per_track")
+        except Exception as exc:
+            logger.error("Charts cascade failed for %s — %s: %s", artist, title, exc)
+            stats["errors"] += 1
+            continue
 
-            if not match or not match.get("id"):
-                stats["not_found"] += 1
-                continue
+        last = cascade.attempts[-1] if cascade.attempts else None
+        source = cascade.final_backend or (last.backend if last else "none")
+        status = cascade.final_status if cascade.success else (last.status if last else "error")
+        err_msg = None if cascade.success else (last.error if last else "no backend succeeded")
 
-            spotify_id = match["id"]
-            dl_result = await client.download(spotify_id)
-            status = dl_result.get("status", "error")
-            task_id = dl_result.get("task_id") or None
+        slskd_username = None
+        slskd_filename = None
+        slskd_transfer_id = None
+        if cascade.success and cascade.final_backend == BackendName.SLSKD.value:
+            slskd_username = cascade.final_extra.get("username")
+            slskd_filename = cascade.final_extra.get("filename")
+            slskd_transfer_id = cascade.final_task_id
 
-            # Persist a download_requests row so the watcher and history
-            # endpoint can find it.  Use a fresh session per row to keep
-            # the write transactions short.
-            matched_title = match.get("name", title)
-            matched_artists = match.get("artists") or []
-            matched_artist_name = matched_artists[0].get("name", artist) if matched_artists else artist
-            matched_album = (match.get("album") or {}).get("name")
-            try:
-                async with AsyncSessionLocal() as dl_session:
-                    dl_session.add(
-                        DownloadRequest(
-                            spotify_id=spotify_id,
-                            task_id=task_id,
-                            status=status,
-                            track_title=matched_title,
-                            artist_name=matched_artist_name,
-                            album_name=matched_album,
-                            requested_by="__charts__",
-                            error_message=dl_result.get("error"),
-                            updated_at=int(time.time()),
-                        )
-                    )
-                    await dl_session.commit()
-            except Exception as exc:
-                logger.warning(
-                    "Charts/Spotizerr: could not persist download row for %s-%s: %s",
-                    artist,
-                    title,
-                    exc,
+        record_id: int | None = None
+        try:
+            async with AsyncSessionLocal() as dl_session:
+                row = DownloadRequest(
+                    task_id=cascade.final_task_id,
+                    status=status,
+                    source=source,
+                    track_title=title,
+                    artist_name=artist,
+                    slskd_username=slskd_username,
+                    slskd_filename=slskd_filename,
+                    slskd_transfer_id=slskd_transfer_id,
+                    attempts=[a.to_dict() for a in cascade.attempts] or None,
+                    requested_by="__charts__",
+                    error_message=err_msg,
+                    updated_at=int(time.time()),
                 )
+                dl_session.add(row)
+                await dl_session.commit()
+                record_id = row.id
+        except Exception as exc:
+            logger.warning(
+                "Charts: could not persist download row for %s — %s: %s", artist, title, exc
+            )
 
-            if status == "downloading":
-                stats["sent"] += 1
-                sent += 1
-                logger.info("Charts/Spotizerr: downloading %s - %s", artist, title)
-                if task_id:
-                    await start_watcher(task_id)
-            elif status == "duplicate":
-                stats["duplicate"] += 1
-                if task_id:
-                    # Attach to the in-flight original task so its
-                    # completion still triggers the refresh chain.
-                    await start_watcher(task_id)
-            else:
+        if not cascade.success:
+            # No backend matched/succeeded — bucket between "not_found" (every
+            # attempt was a clean skip / no-match) and "errors" (any real failure).
+            had_real_failure = any(
+                att.status not in ("skipped",) for att in cascade.attempts
+            )
+            if had_real_failure:
                 stats["errors"] += 1
+            else:
+                stats["not_found"] += 1
+            continue
 
-    except Exception as exc:
-        logger.error("Charts/Spotizerr batch failed: %s", exc)
-        stats["errors"] += 1
-    finally:
-        await client.close()
+        # Success: pick the right watcher for the chosen backend.
+        if cascade.final_backend == BackendName.SLSKD.value:
+            if record_id is not None:
+                from app.services.slskd_watcher import start_watcher as start_slskd_watcher
+
+                await start_slskd_watcher(record_id)
+        elif cascade.final_task_id:
+            from app.services.download_watcher import start_watcher
+
+            await start_watcher(cascade.final_task_id, source=cascade.final_backend)
+
+        if status == "duplicate":
+            stats["duplicate"] += 1
+        else:
+            stats["sent"] += 1
+            sent += 1
+            logger.info("Charts: queued %s — %s via %s", artist, title, source)
 
     return stats
+
+
+# Back-compat alias — old name retained so external callers (if any) keep working.
+_send_tracks_to_spotizerr = _send_tracks_via_cascade
 
 
 # ---------------------------------------------------------------------------

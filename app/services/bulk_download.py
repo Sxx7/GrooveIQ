@@ -1,11 +1,12 @@
 """
-GrooveIQ -- Bulk artist download via Last.fm charts + Soulseek.
+GrooveIQ -- Bulk artist download via Last.fm charts.
 
 Fetches the top N artists from Last.fm's global charts, retrieves each
-artist's top tracks, then searches and downloads them via slskd (Soulseek).
+artist's top tracks, and downloads each via the configured ``bulk_per_track``
+priority chain (streamrip → spotdl → spotizerr → slskd by default).
 
-This bypasses Lidarr entirely -- searches the Soulseek P2P network directly
-for each track, ranks results by audio quality, and queues the best match.
+Bypasses Lidarr — Lidarr operates at album granularity and isn't a good fit
+for "download these specific top tracks across many artists".
 """
 
 from __future__ import annotations
@@ -19,7 +20,6 @@ from typing import Any
 from app.core.config import settings
 from app.db.session import AsyncSessionLocal
 from app.models.db import DownloadRequest
-from app.services.slskd import SlskdClient, get_slskd_client
 
 logger = logging.getLogger(__name__)
 
@@ -106,40 +106,35 @@ async def run_bulk_download(
             job.finished_at = int(time.time())
             return job.to_dict()
 
-        slskd = get_slskd_client()
-        if not slskd:
+        if not settings.download_enabled:
             job.status = "failed"
-            job.errors.append("slskd not configured")
+            job.errors.append("no download backend configured")
             job.finished_at = int(time.time())
             return job.to_dict()
 
-        try:
-            for artist_info in artists:
-                if job.status == "cancelled":
-                    break
+        for artist_info in artists:
+            if job.status == "cancelled":
+                break
 
-                artist_name = artist_info.get("name", "")
-                if not artist_name:
-                    continue
+            artist_name = artist_info.get("name", "")
+            if not artist_name:
+                continue
 
-                job.current_artist = artist_name
+            job.current_artist = artist_name
 
-                try:
-                    await _process_artist(
-                        slskd=slskd,
-                        artist_name=artist_name,
-                        tracks_per_artist=tracks_per_artist,
-                        job=job,
-                        requested_by=requested_by,
-                    )
-                except Exception as exc:
-                    msg = f"Error processing artist {artist_name}: {exc}"
-                    logger.warning(msg)
-                    job.errors.append(msg)
+            try:
+                await _process_artist(
+                    artist_name=artist_name,
+                    tracks_per_artist=tracks_per_artist,
+                    job=job,
+                    requested_by=requested_by,
+                )
+            except Exception as exc:
+                msg = f"Error processing artist {artist_name}: {exc}"
+                logger.warning(msg)
+                job.errors.append(msg)
 
-                job.artists_processed += 1
-        finally:
-            await slskd.close()
+            job.artists_processed += 1
 
         if job.status == "running":
             job.status = "completed"
@@ -194,13 +189,12 @@ async def _fetch_top_artists(limit: int) -> list[dict[str, Any]]:
 
 async def _process_artist(
     *,
-    slskd: SlskdClient,
     artist_name: str,
     tracks_per_artist: int,
     job: BulkDownloadJob,
     requested_by: str | None,
 ) -> None:
-    """Fetch an artist's top tracks from Last.fm and download each via Soulseek."""
+    """Fetch an artist's top tracks from Last.fm and queue each via the cascade."""
     from app.services.lastfm_client import LastFmClient
 
     client = LastFmClient()
@@ -220,8 +214,7 @@ async def _process_artist(
             continue
 
         try:
-            await _search_and_download(
-                slskd=slskd,
+            await _queue_track_via_cascade(
                 artist=artist_name,
                 title=track_name,
                 job=job,
@@ -234,31 +227,33 @@ async def _process_artist(
             job.errors.append(msg)
 
 
-async def _search_and_download(
+async def _queue_track_via_cascade(
     *,
-    slskd: SlskdClient,
     artist: str,
     title: str,
     job: BulkDownloadJob,
     requested_by: str | None,
 ) -> None:
-    """Search Soulseek for a track and queue the best result."""
-    query = f"{artist} {title}"
+    """Walk the bulk_per_track cascade for a single track."""
+    from sqlalchemy import func, select
+
+    from app.models.download_routing_schema import BackendName
+    from app.services.download_chain import TrackRef, try_download_chain
+
     job.tracks_searched += 1
 
-    # Check if we already have a download for this track.
+    # Skip if there's already a successful/in-flight download for this track,
+    # regardless of which backend served it. Avoids duplicate queueing across
+    # repeated runs.
     async with AsyncSessionLocal() as session:
-        from sqlalchemy import select, func
-
         existing = (
             await session.execute(
                 select(func.count())
                 .select_from(DownloadRequest)
                 .where(
-                    DownloadRequest.source == "soulseek",
                     DownloadRequest.artist_name == artist,
                     DownloadRequest.track_title == title,
-                    DownloadRequest.status.in_(["queued", "downloading", "complete"]),
+                    DownloadRequest.status.in_(["queued", "downloading", "complete", "completed", "duplicate"]),
                 )
             )
         ).scalar()
@@ -266,45 +261,55 @@ async def _search_and_download(
             job.tracks_skipped += 1
             return
 
-    results = await slskd.search(query, limit=5)
-    if not results:
-        job.tracks_failed += 1
-        job.errors.append(f"No Soulseek results: {artist} - {title}")
-        return
-
-    best = results[0]
-
-    dl_result = await slskd.download(
-        username=best["username"],
-        filename=best["filename"],
-        size=best["size"],
+    cascade = await try_download_chain(
+        TrackRef(artist=artist, title=title), purpose="bulk_per_track"
     )
+    last = cascade.attempts[-1] if cascade.attempts else None
+    source = cascade.final_backend or (last.backend if last else "none")
+    status = cascade.final_status if cascade.success else (last.status if last else "error")
+    err_msg = None if cascade.success else (last.error if last else "no backend succeeded")
 
-    if dl_result.get("state") == "error":
-        job.tracks_failed += 1
-        error_msg = dl_result.get("error", "Unknown")
-        job.errors.append(f"Download failed: {artist} - {title}: {error_msg}")
-        return
+    slskd_username = None
+    slskd_filename = None
+    slskd_transfer_id = None
+    if cascade.success and cascade.final_backend == BackendName.SLSKD.value:
+        slskd_username = cascade.final_extra.get("username")
+        slskd_filename = cascade.final_extra.get("filename")
+        slskd_transfer_id = cascade.final_task_id
 
-    # Persist to DB.
+    record_id: int | None = None
     async with AsyncSessionLocal() as session:
         record = DownloadRequest(
-            source="soulseek",
-            status="queued",
-            slskd_username=best["username"],
-            slskd_filename=best["filename"],
+            task_id=cascade.final_task_id,
+            status=status,
+            source=source,
             track_title=title,
             artist_name=artist,
+            slskd_username=slskd_username,
+            slskd_filename=slskd_filename,
+            slskd_transfer_id=slskd_transfer_id,
+            attempts=[a.to_dict() for a in cascade.attempts] or None,
             requested_by=requested_by,
+            error_message=err_msg,
             updated_at=int(time.time()),
         )
         session.add(record)
         await session.commit()
+        record_id = record.id
 
-        # Start watcher for this download.
-        from app.services.slskd_watcher import start_watcher
+    if not cascade.success:
+        job.tracks_failed += 1
+        job.errors.append(f"{artist} - {title}: {err_msg}")
+        return
 
-        await start_watcher(record.id)
+    if cascade.final_backend == BackendName.SLSKD.value and record_id is not None:
+        from app.services.slskd_watcher import start_watcher as start_slskd_watcher
+
+        await start_slskd_watcher(record_id)
+    elif cascade.final_task_id:
+        from app.services.download_watcher import start_watcher
+
+        await start_watcher(cascade.final_task_id, source=cascade.final_backend)
 
     job.tracks_queued += 1
-    logger.debug("Queued: %s - %s from %s", artist, title, best["username"])
+    logger.debug("Queued: %s - %s via %s", artist, title, source)
