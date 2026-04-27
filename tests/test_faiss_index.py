@@ -40,10 +40,11 @@ async def setup_db(monkeypatch):
     # Reset singleton state after each test.
     import app.services.faiss_index as fi
 
-    fi._index = None
-    fi._id_to_track = []
-    fi._track_to_id = {}
-    fi._embeddings = None
+    for idx in (fi.effnet_index, fi.clap_index):
+        idx._index = None
+        idx._id_to_track = []
+        idx._track_to_id = {}
+        idx._embeddings = None
 
     async with _test_engine.begin() as conn:
         await conn.run_sync(Base.metadata.drop_all)
