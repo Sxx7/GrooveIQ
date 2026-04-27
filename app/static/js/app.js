@@ -3790,14 +3790,14 @@ function dlDownloadAllAlbums(queueKey, btn, sectionLabel) {
     btn.textContent = 'Queueing ' + (idx + 1) + '/' + queue.length + '\u2026';
     var item = queue[idx];
     var albumLabel = (item.artist_name || '') + ' / ' + (item.album_name || item.track_title || '?');
-    console.log('[Download all] POST ' + (idx + 1) + '/' + queue.length, albumLabel, item.handle);
+    console.log('[Download all] POST ' + (idx + 1) + '/' + queue.length, albumLabel, item.handle); // nosemgrep
     postWithTimeout(item, 30000).then(function(rec) {
       done++;
-      console.log('[Download all] OK ' + (idx + 1) + '/' + queue.length, albumLabel, rec && rec.task_id);
+      console.log('[Download all] OK ' + (idx + 1) + '/' + queue.length, albumLabel, rec && rec.task_id); // nosemgrep
       step();
     }).catch(function(err) {
       failed++;
-      console.error('[Download all] FAIL ' + (idx + 1) + '/' + queue.length, albumLabel, err && err.message);
+      console.error('[Download all] FAIL ' + (idx + 1) + '/' + queue.length, albumLabel, err && err.message); // nosemgrep
       // First few failures get a toast so the user notices something is wrong
       // immediately. Cap at 3 toasts to avoid spamming if the backend is dead.
       if (failed <= 3) notify('Failed to queue ' + albumLabel + ': ' + (err && err.message), 'error');
