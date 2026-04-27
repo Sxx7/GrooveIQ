@@ -239,7 +239,7 @@ var contentSubTab = 'recommendations';
 
 function switchTab(view) {
   // Map legacy tab names to content sub-tabs
-  var contentSubs = { recommendations:1, tracks:1, playlists:1, radio:1, charts:1, discovery:1, news:1, 'music-map':1, search:1 };
+  var contentSubs = { recommendations:1, tracks:1, playlists:1, radio:1, charts:1, discovery:1, news:1, 'music-map':1, search:1, audit:1 };
   if (contentSubs[view]) { contentSubTab = view; view = 'content'; }
 
   currentView = view;
@@ -271,7 +271,8 @@ function contentSubTabBar() {
     { id: 'music-map', label: 'Music Map' },
     { id: 'charts', label: 'Charts' },
     { id: 'discovery', label: 'Discovery' },
-    { id: 'news', label: 'News' }
+    { id: 'news', label: 'News' },
+    { id: 'audit', label: 'Audit' }
   ];
   var bar = '<div class="subtab-bar">';
   for (var i = 0; i < subs.length; i++) {
@@ -291,6 +292,7 @@ function loadContent(sub) {
   else if (contentSubTab === 'charts') loadCharts();
   else if (contentSubTab === 'discovery') loadDiscovery();
   else if (contentSubTab === 'news') loadNews();
+  else if (contentSubTab === 'audit') loadAudit();
 }
 
 // Inject sub-tab bar before content for content sub-views
@@ -4135,6 +4137,415 @@ function dlDownloadEncoded(payloadEnc) {
     }
   }).catch(function(e) {
     notify('Download via ' + backend + ' failed: ' + e.message, 'error');
+  });
+}
+
+// =========================================================================
+// =========================================================================
+// Audit View — recommendation request audit & replay
+// =========================================================================
+var auditState = {
+  view: 'sessions',     // 'sessions' | 'detail' | 'replay'
+  user: '',
+  surface: '',
+  since: 30,
+  limit: 50,
+  offset: 0,
+  requestId: null,
+  replayMode: 'rerank_only',
+  detailCache: null
+};
+
+function loadAudit() {
+  auditState.view = 'sessions';
+  auditState.requestId = null;
+  auditState.detailCache = null;
+  renderAudit();
+}
+
+function renderAudit() {
+  var h = '<div class="page-header"><h1 class="page-title">Recommendation Audit</h1>';
+  h += '<div class="page-actions">';
+  if (auditState.view !== 'sessions') {
+    h += '<button class="btn btn-secondary btn-sm" onclick="auditBackToList()">&larr; Back to list</button>';
+  }
+  h += '<button class="btn btn-secondary btn-sm" onclick="auditShowStats()">Storage stats</button>';
+  h += '</div></div>';
+
+  if (auditState.view === 'sessions') {
+    h += renderAuditSessionsControls();
+    h += '<div id="audit-list"><div class="empty">Loading audit sessions\u2026</div></div>';
+  } else if (auditState.view === 'detail') {
+    h += '<div id="audit-detail"><div class="empty">Loading request detail\u2026</div></div>';
+  } else if (auditState.view === 'replay') {
+    h += '<div id="audit-replay"><div class="empty">Running replay\u2026</div></div>';
+  }
+  setAppContent(h);
+
+  if (auditState.view === 'sessions') auditFetchSessions();
+  else if (auditState.view === 'detail') auditFetchDetail(auditState.requestId);
+  else if (auditState.view === 'replay') auditRunReplay(auditState.requestId, auditState.replayMode);
+}
+
+function renderAuditSessionsControls() {
+  var h = '<div style="display:flex;gap:var(--space-3);margin-bottom:var(--space-4);align-items:center;flex-wrap:wrap">';
+  h += '<select id="audit-user" class="form-select" style="min-width:160px"><option value="">All users (admin)</option>';
+  for (var i = 0; i < cachedUsers.length; i++) {
+    var sel = cachedUsers[i].user_id === auditState.user ? ' selected' : '';
+    h += '<option value="' + esc(cachedUsers[i].user_id) + '"' + sel + '>' + esc(cachedUsers[i].user_id) + '</option>';
+  }
+  h += '</select>';
+  h += '<select id="audit-surface" class="form-select" style="min-width:140px">';
+  var surfaces = [['','All surfaces'],['recommend_api','Recommend API'],['radio','Radio'],['home','Home'],['search','Search']];
+  for (var i = 0; i < surfaces.length; i++) {
+    var sel = surfaces[i][0] === auditState.surface ? ' selected' : '';
+    h += '<option value="' + surfaces[i][0] + '"' + sel + '>' + surfaces[i][1] + '</option>';
+  }
+  h += '</select>';
+  h += '<select id="audit-since" class="form-select" style="min-width:100px">';
+  var ranges = [[1,'24h'],[7,'7d'],[30,'30d'],[90,'90d'],[0,'All time']];
+  for (var i = 0; i < ranges.length; i++) {
+    var sel = ranges[i][0] === auditState.since ? ' selected' : '';
+    h += '<option value="' + ranges[i][0] + '"' + sel + '>' + ranges[i][1] + '</option>';
+  }
+  h += '</select>';
+  h += '<button class="btn btn-primary btn-sm" onclick="auditApplyFilters()">Apply</button>';
+  h += '</div>';
+  return h;
+}
+
+function auditApplyFilters() {
+  var u = document.getElementById('audit-user');
+  var s = document.getElementById('audit-surface');
+  var d = document.getElementById('audit-since');
+  if (u) auditState.user = u.value;
+  if (s) auditState.surface = s.value;
+  if (d) auditState.since = parseInt(d.value, 10);
+  auditState.offset = 0;
+  auditFetchSessions();
+}
+
+function auditFetchSessions() {
+  var params = ['limit=' + auditState.limit, 'offset=' + auditState.offset];
+  if (auditState.user) params.push('user_id=' + encodeURIComponent(auditState.user));
+  if (auditState.surface) params.push('surface=' + encodeURIComponent(auditState.surface));
+  if (auditState.since && auditState.since > 0) params.push('since_days=' + auditState.since);
+  api('/v1/recommend/audit/sessions?' + params.join('&'))
+    .then(renderAuditSessionsList)
+    .catch(function(err) {
+      var el = document.getElementById('audit-list');
+      if (el) el.innerHTML = '<div class="empty" style="color:var(--color-danger)">Failed: ' + esc(err.message) + '</div>';
+    });
+}
+
+function renderAuditSessionsList(rows) {
+  var el = document.getElementById('audit-list');
+  if (!el) return;
+  if (!rows || !rows.length) {
+    el.innerHTML = '<div class="empty">No audit sessions found. Trigger /v1/recommend or start a radio session to populate.</div>';
+    return;
+  }
+  var h = '<div class="card"><div class="card-body" style="overflow-x:auto;padding:0">';
+  h += '<table><tr><th>Time</th><th>User</th><th>Surface</th><th>Top track</th><th>Seed</th><th>Cands</th><th>Model</th><th>Cfg</th><th>Duration</th><th></th></tr>';
+  for (var i = 0; i < rows.length; i++) {
+    var r = rows[i];
+    var topTrack = '\u2014';
+    if (r.top_track && (r.top_track.title || r.top_track.track_id)) {
+      var t = r.top_track;
+      topTrack = (t.artist ? esc(t.artist) + ' \u2014 ' : '') + esc(t.title || t.track_id);
+    }
+    var seed = r.seed_track_id ? esc(r.seed_track_id).slice(0, 14) + '\u2026' : (r.context_id ? '<span class="badge badge-info">ctx</span>' : '\u2014');
+    h += '<tr>';
+    h += '<td class="nowrap" title="' + esc(fmtTime(r.created_at)) + '">' + timeAgo(r.created_at) + '</td>';
+    h += '<td><strong>' + esc(r.user_id) + '</strong></td>';
+    h += '<td>' + esc(r.surface) + '</td>';
+    h += '<td class="truncate" style="max-width:280px">' + topTrack + '</td>';
+    h += '<td class="mono text-sm">' + seed + '</td>';
+    h += '<td>' + r.candidates_total + '</td>';
+    h += '<td class="mono text-sm">' + esc(r.model_version || '\u2014') + '</td>';
+    h += '<td>v' + r.config_version + '</td>';
+    h += '<td>' + r.duration_ms + 'ms</td>';
+    h += '<td><button class="btn btn-secondary btn-sm" onclick="auditViewRequest(\'' + esc(r.request_id) + '\')">View</button></td>';
+    h += '</tr>';
+  }
+  h += '</table></div></div>';
+  // Pagination
+  h += '<div style="display:flex;justify-content:space-between;align-items:center;margin-top:var(--space-3);font-size:0.875rem">';
+  h += '<span>Showing ' + rows.length + ' rows starting at ' + auditState.offset + '</span>';
+  h += '<div style="display:flex;gap:var(--space-2)">';
+  if (auditState.offset > 0) h += '<button class="btn btn-secondary btn-sm" onclick="auditPagePrev()">&larr; Prev</button>';
+  if (rows.length === auditState.limit) h += '<button class="btn btn-secondary btn-sm" onclick="auditPageNext()">Next &rarr;</button>';
+  h += '</div></div>';
+  el.innerHTML = h;
+}
+
+function auditPagePrev() {
+  auditState.offset = Math.max(0, auditState.offset - auditState.limit);
+  auditFetchSessions();
+}
+function auditPageNext() {
+  auditState.offset += auditState.limit;
+  auditFetchSessions();
+}
+
+function auditViewRequest(rid) {
+  auditState.requestId = rid;
+  auditState.view = 'detail';
+  renderAudit();
+}
+
+function auditBackToList() {
+  if (auditState.view === 'replay') {
+    auditState.view = 'detail';
+    renderAudit();
+  } else {
+    auditState.view = 'sessions';
+    renderAudit();
+  }
+}
+
+function auditFetchDetail(rid) {
+  api('/v1/recommend/audit/' + encodeURIComponent(rid))
+    .then(function(detail) {
+      auditState.detailCache = detail;
+      renderAuditDetail(detail);
+    })
+    .catch(function(err) {
+      var el = document.getElementById('audit-detail');
+      if (el) el.innerHTML = '<div class="empty" style="color:var(--color-danger)">Failed: ' + esc(err.message) + '</div>';
+    });
+}
+
+function renderAuditDetail(d) {
+  var el = document.getElementById('audit-detail');
+  if (!el) return;
+
+  // Header
+  var h = '<div class="card"><div class="card-body" style="padding:var(--space-4)">';
+  h += '<div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:var(--space-3)">';
+  h += '<div>';
+  h += '<div style="font-size:0.75rem;color:var(--text-muted)">REQUEST</div>';
+  h += '<div class="mono text-sm">' + esc(d.request_id) + '</div>';
+  h += '<div style="margin-top:var(--space-2)">';
+  h += '<span class="badge badge-info">' + esc(d.surface) + '</span> ';
+  h += '<strong>' + esc(d.user_id) + '</strong> &middot; ';
+  h += fmtTime(d.created_at) + ' &middot; ';
+  h += '<span class="badge badge-primary">model ' + esc(d.model_version) + '</span> ';
+  h += '<span class="badge badge-primary">config v' + d.config_version + '</span>';
+  h += '</div>';
+  // request context chips
+  var ctx = d.request_context || {};
+  var chips = [];
+  ['device_type','output_type','context_type','location_label','hour_of_day','day_of_week','seed_type','seed_value','genre','mood'].forEach(function(k) {
+    if (ctx[k] != null && ctx[k] !== '') chips.push('<span class="badge badge-info" style="margin-right:4px">' + esc(k) + ': ' + esc(String(ctx[k])) + '</span>');
+  });
+  if (chips.length) h += '<div style="margin-top:var(--space-2);font-size:0.75rem">' + chips.join('') + '</div>';
+  h += '</div>';
+  h += '<div style="text-align:right">';
+  h += '<button class="btn btn-primary btn-sm" onclick="auditRunReplayBtn(\'rerank_only\')">Replay (rerank only)</button> ';
+  h += '<button class="btn btn-secondary btn-sm" onclick="auditRunReplayBtn(\'full\')">Replay (full)</button>';
+  h += '</div></div></div></div>';
+
+  // Sources & summary
+  h += '<div class="grid-2" style="margin-top:var(--space-4)">';
+  h += '<div class="card"><div class="card-header">Candidate sources</div><div class="card-body">';
+  var src = d.candidates_by_source || {};
+  var total = d.candidates_total || 1;
+  var srcKeys = Object.keys(src);
+  if (!srcKeys.length) {
+    h += '<div class="empty">No source breakdown captured.</div>';
+  } else {
+    var maxC = 1;
+    for (var i = 0; i < srcKeys.length; i++) if (src[srcKeys[i]] > maxC) maxC = src[srcKeys[i]];
+    srcKeys.sort(function(a, b) { return src[b] - src[a]; });
+    for (var i = 0; i < srcKeys.length; i++) {
+      var k = srcKeys[i], v = src[k];
+      h += '<div class="bar-row"><div class="bar-label">' + esc(k) + '</div><div class="bar-track"><div class="bar-fill" style="width:' + (v/maxC*100).toFixed(1) + '%"></div></div><div class="bar-count">' + v + '</div></div>';
+    }
+  }
+  h += '</div></div>';
+
+  // Reranker actions summary
+  h += '<div class="card"><div class="card-header">Reranker actions</div><div class="card-body">';
+  var actionCounts = {};
+  for (var i = 0; i < d.candidates.length; i++) {
+    var acts = d.candidates[i].reranker_actions || [];
+    for (var j = 0; j < acts.length; j++) {
+      var a = acts[j].action || 'unknown';
+      actionCounts[a] = (actionCounts[a] || 0) + 1;
+    }
+  }
+  var akeys = Object.keys(actionCounts);
+  if (!akeys.length) {
+    h += '<div class="empty">No reranker actions for this request.</div>';
+  } else {
+    h += '<div style="display:flex;flex-wrap:wrap;gap:var(--space-2)">';
+    for (var i = 0; i < akeys.length; i++) {
+      h += '<span class="badge badge-warning">' + esc(akeys[i]) + ' \u00d7 ' + actionCounts[akeys[i]] + '</span>';
+    }
+    h += '</div>';
+  }
+  h += '<div style="margin-top:var(--space-3);font-size:0.875rem">Candidates total: <strong>' + total + '</strong> &middot; persisted: <strong>' + d.candidates.length + '</strong> &middot; limit: <strong>' + d.limit_requested + '</strong></div>';
+  h += '</div></div>';
+  h += '</div>';
+
+  // Candidates table
+  h += '<div class="card" style="margin-top:var(--space-4)"><div class="card-header">Candidates</div><div class="card-body" style="overflow-x:auto;padding:0">';
+  h += '<table><tr><th>Rank</th><th>Track</th><th>Sources</th><th>Raw</th><th>Final</th><th>Actions</th><th></th></tr>';
+  for (var i = 0; i < d.candidates.length; i++) {
+    var c = d.candidates[i];
+    var name = (c.artist ? esc(c.artist) + ' \u2014 ' : '') + (c.title ? esc(c.title) : esc(c.track_id));
+    var rankCell;
+    if (c.shown && c.final_position != null) {
+      var delta = c.pre_rerank_position - c.final_position;
+      var arrow = delta > 0 ? ' <span class="text-success">&uarr;' + delta + '</span>' : delta < 0 ? ' <span class="text-danger">&darr;' + (-delta) + '</span>' : '';
+      rankCell = '<strong>' + (c.final_position + 1) + '</strong>' + arrow;
+    } else {
+      rankCell = '<span class="text-muted" title="filtered out">\u2014</span>';
+    }
+    var srcChips = '';
+    var srcs = c.sources || [];
+    for (var j = 0; j < srcs.length; j++) srcChips += '<span class="badge badge-info" style="margin-right:2px;font-size:0.6875rem">' + esc(srcs[j]) + '</span>';
+    var actChips = '';
+    var acts = c.reranker_actions || [];
+    for (var j = 0; j < acts.length; j++) actChips += '<span class="badge badge-warning" style="margin-right:2px;font-size:0.6875rem">' + esc(acts[j].action || '?') + '</span>';
+    h += '<tr>';
+    h += '<td class="nowrap">' + rankCell + '</td>';
+    h += '<td class="truncate" style="max-width:300px" title="' + esc(c.track_id) + '">' + name + '</td>';
+    h += '<td>' + (srcChips || '\u2014') + '</td>';
+    h += '<td class="mono text-sm">' + (c.raw_score != null ? c.raw_score.toFixed(3) : '\u2014') + '</td>';
+    h += '<td class="mono text-sm">' + (c.final_score != null ? c.final_score.toFixed(3) : '\u2014') + '</td>';
+    h += '<td>' + (actChips || '\u2014') + '</td>';
+    h += '<td><button class="btn btn-secondary btn-sm" onclick="auditToggleWhy(' + i + ')">Why?</button></td>';
+    h += '</tr>';
+    h += '<tr id="audit-why-' + i + '" style="display:none"><td colspan="7" style="background:var(--bg-secondary);padding:var(--space-3) var(--space-4)">';
+    h += renderAuditFeatureVector(c.feature_vector || {});
+    h += '</td></tr>';
+  }
+  h += '</table></div></div>';
+
+  el.innerHTML = h;
+}
+
+function auditToggleWhy(idx) {
+  var row = document.getElementById('audit-why-' + idx);
+  if (row) row.style.display = (row.style.display === 'none' ? '' : 'none');
+}
+
+function renderAuditFeatureVector(fv) {
+  var keys = Object.keys(fv);
+  if (!keys.length) return '<div class="empty">No feature vector persisted.</div>';
+  keys.sort(function(a, b) { return Math.abs(fv[b]) - Math.abs(fv[a]); });
+  var h = '<div style="font-size:0.75rem;font-weight:600;color:var(--text-muted);margin-bottom:var(--space-2)">';
+  h += 'Top features by magnitude (' + keys.length + ' total)';
+  h += '</div>';
+  h += '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:var(--space-1) var(--space-3);font-family:var(--font-mono);font-size:0.75rem">';
+  for (var i = 0; i < keys.length; i++) {
+    var v = fv[keys[i]];
+    var vstr = (typeof v === 'number') ? (Number.isInteger(v) ? v : v.toFixed(4)) : v;
+    h += '<div style="display:flex;justify-content:space-between"><span class="text-muted">' + esc(keys[i]) + '</span><span><strong>' + esc(String(vstr)) + '</strong></span></div>';
+  }
+  h += '</div>';
+  return h;
+}
+
+function auditRunReplayBtn(mode) {
+  auditState.replayMode = mode;
+  auditState.view = 'replay';
+  renderAudit();
+}
+
+function auditRunReplay(rid, mode) {
+  apiPost('/v1/recommend/audit/' + encodeURIComponent(rid) + '/replay', { mode: mode })
+    .then(renderAuditReplay)
+    .catch(function(err) {
+      var el = document.getElementById('audit-replay');
+      if (el) el.innerHTML = '<div class="empty" style="color:var(--color-danger)">Replay failed: ' + esc(err.message) + '</div>';
+    });
+}
+
+function renderAuditReplay(r) {
+  var el = document.getElementById('audit-replay');
+  if (!el) return;
+
+  var h = '<div class="card"><div class="card-body" style="padding:var(--space-4)">';
+  h += '<div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:var(--space-3)">';
+  h += '<div>';
+  h += '<div style="font-size:0.75rem;color:var(--text-muted)">REPLAY \u2014 mode: <strong>' + esc(r.mode) + '</strong></div>';
+  h += '<div class="mono text-sm">' + esc(r.request_id) + '</div>';
+  h += '<div style="margin-top:var(--space-2)">';
+  h += '<span class="badge badge-info">orig: ' + esc(r.original_model_version) + ' / cfg v' + r.original_config_version + '</span> ';
+  h += '<span class="badge badge-success">new: ' + esc(r.new_model_version) + ' / cfg v' + r.new_config_version + '</span>';
+  h += '</div></div>';
+  h += '<div style="text-align:right">';
+  h += '<button class="btn btn-secondary btn-sm" onclick="auditRunReplayBtn(\'rerank_only\')"' + (r.mode === 'rerank_only' ? ' disabled' : '') + '>rerank_only</button> ';
+  h += '<button class="btn btn-secondary btn-sm" onclick="auditRunReplayBtn(\'full\')"' + (r.mode === 'full' ? ' disabled' : '') + '>full</button>';
+  h += '</div></div></div></div>';
+
+  // Summary card
+  var s = r.summary || {};
+  h += '<div class="card" style="margin-top:var(--space-4)"><div class="card-header">Summary</div><div class="card-body">';
+  h += '<div class="profile-grid">';
+  h += '<div class="profile-item"><div class="pval">' + (s.top10_overlap != null ? (s.top10_overlap * 100).toFixed(0) + '%' : '\u2014') + '</div><div class="plbl">Top-10 overlap</div></div>';
+  h += '<div class="profile-item"><div class="pval">' + (s.kendall_tau != null ? s.kendall_tau.toFixed(3) : '\u2014') + '</div><div class="plbl">Kendall\u2019s &tau;</div></div>';
+  h += '<div class="profile-item"><div class="pval">' + (s.avg_abs_delta != null ? s.avg_abs_delta.toFixed(2) : '\u2014') + '</div><div class="plbl">Avg |&Delta;rank|</div></div>';
+  h += '<div class="profile-item"><div class="pval">' + (s.candidates_compared || 0) + '</div><div class="plbl">Compared</div></div>';
+  h += '</div>';
+  if ((s.new_top10_tracks || []).length) h += '<div style="margin-top:var(--space-3);font-size:0.875rem"><strong>New in top 10:</strong> ' + s.new_top10_tracks.length + ' track(s)</div>';
+  if ((s.dropped_top10_tracks || []).length) h += '<div style="font-size:0.875rem"><strong>Dropped from top 10:</strong> ' + s.dropped_top10_tracks.length + ' track(s)</div>';
+  h += '</div></div>';
+
+  // Side-by-side rank deltas
+  h += '<div class="card" style="margin-top:var(--space-4)"><div class="card-header">Rank deltas</div><div class="card-body" style="overflow-x:auto;padding:0">';
+  h += '<table><tr><th>Track</th><th>Original</th><th>New</th><th>&Delta;</th><th>Orig score</th><th>New score</th></tr>';
+  var deltas = r.rank_deltas || [];
+  for (var i = 0; i < deltas.length; i++) {
+    var d = deltas[i];
+    var name = (d.artist ? esc(d.artist) + ' \u2014 ' : '') + (d.title ? esc(d.title) : esc(d.track_id));
+    var rowStyle = '';
+    if (d.original_position != null && d.original_position < 10 && (d.new_position == null || d.new_position >= 10)) rowStyle = 'background:rgba(220,38,38,0.08);text-decoration:line-through';
+    else if (d.new_position != null && d.new_position < 10 && d.original_position == null) rowStyle = 'background:rgba(34,197,94,0.08);border-left:3px solid var(--color-success)';
+    else if (d.delta != null && d.delta > 0) rowStyle = 'background:rgba(34,197,94,0.05)';
+    else if (d.delta != null && d.delta < 0) rowStyle = 'background:rgba(220,38,38,0.05)';
+    var deltaCell = '\u2014';
+    if (d.delta != null) {
+      if (d.delta > 0) deltaCell = '<span class="text-success">&uarr;' + d.delta + '</span>';
+      else if (d.delta < 0) deltaCell = '<span class="text-danger">&darr;' + (-d.delta) + '</span>';
+      else deltaCell = '<span class="text-muted">0</span>';
+    } else if (d.original_position == null) {
+      deltaCell = '<span class="badge badge-success">NEW</span>';
+    } else if (d.new_position == null) {
+      deltaCell = '<span class="badge badge-danger">DROP</span>';
+    }
+    h += '<tr style="' + rowStyle + '">';
+    h += '<td class="truncate" style="max-width:280px" title="' + esc(d.track_id) + '">' + name + '</td>';
+    h += '<td>' + (d.original_position != null ? '#' + (d.original_position + 1) : '\u2014') + '</td>';
+    h += '<td>' + (d.new_position != null ? '#' + (d.new_position + 1) : '\u2014') + '</td>';
+    h += '<td>' + deltaCell + '</td>';
+    h += '<td class="mono text-sm">' + (d.original_score != null ? d.original_score.toFixed(3) : '\u2014') + '</td>';
+    h += '<td class="mono text-sm">' + (d.new_score != null ? d.new_score.toFixed(3) : '\u2014') + '</td>';
+    h += '</tr>';
+  }
+  h += '</table></div></div>';
+  el.innerHTML = h;
+}
+
+function auditShowStats() {
+  api('/v1/recommend/audit/stats').then(function(s) {
+    var mb = (s.storage_bytes_estimate || 0) / 1024 / 1024;
+    var msg = 'Audit storage stats:\n' +
+      '\nEnabled: ' + (s.enabled ? 'yes' : 'no') +
+      '\nTotal requests: ' + (s.total_requests_all || 0).toLocaleString() +
+      '\nLast 30d: ' + (s.total_requests_30d || 0).toLocaleString() +
+      '\nTotal candidates: ' + (s.total_candidates_all || 0).toLocaleString() +
+      '\nEst. storage: ' + mb.toFixed(1) + ' MB' +
+      '\nRetention: ' + s.retention_days + ' days' +
+      '\nMax candidates per request: ' + s.max_candidates_per_request;
+    if (typeof toast === 'function') toast(msg, 'info', 8000);
+    else alert(msg);
+  }).catch(function(err) {
+    if (typeof toast === 'function') toast('Stats failed: ' + err.message, 'error');
+    else alert('Stats failed: ' + err.message);
   });
 }
 

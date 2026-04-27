@@ -16,6 +16,7 @@ import time
 
 from sqlalchemy import (
     JSON,
+    BigInteger,
     Boolean,
     Column,
     Float,
@@ -26,7 +27,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
 )
-from sqlalchemy.orm import DeclarativeBase
+from sqlalchemy.orm import DeclarativeBase, relationship
 
 
 class Base(DeclarativeBase):
@@ -718,3 +719,90 @@ class PlaylistTrack(Base):
         UniqueConstraint("playlist_id", "position", name="uq_playlist_position"),
         Index("ix_playlist_track_pos", "playlist_id", "position"),
     )
+
+
+# ---------------------------------------------------------------------------
+# Recommendation audit  (always-on persistence of /v1/recommend internals)
+# ---------------------------------------------------------------------------
+
+
+class RecommendationRequestAudit(Base):
+    """
+    One row per /v1/recommend (or radio batch) call.
+
+    Persists the request context, candidate-source breakdown, and timing
+    so past requests can be browsed in the dashboard or replayed offline
+    against the current ranker / config to evaluate tuning impact.
+
+    Append-only.  Pruned by a daily cleanup job (RECO_AUDIT_RETENTION_DAYS).
+    """
+
+    __tablename__ = "recommendation_request_audits"
+
+    request_id = Column(String(64), primary_key=True)
+    user_id = Column(String(255), nullable=False, index=True)
+    created_at = Column(BigInteger, nullable=False, index=True)
+    surface = Column(String(32), nullable=False)  # home, radio, search, recommend_api
+    seed_track_id = Column(String(255), nullable=True)
+    context_id = Column(String(255), nullable=True)  # radio session_id, playlist_id, etc.
+    model_version = Column(String(64), nullable=False)
+    config_version = Column(Integer, nullable=False, default=0)
+    request_context = Column(JSON, nullable=True)  # {device_type, output_type, hour_of_day, ...}
+    candidates_total = Column(Integer, nullable=False, default=0)
+    candidates_by_source = Column(JSON, nullable=True)  # {"content": 50, "cf": 30, ...}
+    duration_ms = Column(Integer, nullable=False, default=0)
+    limit_requested = Column(Integer, nullable=False, default=25)
+
+    candidates = relationship(
+        "RecommendationCandidateAudit",
+        back_populates="request",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
+
+    __table_args__ = (Index("idx_reco_audit_user_time", "user_id", "created_at"),)
+
+
+class RecommendationCandidateAudit(Base):
+    """
+    One row per candidate considered in a recommendation request.
+
+    Captures the candidate's pre-rerank rank, post-rerank rank, source
+    attribution, reranker actions, and the full feature vector that fed
+    into the ranker.  This is the data needed to answer "why was track X
+    surfaced at position N?" and to replay the request against newer models.
+    """
+
+    __tablename__ = "recommendation_candidate_audits"
+
+    # SQLite only treats ``INTEGER PRIMARY KEY`` (not BIGINT) as the rowid
+    # alias for autoincrement, so we use Integer here for cross-DB compat.
+    # PostgreSQL maps Integer to int4 which still supports 2.1B rows.
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    request_id = Column(
+        String(64),
+        ForeignKey("recommendation_request_audits.request_id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    track_id = Column(String(255), nullable=False, index=True)
+
+    # A candidate may surface from multiple sources (e.g. content + sasrec).
+    sources = Column(JSON, nullable=True)  # ["content", "sasrec"]
+
+    # Pre-rerank
+    raw_score = Column(Float, nullable=False, default=0.0)
+    pre_rerank_position = Column(Integer, nullable=False, default=-1)
+
+    # Post-rerank — null final_position means filtered out.
+    final_score = Column(Float, nullable=True)
+    final_position = Column(Integer, nullable=True)
+    shown = Column(Boolean, nullable=False, default=False, index=True)
+
+    # Why? — full audit data
+    reranker_actions = Column(JSON, nullable=True)  # ["freshness_boost", "exploration_slot"]
+    feature_vector = Column(JSON, nullable=True)  # the ranker features
+
+    request = relationship("RecommendationRequestAudit", back_populates="candidates")
+
+    __table_args__ = (Index("idx_reco_audit_candidate_track", "request_id", "track_id"),)
