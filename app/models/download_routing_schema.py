@@ -43,10 +43,10 @@ class QualityTier(str, Enum):
     Order matters: LOSSY_LOW < LOSSY_HIGH < LOSSLESS < HIRES.
     """
 
-    LOSSY_LOW = "lossy_low"      # mp3 <= 192 kbps, aac <= 192 kbps
-    LOSSY_HIGH = "lossy_high"    # mp3 256/320, aac 256+
-    LOSSLESS = "lossless"        # FLAC/ALAC 16-bit/44.1 kHz (CD)
-    HIRES = "hires"              # FLAC 24-bit/96 kHz+
+    LOSSY_LOW = "lossy_low"  # mp3 <= 192 kbps, aac <= 192 kbps
+    LOSSY_HIGH = "lossy_high"  # mp3 256/320, aac 256+
+    LOSSLESS = "lossless"  # FLAC/ALAC 16-bit/44.1 kHz (CD)
+    HIRES = "hires"  # FLAC 24-bit/96 kHz+
 
 
 _QUALITY_ORDER = {
@@ -78,11 +78,11 @@ def quality_meets(actual: QualityTier | str | None, minimum: QualityTier | str |
 # (before we've actually searched). Variable-quality backends like slskd are
 # evaluated post-search instead.
 DEFAULT_BACKEND_QUALITY: dict[BackendName, QualityTier] = {
-    BackendName.SPOTDL: QualityTier.LOSSY_HIGH,    # YT Music re-encoded ~256-320kbps
-    BackendName.STREAMRIP: QualityTier.HIRES,      # default config quality=3 → 24/96
-    BackendName.SPOTIZERR: QualityTier.LOSSY_HIGH, # Deezer/YT, mostly 320kbps
-    BackendName.SLSKD: QualityTier.LOSSY_HIGH,     # variable; assume floor
-    BackendName.LIDARR: QualityTier.LOSSLESS,      # depends on quality profile
+    BackendName.SPOTDL: QualityTier.LOSSY_HIGH,  # YT Music re-encoded ~256-320kbps
+    BackendName.STREAMRIP: QualityTier.HIRES,  # default config quality=3 → 24/96
+    BackendName.SPOTIZERR: QualityTier.LOSSY_HIGH,  # Deezer/YT, mostly 320kbps
+    BackendName.SLSKD: QualityTier.LOSSY_HIGH,  # variable; assume floor
+    BackendName.LIDARR: QualityTier.LOSSLESS,  # depends on quality profile
 }
 
 
@@ -104,9 +104,7 @@ class BackendChainEntry(BaseModel):
             "Null means no threshold."
         ),
     )
-    timeout_s: int = Field(
-        60, ge=5, le=600, description="Per-backend timeout in seconds for the cascade attempt"
-    )
+    timeout_s: int = Field(60, ge=5, le=600, description="Per-backend timeout in seconds for the cascade attempt")
 
 
 # ---------------------------------------------------------------------------

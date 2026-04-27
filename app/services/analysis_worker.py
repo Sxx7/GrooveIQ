@@ -453,10 +453,7 @@ def _download_models() -> bool:
             digest = sha.hexdigest()
             expected = _ONNX_MODEL_SHA256.get(filename)
             if expected and digest != expected:
-                raise ValueError(
-                    f"SHA-256 mismatch for {filename}: "
-                    f"expected {expected[:16]}…, got {digest[:16]}…"
-                )
+                raise ValueError(f"SHA-256 mismatch for {filename}: expected {expected[:16]}…, got {digest[:16]}…")
             # Atomic rename into place.
             os.rename(tmp_path, local_path)
             tmp_path = None  # prevent cleanup
@@ -688,17 +685,26 @@ def _analyze_file(
                 try:
                     with tempfile.NamedTemporaryFile(suffix=".wav", delete=True) as tmp:
                         cmd = [
-                            "ffmpeg", "-y", "-i", file_path,
-                            "-ac", "1", "-ar", str(sr),
-                            "-f", "wav", tmp.name,
+                            "ffmpeg",
+                            "-y",
+                            "-i",
+                            file_path,
+                            "-ac",
+                            "1",
+                            "-ar",
+                            str(sr),
+                            "-f",
+                            "wav",
+                            tmp.name,
                         ]
                         proc = subprocess.run(  # noqa: S603 - fixed argv, internal file path
-                            cmd, capture_output=True, timeout=60, check=False,
+                            cmd,
+                            capture_output=True,
+                            timeout=60,
+                            check=False,
                         )
                         if proc.returncode != 0:
-                            raise RuntimeError(
-                                f"ffmpeg downmix failed: {proc.stderr.decode(errors='replace')}"
-                            ) from e
+                            raise RuntimeError(f"ffmpeg downmix failed: {proc.stderr.decode(errors='replace')}") from e
                         audio = es.MonoLoader(filename=tmp.name, sampleRate=sr)()
                     logger.info("Downmixed via ffmpeg: %s", file_path)
                 except FileNotFoundError:
@@ -742,9 +748,7 @@ def _analyze_file(
                 clap_vec = _compute_clap_embedding(audio, sr, clap_audio_session, es)
                 timings["clap"] = time.monotonic() - t0
                 if clap_vec is not None:
-                    result["clap_embedding"] = base64.b64encode(
-                        clap_vec.astype(np.float32).tobytes()
-                    ).decode("ascii")
+                    result["clap_embedding"] = base64.b64encode(clap_vec.astype(np.float32).tobytes()).decode("ascii")
             except Exception as e:
                 logger.debug("CLAP audio embedding failed for %s: %s", file_path, e)
 

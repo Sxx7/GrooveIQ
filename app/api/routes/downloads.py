@@ -230,13 +230,10 @@ async def search_tracks_multi(
     backends: str | None = Query(
         None,
         description=(
-            "Comma-separated list of backends to query. "
-            "Defaults to the routing config's parallel_search_backends."
+            "Comma-separated list of backends to query. Defaults to the routing config's parallel_search_backends."
         ),
     ),
-    timeout_ms: int | None = Query(
-        None, ge=500, le=30000, description="Override per-backend timeout"
-    ),
+    timeout_ms: int | None = Query(None, ge=500, le=30000, description="Override per-backend timeout"),
     session: AsyncSession = Depends(get_session),
     _key: str = Depends(require_api_key),
 ):
@@ -356,11 +353,14 @@ async def search_artist(
     if backend_enum is not BackendName.STREAMRIP:
         return {
             "query": q,
-            "groups": [{
-                "backend": backend, "ok": False,
-                "error": f"{backend} doesn't support artist search yet",
-                "artists": [],
-            }],
+            "groups": [
+                {
+                    "backend": backend,
+                    "ok": False,
+                    "error": f"{backend} doesn't support artist search yet",
+                    "artists": [],
+                }
+            ],
         }
 
     from app.services.streamrip import StreamripClient
@@ -382,12 +382,14 @@ async def search_artist(
     err = result.get("error")
     return {
         "query": q,
-        "groups": [{
-            "backend": "streamrip",
-            "ok": err is None,
-            "error": err,
-            "artists": result.get("artists") or [],
-        }],
+        "groups": [
+            {
+                "backend": "streamrip",
+                "ok": err is None,
+                "error": err,
+                "artists": result.get("artists") or [],
+            }
+        ],
     }
 
 
@@ -686,9 +688,7 @@ async def _probe_live_progress(task_id: str, source: str | None) -> dict | None:
     if client is None or not hasattr(client, "get_status"):
         return None
     try:
-        result = await asyncio.wait_for(
-            client.get_status(task_id), timeout=_PROGRESS_FETCH_TIMEOUT_S
-        )
+        result = await asyncio.wait_for(client.get_status(task_id), timeout=_PROGRESS_FETCH_TIMEOUT_S)
     except (TimeoutError, Exception) as exc:
         logger.debug("Queue probe failed for %s/%s: %s", source, task_id, exc)
         result = None
@@ -719,9 +719,7 @@ async def _probe_live_progress(task_id: str, source: str | None) -> dict | None:
     return normalised
 
 
-def _serialize_queue_row(
-    record: DownloadRequest, live: dict | None
-) -> dict:
+def _serialize_queue_row(record: DownloadRequest, live: dict | None) -> dict:
     """Convert a DB row + optional live probe into a queue-panel JSON row."""
     now = int(time.time())
     return {
@@ -766,31 +764,47 @@ async def get_download_queue(
     doesn't hammer the upstream backends.
     """
     in_flight_rows = (
-        await session.execute(
-            select(DownloadRequest)
-            .where(DownloadRequest.status.in_(_IN_FLIGHT_STATUSES))
-            .order_by(DownloadRequest.created_at.asc())
-            .limit(in_flight_limit)
+        (
+            await session.execute(
+                select(DownloadRequest)
+                .where(DownloadRequest.status.in_(_IN_FLIGHT_STATUSES))
+                .order_by(DownloadRequest.created_at.asc())
+                .limit(in_flight_limit)
+            )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
 
     completed_rows = (
-        await session.execute(
-            select(DownloadRequest)
-            .where(DownloadRequest.status.in_(_TERMINAL_SUCCESS_DB))
-            .order_by(DownloadRequest.updated_at.desc())
-            .limit(recent_limit)
+        (
+            await session.execute(
+                select(DownloadRequest)
+                .where(DownloadRequest.status.in_(_TERMINAL_SUCCESS_DB))
+                .order_by(DownloadRequest.updated_at.desc())
+                .limit(recent_limit)
+            )
         )
-    ).scalars().all() if recent_limit else []
+        .scalars()
+        .all()
+        if recent_limit
+        else []
+    )
 
     failed_rows = (
-        await session.execute(
-            select(DownloadRequest)
-            .where(DownloadRequest.status.in_(_TERMINAL_FAILED_DB))
-            .order_by(DownloadRequest.updated_at.desc())
-            .limit(recent_limit)
+        (
+            await session.execute(
+                select(DownloadRequest)
+                .where(DownloadRequest.status.in_(_TERMINAL_FAILED_DB))
+                .order_by(DownloadRequest.updated_at.desc())
+                .limit(recent_limit)
+            )
         )
-    ).scalars().all() if recent_limit else []
+        .scalars()
+        .all()
+        if recent_limit
+        else []
+    )
 
     # Probe in-flight rows in parallel; each call is timeout-capped + cached.
     probes = await asyncio.gather(
@@ -808,9 +822,7 @@ async def get_download_queue(
     return {
         "now": int(time.time()),
         "active_watchers": active_watcher_count(),
-        "in_flight": [
-            _serialize_queue_row(r, live_by_id.get(r.task_id)) for r in in_flight_rows
-        ],
+        "in_flight": [_serialize_queue_row(r, live_by_id.get(r.task_id)) for r in in_flight_rows],
         "recent_completed": [_serialize_queue_row(r, None) for r in completed_rows],
         "recent_failed": [_serialize_queue_row(r, None) for r in failed_rows],
     }
@@ -908,9 +920,7 @@ async def cancel_download(
     completed/error if the upstream finishes after the user dismissed it.
     """
     record = (
-        await session.execute(
-            select(DownloadRequest).where(DownloadRequest.id == download_id)
-        )
+        await session.execute(select(DownloadRequest).where(DownloadRequest.id == download_id))
     ).scalar_one_or_none()
     if record is None:
         raise HTTPException(status_code=404, detail=f"Download {download_id} not found")

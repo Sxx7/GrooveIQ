@@ -342,9 +342,7 @@ class StreamripAdapter(_SpotIdAdapterMixin):
         return await _run_spot_id_download(
             self.name.value,
             self.expected_quality,
-            lambda: self._client.download(
-                primary_id, artist=track_ref.artist or "", title=track_ref.title or ""
-            ),
+            lambda: self._client.download(primary_id, artist=track_ref.artist or "", title=track_ref.title or ""),
         )
 
     async def from_handle(self, handle: dict[str, Any]) -> AttemptResult:
@@ -671,9 +669,7 @@ class LidarrAdapter:
     async def try_download_album(self, album_ref: AlbumRef) -> AlbumAttempt:
         """Add the album's artist (unmonitored), monitor the album, trigger search."""
         if self._client is None:
-            return AlbumAttempt(
-                backend=self.name.value, success=False, status="skipped", error="not configured"
-            )
+            return AlbumAttempt(backend=self.name.value, success=False, status="skipped", error="not configured")
         if not album_ref.mb_release_group_id:
             return AlbumAttempt(
                 backend=self.name.value,
@@ -684,9 +680,7 @@ class LidarrAdapter:
         try:
             album = await self._client.lookup_album(album_ref.mb_release_group_id)
         except Exception as exc:
-            return AlbumAttempt(
-                backend=self.name.value, success=False, status="error", error=f"lookup failed: {exc}"
-            )
+            return AlbumAttempt(backend=self.name.value, success=False, status="error", error=f"lookup failed: {exc}")
         if not album:
             return AlbumAttempt(
                 backend=self.name.value,
@@ -785,9 +779,7 @@ class StreamripAlbumAdapter:
 
     async def try_download_album(self, album_ref: AlbumRef) -> AlbumAttempt:
         if self._client is None:
-            return AlbumAttempt(
-                backend=self.name.value, success=False, status="skipped", error="not configured"
-            )
+            return AlbumAttempt(backend=self.name.value, success=False, status="skipped", error="not configured")
         if not album_ref.service or not album_ref.album_id:
             return AlbumAttempt(
                 backend=self.name.value,
@@ -807,9 +799,7 @@ class StreamripAlbumAdapter:
                 error="StreamripClient.download_album not yet implemented",
             )
         except Exception as exc:
-            return AlbumAttempt(
-                backend=self.name.value, success=False, status="error", error=str(exc)[:512]
-            )
+            return AlbumAttempt(backend=self.name.value, success=False, status="error", error=str(exc)[:512])
         ok = bool(result and result.get("task_id") and result.get("status") not in ("error", "unknown"))
         return AlbumAttempt(
             backend=self.name.value,
@@ -923,9 +913,7 @@ async def try_download_chain(track_ref: TrackRef, purpose: str = "individual") -
                 continue
 
             try:
-                result = await asyncio.wait_for(
-                    adapter.try_download(track_ref), timeout=entry.timeout_s
-                )
+                result = await asyncio.wait_for(adapter.try_download(track_ref), timeout=entry.timeout_s)
             except TimeoutError:
                 result = AttemptResult(
                     backend=entry.backend.value,
@@ -935,11 +923,7 @@ async def try_download_chain(track_ref: TrackRef, purpose: str = "individual") -
                 )
 
             # Post-flight quality gate (handles slskd's variable quality).
-            if (
-                result.success
-                and entry.min_quality
-                and not quality_meets(result.quality, entry.min_quality)
-            ):
+            if result.success and entry.min_quality and not quality_meets(result.quality, entry.min_quality):
                 # Treat as a quality-rejection failure so the cascade tries the next one.
                 # NOTE: at this point slskd has already enqueued the file, so we just
                 # log and let the next backend race it.
@@ -1024,9 +1008,7 @@ async def try_album_download_chain(album_ref: AlbumRef) -> AlbumCascadeResult:
                 continue
 
             try:
-                result = await asyncio.wait_for(
-                    adapter.try_download_album(album_ref), timeout=entry.timeout_s
-                )
+                result = await asyncio.wait_for(adapter.try_download_album(album_ref), timeout=entry.timeout_s)
             except TimeoutError:
                 result = AlbumAttempt(
                     backend=entry.backend.value,
@@ -1074,9 +1056,7 @@ async def search_via_handle(handle: dict[str, Any]) -> AttemptResult:
     """
     backend_name = handle.get("backend")
     if not backend_name:
-        return AttemptResult(
-            backend="unknown", success=False, status="error", error="handle missing backend"
-        )
+        return AttemptResult(backend="unknown", success=False, status="error", error="handle missing backend")
     try:
         backend = BackendName(backend_name)
     except ValueError:
@@ -1090,14 +1070,14 @@ async def search_via_handle(handle: dict[str, Any]) -> AttemptResult:
         adapter = make_album_adapter(backend)
         if adapter is None:
             return AttemptResult(
-                backend=backend_name, success=False, status="error",
+                backend=backend_name,
+                success=False,
+                status="error",
                 error=f"{backend_name} doesn't support album downloads via from-handle",
             )
         try:
             if not await adapter.is_configured():
-                return AttemptResult(
-                    backend=backend_name, success=False, status="skipped", error="not configured"
-                )
+                return AttemptResult(backend=backend_name, success=False, status="skipped", error="not configured")
             album_ref = AlbumRef(
                 service=handle.get("service"),
                 album_id=handle.get("album_id"),
@@ -1128,14 +1108,10 @@ async def search_via_handle(handle: dict[str, Any]) -> AttemptResult:
     # kind == "track" (default)
     adapter = make_adapter(backend)
     if adapter is None:
-        return AttemptResult(
-            backend=backend_name, success=False, status="error", error="no adapter for backend"
-        )
+        return AttemptResult(backend=backend_name, success=False, status="error", error="no adapter for backend")
     try:
         if not await adapter.is_configured():
-            return AttemptResult(
-                backend=backend_name, success=False, status="skipped", error="not configured"
-            )
+            return AttemptResult(backend=backend_name, success=False, status="skipped", error="not configured")
         return await adapter.from_handle(handle)
     finally:
         try:

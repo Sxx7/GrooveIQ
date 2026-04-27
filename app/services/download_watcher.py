@@ -133,15 +133,16 @@ def _client_for_source(source: str | None):
 
     if source == "streamrip" and settings.streamrip_enabled:
         from app.services.streamrip import StreamripClient
+
         return StreamripClient(settings.STREAMRIP_API_URL)
     if source == "spotdl" and settings.spotdl_enabled:
         from app.services.spotdl import SpotdlClient
+
         return SpotdlClient(settings.SPOTDL_API_URL)
     if source == "spotizerr" and settings.spotizerr_enabled:
         from app.services.spotizerr import SpotizerrClient
-        return SpotizerrClient(
-            settings.SPOTIZERR_URL, settings.SPOTIZERR_USERNAME, settings.SPOTIZERR_PASSWORD
-        )
+
+        return SpotizerrClient(settings.SPOTIZERR_URL, settings.SPOTIZERR_USERNAME, settings.SPOTIZERR_PASSWORD)
     # Unknown / legacy rows with no source — fall back to whatever the env
     # default picks. Logged so we notice when it happens.
     if source:
@@ -158,9 +159,7 @@ async def _watch_loop(task_id: str, timeout_s: int, source: str | None = None) -
     if source is None:
         async with AsyncSessionLocal() as session:
             row = (
-                await session.execute(
-                    select(DownloadRequest.source).where(DownloadRequest.task_id == task_id)
-                )
+                await session.execute(select(DownloadRequest.source).where(DownloadRequest.task_id == task_id))
             ).scalar_one_or_none()
             source = row
 

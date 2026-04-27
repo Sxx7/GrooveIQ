@@ -188,9 +188,7 @@ async def get_version(
     _key: str = Depends(require_api_key),
 ):
     require_admin(_key)
-    result = await session.execute(
-        select(DownloadRoutingConfig).where(DownloadRoutingConfig.version == version)
-    )
+    result = await session.execute(select(DownloadRoutingConfig).where(DownloadRoutingConfig.version == version))
     row = result.scalar_one_or_none()
     if row is None:
         raise HTTPException(404, f"Routing config version {version} not found")

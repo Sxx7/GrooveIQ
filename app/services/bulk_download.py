@@ -261,9 +261,7 @@ async def _queue_track_via_cascade(
             job.tracks_skipped += 1
             return
 
-    cascade = await try_download_chain(
-        TrackRef(artist=artist, title=title), purpose="bulk_per_track"
-    )
+    cascade = await try_download_chain(TrackRef(artist=artist, title=title), purpose="bulk_per_track")
     last = cascade.attempts[-1] if cascade.attempts else None
     source = cascade.final_backend or (last.backend if last else "none")
     status = cascade.final_status if cascade.success else (last.status if last else "error")

@@ -95,9 +95,7 @@ async def backfill_clap_embeddings(limit: int | None = None) -> dict:
                 continue
             async with AsyncSessionLocal() as session:
                 await session.execute(
-                    update(TrackFeatures)
-                    .where(TrackFeatures.track_id == track_id)
-                    .values(clap_embedding=clap)
+                    update(TrackFeatures).where(TrackFeatures.track_id == track_id).values(clap_embedding=clap)
                 )
                 await session.commit()
             updated += 1

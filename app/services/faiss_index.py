@@ -108,15 +108,11 @@ class FaissIndex:
         """Load all rows where ``column`` is not null and rebuild the index."""
         col = getattr(TrackFeatures, column)
         async with AsyncSessionLocal() as session:
-            result = await session.execute(
-                select(TrackFeatures.track_id, col).where(col.isnot(None))
-            )
+            result = await session.execute(select(TrackFeatures.track_id, col).where(col.isnot(None)))
             rows = result.all()
 
         loop = asyncio.get_running_loop()
-        index, track_ids, id_map, matrix, n = await loop.run_in_executor(
-            None, self._build_sync, rows
-        )
+        index, track_ids, id_map, matrix, n = await loop.run_in_executor(None, self._build_sync, rows)
 
         if n == 0:
             logger.warning("FAISS build (%s): no valid embeddings found, index empty.", self.name)

@@ -174,10 +174,7 @@ def ensure_onnx_models() -> bool:
             digest = sha.hexdigest()
             expected = _ONNX_MODEL_SHA256.get(filename)
             if expected and digest != expected:
-                raise ValueError(
-                    f"SHA-256 mismatch for {filename}: "
-                    f"expected {expected[:16]}…, got {digest[:16]}…"
-                )
+                raise ValueError(f"SHA-256 mismatch for {filename}: expected {expected[:16]}…, got {digest[:16]}…")
             os.rename(tmp_path, local_path)
             tmp_path = None
             size_mb = file_size / 1024 / 1024

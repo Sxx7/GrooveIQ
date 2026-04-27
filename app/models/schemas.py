@@ -349,8 +349,8 @@ class PlaylistStrategy(str, Enum):
     MOOD = "mood"
     ENERGY_CURVE = "energy_curve"
     KEY_COMPATIBLE = "key_compatible"
-    PATH = "path"          # sonic bridge between two tracks (embedding slerp)
-    TEXT = "text"          # natural-language prompt → CLAP similarity
+    PATH = "path"  # sonic bridge between two tracks (embedding slerp)
+    TEXT = "text"  # natural-language prompt → CLAP similarity
 
 
 class PlaylistCreate(BaseModel):

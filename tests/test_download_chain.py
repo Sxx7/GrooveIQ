@@ -97,8 +97,12 @@ def _routing_with(individual: list[BackendChainEntry]) -> DownloadRoutingConfigD
 @pytest.mark.asyncio
 async def test_cascade_first_success_wins():
     """First enabled backend that succeeds returns immediately; later backends untouched."""
-    spotdl = _FakeAdapter(name=BackendName.SPOTDL, expected_quality=QualityTier.LOSSY_HIGH, succeed=True, task_id="t-spotdl")
-    streamrip = _FakeAdapter(name=BackendName.STREAMRIP, expected_quality=QualityTier.HIRES, succeed=True, task_id="t-stream")
+    spotdl = _FakeAdapter(
+        name=BackendName.SPOTDL, expected_quality=QualityTier.LOSSY_HIGH, succeed=True, task_id="t-spotdl"
+    )
+    streamrip = _FakeAdapter(
+        name=BackendName.STREAMRIP, expected_quality=QualityTier.HIRES, succeed=True, task_id="t-stream"
+    )
 
     def fake_make(b):
         return {BackendName.SPOTDL: spotdl, BackendName.STREAMRIP: streamrip}.get(b)
@@ -110,8 +114,9 @@ async def test_cascade_first_success_wins():
         ]
     )
 
-    with patch("app.services.download_chain.get_routing", return_value=routing), patch(
-        "app.services.download_chain.make_adapter", side_effect=fake_make
+    with (
+        patch("app.services.download_chain.get_routing", return_value=routing),
+        patch("app.services.download_chain.make_adapter", side_effect=fake_make),
     ):
         result = await try_download_chain(TrackRef(spotify_id="abc"), purpose="individual")
 
@@ -129,7 +134,9 @@ async def test_cascade_first_success_wins():
 async def test_cascade_falls_through_on_failure():
     """When the first backend fails, the cascade tries the next."""
     spotdl = _FakeAdapter(name=BackendName.SPOTDL, expected_quality=QualityTier.LOSSY_HIGH, succeed=False)
-    streamrip = _FakeAdapter(name=BackendName.STREAMRIP, expected_quality=QualityTier.HIRES, succeed=True, task_id="t-s")
+    streamrip = _FakeAdapter(
+        name=BackendName.STREAMRIP, expected_quality=QualityTier.HIRES, succeed=True, task_id="t-s"
+    )
 
     def fake_make(b):
         return {BackendName.SPOTDL: spotdl, BackendName.STREAMRIP: streamrip}.get(b)
@@ -141,8 +148,9 @@ async def test_cascade_falls_through_on_failure():
         ]
     )
 
-    with patch("app.services.download_chain.get_routing", return_value=routing), patch(
-        "app.services.download_chain.make_adapter", side_effect=fake_make
+    with (
+        patch("app.services.download_chain.get_routing", return_value=routing),
+        patch("app.services.download_chain.make_adapter", side_effect=fake_make),
     ):
         result = await try_download_chain(TrackRef(spotify_id="abc"), purpose="individual")
 
@@ -172,8 +180,9 @@ async def test_cascade_skips_disabled_entries():
         ]
     )
 
-    with patch("app.services.download_chain.get_routing", return_value=routing), patch(
-        "app.services.download_chain.make_adapter", side_effect=fake_make
+    with (
+        patch("app.services.download_chain.get_routing", return_value=routing),
+        patch("app.services.download_chain.make_adapter", side_effect=fake_make),
     ):
         result = await try_download_chain(TrackRef(spotify_id="abc"), purpose="individual")
 
@@ -187,7 +196,9 @@ async def test_cascade_quality_gate_pre_flight():
     """A min_quality higher than the backend's expected quality short-circuits it."""
     # spotdl declares LOSSY_HIGH; entry requires LOSSLESS → should be skipped.
     spotdl = _FakeAdapter(name=BackendName.SPOTDL, expected_quality=QualityTier.LOSSY_HIGH, succeed=True)
-    streamrip = _FakeAdapter(name=BackendName.STREAMRIP, expected_quality=QualityTier.HIRES, succeed=True, task_id="t-s")
+    streamrip = _FakeAdapter(
+        name=BackendName.STREAMRIP, expected_quality=QualityTier.HIRES, succeed=True, task_id="t-s"
+    )
 
     def fake_make(b):
         return {BackendName.SPOTDL: spotdl, BackendName.STREAMRIP: streamrip}.get(b)
@@ -199,8 +210,9 @@ async def test_cascade_quality_gate_pre_flight():
         ]
     )
 
-    with patch("app.services.download_chain.get_routing", return_value=routing), patch(
-        "app.services.download_chain.make_adapter", side_effect=fake_make
+    with (
+        patch("app.services.download_chain.get_routing", return_value=routing),
+        patch("app.services.download_chain.make_adapter", side_effect=fake_make),
     ):
         result = await try_download_chain(TrackRef(spotify_id="abc"), purpose="individual")
 
@@ -230,8 +242,9 @@ async def test_cascade_all_fail_returns_full_attempt_log():
         ]
     )
 
-    with patch("app.services.download_chain.get_routing", return_value=routing), patch(
-        "app.services.download_chain.make_adapter", side_effect=fake_make
+    with (
+        patch("app.services.download_chain.get_routing", return_value=routing),
+        patch("app.services.download_chain.make_adapter", side_effect=fake_make),
     ):
         result = await try_download_chain(TrackRef(spotify_id="abc"), purpose="individual")
 
@@ -257,8 +270,9 @@ async def test_cascade_skips_unconfigured_backend():
         ]
     )
 
-    with patch("app.services.download_chain.get_routing", return_value=routing), patch(
-        "app.services.download_chain.make_adapter", side_effect=fake_make
+    with (
+        patch("app.services.download_chain.get_routing", return_value=routing),
+        patch("app.services.download_chain.make_adapter", side_effect=fake_make),
     ):
         result = await try_download_chain(TrackRef(spotify_id="abc"), purpose="individual")
 

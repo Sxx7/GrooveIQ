@@ -63,8 +63,7 @@ def _load() -> None:
     model_path, tokenizer_path = _model_paths()
     if not os.path.exists(model_path):
         raise FileNotFoundError(
-            f"CLAP text model not found at {model_path}. "
-            "See CLAUDE.md § CLAP for export instructions."
+            f"CLAP text model not found at {model_path}. See CLAUDE.md § CLAP for export instructions."
         )
     if not os.path.exists(tokenizer_path):
         raise FileNotFoundError(f"CLAP tokenizer not found at {tokenizer_path}")
@@ -78,8 +77,7 @@ def _load() -> None:
         from tokenizers import Tokenizer
     except ImportError as e:
         raise RuntimeError(
-            "The `tokenizers` package is required for CLAP text encoding. "
-            "Install with: pip install tokenizers>=0.15"
+            "The `tokenizers` package is required for CLAP text encoding. Install with: pip install tokenizers>=0.15"
         ) from e
 
     opts = ort.SessionOptions()

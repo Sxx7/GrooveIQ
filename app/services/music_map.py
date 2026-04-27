@@ -101,9 +101,7 @@ async def build_map() -> dict:
     async with AsyncSessionLocal() as session:
         rows = (
             await session.execute(
-                select(TrackFeatures.track_id, TrackFeatures.embedding).where(
-                    TrackFeatures.embedding.isnot(None)
-                )
+                select(TrackFeatures.track_id, TrackFeatures.embedding).where(TrackFeatures.embedding.isnot(None))
             )
         ).all()
 
@@ -136,9 +134,7 @@ async def build_map() -> dict:
     async with AsyncSessionLocal() as session:
         for tid, (x, y) in zip(track_ids, coords):
             await session.execute(
-                update(TrackFeatures)
-                .where(TrackFeatures.track_id == tid)
-                .values(map_x=float(x), map_y=float(y))
+                update(TrackFeatures).where(TrackFeatures.track_id == tid).values(map_x=float(x), map_y=float(y))
             )
         await session.commit()
 

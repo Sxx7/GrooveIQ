@@ -145,9 +145,7 @@ async def save_routing(
 
 
 async def activate_version(session: AsyncSession, version: int) -> DownloadRoutingConfig | None:
-    result = await session.execute(
-        select(DownloadRoutingConfig).where(DownloadRoutingConfig.version == version)
-    )
+    result = await session.execute(select(DownloadRoutingConfig).where(DownloadRoutingConfig.version == version))
     row = result.scalar_one_or_none()
     if row is None:
         return None
@@ -171,10 +169,7 @@ async def get_history(
     offset: int = 0,
 ) -> list[DownloadRoutingConfig]:
     result = await session.execute(
-        select(DownloadRoutingConfig)
-        .order_by(DownloadRoutingConfig.version.desc())
-        .limit(limit)
-        .offset(offset)
+        select(DownloadRoutingConfig).order_by(DownloadRoutingConfig.version.desc()).limit(limit).offset(offset)
     )
     return list(result.scalars().all())
 

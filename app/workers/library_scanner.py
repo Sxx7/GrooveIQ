@@ -135,7 +135,7 @@ async def get_scan_status(scan_id: int) -> dict | None:
         check_elapsed = _scan_meta.get("check_elapsed", 0.0)
         analyze_elapsed = _scan_meta.get("analyze_elapsed", 0.0)
 
-        check_rate = skipped / check_elapsed if check_elapsed > 0 else None         # files/s
+        check_rate = skipped / check_elapsed if check_elapsed > 0 else None  # files/s
         analyze_rate = (analyzed + failed) / analyze_elapsed if analyze_elapsed > 0 else None
 
         remaining = scan.files_found - processed

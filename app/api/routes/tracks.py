@@ -578,9 +578,7 @@ async def get_clap_stats(
 
     total = await session.scalar(select(sqlfunc.count()).select_from(TrackFeatures))
     with_clap = await session.scalar(
-        select(sqlfunc.count())
-        .select_from(TrackFeatures)
-        .where(TrackFeatures.clap_embedding.isnot(None))
+        select(sqlfunc.count()).select_from(TrackFeatures).where(TrackFeatures.clap_embedding.isnot(None))
     )
     return {
         "enabled": settings.CLAP_ENABLED,

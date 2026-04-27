@@ -381,16 +381,12 @@ async def _send_tracks_via_cascade(
                 await dl_session.commit()
                 record_id = row.id
         except Exception as exc:
-            logger.warning(
-                "Charts: could not persist download row for %s — %s: %s", artist, title, exc
-            )
+            logger.warning("Charts: could not persist download row for %s — %s: %s", artist, title, exc)
 
         if not cascade.success:
             # No backend matched/succeeded — bucket between "not_found" (every
             # attempt was a clean skip / no-match) and "errors" (any real failure).
-            had_real_failure = any(
-                att.status not in ("skipped",) for att in cascade.attempts
-            )
+            had_real_failure = any(att.status not in ("skipped",) for att in cascade.attempts)
             if had_real_failure:
                 stats["errors"] += 1
             else:

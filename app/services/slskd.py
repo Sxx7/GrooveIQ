@@ -134,12 +134,7 @@ class SlskdClient:
                 # Diagnose: show raw counts so we can see whether peers responded
                 # at all vs whether everything was filtered out.
                 total_files = sum(len(r.get("files") or []) for r in responses)
-                total_locked = sum(
-                    1
-                    for r in responses
-                    for f in r.get("files") or []
-                    if f.get("isLocked")
-                )
+                total_locked = sum(1 for r in responses for f in r.get("files") or [] if f.get("isLocked"))
                 total_audio = sum(
                     1
                     for r in responses
@@ -433,14 +428,41 @@ def _normalize(s: str) -> str:
 # but almost never appear in actual filenames on Soulseek peers. If the
 # bracketed content matches one of these tokens, strip the whole group.
 _NOISE_TOKENS = (
-    "remaster", "remastered", "remix", "mix", "edit", "radio edit",
-    "version", "re-recorded", "rerecorded", "re recorded",
-    "live", "acoustic", "instrumental", "a cappella", "acapella",
-    "demo", "mono", "stereo", "extended", "single version",
-    "album version", "original version", "original mix",
-    "feat", "ft", "featuring", "with",
-    "bonus track", "bonus", "deluxe", "explicit", "clean",
-    "anniversary", "expanded", "special edition",
+    "remaster",
+    "remastered",
+    "remix",
+    "mix",
+    "edit",
+    "radio edit",
+    "version",
+    "re-recorded",
+    "rerecorded",
+    "re recorded",
+    "live",
+    "acoustic",
+    "instrumental",
+    "a cappella",
+    "acapella",
+    "demo",
+    "mono",
+    "stereo",
+    "extended",
+    "single version",
+    "album version",
+    "original version",
+    "original mix",
+    "feat",
+    "ft",
+    "featuring",
+    "with",
+    "bonus track",
+    "bonus",
+    "deluxe",
+    "explicit",
+    "clean",
+    "anniversary",
+    "expanded",
+    "special edition",
 )
 
 _BRACKET_GROUP_RE = re.compile(r"[\(\[\{][^\(\)\[\]\{\}]*[\)\]\}]")

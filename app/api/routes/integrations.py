@@ -119,11 +119,7 @@ async def _check_slskd() -> dict[str, Any]:
     if result["ok"]:
         data = result["data"]
         entry["state"] = data.get("state")
-        entry["details"] = {
-            k: data[k]
-            for k in ("version", "isConnected")
-            if k in data
-        }
+        entry["details"] = {k: data[k] for k in ("version", "isConnected") if k in data}
     else:
         entry["error"] = _sanitize_error(result["error"])
     return entry

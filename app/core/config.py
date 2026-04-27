@@ -149,7 +149,7 @@ class Settings(BaseSettings):
     CLAP_TEXT_MODEL_FILE: str = "clap_text.onnx"
     CLAP_TOKENIZER_FILE: str = "clap_tokenizer.json"  # HF tokenizers JSON (RoBERTa BPE)
     CLAP_EMBEDDING_DIM: int = 512
-    CLAP_AUDIO_SR: int = 48000           # LAION-CLAP expects 48 kHz mono
+    CLAP_AUDIO_SR: int = 48000  # LAION-CLAP expects 48 kHz mono
     CLAP_AUDIO_CLIP_SECONDS: float = 10.0  # length of central slice fed to the audio encoder
 
     # Supported audio extensions (comma-separated)

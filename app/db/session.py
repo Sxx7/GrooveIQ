@@ -121,9 +121,7 @@ async def _apply_column_migrations(conn) -> None:
     # Backfill: any pre-existing download_requests rows have source IS NULL
     # because the column was added without a default. Treat them as spotdl.
     try:
-        await conn.exec_driver_sql(
-            "UPDATE download_requests SET source = 'spotdl' WHERE source IS NULL"
-        )
+        await conn.exec_driver_sql("UPDATE download_requests SET source = 'spotdl' WHERE source IS NULL")
     except Exception:
         pass
 
@@ -188,15 +186,9 @@ async def _relax_download_requests_spotify_id_sqlite(conn) -> None:
     await conn.exec_driver_sql(
         "CREATE INDEX IF NOT EXISTS ix_download_requests_spotify_id ON download_requests (spotify_id)"
     )
-    await conn.exec_driver_sql(
-        "CREATE INDEX IF NOT EXISTS ix_download_requests_task_id ON download_requests (task_id)"
-    )
-    await conn.exec_driver_sql(
-        "CREATE INDEX IF NOT EXISTS ix_download_status ON download_requests (status)"
-    )
-    await conn.exec_driver_sql(
-        "CREATE INDEX IF NOT EXISTS ix_download_created ON download_requests (created_at)"
-    )
+    await conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_download_requests_task_id ON download_requests (task_id)")
+    await conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_download_status ON download_requests (status)")
+    await conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_download_created ON download_requests (created_at)")
 
 
 async def get_session() -> AsyncSession:

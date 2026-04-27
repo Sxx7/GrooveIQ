@@ -92,11 +92,7 @@ class StreamripClient:
                     "artists": [{"name": a} for a in (entry.get("artists") or [])],
                     "album": {
                         "name": entry.get("album"),
-                        "images": (
-                            [{"url": cover_url, "width": 300, "height": 300}]
-                            if cover_url
-                            else []
-                        ),
+                        "images": ([{"url": cover_url, "width": 300, "height": 300}] if cover_url else []),
                     },
                     "type": "track",
                     # Preserve streamrip-specific fields. ``_album_id`` lets
@@ -194,11 +190,7 @@ class StreamripClient:
             data = {}
 
         if resp.status_code >= 400:
-            err_msg = (
-                data.get("error")
-                or data.get("detail")
-                or f"streamrip-api HTTP {resp.status_code}"
-            )
+            err_msg = data.get("error") or data.get("detail") or f"streamrip-api HTTP {resp.status_code}"
             logger.warning(
                 "streamrip-api download failed for %s: %s",
                 spotify_track_id,
@@ -217,9 +209,7 @@ class StreamripClient:
 
     # -- Artist search ------------------------------------------------------
 
-    async def search_artist(
-        self, query: str, limit: int = 2, albums_per_artist: int = 50
-    ) -> dict[str, Any]:
+    async def search_artist(self, query: str, limit: int = 2, albums_per_artist: int = 50) -> dict[str, Any]:
         """Return top-N artist matches plus each artist's discography (no
         tracks). Tracks are lazy-loaded per-album via :meth:`get_album_tracks`.
         """
