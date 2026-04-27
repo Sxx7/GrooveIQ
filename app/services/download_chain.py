@@ -481,7 +481,7 @@ class SlskdAdapter:
         if ext in (".flac", ".wav", ".alac", ".ape", ".wv"):
             tier = QualityTier.LOSSLESS  # could be HIRES if sample rate known
         elif ext in (".mp3", ".aac", ".m4a", ".ogg", ".opus"):
-            if (bitrate and bitrate >= 320) or (bitrate and bitrate >= 256):
+            if bitrate and bitrate >= 256:
                 tier = QualityTier.LOSSY_HIGH
             else:
                 tier = QualityTier.LOSSY_LOW

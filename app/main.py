@@ -19,6 +19,7 @@ from app.api.routes import (
     artists,
     charts,
     discovery,
+    download_routing,
     downloads,
     events,
     health,
@@ -32,9 +33,6 @@ from app.api.routes import (
     stats,
     tracks,
     users,
-)
-from app.api.routes import (
-    download_routing as download_routing_routes,
 )
 from app.core.config import settings
 from app.core.logging import setup_logging
@@ -180,7 +178,7 @@ app.include_router(recommend.router, prefix="/v1", tags=["recommendations"])
 app.include_router(discovery.router, prefix="/v1", tags=["discovery"])
 app.include_router(charts.router, prefix="/v1", tags=["charts"])
 app.include_router(downloads.router, prefix="/v1", tags=["downloads"])
-app.include_router(download_routing_routes.router, prefix="/v1", tags=["downloads"])
+app.include_router(download_routing.router, prefix="/v1", tags=["downloads"])
 app.include_router(lastfm.router, prefix="/v1", tags=["lastfm"])
 app.include_router(artists.router, prefix="/v1", tags=["artists"])
 app.include_router(radio.router, prefix="/v1", tags=["radio"])
