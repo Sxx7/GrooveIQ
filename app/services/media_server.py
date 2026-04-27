@@ -110,7 +110,7 @@ async def _fetch_navidrome_tracks(base_url: str, username: str, password: str) -
 
     salt = _secrets.token_hex(8)
     # MD5(password + salt) is mandated by the Subsonic API spec for auth tokens.
-    token = hashlib.md5((password + salt).encode()).hexdigest()  # nosemgrep: python.lang.security.audit.md5-used-as-password.md5-used-as-password
+    token = hashlib.md5((password + salt).encode()).hexdigest()  # nosemgrep
 
     base = base_url.rstrip("/")
     common_params = {
@@ -341,7 +341,7 @@ async def _refresh_navidrome() -> bool:
 
     salt = _secrets.token_hex(8)
     # MD5(password + salt) is mandated by the Subsonic API spec for auth tokens.
-    token = hashlib.md5((password + salt).encode()).hexdigest()  # nosemgrep: python.lang.security.audit.md5-used-as-password.md5-used-as-password
+    token = hashlib.md5((password + salt).encode()).hexdigest()  # nosemgrep
     params = {
         "u": username,
         "t": token,

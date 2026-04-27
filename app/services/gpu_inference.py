@@ -165,7 +165,7 @@ def ensure_onnx_models() -> bool:
             fd = None
             # `url` comes from the hardcoded _ONNX_MODELS dict (Essentia model zoo);
             # downloads are SHA-256 verified below.
-            urllib.request.urlretrieve(url, tmp_path)  # nosemgrep: python.lang.security.audit.dynamic-urllib-use-detected.dynamic-urllib-use-detected
+            urllib.request.urlretrieve(url, tmp_path)  # nosemgrep
             file_size = os.path.getsize(tmp_path)
             if file_size < 1024:
                 raise ValueError(f"Downloaded file too small ({file_size} bytes)")

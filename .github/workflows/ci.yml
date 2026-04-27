@@ -9,7 +9,10 @@ on:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository }}
+  # ghcr.io requires lowercase image names. github.repository preserves the
+  # original case ("Sxx7/GrooveIQ"), which docker push accepts but `trivy
+  # image` rejects with "could not parse reference". Hardcode lowercase.
+  IMAGE_NAME: sxx7/grooveiq
 
 jobs:
   ruff-lint:
