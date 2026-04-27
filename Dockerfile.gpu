@@ -31,7 +31,7 @@ FROM nvidia/cuda:12.2.2-cudnn8-runtime-ubuntu22.04@sha256:131e238d724ee145317f10
 
 LABEL org.opencontainers.image.title="GrooveIQ (GPU)"
 LABEL org.opencontainers.image.description="Behavioral music recommendation engine – GPU accelerated"
-LABEL org.opencontainers.image.source="https://gitlab.local.devii.ch/simon/grooveiq"
+LABEL org.opencontainers.image.source="https://github.com/Sxx7/GrooveIQ"
 
 ENV DEBIAN_FRONTEND=noninteractive
 

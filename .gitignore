@@ -33,7 +33,10 @@ htmlcov/
 
 # Claude Code
 .claude/
+CLAUDE.md
 
 # Local scratchpads / reference material — kept on disk but not in repo.
 LLM_CONTEXT.md
 *.pdf
+acousticbrainz-lookup/HANDOFF.md
+docs/auth-provider-plan.md

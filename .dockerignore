@@ -43,7 +43,7 @@ Dockerfile.igpu
 Caddyfile
 
 # CI
-.gitlab-ci.yml
+.github/
 ruff.toml
 
 # Claude Code

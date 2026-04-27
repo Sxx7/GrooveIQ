@@ -30,7 +30,7 @@ FROM python:3.12-slim@sha256:804ddf3251a60bbf9c92e73b7566c40428d54d0e79d3428194e
 
 LABEL org.opencontainers.image.title="GrooveIQ"
 LABEL org.opencontainers.image.description="Behavioral music recommendation engine"
-LABEL org.opencontainers.image.source="https://gitlab.local.devii.ch/simon/grooveiq"
+LABEL org.opencontainers.image.source="https://github.com/Sxx7/GrooveIQ"
 
 # Runtime audio codec libs (needed by Essentia at import time)
 # Package versions match Debian Trixie (python:3.12-slim base)

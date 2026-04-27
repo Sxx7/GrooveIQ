@@ -37,7 +37,7 @@ No cloud. No tracking. Runs on your hardware.
 ### 1. Clone and configure
 
 ```bash
-git clone https://gitlab.local.devii.ch/simon/grooveiq.git
+git clone https://github.com/Sxx7/GrooveIQ.git
 cd grooveiq
 cp .env.example .env
 ```
@@ -291,12 +291,12 @@ docker build --platform linux/amd64 -t grooveiq:dev .
 
 ## CI/CD
 
-GitLab CI pipeline (`.gitlab-ci.yml`) runs automatically on push:
+GitHub Actions workflow (`.github/workflows/ci.yml`) runs automatically on push and pull requests:
 
 - **Lint** — ruff check + format
 - **Test** — pytest with JUnit reporting
 - **Security** — pip-audit (dependency CVEs), semgrep (SAST), trivy (container scan)
-- **Build** — Docker image pushed to GitLab Container Registry (main branch + tags only)
+- **Build** — Docker image pushed to GitHub Container Registry (`ghcr.io`) on main branch + tags
 
 ## License
 
