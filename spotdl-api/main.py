@@ -118,8 +118,27 @@ def _patch_spotdl_sparse_api():
                 return [_to_safe(i) for i in obj]
             return obj
 
-        for method_name in ("track", "artist", "album"):
-            _orig = getattr(SpotifyClient, method_name)
+        # Wrap every SpotifyClient method that returns dict-shaped data spotDL
+        # then walks with raw key access.  search() and playlist*() are critical
+        # — if they're not wrapped, free-text /search calls return [] because
+        # Song.from_search_result() KeyErrors on missing 'genres'/'external_ids'
+        # and spotDL silently drops the result.
+        for method_name in (
+            "track",
+            "artist",
+            "album",
+            "search",
+            "playlist",
+            "playlist_items",
+            "user_playlists",
+            "album_tracks",
+            "artist_albums",
+            "artist_top_tracks",
+            "artist_related_artists",
+        ):
+            _orig = getattr(SpotifyClient, method_name, None)
+            if _orig is None:
+                continue
 
             def _make_safe(orig_method):
                 def _safe(self, *a, **kw):
