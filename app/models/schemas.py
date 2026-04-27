@@ -779,3 +779,103 @@ class SoulseekDownloadRequest(BaseModel):
     track_title: str | None = Field(None, max_length=512)
     artist_name: str | None = Field(None, max_length=512)
     album_name: str | None = Field(None, max_length=512)
+
+
+# ---------------------------------------------------------------------------
+# Recommendation audit & replay
+# ---------------------------------------------------------------------------
+
+
+class CandidateAuditDetail(BaseModel):
+    """One candidate from a persisted recommendation request."""
+
+    track_id: str
+    sources: list[str] = []
+    raw_score: float = 0.0
+    pre_rerank_position: int = -1
+    final_score: float | None = None
+    final_position: int | None = None
+    shown: bool = False
+    reranker_actions: list[dict[str, Any]] = []
+    feature_vector: dict[str, Any] = {}
+    title: str | None = None
+    artist: str | None = None
+
+
+class RequestAuditSummary(BaseModel):
+    """Summary row for the audit sessions list."""
+
+    request_id: str
+    user_id: str
+    created_at: int
+    surface: str
+    seed_track_id: str | None = None
+    context_id: str | None = None
+    model_version: str
+    config_version: int
+    candidates_total: int
+    candidates_by_source: dict[str, Any] = {}
+    duration_ms: int
+    limit_requested: int
+    top_track: dict[str, Any] | None = None  # title/artist of position-0 candidate
+
+
+class RequestAuditDetail(BaseModel):
+    """Full audit detail: request + every persisted candidate."""
+
+    request_id: str
+    user_id: str
+    created_at: int
+    surface: str
+    seed_track_id: str | None = None
+    context_id: str | None = None
+    model_version: str
+    config_version: int
+    request_context: dict[str, Any] = {}
+    candidates_total: int
+    candidates_by_source: dict[str, Any] = {}
+    duration_ms: int
+    limit_requested: int
+    candidates: list[CandidateAuditDetail] = []
+
+
+class RankDelta(BaseModel):
+    track_id: str
+    title: str | None = None
+    artist: str | None = None
+    original_position: int | None = None
+    new_position: int | None = None
+    delta: int | None = None  # original - new (positive = moved up in new ranking)
+    original_score: float | None = None
+    new_score: float | None = None
+
+
+class ReplaySummary(BaseModel):
+    avg_abs_delta: float = 0.0
+    top10_overlap: float = 0.0
+    kendall_tau: float | None = None
+    new_top10_tracks: list[str] = []
+    dropped_top10_tracks: list[str] = []
+    candidates_compared: int = 0
+
+
+class ReplayResult(BaseModel):
+    request_id: str
+    mode: str  # "rerank_only" | "full"
+    original_model_version: str
+    original_config_version: int
+    new_model_version: str
+    new_config_version: int
+    rank_deltas: list[RankDelta] = []
+    summary: ReplaySummary
+
+
+class ReplayRequest(BaseModel):
+    mode: str = Field("rerank_only", description="rerank_only | full")
+
+    @field_validator("mode")
+    @classmethod
+    def _validate_mode(cls, v: str) -> str:
+        if v not in ("rerank_only", "full"):
+            raise ValueError("mode must be 'rerank_only' or 'full'")
+        return v

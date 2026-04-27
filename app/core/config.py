@@ -276,6 +276,13 @@ class Settings(BaseSettings):
     LASTFM_REFRESH_HOURS: int = 6  # how often to pull Last.fm profiles
 
     # ------------------------------------------------------------------
+    # Recommendation audit & replay (always-on persistence)
+    # ------------------------------------------------------------------
+    RECO_AUDIT_ENABLED: bool = True  # master switch — disable to skip audit writes entirely
+    RECO_AUDIT_RETENTION_DAYS: int = 90  # auto-purge audits older than this
+    RECO_AUDIT_MAX_CANDIDATES: int = 200  # cap candidates persisted per request (top-N by raw_score)
+
+    # ------------------------------------------------------------------
     # Personalized news feed (Reddit-sourced)
     # ------------------------------------------------------------------
     NEWS_ENABLED: bool = False

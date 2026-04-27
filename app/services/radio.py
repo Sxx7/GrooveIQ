@@ -353,16 +353,24 @@ async def get_next_tracks(
     session_id: str,
     count: int,
     db: AsyncSession,
-) -> list[dict[str, Any]] | None:
+    *,
+    collect_audit: bool = False,
+) -> list[dict[str, Any]] | tuple[list[dict[str, Any]], dict[str, Any]] | None:
     """
     Generate the next batch of tracks for a radio session.
 
     Returns None if session not found.
     Returns list of track dicts with metadata.
+
+    When ``collect_audit=True``, returns ``(tracks, audit_data)`` instead.
+    The audit_data dict carries everything the audit service needs:
+      - ``candidate_rows``: per-track audit data (sources, raw/final scores,
+        positions, reranker actions, feature vectors)
+      - ``candidates_by_source``: count by source
     """
     from app.services import collab_filter, faiss_index, lastfm_candidates, session_embeddings
     from app.services.ranker import score_candidates
-    from app.services.reranker import rerank
+    from app.services.reranker import get_last_rerank_actions, rerank
 
     s = get_session(session_id)
     if s is None:
@@ -384,9 +392,16 @@ async def get_next_tracks(
     candidates: list[dict[str, Any]] = []
     seen: set[str] = set(exclude)
 
+    # When collecting audit data, track every source a track surfaced from
+    # (a candidate may match multiple sources but only enters `candidates`
+    # once via the dedup below).
+    sources_by_tid: dict[str, list[str]] = {} if collect_audit else None
+
     def _add(items: list[dict[str, Any]]) -> None:
         for c in items:
             tid = c["track_id"]
+            if sources_by_tid is not None:
+                sources_by_tid.setdefault(tid, []).append(c["source"])
             if tid not in seen:
                 seen.add(tid)
                 candidates.append(c)
@@ -503,6 +518,10 @@ async def get_next_tracks(
     scored = [(tid, ranker_score * 0.6 + retrieval_scores.get(tid, 0.0) * 0.4) for tid, ranker_score in scored]
     scored.sort(key=lambda x: x[1], reverse=True)
 
+    # Capture pre-rerank ordering for the audit before reranking shuffles it.
+    raw_score_by_tid = {tid: float(score) for tid, score in scored}
+    pre_rerank_pos_by_tid = {tid: i for i, (tid, _) in enumerate(scored)}
+
     # --- Rerank for diversity ---
     reranked = await rerank(
         scored,
@@ -510,13 +529,19 @@ async def get_next_tracks(
         db,
         device_type=s.device_type,
         output_type=s.output_type,
+        collect_actions=collect_audit,
     )
+    rerank_actions = get_last_rerank_actions() if collect_audit else []
 
     # Additional radio-specific filtering: enforce no consecutive same-artist
     reranked = _enforce_no_consecutive_artist(reranked, db, s)
 
+    final_score_by_tid = {tid: float(score) for tid, score in reranked}
+    final_pos_by_tid = {tid: i for i, (tid, _) in enumerate(reranked)}
+
     # Take the requested count
     final = reranked[:count]
+    shown_tids: set[str] = {tid for tid, _ in final}
 
     # Fetch track metadata
     final_ids = [tid for tid, _ in final]
@@ -556,7 +581,72 @@ async def get_next_tracks(
             )
         tracks.append(track_data)
 
-    return tracks
+    if not collect_audit:
+        return tracks
+
+    # --- Build audit payload ---
+    audit_track_ids = list(raw_score_by_tid.keys())  # all candidates that made it past scoring
+    candidates_by_source: dict[str, int] = {}
+    for src_list in sources_by_tid.values():
+        for src in src_list:
+            candidates_by_source[src] = candidates_by_source.get(src, 0) + 1
+
+    actions_by_tid: dict[str, list[dict[str, Any]]] = {}
+    for action in rerank_actions:
+        tid = action.get("track_id")
+        if tid:
+            actions_by_tid.setdefault(tid, []).append(action)
+
+    # Build feature vectors for the persisted candidates (cap by config).
+    from app.core.config import settings as _settings
+    from app.services.feature_eng import FEATURE_COLUMNS, build_features
+
+    cap = _settings.RECO_AUDIT_MAX_CANDIDATES
+    ranked_by_raw = sorted(raw_score_by_tid.items(), key=lambda x: x[1], reverse=True)
+    top_n = [tid for tid, _ in ranked_by_raw[:cap]]
+    audit_persist_ids = list({*top_n, *shown_tids})
+
+    feature_vectors: dict[str, dict[str, float]] = {}
+    if audit_persist_ids:
+        feat_result = await build_features(
+            s.user_id,
+            audit_persist_ids,
+            db,
+            hour_of_day=s.hour_of_day,
+            day_of_week=s.day_of_week,
+            device_type=s.device_type,
+            output_type=s.output_type,
+            context_type="radio",
+            location_label=s.location_label,
+        )
+        for idx, tid in enumerate(feat_result["track_ids"]):
+            feature_vectors[tid] = {
+                col: round(float(feat_result["features"][idx][ci]), 4)
+                for ci, col in enumerate(FEATURE_COLUMNS)
+            }
+
+    candidate_rows: list[dict[str, Any]] = []
+    for tid in audit_persist_ids:
+        candidate_rows.append(
+            {
+                "track_id": tid,
+                "sources": sources_by_tid.get(tid, []),
+                "raw_score": raw_score_by_tid.get(tid, 0.0),
+                "pre_rerank_position": pre_rerank_pos_by_tid.get(tid, -1),
+                "final_score": final_score_by_tid.get(tid),
+                "final_position": final_pos_by_tid.get(tid) if tid in final_pos_by_tid else None,
+                "shown": tid in shown_tids,
+                "reranker_actions": actions_by_tid.get(tid, []),
+                "feature_vector": feature_vectors.get(tid, {}),
+            }
+        )
+
+    audit_data = {
+        "candidate_rows": candidate_rows,
+        "candidates_by_source": candidates_by_source,
+        "candidates_total": len(audit_track_ids),
+    }
+    return tracks, audit_data
 
 
 def _apply_session_feedback_boost(

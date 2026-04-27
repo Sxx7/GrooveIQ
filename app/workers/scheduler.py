@@ -119,6 +119,15 @@ async def start_scheduler() -> None:
             replace_existing=True,
         )
 
+    # Recommendation audit cleanup (daily, 02:30 UTC)
+    if settings.RECO_AUDIT_ENABLED:
+        _scheduler.add_job(
+            _purge_old_reco_audits,
+            trigger=CronTrigger(hour=2, minute=30, timezone="UTC"),
+            id="reco_audit_cleanup",
+            replace_existing=True,
+        )
+
     # Last.fm scrobble queue processor (every 60s)
     if settings.lastfm_user_enabled and settings.LASTFM_SCROBBLE_ENABLED:
         _scheduler.add_job(
@@ -404,3 +413,21 @@ async def _refresh_news_feed() -> None:
             logger.info("News feed refreshed: %s", result)
     except Exception:
         logger.error(f"News feed refresh failed: {traceback.format_exc()}")
+
+
+async def _purge_old_reco_audits() -> None:
+    """Purge recommendation audits older than RECO_AUDIT_RETENTION_DAYS."""
+    try:
+        from app.services.reco_audit import purge_old
+
+        async with AsyncSessionLocal() as session:
+            deleted = await purge_old(session, settings.RECO_AUDIT_RETENTION_DAYS)
+            await session.commit()
+        if deleted:
+            logger.info(
+                "Reco audit cleanup: purged %d audits older than %d days",
+                deleted,
+                settings.RECO_AUDIT_RETENTION_DAYS,
+            )
+    except Exception:
+        logger.error(f"Reco audit cleanup failed: {traceback.format_exc()}")

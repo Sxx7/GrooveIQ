@@ -7,6 +7,7 @@ from content-based, collaborative filtering, and heuristic sources.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 import uuid
@@ -72,6 +73,8 @@ async def get_recommendations(
     session: AsyncSession = Depends(get_session),
     _key: str = Depends(require_api_key),
 ):
+    request_t0 = time.monotonic()
+
     # Debug mode exposes model internals and feature vectors — restrict
     # to admin API keys regardless of environment.
     if debug:
@@ -161,6 +164,17 @@ async def get_recommendations(
 
     candidate_ids = [c["track_id"] for c in candidates]
 
+    # Build per-candidate source attribution (a candidate may surface from
+    # multiple sources — we keep them all for the audit).
+    sources_by_tid: dict[str, list[str]] = {}
+    for c in candidates:
+        sources_by_tid.setdefault(c["track_id"], []).append(c["source"])
+    # Counts per source for the audit summary.
+    candidates_by_source_counts: dict[str, int] = {}
+    for src_list in sources_by_tid.values():
+        for s in src_list:
+            candidates_by_source_counts[s] = candidates_by_source_counts.get(s, 0) + 1
+
     # Collect debug data if requested.
     debug_data = None
     if debug:
@@ -188,7 +202,8 @@ async def get_recommendations(
         context_type=context_type,
         location_label=location_label,
     )
-    {tid: score for tid, score in scored}
+    raw_score_by_tid = {tid: float(score) for tid, score in scored}
+    pre_rerank_pos_by_tid = {tid: i for i, (tid, _) in enumerate(scored)}
     source_map = {c["track_id"]: c["source"] for c in candidates}
 
     if debug:
@@ -197,28 +212,50 @@ async def get_recommendations(
         ]
 
     # --- Step 2: Rerank for diversity / business rules ---
-    from app.services.reranker import rerank
+    # Always collect rerank actions so the audit can record them, regardless
+    # of debug mode.  This is cheap (just appends to a list).
+    from app.services.reranker import get_last_rerank_actions, rerank
 
-    reranked = await rerank(
+    reranked_full = await rerank(
         scored,
         user_id,
         session,
         device_type=device_type,
         output_type=output_type,
-        collect_actions=debug,
+        collect_actions=True,
     )
-    reranked = reranked[:limit]
+    rerank_actions = get_last_rerank_actions()
+    reranked = reranked_full[:limit]
+    final_score_by_tid = {tid: float(score) for tid, score in reranked_full}
+    final_pos_by_tid = {tid: i for i, (tid, _) in enumerate(reranked_full)}
+    shown_tids = {tid for tid, _ in reranked}
 
-    if debug:
-        from app.services.reranker import get_last_rerank_actions
+    # Group reranker actions by track for the audit (so each candidate row
+    # carries the actions that affected it).
+    actions_by_tid: dict[str, list[dict]] = {}
+    for action in rerank_actions:
+        tid = action.get("track_id")
+        if tid:
+            actions_by_tid.setdefault(tid, []).append(action)
 
-        debug_data["reranker_actions"] = get_last_rerank_actions()
-        # Build feature vectors for debug output
+    # --- Build feature vectors for the candidates we'll persist in the audit.
+    # Persist the top-N by raw_score (capped by RECO_AUDIT_MAX_CANDIDATES).
+    # We always do this so the audit has a complete picture, but we cap the
+    # set so a 500-candidate request doesn't write 500 feature vectors.
+    audit_track_ids: list[str] = []
+    feature_vectors: dict[str, dict] = {}
+    if settings.RECO_AUDIT_ENABLED or debug:
         from app.services.feature_eng import FEATURE_COLUMNS, build_features
 
-        feat_result_debug = await build_features(
+        cap = settings.RECO_AUDIT_MAX_CANDIDATES
+        # Pick top-N by raw_score, but always include shown tracks.
+        ranked_by_raw = sorted(raw_score_by_tid.items(), key=lambda x: x[1], reverse=True)
+        top_n = [tid for tid, _ in ranked_by_raw[:cap]]
+        audit_track_ids = list({*top_n, *shown_tids})
+
+        feat_result = await build_features(
             user_id,
-            [tid for tid, _ in reranked],
+            audit_track_ids,
             session,
             hour_of_day=hour_of_day,
             day_of_week=day_of_week,
@@ -227,17 +264,20 @@ async def get_recommendations(
             context_type=context_type,
             location_label=location_label,
         )
-        feature_vectors = {}
-        for idx, tid in enumerate(feat_result_debug["track_ids"]):
+        for idx, tid in enumerate(feat_result["track_ids"]):
             feature_vectors[tid] = {
-                col: round(float(feat_result_debug["features"][idx][ci]), 4) for ci, col in enumerate(FEATURE_COLUMNS)
+                col: round(float(feat_result["features"][idx][ci]), 4)
+                for ci, col in enumerate(FEATURE_COLUMNS)
             }
-        debug_data["feature_vectors"] = feature_vectors
+
+    if debug:
+        debug_data["reranker_actions"] = rerank_actions
+        debug_data["feature_vectors"] = {tid: feature_vectors.get(tid, {}) for tid, _ in reranked}
 
     # Fetch track metadata for response.
     final_ids = [tid for tid, _ in reranked]
-    feat_result = await session.execute(select(TrackFeatures).where(TrackFeatures.track_id.in_(final_ids)))
-    feat_map = {t.track_id: t for t in feat_result.scalars().all()}
+    feat_meta_result = await session.execute(select(TrackFeatures).where(TrackFeatures.track_id.in_(final_ids)))
+    feat_map = {t.track_id: t for t in feat_meta_result.scalars().all()}
 
     # Generate a request_id for impression tracking.
     request_id = str(uuid.uuid4())
@@ -264,6 +304,54 @@ async def get_recommendations(
             )
         )
     await session.commit()
+
+    # --- Fire-and-forget audit write ---
+    if settings.RECO_AUDIT_ENABLED:
+        from app.services.algorithm_config import get_config_version
+        from app.services.reco_audit import write_audit
+
+        candidate_rows = []
+        for tid in audit_track_ids:
+            candidate_rows.append(
+                {
+                    "track_id": tid,
+                    "sources": sources_by_tid.get(tid, []),
+                    "raw_score": raw_score_by_tid.get(tid, 0.0),
+                    "pre_rerank_position": pre_rerank_pos_by_tid.get(tid, -1),
+                    "final_score": final_score_by_tid.get(tid),
+                    "final_position": final_pos_by_tid.get(tid) if tid in final_pos_by_tid else None,
+                    "shown": tid in shown_tids,
+                    "reranker_actions": actions_by_tid.get(tid, []),
+                    "feature_vector": feature_vectors.get(tid, {}),
+                }
+            )
+        duration_ms = int((time.monotonic() - request_t0) * 1000)
+        request_context_payload = {
+            "device_type": device_type,
+            "output_type": output_type,
+            "context_type": context_type,
+            "location_label": location_label,
+            "hour_of_day": hour_of_day,
+            "day_of_week": day_of_week,
+            "genre": genre,
+            "mood": mood,
+        }
+        asyncio.create_task(
+            write_audit(
+                request_id=request_id,
+                user_id=user_id,
+                surface="recommend_api",
+                seed_track_id=seed_track_id,
+                context_id=None,
+                request_context=request_context_payload,
+                model_version=model_version,
+                config_version=get_config_version(),
+                duration_ms=duration_ms,
+                limit_requested=limit,
+                candidates_by_source=candidates_by_source_counts,
+                candidate_rows=candidate_rows,
+            )
+        )
 
     # Build response.
     tracks = []

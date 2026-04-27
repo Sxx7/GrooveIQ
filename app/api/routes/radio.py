@@ -17,6 +17,7 @@ Endpoints:
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 import uuid
@@ -25,6 +26,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import settings
 from app.core.security import check_user_access, require_admin, require_api_key
 from app.db.session import get_session
 from app.models.db import ListenEvent, Playlist, TrackFeatures, User
@@ -115,8 +117,20 @@ async def start_radio(
             detail="Could not compute seed embedding. Ensure the seed has analyzed tracks with embeddings.",
         )
 
+    request_t0 = time.monotonic()
+
     # Generate first batch.
-    tracks = await radio_service.get_next_tracks(session.session_id, body.count, db)
+    audit_enabled = settings.RECO_AUDIT_ENABLED
+    if audit_enabled:
+        result = await radio_service.get_next_tracks(session.session_id, body.count, db, collect_audit=True)
+        if result is None:
+            tracks = None
+            audit_data = None
+        else:
+            tracks, audit_data = result
+    else:
+        tracks = await radio_service.get_next_tracks(session.session_id, body.count, db)
+        audit_data = None
 
     if not tracks:
         radio_service.remove_session(session.session_id)
@@ -150,6 +164,37 @@ async def start_radio(
             )
         )
     await db.commit()
+
+    # Fire-and-forget audit write.
+    if audit_enabled and audit_data:
+        from app.services.algorithm_config import get_config_version
+        from app.services.reco_audit import write_audit
+
+        duration_ms = int((time.monotonic() - request_t0) * 1000)
+        asyncio.create_task(
+            write_audit(
+                request_id=request_id,
+                user_id=body.user_id,
+                surface="radio",
+                seed_track_id=body.seed_value if body.seed_type == "track" else None,
+                context_id=session.session_id,
+                request_context={
+                    "seed_type": body.seed_type,
+                    "seed_value": body.seed_value,
+                    "device_type": body.device_type,
+                    "output_type": body.output_type,
+                    "location_label": body.location_label,
+                    "hour_of_day": body.hour_of_day,
+                    "day_of_week": body.day_of_week,
+                },
+                model_version=model_version,
+                config_version=get_config_version(),
+                duration_ms=duration_ms,
+                limit_requested=body.count,
+                candidates_by_source=audit_data["candidates_by_source"],
+                candidate_rows=audit_data["candidate_rows"],
+            )
+        )
 
     return RadioStartResponse(
         session_id=session.session_id,
@@ -201,9 +246,18 @@ async def radio_next(
     if day_of_week is not None:
         s.day_of_week = day_of_week
 
-    tracks = await radio_service.get_next_tracks(session_id, count, db)
-    if tracks is None:
-        raise HTTPException(status_code=404, detail="Radio session not found or expired.")
+    request_t0 = time.monotonic()
+    audit_enabled = settings.RECO_AUDIT_ENABLED
+    if audit_enabled:
+        result = await radio_service.get_next_tracks(session_id, count, db, collect_audit=True)
+        if result is None:
+            raise HTTPException(status_code=404, detail="Radio session not found or expired.")
+        tracks, audit_data = result
+    else:
+        tracks = await radio_service.get_next_tracks(session_id, count, db)
+        audit_data = None
+        if tracks is None:
+            raise HTTPException(status_code=404, detail="Radio session not found or expired.")
 
     # Log impressions.
     model_version = _get_model_version()
@@ -230,6 +284,37 @@ async def radio_next(
             )
         )
     await db.commit()
+
+    # Fire-and-forget audit write.
+    if audit_enabled and audit_data:
+        from app.services.algorithm_config import get_config_version
+        from app.services.reco_audit import write_audit
+
+        duration_ms = int((time.monotonic() - request_t0) * 1000)
+        asyncio.create_task(
+            write_audit(
+                request_id=request_id,
+                user_id=s.user_id,
+                surface="radio",
+                seed_track_id=s.seed_value if s.seed_type == "track" else None,
+                context_id=session_id,
+                request_context={
+                    "seed_type": s.seed_type,
+                    "seed_value": s.seed_value,
+                    "device_type": s.device_type,
+                    "output_type": s.output_type,
+                    "location_label": s.location_label,
+                    "hour_of_day": s.hour_of_day,
+                    "day_of_week": s.day_of_week,
+                },
+                model_version=model_version,
+                config_version=get_config_version(),
+                duration_ms=duration_ms,
+                limit_requested=count,
+                candidates_by_source=audit_data["candidates_by_source"],
+                candidate_rows=audit_data["candidate_rows"],
+            )
+        )
 
     return RadioNextResponse(
         session_id=session_id,
