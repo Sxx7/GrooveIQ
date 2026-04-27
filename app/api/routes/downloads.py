@@ -18,7 +18,7 @@ import re
 import time
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import func, or_, select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
@@ -278,7 +278,7 @@ async def search_tracks_multi(
                 results: list[NormalizedSearchResult] = await asyncio.wait_for(
                     adapter.search(q, limit=limit), timeout=timeout_s
                 )
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 return {
                     "backend": backend.value,
                     "ok": False,
@@ -655,7 +655,7 @@ async def get_download_status(
 # in case a future watcher revision starts emitting them.
 _IN_FLIGHT_STATUSES = ("queued", "pending", "downloading")
 _TERMINAL_SUCCESS_DB = ("completed", "duplicate")
-_TERMINAL_FAILED_DB = ("error", "failed", "stalled", "cancelled")  # noqa: F841 — kept in sync with _TERMINAL_FAILURE_STATUSES below
+_TERMINAL_FAILED_DB = ("error", "failed", "stalled", "cancelled")
 
 # Cache live backend status probes briefly so the queue panel can poll at 3s
 # without thrashing the upstream APIs when there are many in-flight rows.
@@ -689,13 +689,13 @@ async def _probe_live_progress(task_id: str, source: str | None) -> dict | None:
         result = await asyncio.wait_for(
             client.get_status(task_id), timeout=_PROGRESS_FETCH_TIMEOUT_S
         )
-    except (asyncio.TimeoutError, Exception) as exc:  # noqa: BLE001
+    except (TimeoutError, Exception) as exc:
         logger.debug("Queue probe failed for %s/%s: %s", source, task_id, exc)
         result = None
     finally:
         try:
             await client.close()
-        except Exception:  # noqa: BLE001
+        except Exception:
             pass
 
     if result is None:

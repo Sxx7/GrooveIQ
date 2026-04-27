@@ -692,8 +692,8 @@ def _analyze_file(
                             "-ac", "1", "-ar", str(sr),
                             "-f", "wav", tmp.name,
                         ]
-                        proc = subprocess.run(
-                            cmd, capture_output=True, timeout=60,
+                        proc = subprocess.run(  # noqa: S603 - fixed argv, internal file path
+                            cmd, capture_output=True, timeout=60, check=False,
                         )
                         if proc.returncode != 0:
                             raise RuntimeError(

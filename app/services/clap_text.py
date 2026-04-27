@@ -115,7 +115,7 @@ def _load() -> None:
 def _encode_cached(prompt: str) -> bytes:
     """Inner cached encoder. Returns raw bytes so lru_cache can hash safely."""
     _load()
-    assert _tokenizer is not None and _session is not None and _input_name is not None
+    assert _tokenizer is not None and _session is not None and _input_name is not None  # noqa: S101 - type narrowing after _load()
 
     encoded = _tokenizer.encode(prompt)
     # LAION-CLAP typically expects a fixed 77-token window (CLIP convention).

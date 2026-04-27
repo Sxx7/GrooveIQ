@@ -32,7 +32,6 @@ from app.services.download_chain import (
     try_download_chain,
 )
 
-
 # ---------------------------------------------------------------------------
 # Fake adapter — drop-in replacement for any real backend
 # ---------------------------------------------------------------------------

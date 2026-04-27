@@ -19,7 +19,6 @@ from app.api.routes import (
     artists,
     charts,
     discovery,
-    download_routing as download_routing_routes,
     downloads,
     events,
     health,
@@ -33,6 +32,9 @@ from app.api.routes import (
     stats,
     tracks,
     users,
+)
+from app.api.routes import (
+    download_routing as download_routing_routes,
 )
 from app.core.config import settings
 from app.core.logging import setup_logging

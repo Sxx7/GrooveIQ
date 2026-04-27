@@ -481,9 +481,7 @@ class SlskdAdapter:
         if ext in (".flac", ".wav", ".alac", ".ape", ".wv"):
             tier = QualityTier.LOSSLESS  # could be HIRES if sample rate known
         elif ext in (".mp3", ".aac", ".m4a", ".ogg", ".opus"):
-            if bitrate and bitrate >= 320:
-                tier = QualityTier.LOSSY_HIGH
-            elif bitrate and bitrate >= 256:
+            if (bitrate and bitrate >= 320) or (bitrate and bitrate >= 256):
                 tier = QualityTier.LOSSY_HIGH
             else:
                 tier = QualityTier.LOSSY_LOW
@@ -928,7 +926,7 @@ async def try_download_chain(track_ref: TrackRef, purpose: str = "individual") -
                 result = await asyncio.wait_for(
                     adapter.try_download(track_ref), timeout=entry.timeout_s
                 )
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 result = AttemptResult(
                     backend=entry.backend.value,
                     success=False,
@@ -1029,7 +1027,7 @@ async def try_album_download_chain(album_ref: AlbumRef) -> AlbumCascadeResult:
                 result = await asyncio.wait_for(
                     adapter.try_download_album(album_ref), timeout=entry.timeout_s
                 )
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 result = AlbumAttempt(
                     backend=entry.backend.value,
                     success=False,

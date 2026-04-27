@@ -19,8 +19,6 @@ from typing import Any
 
 import httpx
 
-from app.core.config import settings
-
 # Alphanumeric IDs only — prevents path traversal in URL interpolation.
 _SAFE_ID_RE = re.compile(r"^[a-zA-Z0-9]{1,64}$")
 
