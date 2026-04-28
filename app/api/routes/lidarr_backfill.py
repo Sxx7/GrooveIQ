@@ -39,11 +39,20 @@ router = APIRouter()
 
 
 def _row_to_response(row) -> dict[str, Any]:
+    # Round-trip the persisted JSON through the current schema so that
+    # fields added in later releases (e.g. sources.queue_order, match.
+    # allow_structural_fallback) appear with their defaults on legacy rows
+    # that pre-date the field. Matches what the engine actually uses at
+    # runtime — the in-memory cache also goes through model_validate.
+    try:
+        validated = LidarrBackfillConfigData.model_validate(row.config or {}).model_dump(mode="json")
+    except Exception:
+        validated = row.config  # fall back to raw JSON if validation fails (shouldn't happen)
     return {
         "id": row.id,
         "version": row.version,
         "name": row.name,
-        "config": row.config,
+        "config": validated,
         "is_active": row.is_active,
         "created_at": row.created_at,
         "created_by": row.created_by,
