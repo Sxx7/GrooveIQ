@@ -2047,6 +2047,7 @@ var LBF_FIELD_META = {
   'match.require_year_match': { desc: 'Reject if release year differs by more than 1', type: 'bool' },
   'match.require_track_count_match': { desc: 'Reject if track count differs from Lidarr\u2019s expectation', type: 'bool' },
   'match.prefer_album_over_tracks': { desc: 'Album-first: only fall back to per-track downloads when no album hit exists', type: 'bool' },
+  'match.allow_structural_fallback': { desc: 'Accept candidates with low album-title similarity if artist matches exactly + same track count + same year (\u00B11). Catches multi-disc / re-issue / localized titles.', type: 'bool' },
   'retry.cooldown_hours': { desc: 'Wait this many hours before retrying a failed album', type: 'float', min: 0, max: 720, step: 0.5 },
   'retry.max_attempts': { desc: 'Permanently skip after this many failed attempts', type: 'int', min: 1, max: 20, step: 1 },
   'retry.backoff_multiplier': { desc: 'Cooldown grows on each retry (cooldown \u00D7 multiplier^attempts)', type: 'float', min: 1.0, max: 10.0, step: 0.1 },

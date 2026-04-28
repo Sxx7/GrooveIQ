@@ -127,9 +127,16 @@ def _score_match(
 
     Components:
         artist similarity   weight 0.50  (hard reject below threshold)
-        album-title sim     weight 0.40  (hard reject below threshold)
+        album-title sim     weight 0.40  (hard reject below threshold,
+                                          unless structural fallback applies)
         track-count match   weight 0.05  (binary 0/1)
         year match          weight 0.05  (binary 0/1; |diff| ≤ 1 counts)
+
+    When ``cfg.match.allow_structural_fallback`` is True, an album-title
+    similarity below the threshold is forgiven if the artist matches
+    exactly (≥ 0.95) AND track count matches AND year diff ≤ 1 — catches
+    multi-disc / re-issue / localized-title editions where the printable
+    text diverges but the structural metadata aligns.
     """
     target_artist = (lidarr_album.get("artist") or {}).get("artistName") or ""
     target_title = lidarr_album.get("title") or ""
@@ -172,8 +179,23 @@ def _score_match(
         accepted = False
         reasons.append(f"artist_similarity={artist_sim:.2f}<{cfg.match.min_artist_similarity}")
     if album_sim < cfg.match.min_album_similarity:
-        accepted = False
-        reasons.append(f"album_similarity={album_sim:.2f}<{cfg.match.min_album_similarity}")
+        # Optional structural fallback: forgive a low album-title similarity
+        # when artist + track count + year all align tightly.
+        artist_exact = artist_sim >= 0.95
+        track_count_exact = track_count_diff is not None and track_count_diff == 0
+        year_close = year_diff is not None and year_diff <= 1
+        if (
+            cfg.match.allow_structural_fallback
+            and artist_exact
+            and track_count_exact
+            and year_close
+        ):
+            reasons.append(
+                f"album_similarity={album_sim:.2f}<{cfg.match.min_album_similarity}_structural_ok"
+            )
+        else:
+            accepted = False
+            reasons.append(f"album_similarity={album_sim:.2f}<{cfg.match.min_album_similarity}")
     if cfg.match.require_year_match:
         if year_diff is None:
             accepted = False
@@ -250,9 +272,17 @@ async def _find_streamrip_album(
     lidarr_album: dict[str, Any],
     cfg: LidarrBackfillConfigData,
     *,
+    available_services: list[str] | None = None,
     search_limit: int = 25,
 ) -> StreamripMatch | None:
-    """Walk ``cfg.service_priority`` and return the first acceptable album hit."""
+    """Walk ``cfg.service_priority`` and return the first acceptable album hit.
+
+    ``available_services`` (when not None) restricts the walk to services
+    that streamrip-api is actually configured for — avoids the noisy 503
+    chain when only a subset of services are wired up. ``None`` means
+    "don't filter" (current behaviour, preserved for callers that don't
+    want to probe ``/health``).
+    """
     target_artist = (lidarr_album.get("artist") or {}).get("artistName") or ""
     target_title = lidarr_album.get("title") or ""
     if not target_artist or not target_title:
@@ -261,6 +291,9 @@ async def _find_streamrip_album(
     query = f"{target_artist} {target_title}".strip()
 
     for service in cfg.service_priority:
+        # Skip services not configured on streamrip-api (silent — keeps logs clean).
+        if available_services is not None and service not in available_services:
+            continue
         # Quality floor: skip the whole service if its declared best-case quality
         # is below the configured floor.
         declared = _SERVICE_QUALITY.get(service)
@@ -506,6 +539,8 @@ async def _process_album(
     lidarr_album: dict[str, Any],
     cfg: LidarrBackfillConfigData,
     streamrip_client: StreamripClient,
+    *,
+    available_services: list[str] | None = None,
 ) -> dict[str, Any]:
     """Match + (download or skip) a single album. Persists state.
 
@@ -520,7 +555,10 @@ async def _process_album(
         "decision": "pending",
     }
 
-    match = await _find_streamrip_album(streamrip_client, lidarr_album, cfg)
+    match = await _find_streamrip_album(
+        streamrip_client, lidarr_album, cfg,
+        available_services=available_services,
+    )
     if match is None:
         await _persist_request(
             session,
@@ -653,6 +691,10 @@ async def run_backfill_tick(session: AsyncSession) -> dict[str, Any]:
     lidarr_client = LidarrClient(settings.LIDARR_URL, settings.LIDARR_API_KEY)
     streamrip_client = StreamripClient(settings.STREAMRIP_API_URL)
     try:
+        # Probe streamrip-api once per tick so we can skip non-configured
+        # services silently instead of logging a 503 warning per album.
+        available_services = await streamrip_client.get_available_services()
+
         candidates = await _fetch_candidates(cfg, lidarr_client, limit=batch_target * 4)
         candidates = await _filter_by_cooldown_and_state(session, candidates, cfg)
         candidates = candidates[:batch_target]
@@ -660,7 +702,12 @@ async def run_backfill_tick(session: AsyncSession) -> dict[str, Any]:
         results: list[dict[str, Any]] = []
         for album in candidates:
             try:
-                results.append(await _process_album(session, album, cfg, streamrip_client))
+                results.append(
+                    await _process_album(
+                        session, album, cfg, streamrip_client,
+                        available_services=available_services,
+                    )
+                )
             except Exception as exc:  # noqa: BLE001
                 logger.error("lidarr_backfill: _process_album crashed: %s", exc, exc_info=True)
                 results.append(
@@ -675,6 +722,7 @@ async def run_backfill_tick(session: AsyncSession) -> dict[str, Any]:
         return {
             "processed": len(results),
             "capacity_remaining": max(0, capacity - len(results)),
+            "available_services": available_services,
             "results": results,
         }
     finally:
@@ -805,6 +853,7 @@ async def preview_matches(
     streamrip_client = StreamripClient(settings.STREAMRIP_API_URL)
     out: list[dict[str, Any]] = []
     try:
+        available_services = await streamrip_client.get_available_services()
         rows: list[dict[str, Any]] = []
         if cfg.sources.missing:
             try:
@@ -835,7 +884,10 @@ async def preview_matches(
             if deny and norm in deny:
                 continue
 
-            match = await _find_streamrip_album(streamrip_client, album, cfg)
+            match = await _find_streamrip_album(
+                streamrip_client, album, cfg,
+                available_services=available_services,
+            )
             if match is None:
                 out.append(
                     {
@@ -869,7 +921,11 @@ async def preview_matches(
         await lidarr_client.close()
         await streamrip_client.close()
 
-    return {"candidates": out, "config_used": cfg.model_dump(mode="json")}
+    return {
+        "candidates": out,
+        "config_used": cfg.model_dump(mode="json"),
+        "available_services": available_services,
+    }
 
 
 async def reset_backfill_state(session: AsyncSession, scope: str) -> int:

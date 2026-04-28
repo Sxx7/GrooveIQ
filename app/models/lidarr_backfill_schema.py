@@ -48,6 +48,17 @@ class MatchConfig(BaseModel):
         True,
         description="Album-first: only fall back to per-track downloads when no album hit exists",
     )
+    allow_structural_fallback: bool = Field(
+        False,
+        description=(
+            "Accept candidates whose album-title similarity is below "
+            "min_album_similarity, provided the artist matches exactly (≥0.95), "
+            "track count matches, and release year is within ±1. Catches "
+            "multi-disc combos, localized titles, and re-issues with title "
+            "drift. Off by default — preview-match first, especially for "
+            "libraries with significant non-Latin content."
+        ),
+    )
 
 
 class RetryConfig(BaseModel):

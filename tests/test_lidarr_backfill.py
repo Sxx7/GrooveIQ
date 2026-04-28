@@ -581,3 +581,152 @@ def test_next_retry_timestamp_capped_at_30_days(cfg):
 def test_normalize_artist_strips_the_prefix_and_casefolds():
     assert lbf._normalize_artist_name("The Beatles") == "beatles"
     assert lbf._normalize_artist_name("  TAME IMPALA  ") == "tame impala"
+
+
+# ---------------------------------------------------------------------------
+# Structural fallback (allow_structural_fallback)
+# ---------------------------------------------------------------------------
+
+
+def _structural_cfg(cfg, *, on: bool):
+    return cfg.model_copy(update={"match": cfg.match.model_copy(update={"allow_structural_fallback": on})})
+
+
+def test_structural_fallback_off_default_rejects_low_album_sim(cfg):
+    """Default (off): below-threshold album similarity always rejects."""
+    sr = {
+        "artist": "The Kinks",
+        "album": "Picture Book",  # vs lidarr "Picture Book, Volume 1" → ~0.71 similarity
+        "album_year": 2008,
+        "album_track_count": 13,
+    }
+    score = lbf._score_match(
+        _lidarr_album(artist="The Kinks", title="Picture Book, Volume 1", track_count=13, release_date="2008-04-21"),
+        sr,
+        cfg,
+    )
+    assert score.accepted is False
+    assert any("album_similarity" in r and "structural_ok" not in r for r in score.reasons)
+
+
+def test_structural_fallback_on_accepts_when_artist_track_year_align(cfg):
+    """With fallback enabled: low album sim is forgiven when structural metadata matches."""
+    cfg = _structural_cfg(cfg, on=True)
+    sr = {
+        "artist": "The Kinks",
+        "album": "Picture Book",
+        "album_year": 2008,
+        "album_track_count": 13,
+    }
+    score = lbf._score_match(
+        _lidarr_album(artist="The Kinks", title="Picture Book, Volume 1", track_count=13, release_date="2008-04-21"),
+        sr,
+        cfg,
+    )
+    assert score.accepted is True
+    assert any("structural_ok" in r for r in score.reasons)
+
+
+def test_structural_fallback_rejects_when_artist_not_exact(cfg):
+    """Fuzzy artist (<0.95) blocks the fallback even when track count + year align."""
+    cfg = _structural_cfg(cfg, on=True)
+    sr = {
+        "artist": "The Kinks Tribute Band",  # ~0.65 similarity
+        "album": "Picture Book",
+        "album_year": 2008,
+        "album_track_count": 13,
+    }
+    score = lbf._score_match(
+        _lidarr_album(artist="The Kinks", title="Picture Book, Volume 1", track_count=13, release_date="2008-04-21"),
+        sr,
+        cfg,
+    )
+    assert score.accepted is False
+
+
+def test_structural_fallback_rejects_when_track_count_differs(cfg):
+    """Track count must match exactly — different counts block the fallback."""
+    cfg = _structural_cfg(cfg, on=True)
+    sr = {
+        "artist": "The Kinks",
+        "album": "Picture Book",
+        "album_year": 2008,
+        "album_track_count": 26,  # ≠ 13
+    }
+    score = lbf._score_match(
+        _lidarr_album(artist="The Kinks", title="Picture Book, Volume 1", track_count=13, release_date="2008-04-21"),
+        sr,
+        cfg,
+    )
+    assert score.accepted is False
+
+
+def test_structural_fallback_rejects_when_track_count_unknown(cfg):
+    """Missing track count on either side prevents the structural fallback."""
+    cfg = _structural_cfg(cfg, on=True)
+    sr = {
+        "artist": "The Kinks",
+        "album": "Picture Book",
+        "album_year": 2008,
+        "album_track_count": None,  # streamrip didn't expose it
+    }
+    score = lbf._score_match(
+        _lidarr_album(artist="The Kinks", title="Picture Book, Volume 1", track_count=13, release_date="2008-04-21"),
+        sr,
+        cfg,
+    )
+    assert score.accepted is False
+
+
+def test_structural_fallback_rejects_when_year_drift_too_large(cfg):
+    """Year diff > 1 (re-release / remaster threshold) blocks the fallback."""
+    cfg = _structural_cfg(cfg, on=True)
+    sr = {
+        "artist": "The Kinks",
+        "album": "Picture Book",
+        "album_year": 2015,  # 7 years off
+        "album_track_count": 13,
+    }
+    score = lbf._score_match(
+        _lidarr_album(artist="The Kinks", title="Picture Book, Volume 1", track_count=13, release_date="2008-04-21"),
+        sr,
+        cfg,
+    )
+    assert score.accepted is False
+
+
+# ---------------------------------------------------------------------------
+# available_services filtering (no log noise on unconfigured services)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_find_streamrip_album_skips_unconfigured_services(db_session, cfg):
+    """When available_services restricts the set, the engine doesn't even
+    call .search() for unlisted services. Asserts the search_calls log
+    only contains the allowed service."""
+    sr_tracks = [_streamrip_track(track_number=1, service="qobuz")]
+    fake = _FakeStreamrip(search_results={"qobuz": sr_tracks})
+
+    match = await lbf._find_streamrip_album(
+        fake,
+        _lidarr_album(),
+        cfg,
+        available_services=["qobuz"],  # only qobuz is configured
+    )
+    assert match is not None
+    assert match.service == "qobuz"
+    services_searched = {svc for _, _, svc in fake.search_calls}
+    assert services_searched == {"qobuz"}, services_searched  # tidal/deezer/soundcloud skipped silently
+
+
+@pytest.mark.asyncio
+async def test_find_streamrip_album_none_means_dont_filter(db_session, cfg):
+    """available_services=None preserves the prior behaviour (try every service)."""
+    fake = _FakeStreamrip(search_results={"qobuz": [], "tidal": [], "deezer": [], "soundcloud": []})
+
+    await lbf._find_streamrip_album(fake, _lidarr_album(), cfg, available_services=None)
+    services_searched = {svc for _, _, svc in fake.search_calls}
+    # soundcloud is filtered out by the quality-floor gate (lossy_high < lossless),
+    # so we expect everything except soundcloud.
+    assert services_searched == {"qobuz", "tidal", "deezer"}

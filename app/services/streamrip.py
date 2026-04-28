@@ -59,6 +59,32 @@ class StreamripClient:
             await asyncio.sleep(self._MIN_REQUEST_GAP - elapsed)
         self._last_request = time.monotonic()
 
+    # -- Health / capabilities ---------------------------------------------
+
+    async def get_available_services(self) -> list[str] | None:
+        """Return the streaming services streamrip-api is configured for.
+
+        Reads ``available_services`` from ``/health``. The Lidarr backfill
+        engine uses this to pre-filter ``service_priority`` so it doesn't
+        emit 503 search warnings for services that aren't configured.
+
+        Returns ``None`` (meaning "unknown") on probe failure so callers
+        can degrade gracefully — they should treat ``None`` as "don't
+        filter" instead of "filter out everything".
+        """
+        await self._throttle()
+        try:
+            resp = await self._client.get(f"{self._base_url}/health", timeout=5.0)
+            resp.raise_for_status()
+            data = resp.json()
+        except Exception as exc:
+            logger.warning("streamrip-api /health probe failed: %s", exc)
+            return None
+        services = data.get("available_services", [])
+        if not isinstance(services, list):
+            return None
+        return [s for s in services if isinstance(s, str)]
+
     # -- Search -------------------------------------------------------------
 
     async def search(
