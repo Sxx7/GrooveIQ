@@ -2087,7 +2087,17 @@ function renderDiscoveryBackfill() {
   var h = _discoverySubTabBar();
 
   // Status / ETA card
-  var enabledBadge = st.enabled ? '<span class="badge badge-success">Enabled</span>' : '<span class="badge badge-warning">Disabled</span>';
+  // Three states: Running (blue, pulsing) > Active (green) > Paused (yellow).
+  var running = !!st.tick_in_progress;
+  var enabled = !!st.enabled;
+  var statusBadge;
+  if (running) {
+    statusBadge = '<span class="badge badge-info" id="lbf-status-pill" style="animation:pulse 1.6s infinite"><span class="dot success" style="display:inline-block;width:8px;height:8px;border-radius:50%;background:#fff;margin-right:6px;vertical-align:middle"></span>Running tick</span>';
+  } else if (enabled) {
+    statusBadge = '<span class="badge badge-success" id="lbf-status-pill">\u25CF Active</span>';
+  } else {
+    statusBadge = '<span class="badge badge-warning" id="lbf-status-pill">\u25CF Paused</span>';
+  }
   var etaText = '\u2014';
   if (st.eta_hours != null) {
     etaText = (st.eta_days != null && st.eta_days >= 1)
@@ -2098,10 +2108,19 @@ function renderDiscoveryBackfill() {
   var lastTick = st.last_tick_at ? timeAgo(st.last_tick_at) : '\u2014';
 
   h += '<div class="page-header"><div>';
-  h += '<h1 class="page-title">Lidarr Backfill ' + enabledBadge + '</h1>';
+  h += '<h1 class="page-title">Lidarr Backfill ' + statusBadge + '</h1>';
   h += '<span class="subtitle">Drain Lidarr\u2019s wanted queue through streamrip-api \u2014 rate-limited per hour.</span>';
   h += '</div><div class="page-actions">';
-  h += '<button class="btn btn-secondary btn-sm" onclick="lbfRunNow(this)">Run Now</button>';
+  // Run Now: greyed while a tick is in flight so users don't double-click.
+  h += '<button id="lbf-runnow-btn" class="btn btn-secondary btn-sm"' + (running ? ' disabled' : '') + ' onclick="lbfRunNow(this)">' + (running ? 'Running\u2026' : 'Run Now') + '</button>';
+  // Pause / Resume — flips cfg.enabled on the active config (creates a new
+  // versioned config entry named "Paused" / "Resumed" for audit trail).
+  if (enabled) {
+    h += '<button class="btn btn-secondary btn-sm" onclick="lbfPauseResume(this, false)" title="Stop the scheduler from picking new batches">\u23F8 Pause</button>';
+  } else {
+    h += '<button class="btn btn-primary btn-sm" onclick="lbfPauseResume(this, true)" title="Restart the scheduler">\u25B6 Resume</button>';
+  }
+  h += '<span class="divider-v"></span>';
   h += '<button class="btn btn-secondary btn-sm" onclick="lbfPreview()">Preview Match</button>';
   h += '<button class="btn btn-secondary btn-sm" onclick="lbfShowHistory()">History</button>';
   h += '<button class="btn btn-secondary btn-sm" onclick="lbfExport()">Export</button>';
@@ -2389,14 +2408,46 @@ function lbfSaveAndApply() {
 
 function lbfRunNow(btn) {
   if (btn) { btn.disabled = true; btn.textContent = 'Running\u2026'; }
+  // Refresh stats immediately so the status pill flips to "Running tick"
+  // — the server-side flag is set the moment the tick starts.
+  setTimeout(function() {
+    api('/v1/lidarr-backfill/stats').then(function(s) {
+      lbfState.stats = s;
+      // Surgically update the pill without a full re-render.
+      var pill = document.getElementById('lbf-status-pill');
+      if (pill && s.tick_in_progress) {
+        pill.outerHTML = '<span class="badge badge-info" id="lbf-status-pill" style="animation:pulse 1.6s infinite">\u25CF Running tick</span>';
+      }
+    });
+  }, 100);
   apiPost('/v1/lidarr-backfill/run', {}).then(function(summary) {
-    if (btn) { btn.disabled = false; btn.textContent = 'Run Now'; }
     var msg = summary && summary.skipped ? ('Skipped: ' + summary.skipped) : ('Processed ' + (summary.processed || 0) + ' album(s).');
-    alert(msg);
-    setTimeout(function() { loadDiscoveryBackfill(); }, 500);
+    if (!summary || !summary.skipped) {
+      // Refresh full view to pick up new rows + status pill flip back.
+      loadDiscoveryBackfill();
+    } else {
+      if (btn) { btn.disabled = false; btn.textContent = 'Run Now'; }
+      alert(msg);
+    }
   }).catch(function(e) {
     if (btn) { btn.disabled = false; btn.textContent = 'Run Now'; }
     alert('Run failed: ' + e.message);
+  });
+}
+
+function lbfPauseResume(btn, target) {
+  // target: true = resume (set enabled=true), false = pause (set enabled=false).
+  if (btn) { btn.disabled = true; }
+  var newCfg = JSON.parse(JSON.stringify(lbfState.active.config));
+  newCfg.enabled = !!target;
+  apiPut('/v1/lidarr-backfill/config', {
+    name: target ? 'Resumed' : 'Paused',
+    config: newCfg
+  }).then(function() {
+    setTimeout(loadDiscoveryBackfill, 300);
+  }).catch(function(e) {
+    if (btn) { btn.disabled = false; }
+    alert((target ? 'Resume' : 'Pause') + ' failed: ' + e.message);
   });
 }
 
@@ -2543,13 +2594,26 @@ function _lbfModal(title, html) {
 
 function _lbfStartPoll() {
   _lbfStopPoll();
+  // Poll every 5s so brief ticks (typically 5-30s) flash the Running badge
+  // before they finish. We re-render only when tick_in_progress or enabled
+  // flip, to avoid disrupting the user's drawer / modal state.
   lbfState.pollTimer = setInterval(function() {
     if (currentView !== 'content' || contentSubTab !== 'discovery' || discoverySubTab !== 'backfill') {
       _lbfStopPoll();
       return;
     }
-    api('/v1/lidarr-backfill/stats').then(function(s) { lbfState.stats = s; });
-  }, 10000);
+    api('/v1/lidarr-backfill/stats').then(function(s) {
+      var prev = lbfState.stats || {};
+      lbfState.stats = s;
+      var stateChanged = (
+        !!prev.tick_in_progress !== !!s.tick_in_progress ||
+        !!prev.enabled !== !!s.enabled
+      );
+      if (stateChanged) {
+        renderDiscoveryBackfill();
+      }
+    });
+  }, 5000);
 }
 function _lbfStopPoll() {
   if (lbfState.pollTimer) { clearInterval(lbfState.pollTimer); lbfState.pollTimer = null; }
