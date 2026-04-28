@@ -51,6 +51,7 @@ class MediaServerTrack:
     genre: str = ""  # comma-separated genre tags
     file_path: str = ""  # absolute or relative path as reported by the server
     duration: float | None = None
+    mb_track_id: str | None = None  # MusicBrainz Recording ID, if known
 
 
 @dataclass
@@ -63,6 +64,12 @@ class SyncResult:
     tracks_updated: int = 0  # track_id actually changed
     tracks_metadata: int = 0  # metadata (title/artist/album) updated
     tracks_unmatched: int = 0
+    # Per-strategy matching breakdown.  These sum to tracks_matched (excluding
+    # ambiguous, which falls through to the next strategy or unmatched).
+    tracks_matched_by_mbid: int = 0
+    tracks_matched_by_aatd: int = 0  # (artist, album, title, duration±1s)
+    tracks_matched_by_path: int = 0
+    tracks_aatd_ambiguous: int = 0  # AATD key had >1 candidate after duration filter
     errors: list[str] = field(default_factory=list)
     elapsed_s: float = 0.0
 
@@ -70,6 +77,63 @@ class SyncResult:
 # ---------------------------------------------------------------------------
 # Path normalisation
 # ---------------------------------------------------------------------------
+
+
+def _canon_str(s: str | None) -> str:
+    """Lower-case, strip, and collapse internal whitespace.
+
+    Used to build (artist, album, title) keys that survive small textual
+    differences across sources (ID3 tags vs Navidrome's display strings).
+    """
+    if not s:
+        return ""
+    return " ".join(s.lower().split())
+
+
+def _aatd_key(artist: str | None, album: str | None, title: str | None) -> tuple[str, str, str] | None:
+    """Build the canonical (artist, album, title) tuple key.
+
+    Returns ``None`` if either artist or title is missing — without those two
+    we have no business asserting two tracks are the same record.  Album is
+    allowed to be empty (some standalone singles don't tag it).
+    """
+    a = _canon_str(artist)
+    t = _canon_str(title)
+    if not a or not t:
+        return None
+    return (a, _canon_str(album), t)
+
+
+def _duration_compatible(server_dur: float | None, db_dur: float | None, tol: float = 1.5) -> bool:
+    """Return True if two durations agree within ``tol`` seconds.
+
+    When either side is missing duration information, we accept the candidate
+    rather than reject it — we'd rather over-match than under-match here, and
+    the (artist, album, title) tuple is already a strong signal.
+    """
+    if server_dur is None or db_dur is None:
+        return True
+    return abs(server_dur - db_dur) <= tol
+
+
+def _extract_mbid_from_plex_guid(metadata: dict) -> str | None:
+    """Extract the MusicBrainz Recording ID from a Plex track's Guid array.
+
+    Plex serializes external IDs as URIs in the per-item ``Guid`` field, e.g.
+    ``[{"id": "mbid://recording/<uuid>"}, {"id": "mbid://artist/<uuid>"}]``.
+    We only care about the recording-level ID — the artist/album guids are
+    already implicit in the (artist, album, title) tuple.
+    """
+    for guid in metadata.get("Guid", []) or []:
+        if not isinstance(guid, dict):
+            continue
+        gid = guid.get("id") or ""
+        for prefix in ("mbid://recording/", "musicbrainz://recording/"):
+            if gid.startswith(prefix):
+                rec = gid[len(prefix) :].strip()
+                if rec:
+                    return rec
+    return None
 
 
 def _normalise_path(file_path: str, music_root: str) -> str:
@@ -159,6 +223,7 @@ async def _fetch_navidrome_tracks(base_url: str, username: str, password: str) -
                         genre=s.get("genre", ""),
                         file_path=s.get("path", ""),
                         duration=float(s["duration"]) if s.get("duration") else None,
+                        mb_track_id=(s.get("musicBrainzId") or None),
                     )
                 )
 
@@ -231,6 +296,7 @@ async def _fetch_plex_tracks(base_url: str, token: str, library_id: str) -> list
                         genre=genre,
                         file_path=file_path,
                         duration=duration,
+                        mb_track_id=_extract_mbid_from_plex_guid(m),
                     )
                 )
 
@@ -442,13 +508,25 @@ async def sync_track_ids(session: AsyncSession) -> SyncResult:
         result.elapsed_s = time.time() - t0
         return result
 
-    # 2. Build a normalised-path → MediaServerTrack lookup from the server.
+    # 2. Build three lookup indexes from the server tracks, used in priority
+    #    order: MBID → (artist,album,title)+duration → path.  The path index
+    #    is kept as a last-resort matcher because Navidrome 0.61+ reports a
+    #    synthetic templated path (computed from tags) rather than the actual
+    #    filesystem path, which silently breaks pure path matching for any
+    #    library not laid out exactly to Navidrome's template.
     server_music_root = settings.MEDIA_SERVER_MUSIC_PATH or settings.MUSIC_LIBRARY_PATH
-    server_map: dict[str, MediaServerTrack] = {}
+    mb_index: dict[str, MediaServerTrack] = {}
+    aatd_index: dict[tuple[str, str, str], list[MediaServerTrack]] = {}
+    path_index: dict[str, MediaServerTrack] = {}
     for st in server_tracks:
+        if st.mb_track_id:
+            mb_index[st.mb_track_id] = st
+        key = _aatd_key(st.artist, st.album, st.title)
+        if key:
+            aatd_index.setdefault(key, []).append(st)
         norm = _normalise_path(st.file_path, server_music_root)
         if norm:
-            server_map[norm] = st
+            path_index[norm] = st
 
     # 3. Load only the columns we need (not full ORM objects — 21k+ rows).
     rows = (
@@ -462,6 +540,9 @@ async def sync_track_ids(session: AsyncSession) -> SyncResult:
                 TrackFeatures.album,
                 TrackFeatures.genre,
                 TrackFeatures.external_track_id,
+                TrackFeatures.musicbrainz_track_id,
+                TrackFeatures.duration,
+                TrackFeatures.duration_ms,
             )
         )
     ).all()
@@ -473,16 +554,61 @@ async def sync_track_ids(session: AsyncSession) -> SyncResult:
     existing_track_ids = {r.track_id for r in rows}
 
     for r in rows:
-        norm = _normalise_path(r.file_path, grooveiq_music_root)
-        if not norm:
-            continue
+        # GrooveIQ's stored duration: prefer the precise duration_ms (from ID3
+        # tags) over the analyzer's seconds, falling back to whichever is set.
+        db_duration: float | None = None
+        if r.duration_ms is not None:
+            db_duration = r.duration_ms / 1000.0
+        elif r.duration is not None:
+            db_duration = float(r.duration)
 
-        st = server_map.get(norm)
-        if not st:
+        st: MediaServerTrack | None = None
+        match_via: str | None = None
+
+        # Strategy 1: MusicBrainz Recording ID.  Most reliable when present —
+        # it survives renames, retags, and Navidrome's template quirks.
+        if r.musicbrainz_track_id:
+            st = mb_index.get(r.musicbrainz_track_id)
+            if st:
+                match_via = "mbid"
+
+        # Strategy 2: (artist, album, title) tuple, optionally disambiguated
+        # by duration.  Catches Spotizerr/spotdl downloads that lack MBIDs.
+        # Skip when ambiguous (>1 candidate even after duration filter) so
+        # we don't risk wrong attributions; let path fall through.
+        if st is None:
+            key = _aatd_key(r.artist, r.album, r.title)
+            if key:
+                cands = aatd_index.get(key, [])
+                if len(cands) > 1 and db_duration is not None:
+                    cands = [c for c in cands if _duration_compatible(c.duration, db_duration)]
+                if len(cands) == 1:
+                    st = cands[0]
+                    match_via = "aatd"
+                elif len(cands) > 1:
+                    result.tracks_aatd_ambiguous += 1
+
+        # Strategy 3: legacy file-path matcher.  Still useful for Plex
+        # libraries (which return real filesystem paths) and any Navidrome
+        # tracks whose actual layout happens to coincide with the template.
+        if st is None:
+            norm = _normalise_path(r.file_path, grooveiq_music_root)
+            if norm:
+                st = path_index.get(norm)
+                if st:
+                    match_via = "path"
+
+        if st is None:
             result.tracks_unmatched += 1
             continue
 
         result.tracks_matched += 1
+        if match_via == "mbid":
+            result.tracks_matched_by_mbid += 1
+        elif match_via == "aatd":
+            result.tracks_matched_by_aatd += 1
+        elif match_via == "path":
+            result.tracks_matched_by_path += 1
         old_track_id = r.track_id
         new_track_id = st.server_id
 
@@ -558,6 +684,10 @@ async def sync_track_ids(session: AsyncSession) -> SyncResult:
             "server": result.server_type,
             "fetched": result.tracks_fetched,
             "matched": result.tracks_matched,
+            "matched_mbid": result.tracks_matched_by_mbid,
+            "matched_aatd": result.tracks_matched_by_aatd,
+            "matched_path": result.tracks_matched_by_path,
+            "aatd_ambiguous": result.tracks_aatd_ambiguous,
             "updated": result.tracks_updated,
             "metadata": result.tracks_metadata,
             "unmatched": result.tracks_unmatched,
