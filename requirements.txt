@@ -4,9 +4,9 @@
 # Web framework
 # fastapi >=0.118 unlocks starlette >=0.49.1 which patches CVE-2025-62727
 # (FileResponse Range ReDoS) and CVE-2025-54121 (multipart event-loop block).
-fastapi>=0.118,<0.126
-starlette>=0.49.1,<0.51
-uvicorn[standard]==0.32.*
+fastapi>=0.136.1,<0.137
+starlette>=1.0.0,<1.1
+uvicorn[standard]==0.46.*
 python-multipart==0.0.*
 
 # Database
