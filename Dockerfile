@@ -64,16 +64,18 @@ RUN pip install --no-cache-dir --no-index --find-links=/wheels /wheels/* && \
 COPY --chown=grooveiq:grooveiq app/ ./app/
 
 # Data directories (override with volume mounts)
-RUN mkdir -p /data /data/models /music /cache/essentia/onnx /cache/numba && \
+RUN mkdir -p /data /data/models /music /cache/essentia/onnx && \
     chown -R grooveiq:grooveiq /data /music /cache
 
 # Essentia/ONNX model cache (auto-downloaded on first scan)
 ENV ESSENTIA_MODELS_PATH=/cache/essentia
 ENV ONNX_MODELS_PATH=/cache/essentia/onnx
 
-# Numba JIT cache (used by umap-learn). Without a writable location the
-# user has no $HOME, so umap import fails with a RuntimeError.
-ENV NUMBA_CACHE_DIR=/cache/numba
+# Numba JIT cache (used by umap-learn). The compose file marks the rootfs
+# read-only, so point at the writable /tmp tmpfs. The user has no $HOME
+# either, so without this override numba can't cache and umap import
+# fails with a RuntimeError.
+ENV NUMBA_CACHE_DIR=/tmp/numba
 
 # Runtime environment defaults (all overridable via docker-compose / env)
 ENV APP_ENV=production \
