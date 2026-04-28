@@ -61,8 +61,10 @@ def _project_sync(
     """Run UMAP in a worker thread. Returns (track_ids, coords_2d) or None."""
     try:
         import umap  # type: ignore
-    except ImportError:
-        logger.warning("umap-learn not installed; music-map step skipped")
+    except (ImportError, RuntimeError) as e:
+        # RuntimeError covers numba JIT-cache failures (e.g. no writable
+        # NUMBA_CACHE_DIR), which surface at umap import time.
+        logger.warning("umap import failed; music-map step skipped: %s", e)
         return None
 
     n = matrix.shape[0]
