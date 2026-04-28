@@ -25,6 +25,7 @@ from app.api.routes import (
     health,
     integrations,
     lastfm,
+    lidarr_backfill,
     news,
     playlists,
     radio,
@@ -65,6 +66,14 @@ async def lifespan(app: FastAPI):
         await load_active_routing()
     except Exception as e:
         logger.warning(f"Download routing config load failed on startup: {e}")
+
+    # Load Lidarr backfill config from DB (seeds defaults on first run).
+    try:
+        from app.services.lidarr_backfill_config import load_active_config as load_active_lbf_config
+
+        await load_active_lbf_config()
+    except Exception as e:
+        logger.warning(f"Lidarr backfill config load failed on startup: {e}")
 
     # Build FAISS index from existing embeddings (non-blocking if empty).
     try:
@@ -188,6 +197,7 @@ app.include_router(algorithm_config.router, prefix="/v1", tags=["algorithm"])
 app.include_router(soulseek.router, prefix="/v1", tags=["soulseek"])
 app.include_router(integrations.router, prefix="/v1", tags=["integrations"])
 app.include_router(news.router, prefix="/v1", tags=["news"])
+app.include_router(lidarr_backfill.router, prefix="/v1", tags=["lidarr-backfill"])
 
 # ---------------------------------------------------------------------------
 # Dashboard (static)

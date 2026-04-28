@@ -128,6 +128,18 @@ async def start_scheduler() -> None:
             replace_existing=True,
         )
 
+    # Lidarr backfill engine — drains /wanted/missing through streamrip-api.
+    # Both jobs are gated on the persisted config's `enabled` flag; the API
+    # route calls `apply_lidarr_backfill_config()` to register / remove /
+    # reschedule them on save so toggling `enabled` doesn't need a restart.
+    try:
+        from app.services.lidarr_backfill_config import get_config as get_lbf_config
+
+        if get_lbf_config().enabled:
+            _register_lidarr_backfill_jobs(get_lbf_config().poll_interval_minutes)
+    except Exception as e:
+        logger.warning(f"Lidarr backfill scheduler init skipped: {e}")
+
     # Last.fm scrobble queue processor (every 60s)
     if settings.lastfm_user_enabled and settings.LASTFM_SCROBBLE_ENABLED:
         _scheduler.add_job(
@@ -431,3 +443,93 @@ async def _purge_old_reco_audits() -> None:
             )
     except Exception:
         logger.error(f"Reco audit cleanup failed: {traceback.format_exc()}")
+
+
+# ---------------------------------------------------------------------------
+# Lidarr backfill engine jobs (registered only when cfg.enabled)
+# ---------------------------------------------------------------------------
+
+
+_LBF_TICK_JOB_ID = "lidarr_backfill_tick"
+_LBF_POLL_JOB_ID = "lidarr_backfill_poll_status"
+
+
+async def _lidarr_backfill_tick() -> None:
+    """Pick the next batch of missing albums and dispatch downloads."""
+    try:
+        from app.services.lidarr_backfill import run_backfill_tick
+
+        async with AsyncSessionLocal() as session:
+            summary = await run_backfill_tick(session)
+        skipped = summary.get("skipped") if isinstance(summary, dict) else None
+        if skipped:
+            logger.debug("Lidarr backfill tick skipped: %s", skipped)
+        elif isinstance(summary, dict) and summary.get("processed"):
+            logger.info("Lidarr backfill tick: processed=%d", summary["processed"])
+    except Exception:
+        logger.error(f"Lidarr backfill tick failed: {traceback.format_exc()}")
+
+
+async def _lidarr_backfill_poll_status() -> None:
+    """Promote in-flight downloads to terminal states + trigger Lidarr scan."""
+    try:
+        from app.services.lidarr_backfill import poll_in_flight
+
+        async with AsyncSessionLocal() as session:
+            summary = await poll_in_flight(session)
+        if isinstance(summary, dict) and (summary.get("completed") or summary.get("failed")):
+            logger.info(
+                "Lidarr backfill poll: checked=%d completed=%d failed=%d still=%d",
+                summary.get("checked", 0),
+                summary.get("completed", 0),
+                summary.get("failed", 0),
+                summary.get("still_running", 0),
+            )
+    except Exception:
+        logger.error(f"Lidarr backfill poll failed: {traceback.format_exc()}")
+
+
+def _register_lidarr_backfill_jobs(poll_interval_minutes: int) -> None:
+    """Register or replace the two backfill jobs with the given tick interval."""
+    _scheduler.add_job(
+        _lidarr_backfill_tick,
+        trigger=IntervalTrigger(minutes=max(1, int(poll_interval_minutes))),
+        id=_LBF_TICK_JOB_ID,
+        replace_existing=True,
+    )
+    _scheduler.add_job(
+        _lidarr_backfill_poll_status,
+        trigger=IntervalTrigger(minutes=2),
+        id=_LBF_POLL_JOB_ID,
+        replace_existing=True,
+    )
+
+
+def _remove_lidarr_backfill_jobs() -> None:
+    """Drop both backfill jobs. Safe to call when not registered."""
+    for job_id in (_LBF_TICK_JOB_ID, _LBF_POLL_JOB_ID):
+        try:
+            _scheduler.remove_job(job_id)
+        except Exception:
+            pass
+
+
+def apply_lidarr_backfill_config() -> dict[str, str]:
+    """Register / unregister / reschedule jobs based on the active config.
+
+    Called by the API route after saving / activating / resetting a config so
+    operators see policy changes take effect immediately. Idempotent.
+    """
+    try:
+        from app.services.lidarr_backfill_config import get_config as get_lbf_config
+    except Exception as exc:  # pragma: no cover
+        return {"status": "error", "detail": f"config import failed: {exc}"}
+
+    cfg = get_lbf_config()
+    if not _scheduler.running:
+        return {"status": "scheduler_not_running"}
+    if cfg.enabled:
+        _register_lidarr_backfill_jobs(cfg.poll_interval_minutes)
+        return {"status": "registered", "poll_interval_minutes": str(cfg.poll_interval_minutes)}
+    _remove_lidarr_backfill_jobs()
+    return {"status": "unregistered"}

@@ -243,6 +243,74 @@ class LidarrClient:
         )
         resp.raise_for_status()
 
+    # --- Backfill-engine extensions (drain wanted/missing through streamrip) ---
+
+    async def get_missing_albums(
+        self,
+        page_size: int = 100,
+        monitored: bool = True,
+    ) -> list[dict[str, Any]]:
+        """Return all rows from /api/v1/wanted/missing, paginating as needed.
+
+        Each row carries the Lidarr album id, title, artist sub-object
+        (with foreignArtistId), foreignAlbumId (MB release group), and
+        releaseDate. Useful for the backfill engine that drains the queue.
+        """
+        return await self._fetch_wanted_pages("/api/v1/wanted/missing", page_size, monitored)
+
+    async def get_cutoff_unmet_albums(
+        self,
+        page_size: int = 100,
+        monitored: bool = True,
+    ) -> list[dict[str, Any]]:
+        """Return all rows from /api/v1/wanted/cutoff (quality-upgrade queue)."""
+        return await self._fetch_wanted_pages("/api/v1/wanted/cutoff", page_size, monitored)
+
+    async def _fetch_wanted_pages(
+        self,
+        path: str,
+        page_size: int,
+        monitored: bool,
+    ) -> list[dict[str, Any]]:
+        """Walk Lidarr pagination until totalRecords is exhausted."""
+        records: list[dict[str, Any]] = []
+        page = 1
+        while True:
+            resp = await self._client.get(
+                f"{self._base_url}{path}",
+                params={
+                    "page": page,
+                    "pageSize": page_size,
+                    "sortKey": "albums.title",
+                    "monitored": "true" if monitored else "false",
+                    "includeArtist": "true",
+                },
+            )
+            resp.raise_for_status()
+            body = resp.json()
+            page_records = body.get("records") if isinstance(body, dict) else None
+            if not page_records:
+                break
+            records.extend(page_records)
+            total = body.get("totalRecords") or len(records)
+            if len(records) >= total or len(page_records) < page_size:
+                break
+            page += 1
+        return records
+
+    async def trigger_downloaded_scan(self, path: str | None = None) -> None:
+        """POST /api/v1/command DownloadedAlbumsScan to import dropped files.
+
+        ``path`` should be the directory streamrip writes into, as visible to
+        the Lidarr container. Lidarr will pick the file up, match it to the
+        monitored album, and move it into the artist library.
+        """
+        body: dict[str, Any] = {"name": "DownloadedAlbumsScan"}
+        if path:
+            body["path"] = path
+        resp = await self._client.post(f"{self._base_url}/api/v1/command", json=body)
+        resp.raise_for_status()
+
 
 # ---------------------------------------------------------------------------
 # Discovery pipeline
