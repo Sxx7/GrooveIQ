@@ -334,6 +334,19 @@ class StreamripClient:
 
         Returns the same shape as SpotdlClient.get_status():
             {"status", "progress", "error", "raw"}
+
+        Distinguishes three failure modes so callers can react correctly:
+
+        - ``"lost"`` — streamrip-api returned 404. Its task store is in-memory
+          only, so any restart drops every previously-issued task_id.  The
+          caller should re-queue the work from scratch rather than penalise
+          the row (it might have downloaded fine before the restart).
+        - ``"transient_error"`` — network-level failure (timeout, connection
+          refused, DNS).  The caller should leave state untouched and try
+          again on the next poll.
+        - ``"error"`` — streamrip-api responded with a real download error
+          payload.  The caller should treat the album as failed and apply
+          the configured retry/cooldown logic.
         """
         _validate_id(task_id, "task_id")
         await self._throttle()
@@ -341,6 +354,28 @@ class StreamripClient:
             resp = await self._client.get(
                 f"{self._base_url}/status/{task_id}",
             )
+        except httpx.RequestError as exc:
+            # Network-level: timeout, connection refused, DNS, etc.  Caller
+            # should treat as transient — streamrip-api may simply be slow
+            # to come back up after a restart of its own.
+            logger.warning("streamrip-api network error for task %s: %s", task_id, exc)
+            return {
+                "status": "transient_error",
+                "progress": None,
+                "error": str(exc),
+                "raw": {},
+            }
+        if resp.status_code == 404:
+            # streamrip-api is up but has no record of this task — it
+            # restarted (its task store is in-memory) or the task was
+            # cleared.  Don't penalise: the caller should re-queue.
+            return {
+                "status": "lost",
+                "progress": None,
+                "error": "streamrip-api has no record of this task (likely restarted)",
+                "raw": {},
+            }
+        try:
             resp.raise_for_status()
             raw = resp.json()
         except Exception as exc:

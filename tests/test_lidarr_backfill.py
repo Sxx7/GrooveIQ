@@ -389,11 +389,14 @@ async def test_filter_handles_large_candidate_list(db_session, cfg):
 class _FakeStreamrip:
     """In-memory stand-in for StreamripClient. Records calls for assertions."""
 
-    def __init__(self, search_results=None, download_result=None):
+    def __init__(self, search_results=None, download_result=None, status_results=None):
         self.search_results = search_results if search_results is not None else []
         self.download_result = download_result or {"task_id": "task-123", "status": "downloading"}
+        # Map of task_id → status payload (for poll_in_flight tests).
+        self.status_results: dict[str, dict[str, Any]] = status_results or {}
         self.search_calls: list[tuple[str, int, str | None]] = []
         self.download_calls: list[tuple[str, str]] = []
+        self.status_calls: list[str] = []
 
     async def search(self, query, limit=10, service=None):
         self.search_calls.append((query, limit, service))
@@ -405,6 +408,16 @@ class _FakeStreamrip:
     async def download_album(self, service, album_id):
         self.download_calls.append((service, album_id))
         return self.download_result
+
+    async def get_status(self, task_id):
+        self.status_calls.append(task_id)
+        return self.status_results.get(
+            task_id,
+            {"status": "running", "progress": 0.5, "error": None, "raw": {}},
+        )
+
+    async def close(self):
+        pass
 
 
 @pytest.mark.asyncio
@@ -494,6 +507,250 @@ async def test_run_tick_skipped_when_disabled(db_session, monkeypatch):
     # function returns immediately before touching Lidarr/streamrip.
     summary = await lbf.run_backfill_tick(db_session)
     assert summary == {"skipped": "disabled"}
+
+
+# ---------------------------------------------------------------------------
+# StreamripClient.get_status — issue #34: distinguish 404 (lost) from real errors
+# ---------------------------------------------------------------------------
+
+
+class TestStreamripGetStatus:
+    """Verify get_status returns four distinct outcomes so poll_in_flight
+    can react correctly to each. Uses httpx.MockTransport — no network."""
+
+    @pytest.mark.asyncio
+    async def test_complete_status_passed_through(self):
+        import httpx
+
+        from app.services.streamrip import StreamripClient
+
+        def handler(request):
+            return httpx.Response(
+                200,
+                json={"status": "complete", "progress": 1.0, "task_id": "abc", "error": None},
+            )
+
+        client = StreamripClient("http://streamrip-api")
+        client._client = httpx.AsyncClient(transport=httpx.MockTransport(handler), base_url="http://streamrip-api")
+        try:
+            result = await client.get_status("abc")
+            assert result["status"] == "complete"
+        finally:
+            await client.close()
+
+    @pytest.mark.asyncio
+    async def test_404_returns_lost(self):
+        import httpx
+
+        from app.services.streamrip import StreamripClient
+
+        def handler(request):
+            return httpx.Response(404, json={"detail": "Task not found"})
+
+        client = StreamripClient("http://streamrip-api")
+        client._client = httpx.AsyncClient(transport=httpx.MockTransport(handler), base_url="http://streamrip-api")
+        try:
+            result = await client.get_status("vanished")
+            assert result["status"] == "lost"
+            assert "no record" in (result["error"] or "").lower()
+        finally:
+            await client.close()
+
+    @pytest.mark.asyncio
+    async def test_network_error_returns_transient_error(self):
+        import httpx
+
+        from app.services.streamrip import StreamripClient
+
+        def handler(request):
+            raise httpx.ConnectError("Connection refused")
+
+        client = StreamripClient("http://streamrip-api")
+        client._client = httpx.AsyncClient(transport=httpx.MockTransport(handler), base_url="http://streamrip-api")
+        try:
+            result = await client.get_status("any")
+            assert result["status"] == "transient_error"
+            assert "connection" in (result["error"] or "").lower()
+        finally:
+            await client.close()
+
+    @pytest.mark.asyncio
+    async def test_500_returns_error(self):
+        import httpx
+
+        from app.services.streamrip import StreamripClient
+
+        def handler(request):
+            return httpx.Response(500, text="Internal server error")
+
+        client = StreamripClient("http://streamrip-api")
+        client._client = httpx.AsyncClient(transport=httpx.MockTransport(handler), base_url="http://streamrip-api")
+        try:
+            result = await client.get_status("sometask")
+            assert result["status"] == "error"
+        finally:
+            await client.close()
+
+
+@pytest.mark.asyncio
+async def test_poll_in_flight_lost_status_resets_row_without_attempt_bump(db_session, cfg, monkeypatch):
+    """Issue #34: when streamrip-api restarts and loses a task (returns 404),
+    the corresponding `downloading` row must be re-queueable, not penalised
+    with an attempt-count bump or 24h cooldown."""
+    cfg = cfg.model_copy(update={"enabled": True})
+    monkeypatch.setattr(lbf, "get_config", lambda: cfg)
+    monkeypatch.setattr(lbf.settings, "STREAMRIP_API_URL", "http://streamrip-api:8282")
+    monkeypatch.setattr(lbf.settings, "LIDARR_URL", "")  # avoid lidarr trigger path
+    monkeypatch.setattr(lbf.settings, "LIDARR_API_KEY", "")
+
+    now = int(time.time())
+    db_session.add(
+        LidarrBackfillRequest(
+            lidarr_album_id=6001,
+            artist="Lost Artist",
+            album_title="Lost Album",
+            source="missing",
+            status="downloading",
+            streamrip_task_id="task-vanished",
+            picked_service="qobuz",
+            attempt_count=1,
+            created_at=now - 60,
+            updated_at=now - 60,
+        )
+    )
+    await db_session.commit()
+
+    fake = _FakeStreamrip(
+        status_results={
+            "task-vanished": {
+                "status": "lost",
+                "progress": None,
+                "error": "streamrip-api has no record of this task (likely restarted)",
+                "raw": {},
+            }
+        }
+    )
+    monkeypatch.setattr(lbf, "StreamripClient", lambda url: fake)
+
+    summary = await lbf.poll_in_flight(db_session)
+
+    assert summary["lost"] == 1
+    assert summary["failed"] == 0
+    refreshed = (
+        await db_session.execute(select(LidarrBackfillRequest).where(LidarrBackfillRequest.lidarr_album_id == 6001))
+    ).scalar_one()
+    # Re-queueable: no attempt bump, short cooldown, task_id cleared, status=failed.
+    assert refreshed.attempt_count == 1  # unchanged from seeded value
+    assert refreshed.streamrip_task_id is None
+    assert refreshed.status == "failed"
+    assert refreshed.next_retry_at is not None
+    assert refreshed.next_retry_at <= now + 320  # ≤ 5min cooldown + a little slack
+    assert "lost" in (refreshed.last_error or "").lower()
+
+
+@pytest.mark.asyncio
+async def test_poll_in_flight_transient_error_leaves_row_alone(db_session, cfg, monkeypatch):
+    """Issue #34: a network blip mid-poll must NOT promote the row to
+    failed.  The next poll cycle gets another chance."""
+    cfg = cfg.model_copy(update={"enabled": True})
+    monkeypatch.setattr(lbf, "get_config", lambda: cfg)
+    monkeypatch.setattr(lbf.settings, "STREAMRIP_API_URL", "http://streamrip-api:8282")
+    monkeypatch.setattr(lbf.settings, "LIDARR_URL", "")
+    monkeypatch.setattr(lbf.settings, "LIDARR_API_KEY", "")
+
+    now = int(time.time())
+    db_session.add(
+        LidarrBackfillRequest(
+            lidarr_album_id=6002,
+            artist="A",
+            album_title="T",
+            source="missing",
+            status="downloading",
+            streamrip_task_id="task-flaky",
+            attempt_count=1,
+            created_at=now - 60,
+            updated_at=now - 60,
+        )
+    )
+    await db_session.commit()
+
+    fake = _FakeStreamrip(
+        status_results={
+            "task-flaky": {
+                "status": "transient_error",
+                "progress": None,
+                "error": "ConnectTimeout",
+                "raw": {},
+            }
+        }
+    )
+    monkeypatch.setattr(lbf, "StreamripClient", lambda url: fake)
+
+    summary = await lbf.poll_in_flight(db_session)
+
+    assert summary["still_running"] == 1
+    assert summary.get("failed", 0) == 0
+    assert summary.get("lost", 0) == 0
+    refreshed = (
+        await db_session.execute(select(LidarrBackfillRequest).where(LidarrBackfillRequest.lidarr_album_id == 6002))
+    ).scalar_one()
+    # Untouched.
+    assert refreshed.status == "downloading"
+    assert refreshed.streamrip_task_id == "task-flaky"
+    assert refreshed.attempt_count == 1
+    assert refreshed.next_retry_at is None
+
+
+@pytest.mark.asyncio
+async def test_poll_in_flight_real_error_still_fails_row(db_session, cfg, monkeypatch):
+    """Sanity check: a genuine status='error' from streamrip-api must still
+    advance the row to failed with a normal cooldown.  This is the existing
+    behaviour and should not regress with the lost/transient additions."""
+    cfg = cfg.model_copy(update={"enabled": True})
+    monkeypatch.setattr(lbf, "get_config", lambda: cfg)
+    monkeypatch.setattr(lbf.settings, "STREAMRIP_API_URL", "http://streamrip-api:8282")
+    monkeypatch.setattr(lbf.settings, "LIDARR_URL", "")
+    monkeypatch.setattr(lbf.settings, "LIDARR_API_KEY", "")
+
+    now = int(time.time())
+    db_session.add(
+        LidarrBackfillRequest(
+            lidarr_album_id=6003,
+            artist="A",
+            album_title="T",
+            source="missing",
+            status="downloading",
+            streamrip_task_id="task-broken",
+            attempt_count=0,
+            created_at=now - 60,
+            updated_at=now - 60,
+        )
+    )
+    await db_session.commit()
+
+    fake = _FakeStreamrip(
+        status_results={
+            "task-broken": {
+                "status": "error",
+                "progress": None,
+                "error": "qobuz: track not found",
+                "raw": {},
+            }
+        }
+    )
+    monkeypatch.setattr(lbf, "StreamripClient", lambda url: fake)
+
+    summary = await lbf.poll_in_flight(db_session)
+
+    assert summary["failed"] == 1
+    refreshed = (
+        await db_session.execute(select(LidarrBackfillRequest).where(LidarrBackfillRequest.lidarr_album_id == 6003))
+    ).scalar_one()
+    assert refreshed.status == "failed"
+    assert refreshed.attempt_count == 1  # bumped
+    assert refreshed.next_retry_at is not None
+    # Real error gets the configured cooldown (default cooldown_hours=24, so >> 5min).
+    assert refreshed.next_retry_at > now + 3600
 
 
 @pytest.mark.asyncio
