@@ -737,6 +737,98 @@ async def test_find_streamrip_album_none_means_dont_filter(db_session, cfg):
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# Queue-order config (sources.queue_order)
+# ---------------------------------------------------------------------------
+
+
+class _FakeLidarrClient:
+    """Records the sort args passed to get_missing_albums / get_cutoff_unmet_albums.
+
+    Returns whatever was preloaded via ``rows`` so the test can verify both the
+    Lidarr API parameters and the engine's post-fetch handling (e.g. shuffle).
+    """
+
+    def __init__(self, missing_rows=None, cutoff_rows=None):
+        self.missing_rows = missing_rows or []
+        self.cutoff_rows = cutoff_rows or []
+        self.missing_calls: list[dict[str, Any]] = []
+        self.cutoff_calls: list[dict[str, Any]] = []
+
+    async def get_missing_albums(self, page_size=100, monitored=True, sort_key="albums.releaseDate", sort_direction="descending"):
+        self.missing_calls.append({"sort_key": sort_key, "sort_direction": sort_direction, "monitored": monitored})
+        return list(self.missing_rows)
+
+    async def get_cutoff_unmet_albums(self, page_size=100, monitored=True, sort_key="albums.releaseDate", sort_direction="descending"):
+        self.cutoff_calls.append({"sort_key": sort_key, "sort_direction": sort_direction, "monitored": monitored})
+        return list(self.cutoff_rows)
+
+    async def close(self):
+        pass
+
+
+def _make_albums(n: int) -> list[dict[str, Any]]:
+    return [
+        {
+            "id": 9000 + i,
+            "title": f"Album {i}",
+            "artist": {"artistName": f"Artist {i}"},
+            "foreignAlbumId": f"mb-{i}",
+            "trackCount": 10,
+            "releaseDate": f"20{20 + (i % 6)}-01-01",
+        }
+        for i in range(n)
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "order,expected_sort,expected_dir",
+    [
+        ("recent_release", "albums.releaseDate", "descending"),
+        ("oldest_release", "albums.releaseDate", "ascending"),
+        ("alphabetical", "albums.title", "ascending"),
+        ("random", "albums.releaseDate", "descending"),  # base sort, then shuffle
+    ],
+)
+async def test_queue_order_maps_to_correct_lidarr_sort(cfg, order, expected_sort, expected_dir):
+    cfg = cfg.model_copy(update={"sources": cfg.sources.model_copy(update={"queue_order": order})})
+    fake_lidarr = _FakeLidarrClient(missing_rows=_make_albums(3))
+
+    await lbf._fetch_candidates(cfg, fake_lidarr, limit=10)
+
+    assert len(fake_lidarr.missing_calls) == 1
+    call = fake_lidarr.missing_calls[0]
+    assert call["sort_key"] == expected_sort
+    assert call["sort_direction"] == expected_dir
+
+
+@pytest.mark.asyncio
+async def test_queue_order_random_shuffles_results(cfg):
+    cfg = cfg.model_copy(update={"sources": cfg.sources.model_copy(update={"queue_order": "random"})})
+    rows = _make_albums(50)
+    original_order = [r["id"] for r in rows]
+    fake_lidarr = _FakeLidarrClient(missing_rows=rows)
+
+    out = await lbf._fetch_candidates(cfg, fake_lidarr, limit=50)
+
+    out_order = [c["id"] for c in out]
+    # Same set of IDs but permuted (random with seed could in theory reproduce
+    # the original order — extremely unlikely with 50 elements).
+    assert set(out_order) == set(original_order)
+    assert out_order != original_order
+
+
+@pytest.mark.asyncio
+async def test_queue_order_default_is_recent_release(cfg):
+    """Existing configs without queue_order set should default to recent_release."""
+    fake_lidarr = _FakeLidarrClient(missing_rows=_make_albums(3))
+    await lbf._fetch_candidates(cfg, fake_lidarr, limit=10)
+    call = fake_lidarr.missing_calls[0]
+    assert call["sort_key"] == "albums.releaseDate"
+    assert call["sort_direction"] == "descending"
+
+
 @pytest.mark.asyncio
 async def test_no_match_gets_cooldown_to_avoid_back_to_back_retries(db_session, cfg):
     """Regression: no_match rows previously had next_retry_at=None, so the

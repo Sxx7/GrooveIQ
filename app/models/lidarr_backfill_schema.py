@@ -14,11 +14,28 @@ streamrip credentials) still lives in env vars on the respective services.
 
 from __future__ import annotations
 
+from enum import Enum
 from typing import Any
 
 from pydantic import BaseModel, Field
 
 from app.models.download_routing_schema import QualityTier
+
+
+class QueueOrder(str, Enum):
+    """How to traverse Lidarr's missing-albums queue.
+
+    The default ``alphabetical`` sort key (``albums.title``) hits a Lidarr
+    quirk: titles starting with a symbol or non-Latin script reduce to an
+    empty ``cleanTitle``, which all sort first. Operators with libraries
+    that mix Latin + CJK + punctuation-heavy titles see those clustered at
+    the top of every tick. ``recent_release`` avoids this entirely.
+    """
+
+    RECENT_RELEASE = "recent_release"  # Lidarr Albums.releaseDate descending — newest first
+    OLDEST_RELEASE = "oldest_release"  # Lidarr Albums.releaseDate ascending — oldest first
+    ALPHABETICAL = "alphabetical"  # Legacy default, Albums.title ascending
+    RANDOM = "random"  # Shuffle the over-fetched candidate window each tick
 
 # ---------------------------------------------------------------------------
 # Per-group sub-schemas
@@ -26,11 +43,22 @@ from app.models.download_routing_schema import QualityTier
 
 
 class SourcesConfig(BaseModel):
-    """Which Lidarr queues to drain."""
+    """Which Lidarr queues to drain + how to traverse them."""
 
     missing: bool = Field(True, description="Drain /api/v1/wanted/missing")
     cutoff_unmet: bool = Field(False, description="Drain /api/v1/wanted/cutoff (quality upgrades)")
     monitored_only: bool = Field(True, description="Skip albums that are unmonitored in Lidarr")
+    queue_order: QueueOrder = Field(
+        QueueOrder.RECENT_RELEASE,
+        description=(
+            "How to traverse Lidarr's missing queue. 'recent_release' (default) "
+            "processes newest releases first — usually what operators want. "
+            "'alphabetical' is the legacy default but hits a Lidarr quirk: "
+            "non-Latin / symbol titles reduce to empty cleanTitle and cluster "
+            "at the top of the queue. 'random' samples evenly across the "
+            "whole queue per tick."
+        ),
+    )
 
 
 class MatchConfig(BaseModel):
