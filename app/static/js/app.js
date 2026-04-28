@@ -2042,6 +2042,7 @@ var LBF_FIELD_META = {
   'sources.missing': { desc: 'Drain /api/v1/wanted/missing', type: 'bool' },
   'sources.cutoff_unmet': { desc: 'Drain /api/v1/wanted/cutoff (quality upgrades)', type: 'bool' },
   'sources.monitored_only': { desc: 'Skip albums that are unmonitored in Lidarr', type: 'bool' },
+  'sources.queue_order': { desc: 'How to traverse Lidarr’s missing queue. Default \"recent_release\" processes newest releases first; \"alphabetical\" hits a Lidarr quirk where non-Latin / symbol titles cluster at the top; \"random\" samples evenly.', type: 'select', options: ['recent_release', 'oldest_release', 'alphabetical', 'random'] },
   'match.min_artist_similarity': { desc: 'Reject if artist fuzzy ratio is below this (0\u20131)', type: 'float', min: 0, max: 1, step: 0.01 },
   'match.min_album_similarity': { desc: 'Reject if album-title fuzzy ratio is below this (0\u20131)', type: 'float', min: 0, max: 1, step: 0.01 },
   'match.require_year_match': { desc: 'Reject if release year differs by more than 1', type: 'bool' },

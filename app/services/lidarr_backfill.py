@@ -37,10 +37,20 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import settings
 from app.models.db import LidarrBackfillRequest
 from app.models.download_routing_schema import QualityTier, quality_meets
-from app.models.lidarr_backfill_schema import LidarrBackfillConfigData, get_defaults
+from app.models.lidarr_backfill_schema import LidarrBackfillConfigData, QueueOrder, get_defaults
 from app.services.discovery import LidarrClient
 from app.services.lidarr_backfill_config import get_config
 from app.services.streamrip import StreamripClient
+
+
+# Lidarr sort_key + sort_direction for each user-facing queue order. Random
+# uses a stable base sort and gets shuffled in Python after fetch.
+_QUEUE_SORT: dict[QueueOrder, tuple[str, str]] = {
+    QueueOrder.RECENT_RELEASE: ("albums.releaseDate", "descending"),
+    QueueOrder.OLDEST_RELEASE: ("albums.releaseDate", "ascending"),
+    QueueOrder.ALPHABETICAL: ("albums.title", "ascending"),
+    QueueOrder.RANDOM: ("albums.releaseDate", "descending"),
+}
 
 logger = logging.getLogger(__name__)
 
@@ -450,11 +460,24 @@ async def _fetch_candidates(
     *,
     limit: int,
 ) -> list[dict[str, Any]]:
-    """Pull missing + cutoff-unmet rows from Lidarr, apply allow/denylists."""
+    """Pull missing + cutoff-unmet rows from Lidarr, apply allow/denylists.
+
+    The Lidarr sort key is selected from ``cfg.sources.queue_order``. For
+    ``random`` we use the recent-release sort as the base fetch order and
+    then shuffle in Python — Lidarr's API doesn't support random sort.
+    """
+    sort_key, sort_direction = _QUEUE_SORT.get(
+        cfg.sources.queue_order, _QUEUE_SORT[QueueOrder.RECENT_RELEASE]
+    )
+
     candidates: list[dict[str, Any]] = []
     if cfg.sources.missing:
         try:
-            rows = await lidarr_client.get_missing_albums(monitored=cfg.sources.monitored_only)
+            rows = await lidarr_client.get_missing_albums(
+                monitored=cfg.sources.monitored_only,
+                sort_key=sort_key,
+                sort_direction=sort_direction,
+            )
         except Exception as exc:  # noqa: BLE001
             logger.warning("backfill: fetching /wanted/missing failed: %s", exc)
             rows = []
@@ -464,7 +487,11 @@ async def _fetch_candidates(
             candidates.append(r)
     if cfg.sources.cutoff_unmet:
         try:
-            rows = await lidarr_client.get_cutoff_unmet_albums(monitored=cfg.sources.monitored_only)
+            rows = await lidarr_client.get_cutoff_unmet_albums(
+                monitored=cfg.sources.monitored_only,
+                sort_key=sort_key,
+                sort_direction=sort_direction,
+            )
         except Exception as exc:  # noqa: BLE001
             logger.warning("backfill: fetching /wanted/cutoff failed: %s", exc)
             rows = []
@@ -485,6 +512,11 @@ async def _fetch_candidates(
         if deny and norm in deny:
             continue
         filtered.append(c)
+
+    if cfg.sources.queue_order == QueueOrder.RANDOM:
+        import random
+
+        random.shuffle(filtered)
 
     return filtered[: max(1, limit)]
 

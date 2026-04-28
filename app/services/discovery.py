@@ -249,28 +249,41 @@ class LidarrClient:
         self,
         page_size: int = 100,
         monitored: bool = True,
+        sort_key: str = "albums.releaseDate",
+        sort_direction: str = "descending",
     ) -> list[dict[str, Any]]:
         """Return all rows from /api/v1/wanted/missing, paginating as needed.
 
         Each row carries the Lidarr album id, title, artist sub-object
         (with foreignArtistId), foreignAlbumId (MB release group), and
-        releaseDate. Useful for the backfill engine that drains the queue.
+        releaseDate. ``sort_key`` is one of Lidarr's documented keys
+        (``albums.title``, ``albums.releaseDate``, ``artists.sortName``,
+        ``albums.added``); ``sort_direction`` is ``ascending`` or
+        ``descending``.
         """
-        return await self._fetch_wanted_pages("/api/v1/wanted/missing", page_size, monitored)
+        return await self._fetch_wanted_pages(
+            "/api/v1/wanted/missing", page_size, monitored, sort_key, sort_direction
+        )
 
     async def get_cutoff_unmet_albums(
         self,
         page_size: int = 100,
         monitored: bool = True,
+        sort_key: str = "albums.releaseDate",
+        sort_direction: str = "descending",
     ) -> list[dict[str, Any]]:
         """Return all rows from /api/v1/wanted/cutoff (quality-upgrade queue)."""
-        return await self._fetch_wanted_pages("/api/v1/wanted/cutoff", page_size, monitored)
+        return await self._fetch_wanted_pages(
+            "/api/v1/wanted/cutoff", page_size, monitored, sort_key, sort_direction
+        )
 
     async def _fetch_wanted_pages(
         self,
         path: str,
         page_size: int,
         monitored: bool,
+        sort_key: str,
+        sort_direction: str,
     ) -> list[dict[str, Any]]:
         """Walk Lidarr pagination until totalRecords is exhausted."""
         records: list[dict[str, Any]] = []
@@ -281,7 +294,8 @@ class LidarrClient:
                 params={
                     "page": page,
                     "pageSize": page_size,
-                    "sortKey": "albums.title",
+                    "sortKey": sort_key,
+                    "sortDirection": sort_direction,
                     "monitored": "true" if monitored else "false",
                     "includeArtist": "true",
                 },
