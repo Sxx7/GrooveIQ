@@ -2027,7 +2027,8 @@ var lbfState = {
   history: null,          // version list
   stats: null,            // status panel data
   requests: { items: [], offset: 0, status: '', artist: '' },
-  pollTimer: null
+  pollTimer: null,
+  settingsOpen: false     // preserve drawer state across re-renders
 };
 
 var LBF_FIELD_META = {
@@ -2123,14 +2124,14 @@ function renderDiscoveryBackfill() {
   // Settings drawer (collapsible)
   h += '<div class="card" style="margin-bottom:1rem">';
   h += '<div class="card-header algo-group-header" onclick="lbfToggleSettings()">';
-  h += '<span><span class="algo-chevron" id="lbf-settings-chev">\u25B6</span> Settings' + (hasChanges ? ' <span class="badge badge-primary" style="font-size:10px">UNSAVED</span>' : '') + '</span>';
+  h += '<span><span class="algo-chevron" id="lbf-settings-chev">' + (lbfState.settingsOpen ? '\u25BC' : '\u25B6') + '</span> Settings <span class="badge badge-primary" id="lbf-unsaved-badge" style="font-size:10px;display:' + (hasChanges ? 'inline-block' : 'none') + '">UNSAVED</span></span>';
   h += '<span class="text-xs text-muted">All knobs are persisted as a new versioned config.</span>';
   h += '</div>';
-  h += '<div class="card-body" id="lbf-settings-body" style="display:none">';
+  h += '<div class="card-body" id="lbf-settings-body" style="display:' + (lbfState.settingsOpen ? 'block' : 'none') + '">';
   h += _lbfSettingsHtml();
   h += '<div style="display:flex;gap:0.5rem;margin-top:1rem;flex-wrap:wrap">';
-  h += '<button class="btn btn-primary btn-sm"' + (hasChanges ? '' : ' disabled') + ' onclick="lbfSaveAndApply()">Save & Apply</button>';
-  if (hasChanges) h += '<button class="btn btn-secondary btn-sm" onclick="lbfDiscardChanges()">Discard</button>';
+  h += '<button id="lbf-save-btn" class="btn btn-primary btn-sm"' + (hasChanges ? '' : ' disabled') + ' onclick="lbfSaveAndApply()">Save & Apply</button>';
+  h += '<button id="lbf-discard-btn" class="btn btn-secondary btn-sm" style="display:' + (hasChanges ? 'inline-block' : 'none') + '" onclick="lbfDiscardChanges()">Discard</button>';
   h += '<button class="btn btn-secondary btn-sm" style="color:var(--color-warning)" onclick="lbfResetDefaults()">Reset to Defaults</button>';
   h += '</div></div></div>';
 
@@ -2310,10 +2311,31 @@ function _lbfBindInputs() {
           if (tgt) tgt.textContent = hrs >= 24 ? (Math.round((hrs / 24) * 100) / 100) + ' days' : hrs + ' h';
         }
       }
+      // Surgically refresh dirty-state indicators (Save button, Discard button,
+      // UNSAVED badge) without a full re-render — re-rendering would collapse
+      // the drawer mid-edit.
+      _lbfRefreshDirtyState();
+      // Mark the field as changed via CSS class for the visual highlight.
+      var fieldEl = el.closest('.algo-field');
+      if (fieldEl) {
+        var saved = _lbfPathGet(lbfState.active.config, path);
+        var isChanged = JSON.stringify(val) !== JSON.stringify(saved);
+        fieldEl.classList.toggle('algo-field-changed', isChanged);
+      }
     };
     el.addEventListener('change', handler);
     if (type === 'int' || type === 'float') el.addEventListener('input', handler);
   });
+}
+
+function _lbfRefreshDirtyState() {
+  var hasChanges = JSON.stringify(lbfState.edited) !== JSON.stringify(lbfState.active.config);
+  var save = document.getElementById('lbf-save-btn');
+  if (save) save.disabled = !hasChanges;
+  var discard = document.getElementById('lbf-discard-btn');
+  if (discard) discard.style.display = hasChanges ? 'inline-block' : 'none';
+  var badge = document.getElementById('lbf-unsaved-badge');
+  if (badge) badge.style.display = hasChanges ? 'inline-block' : 'none';
 }
 
 function lbfToggleSettings() {
@@ -2323,6 +2345,7 @@ function lbfToggleSettings() {
   var open = body.style.display !== 'none';
   body.style.display = open ? 'none' : 'block';
   if (chev) chev.textContent = open ? '\u25B6' : '\u25BC';
+  lbfState.settingsOpen = !open;
 }
 
 function lbfMoveOrder(path, item, dir) {
