@@ -21,6 +21,10 @@ from app.main import app
 from app.models.db import Base, ListenEvent, TrackFeatures, TrackInteraction, User
 from app.services.media_server import (
     MediaServerTrack,
+    _aatd_key,
+    _canon_str,
+    _duration_compatible,
+    _extract_mbid_from_plex_guid,
     _normalise_path,
     sync_track_ids,
 )
@@ -392,3 +396,351 @@ class TestSyncEndpoint:
         resp = await client.post("/v1/library/sync")
         assert resp.status_code == 400
         assert "No media server configured" in resp.json()["detail"]
+
+
+# ---------------------------------------------------------------------------
+# Canonicalisation helpers (MBID / AATD matcher)
+# ---------------------------------------------------------------------------
+
+
+class TestCanonicalisationHelpers:
+    def test_canon_str_lowercases_and_strips(self):
+        assert _canon_str("  Hello  World  ") == "hello world"
+
+    def test_canon_str_handles_none(self):
+        assert _canon_str(None) == ""
+
+    def test_canon_str_collapses_internal_whitespace(self):
+        assert _canon_str("Foo    Bar\tBaz") == "foo bar baz"
+
+    def test_aatd_key_requires_artist_and_title(self):
+        assert _aatd_key("", "Album", "Title") is None
+        assert _aatd_key("Artist", "Album", "") is None
+        # Album empty is allowed (singles, untagged)
+        assert _aatd_key("Artist", "", "Title") == ("artist", "", "title")
+
+    def test_aatd_key_canonicalises(self):
+        assert _aatd_key("  ARTIST  ", "Album X", "Track 1") == ("artist", "album x", "track 1")
+
+    def test_duration_compatible(self):
+        assert _duration_compatible(180.0, 180.0) is True
+        assert _duration_compatible(180.0, 181.0) is True  # within 1.5s tolerance
+        assert _duration_compatible(180.0, 183.0) is False
+        # Missing on either side: accept (don't reject just because we don't know)
+        assert _duration_compatible(None, 180.0) is True
+        assert _duration_compatible(180.0, None) is True
+
+    def test_extract_mbid_from_plex_guid(self):
+        m = {"Guid": [{"id": "mbid://recording/abc-123"}, {"id": "mbid://artist/xyz"}]}
+        assert _extract_mbid_from_plex_guid(m) == "abc-123"
+
+    def test_extract_mbid_from_plex_guid_alt_scheme(self):
+        m = {"Guid": [{"id": "musicbrainz://recording/uuid-1"}]}
+        assert _extract_mbid_from_plex_guid(m) == "uuid-1"
+
+    def test_extract_mbid_from_plex_guid_no_recording(self):
+        m = {"Guid": [{"id": "mbid://artist/xyz"}]}
+        assert _extract_mbid_from_plex_guid(m) is None
+
+    def test_extract_mbid_from_plex_guid_empty(self):
+        assert _extract_mbid_from_plex_guid({}) is None
+        assert _extract_mbid_from_plex_guid({"Guid": []}) is None
+
+
+# ---------------------------------------------------------------------------
+# Matcher priority chain (MBID → AATD → path)
+# ---------------------------------------------------------------------------
+
+
+class TestMatcherPriorityChain:
+    """Each test seeds a single GrooveIQ row whose path / metadata is rigged
+    to make exactly one strategy succeed, so the priority chain and metric
+    counters can be asserted in isolation.
+
+    The "Spotizerr / Navidrome 0.61" scenario from the prod investigation is
+    the worst case for path matching: the actual filesystem path uses ``and``
+    while Navidrome reports ``&`` and a different track-naming template.  We
+    encode that exact mismatch in the AATD-only test below to lock in the
+    fix.
+    """
+
+    @staticmethod
+    async def _seed_one(track_id, file_path, **kw):
+        async with _TestSession() as session:
+            session.add(TrackFeatures(track_id=track_id, file_path=file_path, **kw))
+            await session.commit()
+
+    @staticmethod
+    def _settings(mock):
+        mock.MEDIA_SERVER_TYPE = "navidrome"
+        mock.MEDIA_SERVER_URL = "http://localhost:4533"
+        mock.MEDIA_SERVER_USER = "admin"
+        mock.MEDIA_SERVER_PASSWORD = "pass"
+        mock.MEDIA_SERVER_TOKEN = ""
+        mock.MEDIA_SERVER_LIBRARY_ID = "1"
+        mock.MEDIA_SERVER_MUSIC_PATH = "/data/media/music"
+        mock.MUSIC_LIBRARY_PATH = "/music"
+
+    @patch("app.services.media_server.settings")
+    async def test_mbid_match(self, mock_settings):
+        """MBID match works even when path is wrong."""
+        self._settings(mock_settings)
+        await self._seed_one(
+            "old-id",
+            file_path="/music/Wrong/Path/To/Song.flac",  # path can't match
+            title="Song",
+            artist="Artist",
+            album="Album",
+            musicbrainz_track_id="mb-recording-1",
+        )
+
+        server_tracks = [
+            MediaServerTrack(
+                server_id="nav-uuid-001",
+                title="Different Title",
+                artist="Different Artist",
+                album="Different Album",
+                file_path="some/synthetic/path.ogg",  # path mismatch
+                mb_track_id="mb-recording-1",  # but MBID matches
+            ),
+        ]
+        with patch("app.services.media_server.fetch_tracks", new_callable=AsyncMock, return_value=server_tracks):
+            async with _TestSession() as session:
+                result = await sync_track_ids(session)
+
+        assert result.tracks_matched == 1
+        assert result.tracks_matched_by_mbid == 1
+        assert result.tracks_matched_by_aatd == 0
+        assert result.tracks_matched_by_path == 0
+        assert result.tracks_updated == 1
+
+    @patch("app.services.media_server.settings")
+    async def test_aatd_match_when_path_is_synthetic(self, mock_settings):
+        """The Navidrome 0.61 scenario: actual filesystem says " and " and the
+        Lidarr-style naming, but Navidrome reports " & " with its own template.
+        Path matching fails, but artist/album/title align — AATD must rescue.
+        """
+        self._settings(mock_settings)
+        await self._seed_one(
+            "legacy-hex-1",
+            file_path="/music/2WEI and Elena Westermann and Edda Hayes/Eternal/01. Eternal (NORMAL).ogg",
+            title="Eternal",
+            artist="2WEI & Elena Westermann & Edda Hayes",  # ID3 tag
+            album="Eternal",
+            duration=180.0,
+        )
+
+        server_tracks = [
+            MediaServerTrack(
+                server_id="22charNavidromeID000A",
+                title="Eternal",
+                artist="2WEI & Elena Westermann & Edda Hayes",
+                album="Eternal",
+                # Navidrome's synthetic path — does NOT correspond to disk
+                file_path="2WEI & Elena Westermann & Edda Hayes/Eternal/01-01 - Eternal.ogg",
+                duration=180.0,
+            ),
+        ]
+        with patch("app.services.media_server.fetch_tracks", new_callable=AsyncMock, return_value=server_tracks):
+            async with _TestSession() as session:
+                result = await sync_track_ids(session)
+
+        assert result.tracks_matched == 1
+        assert result.tracks_matched_by_aatd == 1
+        assert result.tracks_matched_by_mbid == 0
+        assert result.tracks_matched_by_path == 0
+        assert result.tracks_updated == 1
+        assert result.tracks_aatd_ambiguous == 0
+
+    @patch("app.services.media_server.settings")
+    async def test_aatd_disambiguates_by_duration(self, mock_settings):
+        """Two server tracks share artist/album/title (e.g. live + studio)
+        but differ in duration — duration narrows it to one match."""
+        self._settings(mock_settings)
+        await self._seed_one(
+            "old-id",
+            file_path="/music/Wrong/Path.flac",
+            title="Hurt",
+            artist="Johnny Cash",
+            album="American IV",
+            duration=219.0,  # studio version
+        )
+        server_tracks = [
+            MediaServerTrack(
+                server_id="server-live",
+                title="Hurt",
+                artist="Johnny Cash",
+                album="American IV",
+                file_path="x/live.flac",
+                duration=247.0,  # live, different length
+            ),
+            MediaServerTrack(
+                server_id="server-studio",
+                title="Hurt",
+                artist="Johnny Cash",
+                album="American IV",
+                file_path="y/studio.flac",
+                duration=219.0,
+            ),
+        ]
+        with patch("app.services.media_server.fetch_tracks", new_callable=AsyncMock, return_value=server_tracks):
+            async with _TestSession() as session:
+                result = await sync_track_ids(session)
+
+        assert result.tracks_matched == 1
+        assert result.tracks_matched_by_aatd == 1
+        assert result.tracks_aatd_ambiguous == 0
+
+        from sqlalchemy import select
+
+        async with _TestSession() as session:
+            row = (await session.execute(select(TrackFeatures))).scalar_one()
+            assert row.track_id == "server-studio"
+
+    @patch("app.services.media_server.settings")
+    async def test_aatd_ambiguous_skips_match(self, mock_settings):
+        """If AATD has multiple candidates and duration can't disambiguate,
+        the row is counted as ambiguous and the matcher falls through to
+        path matching (which here also misses, so unmatched)."""
+        self._settings(mock_settings)
+        await self._seed_one(
+            "old-id",
+            file_path="/music/Wrong/Path.flac",  # won't match any path
+            title="Hurt",
+            artist="Johnny Cash",
+            album="American IV",
+            # No duration — AATD can't disambiguate
+        )
+        server_tracks = [
+            MediaServerTrack(
+                server_id="dup1",
+                title="Hurt",
+                artist="Johnny Cash",
+                album="American IV",
+                file_path="path1.flac",
+                duration=219.0,
+            ),
+            MediaServerTrack(
+                server_id="dup2",
+                title="Hurt",
+                artist="Johnny Cash",
+                album="American IV",
+                file_path="path2.flac",
+                duration=247.0,
+            ),
+        ]
+        with patch("app.services.media_server.fetch_tracks", new_callable=AsyncMock, return_value=server_tracks):
+            async with _TestSession() as session:
+                result = await sync_track_ids(session)
+
+        assert result.tracks_matched == 0
+        assert result.tracks_aatd_ambiguous == 1
+        assert result.tracks_unmatched == 1
+
+    @patch("app.services.media_server.settings")
+    async def test_path_match_when_mbid_and_aatd_miss(self, mock_settings):
+        """Path matching is still used as a last-resort — covers Plex
+        libraries that return real filesystem paths and tracks where
+        we have no MBID and no aligned tags."""
+        self._settings(mock_settings)
+        await self._seed_one(
+            "old-id",
+            file_path="/music/Some/Album/01 - Untagged.flac",
+            title="",
+            artist="",
+            album="",
+            # No MBID, no usable AATD (artist+title both empty)
+        )
+        server_tracks = [
+            MediaServerTrack(
+                server_id="nav-by-path",
+                title="",
+                artist="",
+                album="",
+                file_path="/data/media/music/Some/Album/01 - Untagged.flac",
+            ),
+        ]
+        with patch("app.services.media_server.fetch_tracks", new_callable=AsyncMock, return_value=server_tracks):
+            async with _TestSession() as session:
+                result = await sync_track_ids(session)
+
+        assert result.tracks_matched == 1
+        assert result.tracks_matched_by_path == 1
+        assert result.tracks_matched_by_mbid == 0
+        assert result.tracks_matched_by_aatd == 0
+
+    @patch("app.services.media_server.settings")
+    async def test_priority_mbid_over_aatd_and_path(self, mock_settings):
+        """When all three strategies could match, MBID wins."""
+        self._settings(mock_settings)
+        await self._seed_one(
+            "old-id",
+            file_path="/music/Artist/Album/Song.flac",
+            title="Song",
+            artist="Artist",
+            album="Album",
+            musicbrainz_track_id="mb-1",
+            duration=180.0,
+        )
+        server_tracks = [
+            MediaServerTrack(
+                server_id="nav-id",
+                title="Song",
+                artist="Artist",
+                album="Album",
+                file_path="/data/media/music/Artist/Album/Song.flac",  # path matches
+                duration=180.0,  # AATD matches
+                mb_track_id="mb-1",  # MBID matches — highest priority
+            ),
+        ]
+        with patch("app.services.media_server.fetch_tracks", new_callable=AsyncMock, return_value=server_tracks):
+            async with _TestSession() as session:
+                result = await sync_track_ids(session)
+
+        assert result.tracks_matched == 1
+        assert result.tracks_matched_by_mbid == 1
+        assert result.tracks_matched_by_aatd == 0
+        assert result.tracks_matched_by_path == 0
+
+    @patch("app.services.media_server.settings")
+    async def test_uses_duration_ms_when_set(self, mock_settings):
+        """If duration_ms is populated (from ID3 reader) it takes precedence
+        over the analyzer's float ``duration`` for AATD comparisons."""
+        self._settings(mock_settings)
+        await self._seed_one(
+            "old-id",
+            file_path="/music/Wrong/Path.flac",
+            title="Song",
+            artist="Artist",
+            album="Album",
+            duration=999.0,  # bogus analyzer value
+            duration_ms=180_000,  # accurate ID3 value (180.0s)
+        )
+        server_tracks = [
+            MediaServerTrack(
+                server_id="match",
+                title="Song",
+                artist="Artist",
+                album="Album",
+                file_path="x/y.flac",
+                duration=180.5,
+            ),
+            MediaServerTrack(
+                server_id="other",
+                title="Song",
+                artist="Artist",
+                album="Album",
+                file_path="x/z.flac",
+                duration=400.0,
+            ),
+        ]
+        with patch("app.services.media_server.fetch_tracks", new_callable=AsyncMock, return_value=server_tracks):
+            async with _TestSession() as session:
+                result = await sync_track_ids(session)
+
+        assert result.tracks_matched_by_aatd == 1
+        from sqlalchemy import select
+
+        async with _TestSession() as session:
+            row = (await session.execute(select(TrackFeatures))).scalar_one()
+            assert row.track_id == "match"
