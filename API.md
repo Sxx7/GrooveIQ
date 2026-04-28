@@ -531,7 +531,81 @@ Maps file-path-based track IDs to Navidrome/Plex native IDs. Cascades updates ac
 
 Requires `MEDIA_SERVER_TYPE`, `MEDIA_SERVER_URL`, and credentials.
 
+The matcher walks four strategies per row in priority order:
+
+1. **MBID** — `musicbrainz_track_id` exact match (most reliable; survives renames + retags).
+2. **AATD** — canonical `(artist, album, title)` tuple, optionally disambiguated by duration (±1.5s). Multi-artist strings are normalised across separator variants (`&` / `and` / `,` / `;` / `/` / `feat` / `ft` / `featuring` / `with` / `x` / `vs`) so the same track tagged differently on each side still keys to the same row.
+3. **ATD** — `(album, title)` + strict duration (±1s) fallback. Used when artist canonicalisation can't bridge the gap. Requires a unique candidate after the duration filter and a non-empty album, otherwise skipped.
+4. **Path** — normalised relative file path. Last-resort matcher; still useful for Plex (which returns real filesystem paths) and Navidrome libraries laid out exactly to its templated path.
+
+Per-user `track_interactions` collisions on the rename target are detected and merged (counts summed, timestamps `max()`-ed) instead of failing the rename with a UNIQUE constraint error.
+
+**Response** `200 OK`
+
+```json
+{
+  "message": "Sync complete",
+  "server_type": "navidrome",
+  "tracks_fetched": 57072,
+  "tracks_matched": 32062,
+  "tracks_matched_by_mbid": 4301,
+  "tracks_matched_by_aatd": 27760,
+  "tracks_matched_by_path": 1,
+  "tracks_aatd_ambiguous": 275,
+  "tracks_updated": 31194,
+  "tracks_metadata": 31194,
+  "tracks_unmatched": 25010,
+  "errors": [],
+  "elapsed_seconds": 84.2
+}
+```
+
 **Error** `400` if no media server configured.
+
+---
+
+### `POST /v1/library/cleanup-stale` — Delete TrackFeatures rows whose files are gone
+
+Admin only. One-shot cleanup for legacy `track_features` rows that point at files no longer on disk — typically the residue of a pre-MBID/AATD sync where Navidrome moved to a new ID format and the old rows can never be re-matched.
+
+For each candidate the endpoint checks whether `file_path` still exists. If the file is gone, the `track_features` row plus its orphaned `track_interactions` and `listen_events` for that `track_id` are deleted. Rows whose files still exist are left alone — the next `POST /v1/library/sync` should pick them up via the MBID/AATD/ATD matcher.
+
+#### Query parameters
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `dry_run` | bool | `true` | Report counts without deleting. Pass `false` to actually delete. |
+| `pattern` | string | `legacy_hex` | Stale-id pattern. Currently only `legacy_hex` (16 lowercase-hex chars — pre-Navidrome-0.61 format) is supported. |
+
+```bash
+# Dry run first — see how many rows would be touched
+curl -X POST "http://localhost:8000/v1/library/cleanup-stale" \
+  -H "Authorization: Bearer YOUR_API_KEY"
+
+# Then execute
+curl -X POST "http://localhost:8000/v1/library/cleanup-stale?dry_run=false" \
+  -H "Authorization: Bearer YOUR_API_KEY"
+```
+
+**Response** `200 OK`
+
+```json
+{
+  "pattern": "legacy_hex",
+  "dry_run": false,
+  "candidates_total": 928,
+  "files_missing": 612,
+  "files_present": 316,
+  "deleted_track_features": 612,
+  "deleted_interactions": 487,
+  "deleted_events": 9214,
+  "next_step": "Run POST /v1/library/sync to re-match the rows whose files still exist."
+}
+```
+
+**Errors**
+
+- `400` — Unknown `pattern` value.
 
 ---
 

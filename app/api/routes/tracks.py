@@ -87,6 +87,122 @@ async def trigger_sync(
 
 
 # ---------------------------------------------------------------------------
+# Stale-track cleanup (one-shot, admin-only)
+# ---------------------------------------------------------------------------
+
+
+@router.post(
+    "/library/cleanup-stale",
+    status_code=200,
+    summary="Delete TrackFeatures rows whose files are gone",
+    description="""
+One-shot cleanup for legacy track_features rows that point at files no
+longer on disk.
+
+Targets rows whose `track_id` looks like a legacy 16-character hex
+Navidrome ID (the format used before Navidrome 0.61's switch to 22-char
+base62) — those are the typical residue of a pre-MBID/AATD sync that
+the new matcher cannot rescue if the file has been moved or deleted.
+
+For each candidate the endpoint checks whether `file_path` still exists.
+If the file is missing, the `track_features` row plus its orphaned
+`track_interactions` rows are deleted.  Rows whose files still exist
+are left alone — the next `POST /v1/library/sync` should pick them up
+via the MBID/AATD matcher.
+
+Defaults to `dry_run=true` so the first call returns counts only.
+Pass `dry_run=false` to actually delete.
+""",
+)
+async def cleanup_stale_track_ids(
+    dry_run: bool = Query(True, description="Report counts without deleting (default true)"),
+    pattern: str = Query(
+        "legacy_hex",
+        description="Which stale-id pattern to target. Currently only 'legacy_hex' is supported (16 hex chars).",
+    ),
+    session: AsyncSession = Depends(get_session),
+    _key: str = Depends(require_api_key),
+):
+    import os
+
+    from sqlalchemy import delete as sql_delete
+
+    from app.core.audit import audit_log
+    from app.models.db import ListenEvent, TrackInteraction
+
+    require_admin(_key)
+    audit_log("library_cleanup_stale", api_key=_key, detail={"dry_run": dry_run, "pattern": pattern})
+
+    if pattern != "legacy_hex":
+        raise HTTPException(status_code=400, detail=f"Unknown pattern '{pattern}'. Supported: legacy_hex.")
+
+    # SQLite GLOB is the most portable way to express "16 lowercase-hex chars"
+    # without a regex extension.  PostgreSQL would need ~ '^[0-9a-f]{16}$' —
+    # we keep it portable by post-filtering in Python.
+    rows = (
+        await session.execute(
+            select(TrackFeatures.id, TrackFeatures.track_id, TrackFeatures.file_path).where(
+                func.length(TrackFeatures.track_id) == 16
+            )
+        )
+    ).all()
+
+    # Post-filter on hex shape so we never delete a 16-char base62 ID by mistake.
+    hex_chars = set("0123456789abcdef")
+    candidates = [r for r in rows if all(c in hex_chars for c in r.track_id.lower())]
+
+    files_missing: list[tuple[int, str, str]] = []  # (tf_id, track_id, file_path)
+    files_present: list[tuple[int, str, str]] = []
+    for r in candidates:
+        # File-existence check is sync I/O but on a few hundred to ~1k paths
+        # it is well below 1s on any sensible disk; not worth threading.
+        if r.file_path and os.path.isfile(r.file_path):
+            files_present.append((r.id, r.track_id, r.file_path))
+        else:
+            files_missing.append((r.id, r.track_id, r.file_path or ""))
+
+    deleted_track_features = 0
+    deleted_interactions = 0
+    deleted_events = 0
+    if not dry_run and files_missing:
+        for tf_id, tid, _fp in files_missing:
+            interactions_res = await session.execute(
+                sql_delete(TrackInteraction).where(TrackInteraction.track_id == tid)
+            )
+            deleted_interactions += interactions_res.rowcount or 0
+
+            events_res = await session.execute(sql_delete(ListenEvent).where(ListenEvent.track_id == tid))
+            deleted_events += events_res.rowcount or 0
+
+            tf_res = await session.execute(sql_delete(TrackFeatures).where(TrackFeatures.id == tf_id))
+            deleted_track_features += tf_res.rowcount or 0
+
+        await session.commit()
+        logger.info(
+            "Stale cleanup: deleted %d track_features, %d interactions, %d events",
+            deleted_track_features,
+            deleted_interactions,
+            deleted_events,
+        )
+
+    return {
+        "pattern": pattern,
+        "dry_run": dry_run,
+        "candidates_total": len(candidates),
+        "files_missing": len(files_missing),
+        "files_present": len(files_present),
+        "deleted_track_features": deleted_track_features,
+        "deleted_interactions": deleted_interactions,
+        "deleted_events": deleted_events,
+        "next_step": (
+            "Run POST /v1/library/sync to re-match the rows whose files still exist."
+            if files_present
+            else "All stale rows resolved."
+        ),
+    }
+
+
+# ---------------------------------------------------------------------------
 # Library scan
 # ---------------------------------------------------------------------------
 
