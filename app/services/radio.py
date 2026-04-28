@@ -621,8 +621,7 @@ async def get_next_tracks(
         )
         for idx, tid in enumerate(feat_result["track_ids"]):
             feature_vectors[tid] = {
-                col: round(float(feat_result["features"][idx][ci]), 4)
-                for ci, col in enumerate(FEATURE_COLUMNS)
+                col: round(float(feat_result["features"][idx][ci]), 4) for ci, col in enumerate(FEATURE_COLUMNS)
             }
 
     candidate_rows: list[dict[str, Any]] = []

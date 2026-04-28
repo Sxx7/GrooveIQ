@@ -185,11 +185,7 @@ async def export_config(
     }
     return JSONResponse(
         content=export_data,
-        headers={
-            "Content-Disposition": (
-                f'attachment; filename="grooveiq-lidarr-backfill-v{row.version}.json"'
-            )
-        },
+        headers={"Content-Disposition": (f'attachment; filename="grooveiq-lidarr-backfill-v{row.version}.json"')},
     )
 
 
@@ -345,12 +341,8 @@ async def stats(
     base = await lbf_service.get_stats(session)
 
     # Last tick timestamp = most-recent created_at across in-flight rows.
-    last = (
-        await session.scalar(
-            select(LidarrBackfillRequest.created_at)
-            .order_by(LidarrBackfillRequest.created_at.desc())
-            .limit(1)
-        )
+    last = await session.scalar(
+        select(LidarrBackfillRequest.created_at).order_by(LidarrBackfillRequest.created_at.desc()).limit(1)
     )
 
     # Try to surface scheduler timing too (best-effort).

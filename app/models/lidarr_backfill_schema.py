@@ -37,6 +37,7 @@ class QueueOrder(str, Enum):
     ALPHABETICAL = "alphabetical"  # Legacy default, Albums.title ascending
     RANDOM = "random"  # Shuffle the over-fetched candidate window each tick
 
+
 # ---------------------------------------------------------------------------
 # Per-group sub-schemas
 # ---------------------------------------------------------------------------
@@ -71,7 +72,9 @@ class MatchConfig(BaseModel):
         0.80, ge=0, le=1, description="Reject if album-title fuzzy ratio is below this (0–1)"
     )
     require_year_match: bool = Field(False, description="Reject if release year differs by more than 1")
-    require_track_count_match: bool = Field(False, description="Reject if track count differs from Lidarr's expectation")
+    require_track_count_match: bool = Field(
+        False, description="Reject if track count differs from Lidarr's expectation"
+    )
     prefer_album_over_tracks: bool = Field(
         True,
         description="Album-first: only fall back to per-track downloads when no album hit exists",
@@ -240,8 +243,7 @@ CONFIG_GROUPS: list[dict[str, Any]] = [
         "key": "match_quality",
         "label": "Match Quality",
         "description": (
-            "Fuzzy-match thresholds, structural checks, streaming-service priority, "
-            "and the streamrip quality floor."
+            "Fuzzy-match thresholds, structural checks, streaming-service priority, and the streamrip quality floor."
         ),
         "fields": ["service_priority", "min_quality_floor", "match"],
     },

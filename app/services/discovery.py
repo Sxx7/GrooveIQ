@@ -261,9 +261,7 @@ class LidarrClient:
         ``albums.added``); ``sort_direction`` is ``ascending`` or
         ``descending``.
         """
-        return await self._fetch_wanted_pages(
-            "/api/v1/wanted/missing", page_size, monitored, sort_key, sort_direction
-        )
+        return await self._fetch_wanted_pages("/api/v1/wanted/missing", page_size, monitored, sort_key, sort_direction)
 
     async def get_cutoff_unmet_albums(
         self,
@@ -273,9 +271,7 @@ class LidarrClient:
         sort_direction: str = "descending",
     ) -> list[dict[str, Any]]:
         """Return all rows from /api/v1/wanted/cutoff (quality-upgrade queue)."""
-        return await self._fetch_wanted_pages(
-            "/api/v1/wanted/cutoff", page_size, monitored, sort_key, sort_direction
-        )
+        return await self._fetch_wanted_pages("/api/v1/wanted/cutoff", page_size, monitored, sort_key, sort_direction)
 
     async def _fetch_wanted_pages(
         self,

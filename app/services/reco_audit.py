@@ -124,9 +124,7 @@ async def _write_audit_inner(
 ) -> bool:
     # Idempotency: skip if already persisted.
     existing = await session.execute(
-        select(RecommendationRequestAudit.request_id).where(
-            RecommendationRequestAudit.request_id == request_id
-        )
+        select(RecommendationRequestAudit.request_id).where(RecommendationRequestAudit.request_id == request_id)
     )
     if existing.scalar_one_or_none() is not None:
         return False
@@ -214,9 +212,7 @@ async def list_requests(
     track_ids = list(set(top_track_ids.values()))
     feat_map: dict[str, TrackFeatures] = {}
     if track_ids:
-        feat_q = await session.execute(
-            select(TrackFeatures).where(TrackFeatures.track_id.in_(track_ids))
-        )
+        feat_q = await session.execute(select(TrackFeatures).where(TrackFeatures.track_id.in_(track_ids)))
         feat_map = {t.track_id: t for t in feat_q.scalars().all()}
 
     out: list[dict[str, Any]] = []
@@ -268,9 +264,7 @@ async def get_request(
     cand_track_ids = list({c.track_id for c in row.candidates})
     feat_map: dict[str, TrackFeatures] = {}
     if cand_track_ids:
-        feat_q = await session.execute(
-            select(TrackFeatures).where(TrackFeatures.track_id.in_(cand_track_ids))
-        )
+        feat_q = await session.execute(select(TrackFeatures).where(TrackFeatures.track_id.in_(cand_track_ids)))
         feat_map = {t.track_id: t for t in feat_q.scalars().all()}
 
     def _sort_key(c: RecommendationCandidateAudit) -> tuple[int, int, float]:
@@ -357,9 +351,7 @@ async def get_stats(session: AsyncSession) -> dict[str, Any]:
         .select_from(RecommendationRequestAudit)
         .where(RecommendationRequestAudit.created_at >= cutoff_30d)
     )
-    cand_count_q = await session.execute(
-        select(func.count()).select_from(RecommendationCandidateAudit)
-    )
+    cand_count_q = await session.execute(select(func.count()).select_from(RecommendationCandidateAudit))
     total_req_q = await session.execute(select(func.count()).select_from(RecommendationRequestAudit))
 
     req_30d = req_count_q.scalar() or 0
@@ -434,12 +426,8 @@ async def replay_request(
     original_candidates = detail["candidates"]
 
     # Build {track_id: original_position} from the persisted ranking.
-    original_positions: dict[str, int | None] = {
-        c["track_id"]: c["final_position"] for c in original_candidates
-    }
-    original_scores: dict[str, float | None] = {
-        c["track_id"]: c["final_score"] for c in original_candidates
-    }
+    original_positions: dict[str, int | None] = {c["track_id"]: c["final_position"] for c in original_candidates}
+    original_scores: dict[str, float | None] = {c["track_id"]: c["final_score"] for c in original_candidates}
     titles: dict[str, str | None] = {c["track_id"]: c.get("title") for c in original_candidates}
     artists: dict[str, str | None] = {c["track_id"]: c.get("artist") for c in original_candidates}
 
@@ -605,11 +593,7 @@ def _kendall_tau(
     new_positions: dict[str, int],
 ) -> float | None:
     """Kendall's tau over the intersection of tracks ranked in both lists."""
-    intersect = [
-        tid
-        for tid, op in original_positions.items()
-        if op is not None and tid in new_positions
-    ]
+    intersect = [tid for tid, op in original_positions.items() if op is not None and tid in new_positions]
     n = len(intersect)
     if n < 2:
         return None
