@@ -75,8 +75,13 @@ class ImportOptionsConfig(BaseModel):
         description="POST /api/v1/command DownloadedAlbumsScan after a successful download",
     )
     scan_path: str = Field(
-        "/downloads/streamrip",
-        description="Path streamrip writes into; must match the Lidarr container's view of that mount",
+        "/data/media/music",
+        description=(
+            "Path Lidarr should scan after a successful download — must be the path "
+            "*as Lidarr's container sees it*, not the host path. With the default "
+            "arr-stack mount layout (host /mnt/media/data → /data inside Lidarr), "
+            "the music library lands at /data/media/music."
+        ),
     )
 
 
