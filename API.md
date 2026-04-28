@@ -4,6 +4,8 @@
 **Auth:** All endpoints except `/health` and `/dashboard` require `Authorization: Bearer <api_key>`.
 **Content-Type:** `application/json`
 
+> **Track-ID schema notice (target state — tracking [#37](https://github.com/Sxx7/GrooveIQ/issues/37)).** The Events, Tracks & Library, and Library/sync sections describe the **post-refactor** schema in which `track_id` is a stable internal GrooveIQ identifier (16-char hex) and per-backend IDs (`media_server_id`, `spotify_id`, `qobuz_id`, `tidal_id`, `deezer_id`, `soundcloud_id`, `mb_track_id`) live in their own columns. The new `GET /v1/tracks/lookup` endpoint and the per-backend ID columns will land together with the migration. Build the iOS app against this contract; `track_id` will not be a Navidrome ID.
+
 ---
 
 ## Table of Contents
@@ -50,6 +52,8 @@ No authentication required. Serves the single-page web dashboard.
 
 ## Events
 
+> **Track-ID model — read this first.** Every track has one stable internal GrooveIQ identifier (`track_id`, a 16-char hex hash) and zero or more per-backend external IDs (`media_server_id`, `spotify_id`, `qobuz_id`, `tidal_id`, `deezer_id`, `soundcloud_id`, `mb_track_id`). The events API requires the **internal `track_id`**. Clients that hold a media-server / streaming-service ID resolve it via [`GET /v1/tracks/lookup`](#get-v1trackslookup--resolve-an-external-id-to-the-internal-track_id) and cache the mapping locally. See the schema rework in [#37](https://github.com/Sxx7/GrooveIQ/issues/37) for background.
+
 ### `POST /v1/events` — Ingest a single event
 
 ```bash
@@ -58,7 +62,7 @@ curl -X POST http://localhost:8000/v1/events \
   -H "Content-Type: application/json" \
   -d '{
     "user_id": "simon",
-    "track_id": "nav-uuid-001",
+    "track_id": "9f3a1b2c4d5e6f70",
     "event_type": "play_end",
     "value": 0.95
   }'
@@ -70,12 +74,14 @@ curl -X POST http://localhost:8000/v1/events \
 {"accepted": 1, "rejected": 0, "errors": []}
 ```
 
+A `track_id` that does not match any analysed `TrackFeatures` row is reported in `errors` (the rest of the batch still ingests).
+
 #### Required fields
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `user_id` | string (1-128) | Media server's user identifier |
-| `track_id` | string (1-128) | Media server's track identifier |
+| `user_id` | string (1-128) | Stable user identifier. Should match what `GET /v1/users` returns. |
+| `track_id` | string (1-128) | **Internal GrooveIQ track ID** — 16-char hex hash. Resolve from a Navidrome / Spotify / Qobuz ID via `GET /v1/tracks/lookup`. |
 | `event_type` | string | One of the event types below |
 
 #### Event types
@@ -193,7 +199,7 @@ curl -X POST http://localhost:8000/v1/events \
   -H "Content-Type: application/json" \
   -d '{
     "user_id": "simon",
-    "track_id": "nav-uuid-001",
+    "track_id": "9f3a1b2c4d5e6f70",
     "event_type": "play_end",
     "value": 0.95,
     "dwell_ms": 245000,
@@ -221,9 +227,9 @@ curl -X POST http://localhost:8000/v1/events/batch \
   -H "Content-Type: application/json" \
   -d '{
     "events": [
-      {"user_id": "simon", "track_id": "nav-uuid-001", "event_type": "play_start"},
-      {"user_id": "simon", "track_id": "nav-uuid-001", "event_type": "play_end", "value": 1.0},
-      {"user_id": "simon", "track_id": "nav-uuid-002", "event_type": "skip", "value": 3.5}
+      {"user_id": "simon", "track_id": "9f3a1b2c4d5e6f70", "event_type": "play_start"},
+      {"user_id": "simon", "track_id": "9f3a1b2c4d5e6f70", "event_type": "play_end", "value": 1.0},
+      {"user_id": "simon", "track_id": "8b75e6a53d9c8f17", "event_type": "skip", "value": 3.5}
     ]
   }'
 ```
@@ -364,11 +370,157 @@ Materialised sessions grouped by inactivity gaps (default 30 min).
 | `mode` | string | - | `major` or `minor` |
 | `mood` | string | - | Mood tag: `happy`, `energetic`, `chill`, `dark`, etc. |
 
+Each row in the response carries the full set of identifiers (the internal `track_id` plus every per-backend external ID currently known for that track):
+
+```json
+{
+  "tracks": [
+    {
+      "track_id": "9f3a1b2c4d5e6f70",
+      "title": "Never Too Late",
+      "artist": "Three Days Grace",
+      "album": "One-X",
+      "duration": 219.0,
+      "bpm": 124.0,
+      "energy": 0.81,
+      "media_server_id": "iDkrnC4UrRVJ6HHEa83nc9",
+      "spotify_id": null,
+      "qobuz_id": null,
+      "tidal_id": null,
+      "deezer_id": null,
+      "soundcloud_id": null,
+      "mb_track_id": null
+    }
+  ],
+  "total": 58445,
+  "limit": 50,
+  "offset": 0
+}
+```
+
+For an iOS / web client that talks directly to Navidrome, the typical bootstrap is to page through `GET /v1/tracks` once and cache `media_server_id → track_id` locally. New tracks discovered later (e.g. from a Navidrome scan) are resolved on demand via [`GET /v1/tracks/lookup`](#get-v1trackslookup--resolve-an-external-id-to-the-internal-track_id).
+
+---
+
+### `GET /v1/tracks/lookup` — Resolve an external ID to the internal `track_id`
+
+Looks up a `TrackFeatures` row by any of its external identifiers. Used by clients (iOS app, web dashboard, Last.fm scrobbler) that hold an ID from a specific backend and need to find the GrooveIQ internal `track_id` before posting events / requesting features / starting radio.
+
+Pass exactly one of the lookup parameters.
+
+| Parameter | Description |
+|-----------|-------------|
+| `media_server_id` | Navidrome song ID (e.g. `iDkrnC4UrRVJ6HHEa83nc9`) |
+| `spotify_id` | Spotify track ID |
+| `qobuz_id` | Qobuz track ID |
+| `tidal_id` | Tidal track ID |
+| `deezer_id` | Deezer track ID |
+| `soundcloud_id` | SoundCloud track ID |
+| `mb_track_id` | MusicBrainz Recording ID (UUID) |
+
+**Example**
+
+```bash
+curl "http://localhost:8000/v1/tracks/lookup?media_server_id=iDkrnC4UrRVJ6HHEa83nc9" \
+  -H "Authorization: Bearer YOUR_API_KEY"
+```
+
+**Response** `200 OK`
+
+```json
+{
+  "track_id": "9f3a1b2c4d5e6f70",
+  "title": "Never Too Late",
+  "artist": "Three Days Grace",
+  "album": "One-X",
+  "duration": 219.0,
+  "media_server_id": "iDkrnC4UrRVJ6HHEa83nc9",
+  "spotify_id": null,
+  "qobuz_id": null,
+  "tidal_id": null,
+  "deezer_id": null,
+  "soundcloud_id": null,
+  "mb_track_id": null
+}
+```
+
+`404` if no track matches the given external ID. `400` if zero or multiple lookup parameters are supplied.
+
+#### Recommended client pattern
+
+Cache the `external_id → track_id` mapping locally on first encounter. The internal `track_id` is stable for the lifetime of the file (it's a hash of the relative file path); only re-fetch if the file moves on disk.
+
+```swift
+// iOS pseudocode
+func grooveIQTrackId(forNavidromeId id: String) async throws -> String {
+    if let cached = mapping[id] { return cached }
+    let r = try await api.get("/v1/tracks/lookup", query: ["media_server_id": id])
+    mapping[id] = r.track_id
+    return r.track_id
+}
+```
+
+Batch resolution (avoids one HTTP request per track) — `POST /v1/tracks/lookup`:
+
+```json
+{ "media_server_ids": ["iDkr...", "u3dW...", "MY6f..."] }
+```
+
+returns
+
+```json
+{
+  "resolved": {
+    "iDkr...": "9f3a1b2c4d5e6f70",
+    "u3dW...": "8b75e6a53d9c8f17",
+    "MY6f...": null
+  }
+}
+```
+
+`null` for IDs that don't match any track.
+
 ---
 
 ### `GET /v1/tracks/{track_id}/features` — Audio features
 
-Returns BPM, key, mode, energy, danceability, valence, acousticness, instrumentalness, mood tags, and analysis metadata.
+`{track_id}` here is the **internal GrooveIQ track ID**. Use [`GET /v1/tracks/lookup`](#get-v1trackslookup--resolve-an-external-id-to-the-internal-track_id) to resolve from a Navidrome / streaming-service ID first.
+
+**Response** `200 OK`
+
+```json
+{
+  "track_id": "9f3a1b2c4d5e6f70",
+  "title": "Never Too Late",
+  "artist": "Three Days Grace",
+  "album": "One-X",
+  "genre": "Rock",
+  "duration": 219.0,
+  "bpm": 124.0,
+  "key": "G",
+  "mode": "minor",
+  "energy": 0.81,
+  "danceability": 0.42,
+  "valence": 0.55,
+  "acousticness": 0.04,
+  "instrumentalness": 0.01,
+  "mood_tags": [
+    {"label": "energetic", "confidence": 0.74},
+    {"label": "aggressive", "confidence": 0.31}
+  ],
+  "analyzed_at": 1775774191,
+  "analysis_version": "v3",
+  "media_server_id": "iDkrnC4UrRVJ6HHEa83nc9",
+  "spotify_id": null,
+  "qobuz_id": null,
+  "tidal_id": null,
+  "deezer_id": null,
+  "soundcloud_id": null,
+  "mb_track_id": null
+}
+```
+
+The per-backend ID columns (`media_server_id` etc.) are populated as the track is encountered through each integration (sync, download, scrobble). Any of them may be `null`.
 
 **Error** `404` if not yet analyzed.
 
@@ -400,7 +552,7 @@ Returns every track that has UMAP-projected `(x, y)` coordinates from the `music
   "count": 1842,
   "tracks": [
     {
-      "track_id": "nav-uuid-001",
+      "track_id": "9f3a1b2c4d5e6f70",
       "title": "Strobe",
       "artist": "deadmau5",
       "genre": "electronic",
@@ -435,7 +587,7 @@ Encodes a text prompt via the LAION-CLAP text tower and returns the `k` closest 
   "count": 37,
   "tracks": [
     {
-      "track_id": "nav-uuid-042",
+      "track_id": "2c4d5e6f70819234",
       "title": "Blue in Green",
       "artist": "Miles Davis",
       "album": "Kind of Blue",
@@ -527,18 +679,18 @@ Status values: `pending`, `running`, `completed`, `failed`.
 
 ### `POST /v1/library/sync` — Sync with media server
 
-Maps file-path-based track IDs to Navidrome/Plex native IDs. Cascades updates across all tables. Also imports title/artist/album metadata.
+Populates `TrackFeatures.media_server_id` (the Navidrome song ID) for every analysed file the matcher can pair up with a Navidrome track. Also imports title / artist / album metadata where the local row has it empty or stale.
 
-Requires `MEDIA_SERVER_TYPE`, `MEDIA_SERVER_URL`, and credentials.
+> Under the post-#37 schema, sync is a **metadata refresh** — it does **not** rename `track_id` and does **not** cascade across `ListenEvent` / `TrackInteraction`. The internal `track_id` is the SHA-256-prefix hash of the relative file path, computed once at first scan, and immutable thereafter.
+
+Requires `MEDIA_SERVER_TYPE=navidrome`, `MEDIA_SERVER_URL`, and credentials. Plex is no longer supported.
 
 The matcher walks four strategies per row in priority order:
 
 1. **MBID** — `musicbrainz_track_id` exact match (most reliable; survives renames + retags).
 2. **AATD** — canonical `(artist, album, title)` tuple, optionally disambiguated by duration (±1.5s). Multi-artist strings are normalised across separator variants (`&` / `and` / `,` / `;` / `/` / `feat` / `ft` / `featuring` / `with` / `x` / `vs`) so the same track tagged differently on each side still keys to the same row.
 3. **ATD** — `(album, title)` + strict duration (±1s) fallback. Used when artist canonicalisation can't bridge the gap. Requires a unique candidate after the duration filter and a non-empty album, otherwise skipped.
-4. **Path** — normalised relative file path. Last-resort matcher; still useful for Plex (which returns real filesystem paths) and Navidrome libraries laid out exactly to its templated path.
-
-Per-user `track_interactions` collisions on the rename target are detected and merged (counts summed, timestamps `max()`-ed) instead of failing the rename with a UNIQUE constraint error.
+4. **Path** — normalised relative file path. Last-resort matcher; useful for Navidrome libraries laid out exactly to its templated path.
 
 **Response** `200 OK`
 
@@ -552,8 +704,8 @@ Per-user `track_interactions` collisions on the rename target are detected and m
   "tracks_matched_by_aatd": 27760,
   "tracks_matched_by_path": 1,
   "tracks_aatd_ambiguous": 275,
-  "tracks_updated": 31194,
-  "tracks_metadata": 31194,
+  "media_server_id_updated": 31194,
+  "metadata_updated": 31194,
   "tracks_unmatched": 25010,
   "errors": [],
   "elapsed_seconds": 84.2
@@ -653,7 +805,7 @@ curl "http://localhost:8000/v1/recommend/simon?debug=true" \
   "context": {"hour_of_day": 8, "device_type": "mobile", "...": "..."},
   "tracks": [
     {
-      "position": 0, "track_id": "nav-uuid-042", "source": "content",
+      "position": 0, "track_id": "2c4d5e6f70819234", "source": "content",
       "score": 0.87, "title": "Da Funk", "artist": "Daft Punk",
       "bpm": 118.7, "energy": 0.79, "duration": 329.0
     }
@@ -676,7 +828,7 @@ curl -X POST http://localhost:8000/v1/events \
   -H "Authorization: Bearer YOUR_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{
-    "user_id": "simon", "track_id": "nav-uuid-042",
+    "user_id": "simon", "track_id": "2c4d5e6f70819234",
     "event_type": "play_start",
     "request_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
   }'
@@ -883,7 +1035,7 @@ curl -X POST http://localhost:8000/v1/playlists \
   -d '{
     "name": "Friday Night Flow",
     "strategy": "flow",
-    "seed_track_id": "nav-uuid-001",
+    "seed_track_id": "9f3a1b2c4d5e6f70",
     "max_tracks": 25
   }'
 ```
@@ -908,9 +1060,9 @@ curl -X POST http://localhost:8000/v1/playlists \
   -d '{
     "name": "From Deadmau5 to Chet Baker",
     "strategy": "path",
-    "seed_track_id": "nav-uuid-strobe",
+    "seed_track_id": "strobe-9f3a1b2c4d5e",
     "max_tracks": 15,
-    "params": {"target_track_id": "nav-uuid-baker"}
+    "params": {"target_track_id": "baker-2c4d5e6f7081"}
   }'
 ```
 
