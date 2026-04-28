@@ -1,0 +1,30 @@
+name: Upstream releases watcher
+
+# Tracks GitHub releases of upstream projects we depend on but don't pin
+# as Python packages — the things Dependabot can't see (server apps,
+# REST APIs, CLI binaries). When a new release lands, the workflow
+# opens or updates a tracking issue per upstream so you have a single
+# place to read changelogs and decide if anything needs adjusting on
+# our side.
+#
+# Add or remove repos by editing .github/scripts/check-upstreams.sh.
+
+on:
+  schedule:
+    - cron: '0 6 * * 1'  # Monday 06:00 UTC
+  workflow_dispatch:
+
+permissions:
+  issues: write
+  contents: read
+
+jobs:
+  check:
+    name: Check upstream releases
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Run watcher
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: bash .github/scripts/check-upstreams.sh
