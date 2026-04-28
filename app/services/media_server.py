@@ -478,6 +478,90 @@ async def _refresh_plex(path: str | None = None) -> bool:
         return False
 
 
+async def _merge_colliding_interactions(session: AsyncSession, old_id: str, new_id: str) -> int:
+    """Merge per-user TrackInteraction collisions before renaming old_id → new_id.
+
+    When two ``track_features`` rows resolve to the same media-server track
+    (e.g. a Spotizerr re-download under a slightly different folder), some
+    users may have interactions on both ``old_id`` and ``new_id``.  The
+    naive ``UPDATE … SET track_id=new_id WHERE track_id=old_id`` then trips
+    the ``(user_id, track_id)`` UNIQUE constraint.
+
+    For each colliding user, sum the count columns into the surviving row
+    (the existing ``new_id`` row), max() the timestamp columns, then delete
+    the ``old_id`` row.  The remaining non-colliding ``old_id`` rows are
+    left for the caller's ``UPDATE`` to handle.
+
+    Returns the number of rows merged + deleted (i.e. collisions resolved).
+    """
+    rows = (
+        await session.execute(
+            select(TrackInteraction)
+            .where(TrackInteraction.track_id.in_((old_id, new_id)))
+            .order_by(TrackInteraction.user_id, TrackInteraction.track_id)
+        )
+    ).scalars().all()
+
+    by_user: dict[str, dict[str, TrackInteraction]] = {}
+    for r in rows:
+        by_user.setdefault(r.user_id, {})[r.track_id] = r
+
+    merged = 0
+    for user_id, pair in by_user.items():
+        old = pair.get(old_id)
+        new = pair.get(new_id)
+        if old is None or new is None:
+            continue  # not a collision; the regular UPDATE will handle it
+
+        # Sum count columns into the surviving (new_id) row.
+        new.play_count = (new.play_count or 0) + (old.play_count or 0)
+        new.skip_count = (new.skip_count or 0) + (old.skip_count or 0)
+        new.like_count = (new.like_count or 0) + (old.like_count or 0)
+        new.dislike_count = (new.dislike_count or 0) + (old.dislike_count or 0)
+        new.repeat_count = (new.repeat_count or 0) + (old.repeat_count or 0)
+        new.playlist_add_count = (new.playlist_add_count or 0) + (old.playlist_add_count or 0)
+        new.queue_add_count = (new.queue_add_count or 0) + (old.queue_add_count or 0)
+        new.early_skip_count = (new.early_skip_count or 0) + (old.early_skip_count or 0)
+        new.mid_skip_count = (new.mid_skip_count or 0) + (old.mid_skip_count or 0)
+        new.full_listen_count = (new.full_listen_count or 0) + (old.full_listen_count or 0)
+        new.total_seekfwd = (new.total_seekfwd or 0) + (old.total_seekfwd or 0)
+        new.total_seekbk = (new.total_seekbk or 0) + (old.total_seekbk or 0)
+
+        # Sum dwell, weighted-average completion (so it stays in [0, 1]).
+        old_dwell = old.total_dwell_ms or 0
+        new_dwell = new.total_dwell_ms or 0
+        new.total_dwell_ms = old_dwell + new_dwell
+        if old.avg_completion is not None and new.avg_completion is not None:
+            old_plays = max(old.play_count or 0, 1)
+            new_plays_before = max((new.play_count or 0) - (old.play_count or 0), 1)
+            total = old_plays + new_plays_before
+            new.avg_completion = (
+                old.avg_completion * old_plays + new.avg_completion * new_plays_before
+            ) / total
+        elif old.avg_completion is not None:
+            new.avg_completion = old.avg_completion
+
+        # max() temporal fields, take whichever is set.
+        if old.first_played_at and (not new.first_played_at or old.first_played_at < new.first_played_at):
+            new.first_played_at = old.first_played_at
+        if old.last_played_at and (not new.last_played_at or old.last_played_at > new.last_played_at):
+            new.last_played_at = old.last_played_at
+        if (old.last_event_id or 0) > (new.last_event_id or 0):
+            new.last_event_id = old.last_event_id
+
+        # satisfaction_score will be recomputed on the next scoring run
+        # from the merged counts; leave new.satisfaction_score in place
+        # (it's the more recent value) until then.
+        new.updated_at = max(new.updated_at or 0, old.updated_at or 0, int(time.time()))
+
+        await session.delete(old)
+        merged += 1
+
+    if merged:
+        await session.flush()
+    return merged
+
+
 async def sync_track_ids(session: AsyncSession) -> SyncResult:
     """
     Synchronise GrooveIQ track IDs with the configured media server.
@@ -666,6 +750,10 @@ async def sync_track_ids(session: AsyncSession) -> SyncResult:
                 update(TrackFeatures).where(TrackFeatures.id == tf_id).values(track_id=new_id, external_track_id=ext_id)
             )
             await session.execute(update(ListenEvent).where(ListenEvent.track_id == old_id).values(track_id=new_id))
+            # Merge any per-user collisions on track_interactions before the
+            # bulk UPDATE so we don't trip the (user_id, track_id) UNIQUE
+            # constraint when a user has interactions on both old and new.
+            await _merge_colliding_interactions(session, old_id, new_id)
             await session.execute(
                 update(TrackInteraction).where(TrackInteraction.track_id == old_id).values(track_id=new_id)
             )
