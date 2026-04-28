@@ -1,0 +1,28 @@
+name: Dependency review
+
+# Runs on every PR targeting main. Inspects the dependency diff and
+# fails the check if the PR introduces a new dependency that has a
+# known vulnerability at HIGH or CRITICAL severity. Posts a summary
+# comment on the PR with the dependency changes.
+#
+# Catches the case Dependabot can't: a human-authored PR that adds
+# a new package which already has a CVE.
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+  pull-requests: write  # for comment-summary-in-pr
+
+jobs:
+  review:
+    name: Review dependency changes
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/dependency-review-action@v4
+        with:
+          fail-on-severity: high
+          comment-summary-in-pr: on-failure
