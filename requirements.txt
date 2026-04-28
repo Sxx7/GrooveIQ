@@ -11,9 +11,9 @@ python-multipart==0.0.*
 
 # Database
 sqlalchemy==2.0.*
-aiosqlite==0.20.*           # SQLite async driver (default)
-asyncpg==0.30.*             # PostgreSQL async driver (optional)
-alembic==1.14.*             # DB migrations
+aiosqlite==0.22.*           # SQLite async driver (default)
+asyncpg==0.31.*             # PostgreSQL async driver (optional)
+alembic==1.18.*             # DB migrations
 
 # Validation & settings
 pydantic==2.10.*
