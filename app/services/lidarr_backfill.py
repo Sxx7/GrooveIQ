@@ -911,7 +911,7 @@ async def poll_in_flight(session: AsyncSession) -> dict[str, Any]:
     if cfg.import_options.trigger_lidarr_scan and settings.LIDARR_URL and settings.LIDARR_API_KEY:
         lidarr_client = LidarrClient(settings.LIDARR_URL, settings.LIDARR_API_KEY)
 
-    summary = {"checked": len(rows), "completed": 0, "failed": 0, "still_running": 0}
+    summary = {"checked": len(rows), "completed": 0, "failed": 0, "lost": 0, "still_running": 0}
     try:
         for row in rows:
             try:
@@ -939,6 +939,28 @@ async def poll_in_flight(session: AsyncSession) -> dict[str, Any]:
                         await lidarr_client.trigger_downloaded_scan(cfg.import_options.scan_path)
                     except Exception as exc:
                         logger.warning("lidarr_backfill: import scan failed: %s", exc)
+            elif sr_status == "lost":
+                # streamrip-api restarted between dispatch and status check.
+                # The task is gone from its in-memory store but the file may
+                # have downloaded fine (Lidarr's import scan will pick it up
+                # if it did).  Don't penalise the album — clear the task_id
+                # and drop to a re-queueable state with a short cooldown so
+                # the next tick re-picks it from Lidarr's missing list.
+                row.streamrip_task_id = None
+                row.status = STATUS_FAILED
+                row.last_error = "streamrip-api lost task on restart — re-queueable"
+                row.next_retry_at = _now_ts() + 300  # 5 minutes
+                row.updated_at = _now_ts()
+                summary["lost"] += 1
+                logger.info(
+                    "lidarr_backfill: lost album_id=%s service=%s — re-queueable",
+                    row.lidarr_album_id,
+                    row.picked_service,
+                )
+            elif sr_status == "transient_error":
+                # Network blip or streamrip-api still coming back up.  Leave
+                # the row alone and try again on the next poll cycle.
+                summary["still_running"] += 1
             elif sr_status == "error":
                 row.attempt_count += 1
                 row.last_attempt_at = _now_ts()
