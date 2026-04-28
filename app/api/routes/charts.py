@@ -190,31 +190,27 @@ async def get_chart(
     # ship an image_url at chart-build time, and (b) matched_track_id has gone
     # stale because the TrackFeatures row was pruned after the chart was built —
     # without the fallback those entries would render the music-note placeholder.
+    # We unconditionally look up cover_art_cache for every entry, even matched
+    # ones. The frontend uses image_url as a fallback when library.cover_url
+    # 404s (e.g. when external_track_id is a stale legacy GrooveIQ hex that
+    # Navidrome doesn't know about), so giving it a Spotify CDN URL to fall
+    # back on is strictly better than nothing.
     cover_cache_map: dict[tuple[str, str], str] = {}
-    fallback_needed: list[tuple[str, str, str]] = []
+    keys_a: set[str] = set()
+    keys_t: set[str] = set()
     for e in entries:
-        if e.image_url:
-            continue
-        # If matched_track_id is set AND TrackFeatures still exists with a
-        # working external_track_id, the route will build a media-server URL
-        # — skip the fallback in that case so we don't hit the cache pointlessly.
-        if e.matched_track_id and e.matched_track_id in feat_map:
-            tf = feat_map[e.matched_track_id]
-            if tf.external_track_id and cover_auth and settings.MEDIA_SERVER_URL:
-                continue
-        if not e.artist_name or not (e.track_title or e.artist_name):
+        if e.image_url or not e.artist_name or not e.track_title:
             continue
         a_norm = _normalize_cover_key(e.artist_name)
-        t_norm = _normalize_cover_key(e.track_title or "")
+        t_norm = _normalize_cover_key(e.track_title)
         if a_norm and t_norm:
-            fallback_needed.append((a_norm, t_norm, ""))
-    if fallback_needed:
-        keys_a = list({k[0] for k in fallback_needed})
-        keys_t = list({k[1] for k in fallback_needed})
+            keys_a.add(a_norm)
+            keys_t.add(t_norm)
+    if keys_a:
         cc_q = await session.execute(
             select(CoverArtCache).where(
-                CoverArtCache.artist_norm.in_(keys_a),
-                CoverArtCache.title_norm.in_(keys_t),
+                CoverArtCache.artist_norm.in_(list(keys_a)),
+                CoverArtCache.title_norm.in_(list(keys_t)),
             )
         )
         for c in cc_q.scalars().all():
