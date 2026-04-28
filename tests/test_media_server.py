@@ -522,15 +522,9 @@ class TestCleanupStale:
         from sqlalchemy import select
 
         async with _TestSession() as session:
-            remaining_tf = (
-                (await session.execute(select(TrackFeatures.track_id))).scalars().all()
-            )
-            remaining_int = (
-                (await session.execute(select(TrackInteraction.track_id))).scalars().all()
-            )
-            remaining_ev = (
-                (await session.execute(select(ListenEvent.track_id))).scalars().all()
-            )
+            remaining_tf = (await session.execute(select(TrackFeatures.track_id))).scalars().all()
+            remaining_int = (await session.execute(select(TrackInteraction.track_id))).scalars().all()
+            remaining_ev = (await session.execute(select(ListenEvent.track_id))).scalars().all()
 
         # The doomed id is gone everywhere.
         assert "bbbbbbbbbbbbbbbb" not in remaining_tf
