@@ -92,6 +92,7 @@ _SERVICE_QUALITY: dict[str, QualityTier] = {
 _tick_lock = threading.Lock()
 _tick_in_progress = False
 _tick_started_at: int | None = None
+_last_tick_at: int | None = None  # last completed tick, regardless of whether it persisted rows
 
 
 def is_tick_in_progress() -> bool:
@@ -104,6 +105,17 @@ def get_tick_started_at() -> int | None:
     """Unix timestamp at which the in-flight tick started, or None if no tick is running."""
     with _tick_lock:
         return _tick_started_at
+
+
+def get_last_tick_at() -> int | None:
+    """Unix timestamp at which the most recent ``run_backfill_tick`` completed.
+
+    Distinct from "most recent persisted row" — useful for distinguishing
+    "scheduler isn't running" from "scheduler is running but every tick is
+    short-circuiting because no fresh candidates".
+    """
+    with _tick_lock:
+        return _last_tick_at
 
 
 @contextlib.asynccontextmanager
@@ -121,6 +133,18 @@ async def _mark_tick_running():
         with _tick_lock:
             _tick_in_progress = False
             _tick_started_at = None
+
+
+def _record_tick_completion() -> None:
+    """Stamp ``_last_tick_at`` regardless of whether the tick produced rows.
+
+    Tracks every run_backfill_tick exit (including early-skip / disabled /
+    rate-limited / no-fresh-candidates) so operators can distinguish
+    "scheduler hasn't fired" from "scheduler fires but always short-circuits".
+    """
+    global _last_tick_at
+    with _tick_lock:
+        _last_tick_at = _now_ts()
 
 
 # ---------------------------------------------------------------------------
@@ -410,14 +434,26 @@ async def _filter_by_cooldown_and_state(
 ) -> list[dict[str, Any]]:
     """Drop albums already queued/in-progress/permanently-skipped/complete,
     plus any failed or no_match rows still inside their cooldown window or
-    past max_attempts."""
+    past max_attempts.
+
+    Loads persisted rows in chunks of 500 IDs so this scales when the caller
+    passes the full Lidarr missing pool (tens of thousands of rows) without
+    tripping SQLite's parameter limit.
+    """
     if not candidates:
         return []
     ids = [c.get("id") for c in candidates if c.get("id")]
     if not ids:
         return []
-    rows = await session.execute(select(LidarrBackfillRequest).where(LidarrBackfillRequest.lidarr_album_id.in_(ids)))
-    state_by_id: dict[int, LidarrBackfillRequest] = {r.lidarr_album_id: r for r in rows.scalars().all()}
+    state_by_id: dict[int, LidarrBackfillRequest] = {}
+    chunk_size = 500
+    for i in range(0, len(ids), chunk_size):
+        chunk_ids = ids[i : i + chunk_size]
+        rows = await session.execute(
+            select(LidarrBackfillRequest).where(LidarrBackfillRequest.lidarr_album_id.in_(chunk_ids))
+        )
+        for r in rows.scalars().all():
+            state_by_id[r.lidarr_album_id] = r
     now = _now_ts()
     out: list[dict[str, Any]] = []
     for c in candidates:
@@ -447,13 +483,19 @@ async def _fetch_candidates(
     cfg: LidarrBackfillConfigData,
     lidarr_client: LidarrClient,
     *,
-    limit: int,
+    limit: int | None,
 ) -> list[dict[str, Any]]:
     """Pull missing + cutoff-unmet rows from Lidarr, apply allow/denylists.
 
     The Lidarr sort key is selected from ``cfg.sources.queue_order``. For
     ``random`` we use the recent-release sort as the base fetch order and
     then shuffle in Python — Lidarr's API doesn't support random sort.
+
+    ``limit=None`` returns the full filtered pool — that's the right default
+    when the caller is also going to pass the result through
+    ``_filter_by_cooldown_and_state`` (which will drop completed / cooldown'd
+    rows): slicing here too aggressively starves the downstream filter once
+    the top of the sort order saturates with already-touched albums.
     """
     sort_key, sort_direction = _QUEUE_SORT.get(cfg.sources.queue_order, _QUEUE_SORT[QueueOrder.RECENT_RELEASE])
 
@@ -505,6 +547,8 @@ async def _fetch_candidates(
 
         random.shuffle(filtered)
 
+    if limit is None:
+        return filtered
     return filtered[: max(1, limit)]
 
 
@@ -741,6 +785,16 @@ async def run_backfill_tick(session: AsyncSession) -> dict[str, Any]:
     """One scheduler tick. Picks the next batch and dispatches downloads."""
     from app.services.download_chain import lidarr_enabled_in_chain  # local import to avoid cycle
 
+    try:
+        return await _run_backfill_tick_inner(session, lidarr_enabled_in_chain)
+    finally:
+        # Stamp every tick exit (including early-skip / rate-limited / disabled)
+        # so operators can verify the scheduler is actually firing even when
+        # nothing has been persisted in hours.
+        _record_tick_completion()
+
+
+async def _run_backfill_tick_inner(session: AsyncSession, lidarr_enabled_in_chain) -> dict[str, Any]:
     cfg = get_config()
     if not cfg.enabled:
         return {"skipped": "disabled"}
@@ -765,9 +819,34 @@ async def run_backfill_tick(session: AsyncSession) -> dict[str, Any]:
             # services silently instead of logging a 503 warning per album.
             available_services = await streamrip_client.get_available_services()
 
-            candidates = await _fetch_candidates(cfg, lidarr_client, limit=batch_target * 4)
-            candidates = await _filter_by_cooldown_and_state(session, candidates, cfg)
-            candidates = candidates[:batch_target]
+            # Fetch the full filtered candidate pool — `_filter_by_cooldown_and_state`
+            # then drops completed / in-cooldown rows, and the post-filter slice
+            # picks the top `batch_target` fresh candidates.  Slicing before the
+            # filter starves it once the top of the sort order is saturated with
+            # already-touched albums (every tick re-pulls the same blocked rows).
+            all_candidates = await _fetch_candidates(cfg, lidarr_client, limit=None)
+            fresh_candidates = await _filter_by_cooldown_and_state(session, all_candidates, cfg)
+            candidates = fresh_candidates[:batch_target]
+
+            if not candidates:
+                # Surface why we did nothing — silent zero-progress ticks make
+                # this kind of stall invisible without DEBUG logging.
+                logger.info(
+                    "Lidarr backfill tick: 0 fresh candidates "
+                    "(lidarr_pool=%d, after_filter=%d, capacity=%d, available_services=%s)",
+                    len(all_candidates),
+                    len(fresh_candidates),
+                    capacity,
+                    available_services,
+                )
+                return {
+                    "processed": 0,
+                    "capacity_remaining": capacity,
+                    "available_services": available_services,
+                    "results": [],
+                    "lidarr_pool": len(all_candidates),
+                    "after_filter": len(fresh_candidates),
+                }
 
             results: list[dict[str, Any]] = []
             for album in candidates:

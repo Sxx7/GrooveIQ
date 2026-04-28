@@ -323,6 +323,64 @@ async def test_filter_lets_eligible_retry_through(db_session, cfg):
     assert [c["id"] for c in filtered] == [3030]
 
 
+@pytest.mark.asyncio
+async def test_filter_returns_fresh_candidates_when_top_is_fully_blocked(db_session, cfg):
+    """Issue #33: a fresh candidate further down the list must still come
+    through even when the first N candidates are all blocked
+    (complete / no_match-in-cooldown)."""
+    now = int(time.time())
+    # 20 blocked rows (the "top of recent_release sort" scenario from prod):
+    # 10 complete + 10 no_match in cooldown.
+    for i in range(10):
+        db_session.add(
+            LidarrBackfillRequest(
+                lidarr_album_id=4000 + i,
+                artist=f"A{i}",
+                album_title=f"T{i}",
+                source="missing",
+                status="complete",
+                attempt_count=1,
+                created_at=now - 3600,
+                updated_at=now - 60,
+            )
+        )
+    for i in range(10):
+        db_session.add(
+            LidarrBackfillRequest(
+                lidarr_album_id=4100 + i,
+                artist=f"B{i}",
+                album_title=f"U{i}",
+                source="missing",
+                status="no_match",
+                attempt_count=1,
+                next_retry_at=now + 3600,  # 1h into 24h cooldown
+                created_at=now - 3600,
+                updated_at=now - 60,
+            )
+        )
+    await db_session.commit()
+
+    # Caller passes the full Lidarr pool (top 20 blocked + 5 fresh further down).
+    candidates = (
+        [_lidarr_album(album_id=4000 + i) for i in range(10)]
+        + [_lidarr_album(album_id=4100 + i) for i in range(10)]
+        + [_lidarr_album(album_id=4200 + i) for i in range(5)]
+    )
+
+    filtered = await lbf._filter_by_cooldown_and_state(db_session, candidates, cfg)
+    assert {c["id"] for c in filtered} == {4200, 4201, 4202, 4203, 4204}
+
+
+@pytest.mark.asyncio
+async def test_filter_handles_large_candidate_list(db_session, cfg):
+    """Caller can pass a Lidarr-pool-sized list (thousands of IDs) without
+    tripping SQLite's parameter limit. The filter chunks the IN query."""
+    # Persist nothing — every candidate should pass through.
+    candidates = [_lidarr_album(album_id=10_000 + i) for i in range(2500)]
+    filtered = await lbf._filter_by_cooldown_and_state(db_session, candidates, cfg)
+    assert len(filtered) == 2500
+
+
 # ---------------------------------------------------------------------------
 # Process album: dry_run, downloading, no_match
 # ---------------------------------------------------------------------------
@@ -436,6 +494,27 @@ async def test_run_tick_skipped_when_disabled(db_session, monkeypatch):
     # function returns immediately before touching Lidarr/streamrip.
     summary = await lbf.run_backfill_tick(db_session)
     assert summary == {"skipped": "disabled"}
+
+
+@pytest.mark.asyncio
+async def test_run_tick_records_completion_even_on_early_skip(db_session, monkeypatch):
+    """`get_last_tick_at` must be stamped on every tick exit so the dashboard
+    can distinguish 'scheduler isn't running' from 'scheduler runs every 5m
+    but always early-skips'."""
+    # Reset module-level state (other tests may have set it).
+    monkeypatch.setattr(lbf, "_last_tick_at", None)
+    assert lbf.get_last_tick_at() is None
+
+    # enabled=False short-circuits before the inner work — but the wrapper
+    # still records completion.
+    before = int(time.time())
+    summary = await lbf.run_backfill_tick(db_session)
+    after = int(time.time())
+
+    assert summary == {"skipped": "disabled"}
+    last = lbf.get_last_tick_at()
+    assert last is not None
+    assert before <= last <= after
 
 
 # ---------------------------------------------------------------------------
