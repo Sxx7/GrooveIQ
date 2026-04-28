@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import re
 import time
 from dataclasses import dataclass, field
 
@@ -90,18 +91,74 @@ def _canon_str(s: str | None) -> str:
     return " ".join(s.lower().split())
 
 
+# Splits an artist string on every common collaborator separator so we can
+# treat "Foo & Bar", "Foo and Bar", "Foo, Bar", "Foo / Bar", "Foo feat. Bar",
+# "Foo featuring Bar", "Foo ft Bar", "Foo x Bar" as the same set of artists.
+# Order matters: longer text tokens (`featuring`) must precede shorter ones
+# (`feat`) and word-bounded tokens (` and `, ` x `) must include their
+# surrounding spaces so we don't shred ordinary album/song words.
+_ARTIST_SEP_RE = re.compile(
+    r"(?: featuring | feat\.? | ft\.? | with | and | vs\.? | x | & |/|;|,)",
+    flags=re.IGNORECASE,
+)
+
+
+def _canon_artist_set(artist: str | None) -> str:
+    """Canonicalise a (possibly multi-)artist string into a sorted token set.
+
+    Navidrome and ID3 tags often disagree on the separator for collab artists
+    — disk says ``"2WEI and Elena Westermann and Edda Hayes"``, Navidrome
+    reports ``"2WEI & Elena Westermann & Edda Hayes"``.  Splitting on every
+    common separator and sorting the result yields the same canonical token
+    regardless of which side wrote it.
+
+    Returns an empty string when no usable artist tokens are found.
+    """
+    if not artist:
+        return ""
+    parts = _ARTIST_SEP_RE.split(artist)
+    tokens = []
+    for p in parts:
+        c = _canon_str(p)
+        if c:
+            tokens.append(c)
+    if not tokens:
+        return ""
+    return "|".join(sorted(set(tokens)))
+
+
 def _aatd_key(artist: str | None, album: str | None, title: str | None) -> tuple[str, str, str] | None:
     """Build the canonical (artist, album, title) tuple key.
 
+    The artist component is a *sorted set* of canonicalised tokens so a track
+    tagged "Foo & Bar" matches a server-side "Foo and Bar" or "Bar, Foo".
     Returns ``None`` if either artist or title is missing — without those two
     we have no business asserting two tracks are the same record.  Album is
     allowed to be empty (some standalone singles don't tag it).
     """
-    a = _canon_str(artist)
+    a = _canon_artist_set(artist)
     t = _canon_str(title)
     if not a or not t:
         return None
     return (a, _canon_str(album), t)
+
+
+def _atd_key(album: str | None, title: str | None) -> tuple[str, str] | None:
+    """Build the canonical (album, title) tuple key for the ATD fallback.
+
+    Used when AATD misses entirely (typically because the artist field can't
+    be canonicalised — e.g. completely different "Various Artists" wording).
+    Caller must apply a strict duration filter; without artist as an anchor,
+    duration is the only thing keeping us off near-miss tracks.
+    """
+    al = _canon_str(album)
+    t = _canon_str(title)
+    if not al or not t:
+        # Require a non-empty album for ATD.  A bare (title, duration) match
+        # would be far too lossy; many libraries have multiple tracks named
+        # "Intro" that happen to share a duration.
+        return None
+    return (al, t)
 
 
 def _duration_compatible(server_dur: float | None, db_dur: float | None, tol: float = 1.5) -> bool:
@@ -592,15 +649,19 @@ async def sync_track_ids(session: AsyncSession) -> SyncResult:
         result.elapsed_s = time.time() - t0
         return result
 
-    # 2. Build three lookup indexes from the server tracks, used in priority
-    #    order: MBID → (artist,album,title)+duration → path.  The path index
-    #    is kept as a last-resort matcher because Navidrome 0.61+ reports a
-    #    synthetic templated path (computed from tags) rather than the actual
-    #    filesystem path, which silently breaks pure path matching for any
-    #    library not laid out exactly to Navidrome's template.
+    # 2. Build four lookup indexes from the server tracks, used in priority
+    #    order: MBID → (artist,album,title)+duration → (album,title)+duration
+    #    → path.  The path index is kept as a last-resort matcher because
+    #    Navidrome 0.61+ reports a synthetic templated path (computed from
+    #    tags) rather than the actual filesystem path, which silently breaks
+    #    pure path matching for any library not laid out exactly to
+    #    Navidrome's template.  The ATD index handles the residual case where
+    #    AATD misses entirely because of artist-field divergence we couldn't
+    #    canonicalise (e.g. completely different "Various Artists" wording).
     server_music_root = settings.MEDIA_SERVER_MUSIC_PATH or settings.MUSIC_LIBRARY_PATH
     mb_index: dict[str, MediaServerTrack] = {}
     aatd_index: dict[tuple[str, str, str], list[MediaServerTrack]] = {}
+    atd_index: dict[tuple[str, str], list[MediaServerTrack]] = {}
     path_index: dict[str, MediaServerTrack] = {}
     for st in server_tracks:
         if st.mb_track_id:
@@ -608,6 +669,9 @@ async def sync_track_ids(session: AsyncSession) -> SyncResult:
         key = _aatd_key(st.artist, st.album, st.title)
         if key:
             aatd_index.setdefault(key, []).append(st)
+        atd = _atd_key(st.album, st.title)
+        if atd:
+            atd_index.setdefault(atd, []).append(st)
         norm = _normalise_path(st.file_path, server_music_root)
         if norm:
             path_index[norm] = st
@@ -671,6 +735,26 @@ async def sync_track_ids(session: AsyncSession) -> SyncResult:
                     match_via = "aatd"
                 elif len(cands) > 1:
                     result.tracks_aatd_ambiguous += 1
+
+        # Strategy 2b: (album, title) + strict duration fallback.  Picks up
+        # tracks where artist canonicalisation still failed (e.g. "Various
+        # Artists" vs the original artist, or non-Latin script variants).
+        # We only accept when (a) duration is known on both sides, (b) the
+        # match is unique after a strict ±1s filter — without artist as an
+        # anchor, duration is the only thing keeping us off near-miss tracks.
+        # Counts under tracks_matched_by_aatd to stay backwards-compatible.
+        if st is None and db_duration is not None:
+            atd = _atd_key(r.album, r.title)
+            if atd:
+                cands = atd_index.get(atd, [])
+                cands = [
+                    c
+                    for c in cands
+                    if c.duration is not None and _duration_compatible(c.duration, db_duration, tol=1.0)
+                ]
+                if len(cands) == 1:
+                    st = cands[0]
+                    match_via = "aatd"
 
         # Strategy 3: legacy file-path matcher.  Still useful for Plex
         # libraries (which return real filesystem paths) and any Navidrome

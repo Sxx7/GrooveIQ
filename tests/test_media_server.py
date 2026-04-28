@@ -22,6 +22,8 @@ from app.models.db import Base, ListenEvent, TrackFeatures, TrackInteraction, Us
 from app.services.media_server import (
     MediaServerTrack,
     _aatd_key,
+    _atd_key,
+    _canon_artist_set,
     _canon_str,
     _duration_compatible,
     _extract_mbid_from_plex_guid,
@@ -422,6 +424,66 @@ class TestCanonicalisationHelpers:
     def test_aatd_key_canonicalises(self):
         assert _aatd_key("  ARTIST  ", "Album X", "Track 1") == ("artist", "album x", "track 1")
 
+    def test_canon_artist_set_handles_separators(self):
+        """All common collab separators yield the same canonical token set,
+        so "Foo & Bar" and "Foo and Bar" key the same row."""
+        ampersand = _canon_artist_set("Foo & Bar")
+        ampersand_with_and = _canon_artist_set("Foo and Bar")
+        slash = _canon_artist_set("Foo / Bar")
+        comma = _canon_artist_set("Foo, Bar")
+        semicolon = _canon_artist_set("Foo; Bar")
+        feat = _canon_artist_set("Foo feat. Bar")
+        featuring = _canon_artist_set("Foo featuring Bar")
+        ft = _canon_artist_set("Foo ft Bar")
+        x = _canon_artist_set("Foo x Bar")
+        with_word = _canon_artist_set("Foo with Bar")
+        # All forms collapse to the same sorted set.
+        assert ampersand == "bar|foo"
+        assert ampersand_with_and == "bar|foo"
+        assert slash == "bar|foo"
+        assert comma == "bar|foo"
+        assert semicolon == "bar|foo"
+        assert feat == "bar|foo"
+        assert featuring == "bar|foo"
+        assert ft == "bar|foo"
+        assert x == "bar|foo"
+        assert with_word == "bar|foo"
+
+    def test_canon_artist_set_three_way_collab(self):
+        """The exact mismatch from the production investigation: "and" vs "&"
+        across three collaborators."""
+        a = _canon_artist_set("2WEI and Elena Westermann and Edda Hayes")
+        b = _canon_artist_set("2WEI & Elena Westermann & Edda Hayes")
+        assert a == b
+        # Sanity: actual content is preserved as a sorted set.
+        assert a == "2wei|edda hayes|elena westermann"
+
+    def test_canon_artist_set_single_artist_unchanged(self):
+        """A single artist with no separators still canonicalises through."""
+        assert _canon_artist_set("Johnny Cash") == "johnny cash"
+        assert _canon_artist_set("  Johnny  Cash  ") == "johnny cash"
+
+    def test_canon_artist_set_handles_none_and_empty(self):
+        assert _canon_artist_set(None) == ""
+        assert _canon_artist_set("") == ""
+        assert _canon_artist_set("   ") == ""
+
+    def test_aatd_key_artist_set_normalises_separators(self):
+        """End-to-end: AATD key matches across separator variants."""
+        a = _aatd_key("2WEI and Elena Westermann and Edda Hayes", "Eternal", "Eternal")
+        b = _aatd_key("2WEI & Elena Westermann & Edda Hayes", "Eternal", "Eternal")
+        assert a == b
+        assert a is not None
+
+    def test_atd_key_requires_album_and_title(self):
+        assert _atd_key("", "Title") is None
+        assert _atd_key("Album", "") is None
+        assert _atd_key(None, "Title") is None
+        assert _atd_key("Album", "Title") == ("album", "title")
+
+    def test_atd_key_canonicalises(self):
+        assert _atd_key("  ALBUM  X  ", "Track 1") == ("album x", "track 1")
+
     def test_duration_compatible(self):
         assert _duration_compatible(180.0, 180.0) is True
         assert _duration_compatible(180.0, 181.0) is True  # within 1.5s tolerance
@@ -701,6 +763,179 @@ class TestMatcherPriorityChain:
         assert result.tracks_matched_by_mbid == 1
         assert result.tracks_matched_by_aatd == 0
         assert result.tracks_matched_by_path == 0
+
+    @patch("app.services.media_server.settings")
+    async def test_aatd_handles_multi_artist_separator_divergence(self, mock_settings):
+        """Issue #27: disk says " and ", Navidrome says " & ".  After
+        multi-artist canonicalisation, AATD must still resolve the pair.
+        """
+        self._settings(mock_settings)
+        await self._seed_one(
+            "old-id",
+            file_path="/music/Wrong/Path.flac",  # path won't help
+            title="Eternal",
+            # Disk-side: ID3 tag uses " and " between collaborators.
+            artist="2WEI and Elena Westermann and Edda Hayes",
+            album="Eternal",
+            duration=180.0,
+        )
+        server_tracks = [
+            MediaServerTrack(
+                server_id="22charNavidromeID000A",
+                title="Eternal",
+                # Server-side: Navidrome's display string uses " & ".
+                artist="2WEI & Elena Westermann & Edda Hayes",
+                album="Eternal",
+                file_path="x/synthetic.ogg",
+                duration=180.0,
+            ),
+        ]
+        with patch("app.services.media_server.fetch_tracks", new_callable=AsyncMock, return_value=server_tracks):
+            async with _TestSession() as session:
+                result = await sync_track_ids(session)
+
+        assert result.tracks_matched == 1
+        assert result.tracks_matched_by_aatd == 1
+        assert result.tracks_aatd_ambiguous == 0
+        assert result.tracks_updated == 1
+
+    @patch("app.services.media_server.settings")
+    async def test_atd_fallback_when_artist_diverges_completely(self, mock_settings):
+        """Issue #27 stretch: artist tags don't share a single token
+        ("Soundtrack" vs "John Williams"), but album+title+duration align.
+        ATD fallback must rescue this with strict duration filtering.
+        """
+        self._settings(mock_settings)
+        await self._seed_one(
+            "old-id",
+            file_path="/music/Wrong/Path.flac",
+            title="Imperial March",
+            artist="Soundtrack",  # ID3 lead-artist tag
+            album="Star Wars: The Empire Strikes Back",
+            duration=180.0,
+        )
+        server_tracks = [
+            MediaServerTrack(
+                server_id="nav-atd-1",
+                title="Imperial March",
+                artist="John Williams",  # Navidrome's display artist
+                album="Star Wars: The Empire Strikes Back",
+                file_path="x/y.ogg",
+                duration=180.5,  # within ±1.0s strict ATD tolerance
+            ),
+        ]
+        with patch("app.services.media_server.fetch_tracks", new_callable=AsyncMock, return_value=server_tracks):
+            async with _TestSession() as session:
+                result = await sync_track_ids(session)
+
+        assert result.tracks_matched == 1
+        # ATD is rolled into the aatd counter for backwards-compat reporting.
+        assert result.tracks_matched_by_aatd == 1
+        assert result.tracks_updated == 1
+
+    @patch("app.services.media_server.settings")
+    async def test_atd_fallback_rejects_when_duration_misses(self, mock_settings):
+        """ATD without an artist anchor MUST be strict on duration. A 5s
+        difference (well outside the ±1s ATD tolerance) means we let the
+        row fall through to path matching, not gamble."""
+        self._settings(mock_settings)
+        await self._seed_one(
+            "old-id",
+            file_path="/music/Wrong/Path.flac",
+            title="Imperial March",
+            artist="Soundtrack",
+            album="Star Wars",
+            duration=180.0,
+        )
+        server_tracks = [
+            MediaServerTrack(
+                server_id="nav-wrong",
+                title="Imperial March",
+                artist="John Williams",
+                album="Star Wars",
+                file_path="x/y.ogg",
+                duration=185.0,  # 5s off — too far for ATD without artist
+            ),
+        ]
+        with patch("app.services.media_server.fetch_tracks", new_callable=AsyncMock, return_value=server_tracks):
+            async with _TestSession() as session:
+                result = await sync_track_ids(session)
+
+        # Falls through ATD (duration too far) and path (different paths).
+        assert result.tracks_matched == 0
+        assert result.tracks_unmatched == 1
+
+    @patch("app.services.media_server.settings")
+    async def test_atd_fallback_skips_when_album_empty(self, mock_settings):
+        """ATD requires a non-empty album.  A bare (title, duration) match
+        is too lossy.  When album is empty we skip ATD and fall through."""
+        self._settings(mock_settings)
+        await self._seed_one(
+            "old-id",
+            file_path="/music/Wrong/Path.flac",
+            title="Intro",
+            artist="Mystery",
+            album="",  # no album
+            duration=30.0,
+        )
+        server_tracks = [
+            MediaServerTrack(
+                server_id="nav-intro",
+                title="Intro",
+                artist="Different Artist",
+                album="",
+                file_path="x/y.ogg",
+                duration=30.0,
+            ),
+        ]
+        with patch("app.services.media_server.fetch_tracks", new_callable=AsyncMock, return_value=server_tracks):
+            async with _TestSession() as session:
+                result = await sync_track_ids(session)
+
+        # Without album, ATD is unsafe — fall through.  AATD also misses
+        # because artists differ entirely.  Path differs.  Unmatched.
+        assert result.tracks_matched == 0
+        assert result.tracks_unmatched == 1
+
+    @patch("app.services.media_server.settings")
+    async def test_atd_fallback_requires_unique_match(self, mock_settings):
+        """If two server tracks share (album, title) and both pass the
+        strict duration filter, ATD must skip — without artist, we can't
+        tell them apart."""
+        self._settings(mock_settings)
+        await self._seed_one(
+            "old-id",
+            file_path="/music/Wrong/Path.flac",
+            title="Track 1",
+            artist="Various",
+            album="Compilation",
+            duration=180.0,
+        )
+        server_tracks = [
+            MediaServerTrack(
+                server_id="cand-1",
+                title="Track 1",
+                artist="Artist A",
+                album="Compilation",
+                file_path="x/a.ogg",
+                duration=180.0,
+            ),
+            MediaServerTrack(
+                server_id="cand-2",
+                title="Track 1",
+                artist="Artist B",
+                album="Compilation",
+                file_path="x/b.ogg",
+                duration=180.5,  # also within ±1s
+            ),
+        ]
+        with patch("app.services.media_server.fetch_tracks", new_callable=AsyncMock, return_value=server_tracks):
+            async with _TestSession() as session:
+                result = await sync_track_ids(session)
+
+        # Two candidates pass — ATD refuses to guess.  Falls through.
+        assert result.tracks_matched == 0
+        assert result.tracks_unmatched == 1
 
     @patch("app.services.media_server.settings")
     async def test_rename_merges_colliding_interactions(self, mock_settings):
