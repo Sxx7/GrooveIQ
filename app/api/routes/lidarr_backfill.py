@@ -340,8 +340,10 @@ async def stats(
 
     base = await lbf_service.get_stats(session)
 
-    # Last tick timestamp = most-recent created_at across in-flight rows.
-    last = await session.scalar(
+    # Most-recent created_at across persisted rows. Useful as a "last
+    # progress" indicator. NOT the same as "last scheduler tick" — see
+    # `last_tick_at` below.
+    last_row_created_at = await session.scalar(
         select(LidarrBackfillRequest.created_at).order_by(LidarrBackfillRequest.created_at.desc()).limit(1)
     )
 
@@ -356,7 +358,15 @@ async def stats(
     except Exception:
         pass
 
-    return {**base, "last_tick_at": last, "next_tick_at": next_tick_at}
+    return {
+        **base,
+        # When the last `run_backfill_tick` actually completed (any outcome).
+        # Falls back to `last_row_created_at` for early calls before any tick
+        # has run since process start.
+        "last_tick_at": lbf_service.get_last_tick_at() or last_row_created_at,
+        "last_row_created_at": last_row_created_at,
+        "next_tick_at": next_tick_at,
+    }
 
 
 # ---------------------------------------------------------------------------
