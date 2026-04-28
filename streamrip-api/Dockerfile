@@ -3,7 +3,7 @@
 # Build:  docker build -t streamrip-api .
 # Run:    docker run -p 8282:8282 -v /path/to/music:/music streamrip-api
 
-FROM python:3.12-slim AS runtime
+FROM python:3.14-slim AS runtime
 
 # FFmpeg is required by streamrip for transcoding
 RUN apt-get update \
