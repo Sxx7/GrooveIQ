@@ -407,8 +407,9 @@ async def _filter_by_cooldown_and_state(
     candidates: list[dict[str, Any]],
     cfg: LidarrBackfillConfigData,
 ) -> list[dict[str, Any]]:
-    """Drop albums already queued/in-progress/permanently-skipped, plus any
-    failed rows still inside their cooldown window."""
+    """Drop albums already queued/in-progress/permanently-skipped/complete,
+    plus any failed or no_match rows still inside their cooldown window or
+    past max_attempts."""
     if not candidates:
         return []
     ids = [c.get("id") for c in candidates if c.get("id")]
@@ -521,7 +522,10 @@ async def _persist_request(
     if existing is None:
         attempt_count = 1 if bump_attempt else 0
         next_retry_at: int | None = None
-        if status == STATUS_FAILED and bump_attempt:
+        # Both `failed` (download error) and `no_match` (catalog gap) get the
+        # same cooldown curve so retries spread over days, not minutes — the
+        # success rate of immediate back-to-back retries is near zero anyway.
+        if status in (STATUS_FAILED, STATUS_NO_MATCH) and bump_attempt:
             next_retry_at = _next_retry_timestamp(attempt_count, cfg)
         row = LidarrBackfillRequest(
             lidarr_album_id=lidarr_album_id,
@@ -559,7 +563,7 @@ async def _persist_request(
     if bump_attempt:
         existing.attempt_count += 1
         existing.last_attempt_at = now
-        if status == STATUS_FAILED:
+        if status in (STATUS_FAILED, STATUS_NO_MATCH):
             existing.next_retry_at = _next_retry_timestamp(existing.attempt_count, cfg)
         elif status in _TERMINAL_STATUSES or status in (STATUS_DOWNLOADING, STATUS_QUEUED):
             existing.next_retry_at = None
