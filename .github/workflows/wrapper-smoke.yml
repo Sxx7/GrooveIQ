@@ -1,0 +1,63 @@
+name: Wrapper smoke tests
+
+# Builds and boots each wrapper container that changed in the PR, then
+# polls /health. Catches the most common upstream-broke-something
+# breakage: when a `pip install` succeeds but the wrapper crashes
+# importing a renamed symbol, or hits a runtime error before the FastAPI
+# app finishes starting up.
+#
+# Path-filtered: this workflow only runs when files under one of the
+# wrapper directories changed.
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'streamrip-api/**'
+      - 'acousticbrainz-lookup/**'
+      - 'spotdl-api/**'
+      - '.github/workflows/wrapper-smoke.yml'
+
+jobs:
+  smoke:
+    name: ${{ matrix.wrapper }} (boot + /health)
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - wrapper: streamrip-api
+            port: 8282
+          - wrapper: spotdl-api
+            port: 8181
+          - wrapper: acousticbrainz-lookup
+            port: 8200
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Build image
+        run: docker build -t smoke:${{ matrix.wrapper }} ./${{ matrix.wrapper }}
+
+      - name: Run container
+        run: |
+          docker run -d --name w \
+            -e SAMPLE_MODE=true \
+            -p 127.0.0.1:8000:${{ matrix.port }} \
+            smoke:${{ matrix.wrapper }}
+
+      - name: Poll /health
+        run: |
+          for i in $(seq 1 30); do
+            if curl -fsSL http://127.0.0.1:8000/health >/dev/null 2>&1; then
+              echo "✓ /health responded after ~$((i * 2))s"
+              curl -s http://127.0.0.1:8000/health
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "::error::/health never responded within 60s"
+          exit 1
+
+      - name: Container logs (always)
+        if: always()
+        run: docker logs w 2>&1 | tail -80
