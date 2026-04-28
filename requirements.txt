@@ -35,7 +35,7 @@ mutagen>=1.47
 # Audio analysis (Phase 3)
 # Base essentia for DSP (BPM, key, loudness); no TensorFlow dependency.
 # ML inference (danceability, mood, embedding) uses ONNX Runtime below.
-essentia>=2.1b6.dev0,<2.1b7
+essentia>=2.1b6.dev1389,<2.1b7
 
 numpy>=2.4.4,<3
 
