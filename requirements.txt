@@ -16,8 +16,8 @@ asyncpg==0.30.*             # PostgreSQL async driver (optional)
 alembic==1.14.*             # DB migrations
 
 # Validation & settings
-pydantic==2.10.*
-pydantic-settings==2.7.*
+pydantic==2.13.*
+pydantic-settings==2.14.*
 
 # Scheduling
 apscheduler==3.10.*
