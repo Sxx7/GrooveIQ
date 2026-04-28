@@ -552,12 +552,16 @@ async def _merge_colliding_interactions(session: AsyncSession, old_id: str, new_
     Returns the number of rows merged + deleted (i.e. collisions resolved).
     """
     rows = (
-        await session.execute(
-            select(TrackInteraction)
-            .where(TrackInteraction.track_id.in_((old_id, new_id)))
-            .order_by(TrackInteraction.user_id, TrackInteraction.track_id)
+        (
+            await session.execute(
+                select(TrackInteraction)
+                .where(TrackInteraction.track_id.in_((old_id, new_id)))
+                .order_by(TrackInteraction.user_id, TrackInteraction.track_id)
+            )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
 
     by_user: dict[str, dict[str, TrackInteraction]] = {}
     for r in rows:
@@ -592,9 +596,7 @@ async def _merge_colliding_interactions(session: AsyncSession, old_id: str, new_
             old_plays = max(old.play_count or 0, 1)
             new_plays_before = max((new.play_count or 0) - (old.play_count or 0), 1)
             total = old_plays + new_plays_before
-            new.avg_completion = (
-                old.avg_completion * old_plays + new.avg_completion * new_plays_before
-            ) / total
+            new.avg_completion = (old.avg_completion * old_plays + new.avg_completion * new_plays_before) / total
         elif old.avg_completion is not None:
             new.avg_completion = old.avg_completion
 

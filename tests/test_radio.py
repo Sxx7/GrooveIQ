@@ -182,6 +182,7 @@ class TestRadioStartSeedValidation:
             "app.services.faiss_index.get_embedding",
             lambda tid: np.ones(64, dtype=np.float32),
         )
+
         # Stub get_next_tracks so we don't need a built index for candidate gen.
         # The real service returns the internal `track_id` (which post-sync is
         # the current Navidrome id) rather than the legacy external_track_id.
