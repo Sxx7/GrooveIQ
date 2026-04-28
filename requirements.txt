@@ -37,26 +37,26 @@ mutagen>=1.47
 # ML inference (danceability, mood, embedding) uses ONNX Runtime below.
 essentia>=2.1b6.dev0,<2.1b7
 
-numpy>=1.26,<3
+numpy>=2.4.4,<3
 
 # ONNX Runtime for Discogs-EffNet + classifier heads.
 # For Intel iGPU acceleration, install onnxruntime-openvino instead.
-onnxruntime>=1.17.0
+onnxruntime>=1.25.1
 
 # Candidate generation (Phase 4)
-faiss-cpu>=1.7.4
-implicit>=0.7.0
-scipy>=1.10.0
+faiss-cpu>=1.13.2
+implicit>=0.7.2
+scipy>=1.17.1
 
 # Ranking model (Phase 4)
-lightgbm>=4.0.0
-scikit-learn>=1.3.0
+lightgbm>=4.6.0
+scikit-learn>=1.8.0
 
 # Session skip-gram embeddings
-gensim>=4.3.0
+gensim>=4.4.0
 
 # 2D music-map projection (UMAP over EffNet embeddings)
-umap-learn>=0.5.5
+umap-learn>=0.5.12
 
 # HTTP client (used by discovery pipeline + tests)
 httpx==0.28.*
