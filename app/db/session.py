@@ -103,6 +103,16 @@ async def _apply_column_migrations(conn) -> None:
         ("track_features", "map_y", "REAL"),
         # Cascade attempt log for download-routing chain (Phase 2)
         ("download_requests", "attempts", "TEXT"),
+        # Per-backend external track identifiers (issue #37). Each is added
+        # as a plain nullable column here; unique indexes are created in the
+        # _UNIQUE_INDEXES block below. external_track_id is retained until
+        # Phase 5 of the migration drops it.
+        ("track_features", "media_server_id", "VARCHAR(64)"),
+        ("track_features", "spotify_id", "VARCHAR(64)"),
+        ("track_features", "qobuz_id", "VARCHAR(64)"),
+        ("track_features", "tidal_id", "VARCHAR(64)"),
+        ("track_features", "deezer_id", "VARCHAR(64)"),
+        ("track_features", "soundcloud_id", "VARCHAR(64)"),
     ]
     for table, column, col_type in migrations:
         # Validate identifiers to prevent SQL injection via migration list.
@@ -117,6 +127,41 @@ async def _apply_column_migrations(conn) -> None:
             logger.info(f"Migration: added {table}.{column}")
         except Exception:
             pass  # Column already exists
+
+    # Unique indexes for columns added via ALTER TABLE above. ALTER TABLE
+    # ADD COLUMN can't carry a UNIQUE constraint into an existing table, so
+    # we add the unique index separately. Both SQLite and PostgreSQL treat
+    # multiple NULLs as distinct in unique indexes, so many rows may share
+    # NULL for any of these per-backend IDs.
+    unique_indexes = [
+        ("track_features", "media_server_id"),
+        ("track_features", "spotify_id"),
+        ("track_features", "qobuz_id"),
+        ("track_features", "tidal_id"),
+        ("track_features", "deezer_id"),
+        ("track_features", "soundcloud_id"),
+        # Non-unique secondary index — MBIDs already exist in the schema as
+        # nullable but were never indexed. The lookup endpoint queries by it.
+    ]
+    for table, column in unique_indexes:
+        if not _SAFE_IDENTIFIER.match(table) or not _SAFE_IDENTIFIER.match(column):
+            raise ValueError(f"Unsafe identifier in unique-index migration: {table}.{column}")
+        index_name = f"ix_{table}_{column}"
+        try:
+            await conn.exec_driver_sql(
+                f"CREATE UNIQUE INDEX IF NOT EXISTS {index_name} ON {table} ({column})"
+            )
+        except Exception as e:
+            logger.warning("Migration: could not create unique index %s: %s", index_name, e)
+
+    # Plain (non-unique) index on musicbrainz_track_id for the lookup endpoint.
+    try:
+        await conn.exec_driver_sql(
+            "CREATE INDEX IF NOT EXISTS ix_track_features_musicbrainz_track_id "
+            "ON track_features (musicbrainz_track_id)"
+        )
+    except Exception as e:
+        logger.warning("Migration: could not create musicbrainz_track_id index: %s", e)
 
     # Backfill: any pre-existing download_requests rows have source IS NULL
     # because the column was added without a default. Treat them as spotdl.

@@ -1,18 +1,24 @@
 """
-GrooveIQ – Media server integration (Navidrome / Plex).
+GrooveIQ – Media server integration (Navidrome).
 
-Fetches track catalogues from the configured media server and syncs
-track IDs so GrooveIQ uses the same identifiers as the media server.
-This means events from iOS/web clients can reference tracks by their
-Navidrome/Plex ID and recommendations return those same IDs.
+Fetches the track catalogue from the configured media server and records
+each match's external identifier on ``TrackFeatures.media_server_id``.
+
+Under the post-#37 schema, sync is a *metadata refresh*: ``track_id`` is
+the stable internal GrooveIQ id (a SHA-256-prefix hash of the file path
+relative to the music library, set once at scan time and never overwritten)
+and the media server's ID lives in its own column. The previous behaviour
+— renaming ``track_id`` and cascading the change across listen_events /
+track_interactions / playlists / etc. — is gone.
 
 Sync flow:
   1. Fetch all tracks from the media server API.
-  2. Match each to a TrackFeatures row by normalised relative file path.
-  3. For matched tracks: update track_id to the media server ID,
-     populate title/artist/album metadata.
-  4. Cascade track_id changes to listen_events, listen_sessions,
-     and track_interactions.
+  2. Match each to a TrackFeatures row using one of four strategies in
+     priority order: MBID → AATD (artist/album/title + duration) → ATD
+     (album/title + strict duration) → file path.
+  3. For matched tracks, write the media server ID into
+     ``TrackFeatures.media_server_id`` and refresh the title / artist /
+     album / genre fields from server metadata when they have drifted.
 """
 
 from __future__ import annotations
@@ -28,7 +34,7 @@ from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
-from app.models.db import ListenEvent, TrackFeatures, TrackInteraction
+from app.models.db import TrackFeatures
 
 logger = logging.getLogger(__name__)
 
@@ -62,8 +68,8 @@ class SyncResult:
     server_type: str = ""
     tracks_fetched: int = 0
     tracks_matched: int = 0
-    tracks_updated: int = 0  # track_id actually changed
-    tracks_metadata: int = 0  # metadata (title/artist/album) updated
+    media_server_id_updated: int = 0  # rows whose media_server_id was newly set / changed
+    metadata_updated: int = 0  # rows whose title / artist / album / genre was refreshed
     tracks_unmatched: int = 0
     # Per-strategy matching breakdown.  These sum to tracks_matched (excluding
     # ambiguous, which falls through to the next strategy or unmatched).
@@ -535,92 +541,6 @@ async def _refresh_plex(path: str | None = None) -> bool:
         return False
 
 
-async def _merge_colliding_interactions(session: AsyncSession, old_id: str, new_id: str) -> int:
-    """Merge per-user TrackInteraction collisions before renaming old_id → new_id.
-
-    When two ``track_features`` rows resolve to the same media-server track
-    (e.g. a Spotizerr re-download under a slightly different folder), some
-    users may have interactions on both ``old_id`` and ``new_id``.  The
-    naive ``UPDATE … SET track_id=new_id WHERE track_id=old_id`` then trips
-    the ``(user_id, track_id)`` UNIQUE constraint.
-
-    For each colliding user, sum the count columns into the surviving row
-    (the existing ``new_id`` row), max() the timestamp columns, then delete
-    the ``old_id`` row.  The remaining non-colliding ``old_id`` rows are
-    left for the caller's ``UPDATE`` to handle.
-
-    Returns the number of rows merged + deleted (i.e. collisions resolved).
-    """
-    rows = (
-        (
-            await session.execute(
-                select(TrackInteraction)
-                .where(TrackInteraction.track_id.in_((old_id, new_id)))
-                .order_by(TrackInteraction.user_id, TrackInteraction.track_id)
-            )
-        )
-        .scalars()
-        .all()
-    )
-
-    by_user: dict[str, dict[str, TrackInteraction]] = {}
-    for r in rows:
-        by_user.setdefault(r.user_id, {})[r.track_id] = r
-
-    merged = 0
-    for user_id, pair in by_user.items():
-        old = pair.get(old_id)
-        new = pair.get(new_id)
-        if old is None or new is None:
-            continue  # not a collision; the regular UPDATE will handle it
-
-        # Sum count columns into the surviving (new_id) row.
-        new.play_count = (new.play_count or 0) + (old.play_count or 0)
-        new.skip_count = (new.skip_count or 0) + (old.skip_count or 0)
-        new.like_count = (new.like_count or 0) + (old.like_count or 0)
-        new.dislike_count = (new.dislike_count or 0) + (old.dislike_count or 0)
-        new.repeat_count = (new.repeat_count or 0) + (old.repeat_count or 0)
-        new.playlist_add_count = (new.playlist_add_count or 0) + (old.playlist_add_count or 0)
-        new.queue_add_count = (new.queue_add_count or 0) + (old.queue_add_count or 0)
-        new.early_skip_count = (new.early_skip_count or 0) + (old.early_skip_count or 0)
-        new.mid_skip_count = (new.mid_skip_count or 0) + (old.mid_skip_count or 0)
-        new.full_listen_count = (new.full_listen_count or 0) + (old.full_listen_count or 0)
-        new.total_seekfwd = (new.total_seekfwd or 0) + (old.total_seekfwd or 0)
-        new.total_seekbk = (new.total_seekbk or 0) + (old.total_seekbk or 0)
-
-        # Sum dwell, weighted-average completion (so it stays in [0, 1]).
-        old_dwell = old.total_dwell_ms or 0
-        new_dwell = new.total_dwell_ms or 0
-        new.total_dwell_ms = old_dwell + new_dwell
-        if old.avg_completion is not None and new.avg_completion is not None:
-            old_plays = max(old.play_count or 0, 1)
-            new_plays_before = max((new.play_count or 0) - (old.play_count or 0), 1)
-            total = old_plays + new_plays_before
-            new.avg_completion = (old.avg_completion * old_plays + new.avg_completion * new_plays_before) / total
-        elif old.avg_completion is not None:
-            new.avg_completion = old.avg_completion
-
-        # max() temporal fields, take whichever is set.
-        if old.first_played_at and (not new.first_played_at or old.first_played_at < new.first_played_at):
-            new.first_played_at = old.first_played_at
-        if old.last_played_at and (not new.last_played_at or old.last_played_at > new.last_played_at):
-            new.last_played_at = old.last_played_at
-        if (old.last_event_id or 0) > (new.last_event_id or 0):
-            new.last_event_id = old.last_event_id
-
-        # satisfaction_score will be recomputed on the next scoring run
-        # from the merged counts; leave new.satisfaction_score in place
-        # (it's the more recent value) until then.
-        new.updated_at = max(new.updated_at or 0, old.updated_at or 0, int(time.time()))
-
-        await session.delete(old)
-        merged += 1
-
-    if merged:
-        await session.flush()
-    return merged
-
-
 async def sync_track_ids(session: AsyncSession) -> SyncResult:
     """
     Synchronise GrooveIQ track IDs with the configured media server.
@@ -689,7 +609,7 @@ async def sync_track_ids(session: AsyncSession) -> SyncResult:
                 TrackFeatures.artist,
                 TrackFeatures.album,
                 TrackFeatures.genre,
-                TrackFeatures.external_track_id,
+                TrackFeatures.media_server_id,
                 TrackFeatures.musicbrainz_track_id,
                 TrackFeatures.duration,
                 TrackFeatures.duration_ms,
@@ -698,10 +618,10 @@ async def sync_track_ids(session: AsyncSession) -> SyncResult:
     ).all()
     grooveiq_music_root = settings.MUSIC_LIBRARY_PATH
 
-    # 4. Build batch updates instead of per-row ORM flush.
-    metadata_updates: list[dict] = []  # bulk metadata UPDATE
-    track_id_renames: list[tuple] = []  # (tf_id, old_id, new_id, external_id)
-    existing_track_ids = {r.track_id for r in rows}
+    # 4. Build batch updates. Sync is a metadata refresh under the post-#37
+    #    schema: it never rewrites track_id, so there's no cross-table cascade.
+    metadata_updates: list[dict] = []  # bulk metadata UPDATE (title/artist/album/genre)
+    media_server_id_updates: list[dict] = []  # bulk UPDATE for the per-row external ID
 
     for r in rows:
         # GrooveIQ's stored duration: prefer the precise duration_ms (from ID3
@@ -779,10 +699,8 @@ async def sync_track_ids(session: AsyncSession) -> SyncResult:
             result.tracks_matched_by_aatd += 1
         elif match_via == "path":
             result.tracks_matched_by_path += 1
-        old_track_id = r.track_id
-        new_track_id = st.server_id
 
-        # Check metadata changes.
+        # Refresh title/artist/album/genre from the server when they've drifted.
         if r.title != st.title or r.artist != st.artist or r.album != st.album or r.genre != st.genre:
             metadata_updates.append(
                 {
@@ -793,26 +711,18 @@ async def sync_track_ids(session: AsyncSession) -> SyncResult:
                     "genre": st.genre,
                 }
             )
-            result.tracks_metadata += 1
+            result.metadata_updated += 1
 
-        # Check track_id rename.
-        if old_track_id != new_track_id:
-            # Skip if new_track_id already exists (conflict).
-            if new_track_id in existing_track_ids:
-                logger.warning(
-                    "Track ID conflict for %s: server ID '%s' already exists, keeping metadata only", norm, new_track_id
-                )
-            else:
-                ext_id = r.external_track_id or old_track_id
-                track_id_renames.append((r.id, old_track_id, new_track_id, ext_id))
-                # Update the set so subsequent checks see the new ID.
-                existing_track_ids.discard(old_track_id)
-                existing_track_ids.add(new_track_id)
-                result.tracks_updated += 1
+        # Record / refresh the media server's ID for this row. No rename, no
+        # cascade — the internal `track_id` is immutable.
+        if r.media_server_id != st.server_id:
+            media_server_id_updates.append({"tf_id": r.id, "media_server_id": st.server_id})
+            result.media_server_id_updated += 1
 
     logger.info(
         f"Media server sync: matched={result.tracks_matched}, "
-        f"metadata_updates={len(metadata_updates)}, id_renames={len(track_id_renames)}, "
+        f"metadata_updates={len(metadata_updates)}, "
+        f"media_server_id_updates={len(media_server_id_updates)}, "
         f"match_phase={time.time() - t0:.1f}s"
     )
 
@@ -829,24 +739,16 @@ async def sync_track_ids(session: AsyncSession) -> SyncResult:
         await session.flush()
         await asyncio.sleep(0)  # yield to event loop
 
-    # 6. Apply track_id renames (with cascading).
-    for tf_id, old_id, new_id, ext_id in track_id_renames:
-        try:
+    # 6. Apply media_server_id updates in batches.
+    for i in range(0, len(media_server_id_updates), batch_size):
+        batch = media_server_id_updates[i : i + batch_size]
+        for upd in batch:
             await session.execute(
-                update(TrackFeatures).where(TrackFeatures.id == tf_id).values(track_id=new_id, external_track_id=ext_id)
+                update(TrackFeatures)
+                .where(TrackFeatures.id == upd["tf_id"])
+                .values(media_server_id=upd["media_server_id"])
             )
-            await session.execute(update(ListenEvent).where(ListenEvent.track_id == old_id).values(track_id=new_id))
-            # Merge any per-user collisions on track_interactions before the
-            # bulk UPDATE so we don't trip the (user_id, track_id) UNIQUE
-            # constraint when a user has interactions on both old and new.
-            await _merge_colliding_interactions(session, old_id, new_id)
-            await session.execute(
-                update(TrackInteraction).where(TrackInteraction.track_id == old_id).values(track_id=new_id)
-            )
-        except Exception as exc:
-            result.errors.append(f"rename {old_id}→{new_id}: {str(exc)[:120]}")
-            logger.warning("Sync rename error %s→%s: %s", old_id, new_id, exc)
-        # Yield every rename to keep event loop responsive.
+        await session.flush()
         await asyncio.sleep(0)
 
     await session.commit()
@@ -862,8 +764,8 @@ async def sync_track_ids(session: AsyncSession) -> SyncResult:
             "matched_aatd": result.tracks_matched_by_aatd,
             "matched_path": result.tracks_matched_by_path,
             "aatd_ambiguous": result.tracks_aatd_ambiguous,
-            "updated": result.tracks_updated,
-            "metadata": result.tracks_metadata,
+            "media_server_id_updated": result.media_server_id_updated,
+            "metadata_updated": result.metadata_updated,
             "unmatched": result.tracks_unmatched,
             "elapsed": result.elapsed_s,
         },

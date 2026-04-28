@@ -62,8 +62,6 @@ async def get_stats(
     event_types = {row[0]: row[1] for row in type_rows}
 
     # Top tracks (last 24h by event count), enriched with metadata
-    from sqlalchemy import or_
-
     track_rows = (
         await session.execute(
             select(
@@ -72,13 +70,7 @@ async def get_stats(
                 TrackFeatures.title,
                 TrackFeatures.artist,
             )
-            .outerjoin(
-                TrackFeatures,
-                or_(
-                    ListenEvent.track_id == TrackFeatures.track_id,
-                    ListenEvent.track_id == TrackFeatures.external_track_id,
-                ),
-            )
+            .outerjoin(TrackFeatures, ListenEvent.track_id == TrackFeatures.track_id)
             .where(ListenEvent.timestamp >= day_ago)
             .group_by(ListenEvent.track_id, TrackFeatures.title, TrackFeatures.artist)
             .order_by(func.count(ListenEvent.id).desc())
@@ -388,8 +380,6 @@ async def pipeline_stats_scoring(
         bins.append({"range": f"{lo:.1f}-{hi:.1f}", "count": cnt})
 
     # Top 10 highest-scored tracks.
-    from sqlalchemy import or_
-
     top_result = (
         await session.execute(
             select(
@@ -399,13 +389,7 @@ async def pipeline_stats_scoring(
                 TrackFeatures.title,
                 TrackFeatures.artist,
             )
-            .outerjoin(
-                TrackFeatures,
-                or_(
-                    TrackInteraction.track_id == TrackFeatures.track_id,
-                    TrackInteraction.track_id == TrackFeatures.external_track_id,
-                ),
-            )
+            .outerjoin(TrackFeatures, TrackInteraction.track_id == TrackFeatures.track_id)
             .order_by(TrackInteraction.satisfaction_score.desc())
             .limit(10)
         )
@@ -425,13 +409,7 @@ async def pipeline_stats_scoring(
                 TrackFeatures.title,
                 TrackFeatures.artist,
             )
-            .outerjoin(
-                TrackFeatures,
-                or_(
-                    TrackInteraction.track_id == TrackFeatures.track_id,
-                    TrackInteraction.track_id == TrackFeatures.external_track_id,
-                ),
-            )
+            .outerjoin(TrackFeatures, TrackInteraction.track_id == TrackFeatures.track_id)
             .order_by(TrackInteraction.satisfaction_score.asc())
             .limit(10)
         )

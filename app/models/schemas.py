@@ -238,6 +238,10 @@ class MoodTag(BaseModel):
 
 class TrackFeaturesResponse(BaseModel):
     track_id: str
+    title: str | None = None
+    artist: str | None = None
+    album: str | None = None
+    genre: str | None = None
     duration: float | None
     bpm: float | None
     key: str | None
@@ -251,7 +255,38 @@ class TrackFeaturesResponse(BaseModel):
     analyzed_at: int | None
     analysis_version: str | None
 
+    # Per-backend external identifiers (issue #37). Any of them may be NULL.
+    media_server_id: str | None = None
+    spotify_id: str | None = None
+    qobuz_id: str | None = None
+    tidal_id: str | None = None
+    deezer_id: str | None = None
+    soundcloud_id: str | None = None
+    # NOTE: serialised under the API name `mb_track_id` (column is
+    # `musicbrainz_track_id`). Route handlers build this dict explicitly
+    # so we don't rely on alias quirks during from_attributes.
+    mb_track_id: str | None = None
+
     model_config = {"from_attributes": True}
+
+
+class TrackLookupBatchRequest(BaseModel):
+    """POST /v1/tracks/lookup — batch resolution of one external-id type to
+    internal track_id. Pass exactly one of the *_ids fields."""
+
+    media_server_ids: list[str] | None = None
+    spotify_ids: list[str] | None = None
+    qobuz_ids: list[str] | None = None
+    tidal_ids: list[str] | None = None
+    deezer_ids: list[str] | None = None
+    soundcloud_ids: list[str] | None = None
+    mb_track_ids: list[str] | None = None
+
+
+class TrackLookupBatchResponse(BaseModel):
+    """{external_id: internal_track_id_or_None} for every input id."""
+
+    resolved: dict[str, str | None]
 
 
 # ---------------------------------------------------------------------------

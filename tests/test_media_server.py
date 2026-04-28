@@ -197,26 +197,27 @@ class TestSyncTrackIds:
 
         assert result.tracks_fetched == 2
         assert result.tracks_matched == 2
-        assert result.tracks_updated == 2
-        assert result.tracks_metadata == 2
+        assert result.media_server_id_updated == 2
+        assert result.metadata_updated == 2
 
-        # Verify the track_ids were updated.
+        # Verify the media_server_id was set and track_id is untouched.
         from sqlalchemy import select
 
         async with _TestSession() as session:
             t1 = (
-                await session.execute(select(TrackFeatures).where(TrackFeatures.track_id == "nav-uuid-001"))
+                await session.execute(select(TrackFeatures).where(TrackFeatures.media_server_id == "nav-uuid-001"))
             ).scalar_one_or_none()
             assert t1 is not None
             assert t1.title == "Track One"
             assert t1.artist == "Artist One"
             assert t1.album == "Album A"
-            # Old hash ID preserved in external_track_id.
-            assert t1.external_track_id == "hash_abc123"
+            # Internal track_id is immutable — the original hash stays.
+            assert t1.track_id == "hash_abc123"
 
     @patch("app.services.media_server.settings")
-    async def test_sync_cascades_to_events_and_interactions(self, mock_settings):
-        """When track_id changes, events and interactions are updated too."""
+    async def test_sync_does_not_rename_track_id_or_cascade(self, mock_settings):
+        """Post-#37 sync is a metadata refresh: track_id is immutable, so
+        listen_events / track_interactions / etc. are never rewritten."""
         mock_settings.MEDIA_SERVER_TYPE = "navidrome"
         mock_settings.MEDIA_SERVER_URL = "http://localhost:4533"
         mock_settings.MEDIA_SERVER_USER = "admin"
@@ -242,34 +243,39 @@ class TestSyncTrackIds:
             async with _TestSession() as session:
                 result = await sync_track_ids(session)
 
-        assert result.tracks_updated == 1
+        # The match is recorded — but only as a media_server_id update.
+        assert result.media_server_id_updated == 1
 
-        # Verify cascade.
         from sqlalchemy import select
 
         async with _TestSession() as session:
-            # Event should now reference the new track_id.
+            # The seeded event / interaction still point at the original
+            # hash track_id; sync never rewrites them under the new schema.
             events = (
-                (await session.execute(select(ListenEvent).where(ListenEvent.track_id == "nav-uuid-003")))
+                (await session.execute(select(ListenEvent).where(ListenEvent.track_id == "hash_ghi789")))
                 .scalars()
                 .all()
             )
             assert len(events) == 1
 
-            # Old track_id should have no events.
-            old_events = (
-                (await session.execute(select(ListenEvent).where(ListenEvent.track_id == "hash_ghi789")))
+            no_events_under_navi = (
+                (await session.execute(select(ListenEvent).where(ListenEvent.track_id == "nav-uuid-003")))
                 .scalars()
                 .all()
             )
-            assert len(old_events) == 0
+            assert no_events_under_navi == []
 
-            # Interaction should be updated.
             interaction = (
-                await session.execute(select(TrackInteraction).where(TrackInteraction.track_id == "nav-uuid-003"))
+                await session.execute(select(TrackInteraction).where(TrackInteraction.track_id == "hash_ghi789"))
             ).scalar_one_or_none()
             assert interaction is not None
             assert interaction.play_count == 5
+
+            # The TrackFeatures row got the media_server_id set, internal id unchanged.
+            tf = (
+                await session.execute(select(TrackFeatures).where(TrackFeatures.track_id == "hash_ghi789"))
+            ).scalar_one()
+            assert tf.media_server_id == "nav-uuid-003"
 
     @patch("app.services.media_server.settings")
     async def test_unmatched_tracks_counted(self, mock_settings):
@@ -333,13 +339,14 @@ class TestSyncTrackIds:
             async with _TestSession() as session:
                 r2 = await sync_track_ids(session)
 
-        assert r1.tracks_updated == 1
-        assert r2.tracks_updated == 0  # Already synced, no change.
+        assert r1.media_server_id_updated == 1
+        assert r2.media_server_id_updated == 0  # Already synced, no change.
         assert r2.tracks_matched == 1
 
     @patch("app.services.media_server.settings")
-    async def test_metadata_update_without_id_change(self, mock_settings):
-        """If track_id already matches but metadata changed, only metadata updates."""
+    async def test_metadata_update_without_media_server_id_change(self, mock_settings):
+        """If media_server_id already matches but metadata drifted, only the
+        title/artist/album/genre fields are refreshed."""
         mock_settings.MEDIA_SERVER_TYPE = "navidrome"
         mock_settings.MEDIA_SERVER_URL = "http://localhost:4533"
         mock_settings.MEDIA_SERVER_USER = "admin"
@@ -349,11 +356,12 @@ class TestSyncTrackIds:
         mock_settings.MEDIA_SERVER_MUSIC_PATH = "/music"
         mock_settings.MUSIC_LIBRARY_PATH = "/music"
 
-        # Create a track that already has the correct track_id.
+        # A row whose media_server_id is already populated correctly.
         async with _TestSession() as session:
             session.add(
                 TrackFeatures(
-                    track_id="nav-uuid-001",
+                    track_id="hash_internal_001",
+                    media_server_id="nav-uuid-001",
                     file_path="/music/Artist/Album/Song.flac",
                     bpm=120.0,
                 )
@@ -374,15 +382,16 @@ class TestSyncTrackIds:
             async with _TestSession() as session:
                 result = await sync_track_ids(session)
 
-        assert result.tracks_updated == 0  # ID didn't change.
-        assert result.tracks_metadata == 1  # But metadata was updated.
+        assert result.media_server_id_updated == 0  # Already had the right ID.
+        assert result.metadata_updated == 1  # But metadata was refreshed.
 
         from sqlalchemy import select
 
         async with _TestSession() as session:
             t = (
-                await session.execute(select(TrackFeatures).where(TrackFeatures.track_id == "nav-uuid-001"))
+                await session.execute(select(TrackFeatures).where(TrackFeatures.media_server_id == "nav-uuid-001"))
             ).scalar_one()
+            assert t.track_id == "hash_internal_001"
             assert t.title == "Updated Title"
             assert t.artist == "Updated Artist"
 
@@ -735,7 +744,7 @@ class TestMatcherPriorityChain:
         assert result.tracks_matched_by_mbid == 1
         assert result.tracks_matched_by_aatd == 0
         assert result.tracks_matched_by_path == 0
-        assert result.tracks_updated == 1
+        assert result.media_server_id_updated == 1
 
     @patch("app.services.media_server.settings")
     async def test_aatd_match_when_path_is_synthetic(self, mock_settings):
@@ -772,7 +781,7 @@ class TestMatcherPriorityChain:
         assert result.tracks_matched_by_aatd == 1
         assert result.tracks_matched_by_mbid == 0
         assert result.tracks_matched_by_path == 0
-        assert result.tracks_updated == 1
+        assert result.media_server_id_updated == 1
         assert result.tracks_aatd_ambiguous == 0
 
     @patch("app.services.media_server.settings")
@@ -958,7 +967,7 @@ class TestMatcherPriorityChain:
         assert result.tracks_matched == 1
         assert result.tracks_matched_by_aatd == 1
         assert result.tracks_aatd_ambiguous == 0
-        assert result.tracks_updated == 1
+        assert result.media_server_id_updated == 1
 
     @patch("app.services.media_server.settings")
     async def test_atd_fallback_when_artist_diverges_completely(self, mock_settings):
@@ -992,7 +1001,7 @@ class TestMatcherPriorityChain:
         assert result.tracks_matched == 1
         # ATD is rolled into the aatd counter for backwards-compat reporting.
         assert result.tracks_matched_by_aatd == 1
-        assert result.tracks_updated == 1
+        assert result.media_server_id_updated == 1
 
     @patch("app.services.media_server.settings")
     async def test_atd_fallback_rejects_when_duration_misses(self, mock_settings):
@@ -1098,128 +1107,11 @@ class TestMatcherPriorityChain:
         assert result.tracks_matched == 0
         assert result.tracks_unmatched == 1
 
-    @patch("app.services.media_server.settings")
-    async def test_rename_merges_colliding_interactions(self, mock_settings):
-        """Repro for issue #28: a TrackInteraction already exists at the
-        post-rename track_id (e.g. left over from a previous sync, or from
-        events that came in tagged with the Navidrome ID directly).  The
-        naive UPDATE in the rename loop trips uq_user_track; the fix merges
-        the two rows by summing counts and deleting the old row.
-        """
-        self._settings(mock_settings)
-
-        async with _TestSession() as session:
-            # GrooveIQ track currently at the legacy hash id.
-            session.add(
-                TrackFeatures(
-                    track_id="legacy-23946",
-                    file_path="/music/Artist/Album/song.flac",
-                    title="Song",
-                    artist="Artist",
-                    album="Album",
-                    duration=180.0,
-                )
-            )
-            session.add(User(user_id="u1"))
-            now = int(time.time())
-            # u1 has interactions on the legacy id AND on the post-rename id
-            # (the latter typically arrives via events ingested before sync,
-            # or from a previous partial sync).
-            session.add(
-                TrackInteraction(
-                    user_id="u1",
-                    track_id="legacy-23946",
-                    play_count=3,
-                    skip_count=1,
-                    like_count=1,
-                    early_skip_count=1,
-                    full_listen_count=2,
-                    total_dwell_ms=120_000,
-                    avg_completion=0.9,
-                    first_played_at=now - 100,
-                    last_played_at=now - 10,
-                    satisfaction_score=0.7,
-                    last_event_id=10,
-                    updated_at=now,
-                )
-            )
-            session.add(
-                TrackInteraction(
-                    user_id="u1",
-                    track_id="nav-target-id",
-                    play_count=2,
-                    skip_count=0,
-                    full_listen_count=2,
-                    total_dwell_ms=80_000,
-                    avg_completion=0.8,
-                    first_played_at=now - 50,
-                    last_played_at=now - 5,
-                    satisfaction_score=0.5,
-                    last_event_id=15,
-                    updated_at=now,
-                )
-            )
-            # And one interaction for a different user on the legacy id only —
-            # this should be UPDATEd normally (no collision).
-            session.add(
-                TrackInteraction(
-                    user_id="u2",
-                    track_id="legacy-23946",
-                    play_count=4,
-                    last_event_id=7,
-                    updated_at=now,
-                )
-            )
-            await session.commit()
-
-        server_tracks = [
-            MediaServerTrack(
-                server_id="nav-target-id",
-                title="Song",
-                artist="Artist",
-                album="Album",
-                file_path="x/y/z.flac",
-                duration=180.0,
-            ),
-        ]
-        with patch("app.services.media_server.fetch_tracks", new_callable=AsyncMock, return_value=server_tracks):
-            async with _TestSession() as session:
-                result = await sync_track_ids(session)
-
-        # No UNIQUE constraint errors.
-        assert all("UNIQUE" not in e for e in result.errors), f"unexpected UNIQUE errors: {result.errors}"
-        assert result.tracks_updated == 1
-
-        from sqlalchemy import select
-
-        async with _TestSession() as session:
-            # u1: one merged row at the new id with summed counts.
-            u1 = (
-                (await session.execute(select(TrackInteraction).where(TrackInteraction.user_id == "u1")))
-                .scalars()
-                .all()
-            )
-            assert len(u1) == 1
-            merged = u1[0]
-            assert merged.track_id == "nav-target-id"
-            assert merged.play_count == 5  # 3 + 2
-            assert merged.skip_count == 1  # 1 + 0
-            assert merged.like_count == 1  # 1 + 0
-            assert merged.full_listen_count == 4  # 2 + 2
-            assert merged.total_dwell_ms == 200_000  # 120_000 + 80_000
-            assert merged.last_event_id == 15  # max(10, 15)
-            assert merged.first_played_at == now - 100  # earliest
-            assert merged.last_played_at == now - 5  # latest
-
-            # u2: non-colliding row was renamed normally.
-            u2 = (
-                (await session.execute(select(TrackInteraction).where(TrackInteraction.user_id == "u2")))
-                .scalars()
-                .all()
-            )
-            assert len(u2) == 1
-            assert u2[0].track_id == "nav-target-id"
-            assert u2[0].play_count == 4
+    # NOTE: ``test_rename_merges_colliding_interactions`` (issue #28) was
+    # removed as part of issue #37. Sync no longer renames track_id, so the
+    # (user_id, track_id) UNIQUE collision can't arise from sync. The merge
+    # logic itself now lives in migrations/010 for the one-shot data reshape;
+    # see that script for tests of the merge behaviour.
 
     @patch("app.services.media_server.settings")
     async def test_uses_duration_ms_when_set(self, mock_settings):

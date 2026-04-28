@@ -276,7 +276,9 @@ async def _run_scan(scan_id: int) -> None:
                     sync_result = await sync_track_ids(sync_session)
                 logger.info(
                     f"[Scan {scan_id}] Post-scan phase B (media sync): "
-                    f"{sync_result.tracks_matched} matched, {sync_result.tracks_updated} updated, "
+                    f"{sync_result.tracks_matched} matched, "
+                    f"{sync_result.media_server_id_updated} ids updated, "
+                    f"{sync_result.metadata_updated} metadata refreshed, "
                     f"{time.time() - t_phase:.1f}s"
                 )
             else:
@@ -448,21 +450,37 @@ async def _process_batch(
 
 
 async def _upsert_track_features(session: AsyncSession, data: dict) -> None:
-    """Insert or update track_features row from analysis result dict."""
+    """Insert or update track_features row from analysis result dict.
+
+    The internal ``track_id`` is ALWAYS derived from the file's relative path
+    via ``generate_track_id`` — never copied from the analysis worker's
+    output. Historically, a numeric streamrip / Qobuz / Tidal service ID
+    occasionally leaked in through ``data["track_id"]`` and ended up
+    overwriting the canonical hash; issue #37 closes that hole.
+
+    Any service-specific identifier the worker can extract (Spotify, Qobuz,
+    Tidal, Deezer, SoundCloud, Navidrome) is welcome — it lands in its
+    dedicated per-backend column thanks to the ``hasattr(TrackFeatures, k)``
+    filter, since those columns now exist on the model.
+    """
     file_path = data.get("file_path", "")
-    track_id = data.get("track_id") or generate_track_id(file_path)
+    track_id = generate_track_id(file_path)
+
+    # Drop any track_id smuggled in via the analysis pipeline — the only
+    # legitimate source of TrackFeatures.track_id is the file-path hash.
+    data = {k: v for k, v in data.items() if k != "track_id"}
 
     result = await session.execute(select(TrackFeatures).where(TrackFeatures.track_id == track_id))
     existing = result.scalar_one_or_none()
 
     if existing is None:
         row = TrackFeatures(
-            track_id=track_id, **{k: v for k, v in data.items() if hasattr(TrackFeatures, k) and k != "track_id"}
+            track_id=track_id, **{k: v for k, v in data.items() if hasattr(TrackFeatures, k)}
         )
         session.add(row)
     else:
         for k, v in data.items():
-            if hasattr(existing, k) and k not in ("id", "track_id"):
+            if hasattr(existing, k) and k != "id":
                 setattr(existing, k, v)
 
 

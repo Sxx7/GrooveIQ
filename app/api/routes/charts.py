@@ -54,22 +54,20 @@ def _media_server_auth_params() -> str | None:
 def _build_cover_url(tf: TrackFeatures, auth_qs: str | None) -> str | None:
     """Build a media-server cover art URL for a matched track.
 
-    Navidrome (Subsonic API): /rest/getCoverArt.view?id=<external_id>&size=300
-    Plex: /library/metadata/<external_id>/thumb
+    Navidrome (Subsonic API): /rest/getCoverArt.view?id=<media_server_id>&size=300
 
-    Returns None if no media server is configured or the track has no external ID.
+    Returns None if no media server is configured or the row hasn't been
+    matched to one yet (media_server_id IS NULL).
     """
-    ext_id = tf.external_track_id
-    if not ext_id or not auth_qs or not settings.MEDIA_SERVER_URL:
+    msid = tf.media_server_id
+    if not msid or not auth_qs or not settings.MEDIA_SERVER_URL:
         return None
 
     base = settings.MEDIA_SERVER_URL.rstrip("/")
     server_type = (settings.MEDIA_SERVER_TYPE or "").lower()
 
     if server_type == "navidrome":
-        return f"{base}/rest/getCoverArt.view?id={ext_id}&size=300&{auth_qs}"
-    elif server_type == "plex":
-        return f"{base}/library/metadata/{ext_id}/thumb?{auth_qs}"
+        return f"{base}/rest/getCoverArt.view?id={msid}&size=300&{auth_qs}"
 
     return None
 
@@ -192,9 +190,9 @@ async def get_chart(
     # without the fallback those entries would render the music-note placeholder.
     # We unconditionally look up cover_art_cache for every entry, even matched
     # ones. The frontend uses image_url as a fallback when library.cover_url
-    # 404s (e.g. when external_track_id is a stale legacy GrooveIQ hex that
-    # Navidrome doesn't know about), so giving it a Spotify CDN URL to fall
-    # back on is strictly better than nothing.
+    # 404s (e.g. when media_server_id points at a song Navidrome no longer
+    # knows about because it was deleted/moved), so giving it a Spotify CDN
+    # URL to fall back on is strictly better than nothing.
     cover_cache_map: dict[tuple[str, str], str] = {}
     keys_a: set[str] = set()
     keys_t: set[str] = set()

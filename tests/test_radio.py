@@ -74,15 +74,15 @@ async def client():
         yield c
 
 
-async def _seed_user_and_track(*, internal_id: str = "12345", external_id: str = "qhiFiRW0x0Ux612N02Xmgu") -> None:
-    """Create a user plus one track with both internal and external IDs."""
+async def _seed_user_and_track(*, internal_id: str = "12345", media_server_id: str = "qhiFiRW0x0Ux612N02Xmgu") -> None:
+    """Create a user plus one track with both internal track_id and media_server_id."""
     now = int(time.time())
     async with _TestSession() as session:
         session.add(User(user_id="testuser", display_name="Test User", profile_updated_at=now))
         session.add(
             TrackFeatures(
                 track_id=internal_id,
-                external_track_id=external_id,
+                media_server_id=media_server_id,
                 file_path=f"/music/{internal_id}.mp3",
                 title="Test Song",
                 artist="Test Artist",
@@ -98,18 +98,18 @@ async def _seed_user_and_track(*, internal_id: str = "12345", external_id: str =
 
 
 # ---------------------------------------------------------------------------
-# Service-level: create_radio_session resolves external_track_id → internal
+# Service-level: create_radio_session resolves media_server_id → internal
 # ---------------------------------------------------------------------------
 
 
 class TestRadioSessionSeedResolution:
-    async def test_track_seed_with_external_id_resolves_to_internal(self, monkeypatch):
-        """When seed_value is an external_track_id, seed_track_ids must hold the
+    async def test_track_seed_with_media_server_id_resolves_to_internal(self, monkeypatch):
+        """When seed_value is a media_server_id, seed_track_ids must hold the
         internal track_id (FAISS keys), and faiss_index.get_embedding must be
         called with the internal id."""
         from app.services import radio as radio_service
 
-        await _seed_user_and_track(internal_id="42", external_id="qhiFiRW0x0Ux612N02Xmgu")
+        await _seed_user_and_track(internal_id="42", media_server_id="qhiFiRW0x0Ux612N02Xmgu")
 
         # Stub FAISS so the service doesn't need a built index.
         seen_args: list[str] = []
@@ -124,11 +124,11 @@ class TestRadioSessionSeedResolution:
             session = await radio_service.create_radio_session(
                 user_id="testuser",
                 seed_type="track",
-                seed_value="qhiFiRW0x0Ux612N02Xmgu",  # external id
+                seed_value="qhiFiRW0x0Ux612N02Xmgu",  # media_server_id
                 db=db,
             )
 
-        # FAISS must have been queried with the internal id, not the external one.
+        # FAISS must have been queried with the internal id, not the media server one.
         assert seen_args == ["42"]
         assert session.seed_track_ids == ["42"]
         assert session.seed_embedding is not None
@@ -140,7 +140,7 @@ class TestRadioSessionSeedResolution:
         must continue to function unchanged."""
         from app.services import radio as radio_service
 
-        await _seed_user_and_track(internal_id="42", external_id="qhiFiRW0x0Ux612N02Xmgu")
+        await _seed_user_and_track(internal_id="42", media_server_id="qhiFiRW0x0Ux612N02Xmgu")
 
         seen_args: list[str] = []
 
@@ -168,10 +168,10 @@ class TestRadioSessionSeedResolution:
 
 
 class TestRadioStartSeedValidation:
-    async def test_seed_external_id_passes_validation(self, client: AsyncClient, monkeypatch):
-        """Sending a Navidrome external_track_id as seed_value must not 404 at
+    async def test_seed_media_server_id_passes_validation(self, client: AsyncClient, monkeypatch):
+        """Sending a Navidrome media_server_id as seed_value must not 404 at
         the validation step."""
-        await _seed_user_and_track(internal_id="42", external_id="qhiFiRW0x0Ux612N02Xmgu")
+        await _seed_user_and_track(internal_id="42", media_server_id="qhiFiRW0x0Ux612N02Xmgu")
 
         # Audit writes use the production AsyncSessionLocal; not worth wiring
         # for this test so just disable it.
@@ -184,8 +184,8 @@ class TestRadioStartSeedValidation:
         )
 
         # Stub get_next_tracks so we don't need a built index for candidate gen.
-        # The real service returns the internal `track_id` (which post-sync is
-        # the current Navidrome id) rather than the legacy external_track_id.
+        # The real service returns the internal `track_id` (a stable file-path
+        # hash, post-#37) and the row's media_server_id alongside it.
         async def _fake_get_next_tracks(session_id, count, db, *, collect_audit=False):
             track_data = {
                 "position": 0,
@@ -210,7 +210,7 @@ class TestRadioStartSeedValidation:
             json={
                 "user_id": "testuser",
                 "seed_type": "track",
-                "seed_value": "qhiFiRW0x0Ux612N02Xmgu",  # external id from iOS
+                "seed_value": "qhiFiRW0x0Ux612N02Xmgu",  # media_server_id from iOS
                 "count": 1,
             },
         )
@@ -219,14 +219,15 @@ class TestRadioStartSeedValidation:
         # Route echoes back the seed_value the caller passed — preserved as-is
         # in the session record so iOS knows what it asked for.
         assert data["seed_value"] == "qhiFiRW0x0Ux612N02Xmgu"
-        # The returned track_id is the canonical id (post-sync = Navidrome id).
+        # The returned track_id is the canonical internal id (post-#37, a
+        # stable hash that is NEVER the Navidrome id).
         assert data["tracks"][0]["track_id"] == "42"
 
     async def test_seed_unknown_id_still_404s(self, client: AsyncClient):
         """Unknown seed values must still produce a 404 (regression check on
         the or_() validation widening — it must not accidentally pass through
         bogus ids)."""
-        await _seed_user_and_track(internal_id="42", external_id="qhiFiRW0x0Ux612N02Xmgu")
+        await _seed_user_and_track(internal_id="42", media_server_id="qhiFiRW0x0Ux612N02Xmgu")
 
         resp = await client.post(
             "/v1/radio/start",
@@ -247,11 +248,11 @@ class TestRadioStartSeedValidation:
 
 
 class TestRadioResponseTrackIdMapping:
-    """After library/sync runs, ``TrackFeatures.track_id`` IS the current
-    media-server id (sync renames it).  ``external_track_id`` holds the
-    *previous* id and is generally stale after a media-server upgrade, so
-    the radio response must surface the internal/canonical ``tid`` and
-    must NOT fall back to ``external_track_id``."""
+    """Post-#37, ``TrackFeatures.track_id`` is the immutable internal hash
+    and ``media_server_id`` holds the Navidrome id. The radio response
+    surfaces both: ``track_id`` so subsequent /v1/events posts can attribute
+    correctly, and ``media_server_id`` so the client can hit Navidrome
+    without a /v1/tracks/lookup roundtrip."""
 
     @staticmethod
     def _stub_pipeline(monkeypatch, candidate_id: str) -> None:
@@ -279,46 +280,39 @@ class TestRadioResponseTrackIdMapping:
         monkeypatch.setattr("app.services.reranker.rerank", _fake_rerank)
         monkeypatch.setattr("app.services.reranker.get_last_rerank_actions", lambda: [])
 
-    async def test_response_returns_internal_track_id_post_sync(self, monkeypatch):
-        """Post-sync, track_id IS the current Navidrome id.  Even though the
-        track also has a (stale) external_track_id from a previous sync,
-        the response must use track_id so the client hits Navidrome with
-        the *current* id, not the stale one."""
+    async def test_response_returns_internal_track_id_and_media_server_id(self, monkeypatch):
+        """The response must carry the internal track_id under "track_id" and
+        the row's Navidrome id under "media_server_id"."""
         from app.services import radio as radio_service
 
-        # Mimics a track that the new sync just renamed: track_id is the
-        # 22-char Navidrome id, external_track_id is the previous (stale)
-        # 16-hex id from an older sync.
         await _seed_user_and_track(
-            internal_id="iDkrnC4UrRVJ6HHEa83nc9",  # current Navidrome id
-            external_id="85637f2c0b1968aa",  # legacy 16-hex
+            internal_id="aaaaa1234bbbbb56",  # canonical 16-hex
+            media_server_id="iDkrnC4UrRVJ6HHEa83nc9",  # Navidrome id
         )
 
         s = radio_service.RadioSession(
             session_id="sess-1",
             user_id="testuser",
             seed_type="track",
-            seed_value="iDkrnC4UrRVJ6HHEa83nc9",
-            seed_track_ids=["iDkrnC4UrRVJ6HHEa83nc9"],
+            seed_value="aaaaa1234bbbbb56",
+            seed_track_ids=["aaaaa1234bbbbb56"],
             seed_embedding=np.ones(64, dtype=np.float32),
             drift_embedding=np.ones(64, dtype=np.float32),
         )
         radio_service.store_session(s)
-        self._stub_pipeline(monkeypatch, "iDkrnC4UrRVJ6HHEa83nc9")
+        self._stub_pipeline(monkeypatch, "aaaaa1234bbbbb56")
 
         async with _TestSession() as db:
             tracks = await radio_service.get_next_tracks("sess-1", 1, db)
 
         assert tracks is not None and len(tracks) == 1
-        # MUST be the current id (track_id), NOT the stale external_track_id.
-        assert tracks[0]["track_id"] == "iDkrnC4UrRVJ6HHEa83nc9"
-        # Internal bookkeeping still uses the internal id.
-        assert "iDkrnC4UrRVJ6HHEa83nc9" in s.played_set
+        assert tracks[0]["track_id"] == "aaaaa1234bbbbb56"
+        assert tracks[0]["media_server_id"] == "iDkrnC4UrRVJ6HHEa83nc9"
+        assert "aaaaa1234bbbbb56" in s.played_set
 
-    async def test_response_uses_internal_when_no_external(self, monkeypatch):
-        """Tracks that the sync hasn't matched yet (no external_track_id)
-        still surface the internal id — that's all we have, and the client
-        will simply 404 on it (no different from any other unmatched track)."""
+    async def test_response_uses_internal_when_no_media_server_id(self, monkeypatch):
+        """Tracks that the sync hasn't matched yet (media_server_id IS NULL)
+        still surface the internal id — that's all we have."""
         from app.services import radio as radio_service
 
         now = int(time.time())
@@ -327,7 +321,7 @@ class TestRadioResponseTrackIdMapping:
             db.add(
                 TrackFeatures(
                     track_id="legacy-1",
-                    external_track_id=None,
+                    media_server_id=None,
                     file_path="/music/legacy-1.mp3",
                     title="Legacy",
                     artist="Old",

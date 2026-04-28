@@ -53,8 +53,10 @@ async def _resolve_track_meta(
 ) -> _TrackMeta | None:
     """
     Resolve artist/title for a track_id using multiple strategies:
-      1. TrackFeatures.track_id (direct match after media server sync)
-      2. TrackFeatures.external_track_id (pre-sync hash-based ID)
+      1. TrackFeatures.track_id (the canonical internal id — always first)
+      2. TrackFeatures.media_server_id (in case a caller still passes a
+         Navidrome song id — defensive, post-#37 ingestion rejects these
+         but legacy queue entries may still hold one)
       3. Previously successful ScrobbleQueue entry for the same track_id
 
     Returns None if no metadata can be found.
@@ -64,10 +66,10 @@ async def _resolve_track_meta(
         await session.execute(select(TrackFeatures).where(TrackFeatures.track_id == track_id))
     ).scalar_one_or_none()
 
-    # Strategy 2: external_track_id match
+    # Strategy 2: media_server_id match
     if track is None:
         track = (
-            await session.execute(select(TrackFeatures).where(TrackFeatures.external_track_id == track_id))
+            await session.execute(select(TrackFeatures).where(TrackFeatures.media_server_id == track_id))
         ).scalar_one_or_none()
 
     if track and track.artist and track.title:

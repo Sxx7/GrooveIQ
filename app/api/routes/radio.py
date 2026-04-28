@@ -76,14 +76,14 @@ async def start_radio(
 
     # Validate seed based on type.
     if body.seed_type == "track":
-        # Accept either the internal track_id or the media-server external_track_id
-        # (e.g. a Navidrome 22-char base62 ID from an iOS client).  Mirrors the
-        # pattern used by users.py for onboarding's favourite_tracks.
+        # Accept either the internal track_id or the media_server_id (e.g. a
+        # Navidrome 22-char base62 ID from an iOS client). Mirrors the pattern
+        # used by users.py for onboarding's favourite_tracks.
         result = await db.execute(
             select(TrackFeatures.track_id).where(
                 or_(
                     TrackFeatures.track_id == body.seed_value,
-                    TrackFeatures.external_track_id == body.seed_value,
+                    TrackFeatures.media_server_id == body.seed_value,
                 )
             )
         )

@@ -1183,7 +1183,7 @@ function backfillScrobbles(userId) {
 
 function triggerSync() {
   apiPost('/v1/library/sync', {}).then(function(data) {
-    var msg = 'Sync complete: ' + data.tracks_matched + ' matched, ' + data.tracks_updated + ' updated, ' + data.tracks_metadata + ' metadata refreshed';
+    var msg = 'Sync complete: ' + data.tracks_matched + ' matched, ' + data.media_server_id_updated + ' ids updated, ' + data.metadata_updated + ' metadata refreshed';
     if (data.tracks_unmatched) msg += ', ' + data.tracks_unmatched + ' unmatched';
     if (data.errors && data.errors.length) msg += '\nErrors: ' + data.errors.join(', ');
     alert(msg); loadDashboard();
