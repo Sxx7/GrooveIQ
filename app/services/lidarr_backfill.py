@@ -27,7 +27,7 @@ import logging
 import threading
 import time
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from difflib import SequenceMatcher
 from typing import Any
 
@@ -41,7 +41,6 @@ from app.models.lidarr_backfill_schema import LidarrBackfillConfigData, QueueOrd
 from app.services.discovery import LidarrClient
 from app.services.lidarr_backfill_config import get_config
 from app.services.streamrip import StreamripClient
-
 
 # Lidarr sort_key + sort_direction for each user-facing queue order. Random
 # uses a stable base sort and gets shuffled in Python after fetch.
@@ -352,7 +351,7 @@ async def _find_streamrip_album(
 
         try:
             results = await streamrip_client.search(query, limit=search_limit, service=service)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             logger.warning("backfill: streamrip search failed (%s): %s", service, exc)
             continue
         if not results:
@@ -394,7 +393,7 @@ async def _find_streamrip_album(
 
 async def _compute_capacity(session: AsyncSession, cfg: LidarrBackfillConfigData) -> int:
     """How many more downloads can we start in the current sliding hour."""
-    cutoff = datetime.now(timezone.utc) - timedelta(hours=1)
+    cutoff = datetime.now(UTC) - timedelta(hours=1)
     cutoff_ts = int(cutoff.timestamp())
     in_window = await session.scalar(
         select(func.count()).select_from(LidarrBackfillRequest).where(LidarrBackfillRequest.created_at > cutoff_ts)
@@ -466,7 +465,7 @@ async def _fetch_candidates(
                 sort_key=sort_key,
                 sort_direction=sort_direction,
             )
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             logger.warning("backfill: fetching /wanted/missing failed: %s", exc)
             rows = []
         for r in rows:
@@ -480,7 +479,7 @@ async def _fetch_candidates(
                 sort_key=sort_key,
                 sort_direction=sort_direction,
             )
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             logger.warning("backfill: fetching /wanted/cutoff failed: %s", exc)
             rows = []
         for r in rows:
@@ -676,7 +675,7 @@ async def _process_album(
 
     try:
         result = await streamrip_client.download_album(match.service, match.album_id)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         logger.warning("lidarr_backfill: download_album raised: %s", exc)
         await _persist_request(
             session,
@@ -782,7 +781,7 @@ async def run_backfill_tick(session: AsyncSession) -> dict[str, Any]:
                             available_services=available_services,
                         )
                     )
-                except Exception as exc:  # noqa: BLE001
+                except Exception as exc:
                     logger.error("lidarr_backfill: _process_album crashed: %s", exc, exc_info=True)
                     results.append(
                         {
@@ -838,7 +837,7 @@ async def poll_in_flight(session: AsyncSession) -> dict[str, Any]:
         for row in rows:
             try:
                 status = await streamrip_client.get_status(row.streamrip_task_id or "")
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 logger.warning("lidarr_backfill: status check raised: %s", exc)
                 summary["still_running"] += 1
                 continue
@@ -859,7 +858,7 @@ async def poll_in_flight(session: AsyncSession) -> dict[str, Any]:
                 if lidarr_client is not None:
                     try:
                         await lidarr_client.trigger_downloaded_scan(cfg.import_options.scan_path)
-                    except Exception as exc:  # noqa: BLE001
+                    except Exception as exc:
                         logger.warning("lidarr_backfill: import scan failed: %s", exc)
             elif sr_status == "error":
                 row.attempt_count += 1
@@ -917,7 +916,7 @@ async def preview_matches(
                 merged[k] = v
         try:
             cfg = LidarrBackfillConfigData.model_validate(merged)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             return {"error": f"invalid config_override: {exc}", "candidates": []}
     else:
         cfg = get_config()
@@ -939,7 +938,7 @@ async def preview_matches(
                     {**r, "_source": "missing"}
                     for r in await lidarr_client.get_missing_albums(monitored=cfg.sources.monitored_only)
                 )
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 return {"error": f"lidarr_fetch_failed: {exc}", "candidates": []}
         if cfg.sources.cutoff_unmet:
             try:
@@ -947,7 +946,7 @@ async def preview_matches(
                     {**r, "_source": "cutoff"}
                     for r in await lidarr_client.get_cutoff_unmet_albums(monitored=cfg.sources.monitored_only)
                 )
-            except Exception:  # noqa: BLE001
+            except Exception:
                 pass
 
         # Apply filters (non-persisted).
@@ -1125,7 +1124,7 @@ async def get_stats(session: AsyncSession) -> dict[str, Any]:
                 )
                 resp.raise_for_status()
                 missing_total = resp.json().get("totalRecords")
-            except Exception:  # noqa: BLE001
+            except Exception:
                 missing_total = None
             try:
                 resp = await client._client.get(
@@ -1134,7 +1133,7 @@ async def get_stats(session: AsyncSession) -> dict[str, Any]:
                 )
                 resp.raise_for_status()
                 cutoff_total = resp.json().get("totalRecords")
-            except Exception:  # noqa: BLE001
+            except Exception:
                 cutoff_total = None
         finally:
             await client.close()
