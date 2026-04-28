@@ -730,3 +730,30 @@ async def test_find_streamrip_album_none_means_dont_filter(db_session, cfg):
     # soundcloud is filtered out by the quality-floor gate (lossy_high < lossless),
     # so we expect everything except soundcloud.
     assert services_searched == {"qobuz", "tidal", "deezer"}
+
+
+# ---------------------------------------------------------------------------
+# Tick-in-progress flag (powers the dashboard "Running tick" badge)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_tick_in_progress_flag_lifecycle():
+    """The flag flips on inside the context, off on exit, even on exception."""
+    assert lbf.is_tick_in_progress() is False
+    assert lbf.get_tick_started_at() is None
+
+    async with lbf._mark_tick_running():
+        assert lbf.is_tick_in_progress() is True
+        assert lbf.get_tick_started_at() is not None
+
+    assert lbf.is_tick_in_progress() is False
+    assert lbf.get_tick_started_at() is None
+
+    # And clears on exception.
+    with pytest.raises(RuntimeError):
+        async with lbf._mark_tick_running():
+            assert lbf.is_tick_in_progress() is True
+            raise RuntimeError("boom")
+    assert lbf.is_tick_in_progress() is False
+    assert lbf.get_tick_started_at() is None

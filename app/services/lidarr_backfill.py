@@ -22,7 +22,9 @@ fill_library pattern).
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
+import threading
 import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -68,6 +70,48 @@ _SERVICE_QUALITY: dict[str, QualityTier] = {
     "deezer": QualityTier.LOSSLESS,
     "soundcloud": QualityTier.LOSSY_HIGH,
 }
+
+
+# ---------------------------------------------------------------------------
+# Tick-in-progress flag
+# ---------------------------------------------------------------------------
+#
+# Surfaced via the /stats endpoint so the dashboard can show a live "running
+# tick" badge — gives operators clear feedback that work is happening, even
+# for scheduled ticks they didn't trigger themselves.
+
+_tick_lock = threading.Lock()
+_tick_in_progress = False
+_tick_started_at: int | None = None
+
+
+def is_tick_in_progress() -> bool:
+    """Whether ``run_backfill_tick`` is currently doing work (not just spinning early-skips)."""
+    with _tick_lock:
+        return _tick_in_progress
+
+
+def get_tick_started_at() -> int | None:
+    """Unix timestamp at which the in-flight tick started, or None if no tick is running."""
+    with _tick_lock:
+        return _tick_started_at
+
+
+@contextlib.asynccontextmanager
+async def _mark_tick_running():
+    """Context manager that flips ``_tick_in_progress`` on entry and clears it on exit
+    (even if the body raises). Wrapped around the meaningful work in run_backfill_tick.
+    """
+    global _tick_in_progress, _tick_started_at
+    with _tick_lock:
+        _tick_in_progress = True
+        _tick_started_at = _now_ts()
+    try:
+        yield
+    finally:
+        with _tick_lock:
+            _tick_in_progress = False
+            _tick_started_at = None
 
 
 # ---------------------------------------------------------------------------
@@ -691,40 +735,41 @@ async def run_backfill_tick(session: AsyncSession) -> dict[str, Any]:
     lidarr_client = LidarrClient(settings.LIDARR_URL, settings.LIDARR_API_KEY)
     streamrip_client = StreamripClient(settings.STREAMRIP_API_URL)
     try:
-        # Probe streamrip-api once per tick so we can skip non-configured
-        # services silently instead of logging a 503 warning per album.
-        available_services = await streamrip_client.get_available_services()
+        async with _mark_tick_running():
+            # Probe streamrip-api once per tick so we can skip non-configured
+            # services silently instead of logging a 503 warning per album.
+            available_services = await streamrip_client.get_available_services()
 
-        candidates = await _fetch_candidates(cfg, lidarr_client, limit=batch_target * 4)
-        candidates = await _filter_by_cooldown_and_state(session, candidates, cfg)
-        candidates = candidates[:batch_target]
+            candidates = await _fetch_candidates(cfg, lidarr_client, limit=batch_target * 4)
+            candidates = await _filter_by_cooldown_and_state(session, candidates, cfg)
+            candidates = candidates[:batch_target]
 
-        results: list[dict[str, Any]] = []
-        for album in candidates:
-            try:
-                results.append(
-                    await _process_album(
-                        session, album, cfg, streamrip_client,
-                        available_services=available_services,
+            results: list[dict[str, Any]] = []
+            for album in candidates:
+                try:
+                    results.append(
+                        await _process_album(
+                            session, album, cfg, streamrip_client,
+                            available_services=available_services,
+                        )
                     )
-                )
-            except Exception as exc:  # noqa: BLE001
-                logger.error("lidarr_backfill: _process_album crashed: %s", exc, exc_info=True)
-                results.append(
-                    {
-                        "lidarr_album_id": album.get("id"),
-                        "decision": "failed",
-                        "error": f"crashed: {exc}",
-                    }
-                )
-            await session.commit()
+                except Exception as exc:  # noqa: BLE001
+                    logger.error("lidarr_backfill: _process_album crashed: %s", exc, exc_info=True)
+                    results.append(
+                        {
+                            "lidarr_album_id": album.get("id"),
+                            "decision": "failed",
+                            "error": f"crashed: {exc}",
+                        }
+                    )
+                await session.commit()
 
-        return {
-            "processed": len(results),
-            "capacity_remaining": max(0, capacity - len(results)),
-            "available_services": available_services,
-            "results": results,
-        }
+            return {
+                "processed": len(results),
+                "capacity_remaining": max(0, capacity - len(results)),
+                "available_services": available_services,
+                "results": results,
+            }
     finally:
         await lidarr_client.close()
         await streamrip_client.close()
@@ -1075,6 +1120,8 @@ async def get_stats(session: AsyncSession) -> dict[str, Any]:
 
     return {
         "enabled": cfg.enabled,
+        "tick_in_progress": is_tick_in_progress(),
+        "tick_started_at": get_tick_started_at(),
         "missing_total": missing_total,
         "cutoff_total": cutoff_total,
         "queued": by_status.get(STATUS_QUEUED, 0),
