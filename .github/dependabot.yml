@@ -1,0 +1,117 @@
+version: 2
+
+updates:
+  # ── Python dependencies ─────────────────────────────────────────────
+  # Main app
+  - package-ecosystem: pip
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Europe/Zurich
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "deps"
+    groups:
+      fastapi-stack:
+        patterns:
+          - "fastapi"
+          - "starlette"
+          - "uvicorn*"
+          - "python-multipart"
+      pydantic-stack:
+        patterns:
+          - "pydantic"
+          - "pydantic-settings"
+      sqlalchemy-stack:
+        patterns:
+          - "sqlalchemy"
+          - "aiosqlite"
+          - "asyncpg"
+          - "alembic"
+      ml-stack:
+        patterns:
+          - "numpy"
+          - "scipy"
+          - "scikit-learn"
+          - "lightgbm"
+          - "faiss-cpu"
+          - "implicit"
+          - "gensim"
+          - "onnxruntime"
+          - "umap-learn"
+      pytest-stack:
+        patterns:
+          - "pytest*"
+
+  # streamrip-api wrapper
+  - package-ecosystem: pip
+    directory: "/streamrip-api"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Europe/Zurich
+    open-pull-requests-limit: 3
+    commit-message:
+      prefix: "deps(streamrip-api)"
+
+  # acousticbrainz-lookup wrapper
+  - package-ecosystem: pip
+    directory: "/acousticbrainz-lookup"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Europe/Zurich
+    open-pull-requests-limit: 3
+    commit-message:
+      prefix: "deps(ab-lookup)"
+
+  # ── Docker base images ──────────────────────────────────────────────
+  # Bumps the pinned `python:3.12-slim@sha256:...` digest and any other
+  # FROM lines. Replaces the manual "last pulled" cadence comment in each
+  # Dockerfile.
+  - package-ecosystem: docker
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Europe/Zurich
+    commit-message:
+      prefix: "deps(docker)"
+
+  - package-ecosystem: docker
+    directory: "/streamrip-api"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Europe/Zurich
+    commit-message:
+      prefix: "deps(docker)"
+
+  - package-ecosystem: docker
+    directory: "/acousticbrainz-lookup"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Europe/Zurich
+    commit-message:
+      prefix: "deps(docker)"
+
+  # ── GitHub Actions ──────────────────────────────────────────────────
+  # Catches the Node 20 deprecation across actions/checkout, setup-python,
+  # upload-artifact, docker/* etc.
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Europe/Zurich
+    commit-message:
+      prefix: "ci"
