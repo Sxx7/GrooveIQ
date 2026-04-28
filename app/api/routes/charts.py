@@ -17,8 +17,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import settings
 from app.core.security import require_admin, require_api_key
 from app.db.session import get_session
-from app.models.db import ChartEntry, DiscoveryRequest, TrackFeatures
+from app.models.db import ChartEntry, CoverArtCache, DiscoveryRequest, TrackFeatures
 from app.models.schemas import ChartDownloadRequest
+from app.services.cover_art import _normalize as _normalize_cover_key
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -184,6 +185,42 @@ async def get_chart(
     # Pre-compute media server auth for cover art URLs.
     cover_auth = _media_server_auth_params() if feat_map else None
 
+    # Cover-art-cache fallback for entries with no usable cover. This covers two
+    # cases: (a) the track was never matched to the library and Last.fm didn't
+    # ship an image_url at chart-build time, and (b) matched_track_id has gone
+    # stale because the TrackFeatures row was pruned after the chart was built —
+    # without the fallback those entries would render the music-note placeholder.
+    cover_cache_map: dict[tuple[str, str], str] = {}
+    fallback_needed: list[tuple[str, str, str]] = []
+    for e in entries:
+        if e.image_url:
+            continue
+        # If matched_track_id is set AND TrackFeatures still exists with a
+        # working external_track_id, the route will build a media-server URL
+        # — skip the fallback in that case so we don't hit the cache pointlessly.
+        if e.matched_track_id and e.matched_track_id in feat_map:
+            tf = feat_map[e.matched_track_id]
+            if tf.external_track_id and cover_auth and settings.MEDIA_SERVER_URL:
+                continue
+        if not e.artist_name or not (e.track_title or e.artist_name):
+            continue
+        a_norm = _normalize_cover_key(e.artist_name)
+        t_norm = _normalize_cover_key(e.track_title or "")
+        if a_norm and t_norm:
+            fallback_needed.append((a_norm, t_norm, ""))
+    if fallback_needed:
+        keys_a = list({k[0] for k in fallback_needed})
+        keys_t = list({k[1] for k in fallback_needed})
+        cc_q = await session.execute(
+            select(CoverArtCache).where(
+                CoverArtCache.artist_norm.in_(keys_a),
+                CoverArtCache.title_norm.in_(keys_t),
+            )
+        )
+        for c in cc_q.scalars().all():
+            if c.url:
+                cover_cache_map[(c.artist_norm, c.title_norm)] = c.url
+
     # Build Lidarr status lookup for unmatched artists.
     unmatched_artists = list({e.artist_name for e in entries if not e.matched_track_id and e.artist_name})
     lidarr_status_map = {}
@@ -199,6 +236,15 @@ async def get_chart(
 
     items = []
     for e in entries:
+        # Effective image_url: take what the chart builder stored; if absent and
+        # we have a cover_art_cache hit, use that instead (fixes stale-match and
+        # never-resolved cases at render time).
+        eff_image_url = e.image_url
+        if not eff_image_url and e.artist_name and e.track_title:
+            a_norm = _normalize_cover_key(e.artist_name)
+            t_norm = _normalize_cover_key(e.track_title)
+            eff_image_url = cover_cache_map.get((a_norm, t_norm))
+
         item = {
             "position": e.position,
             "artist_name": e.artist_name,
@@ -206,7 +252,7 @@ async def get_chart(
             "listeners": e.listeners,
             "in_library": e.in_library,
             "matched_track_id": e.matched_track_id,
-            "image_url": e.image_url,
+            "image_url": eff_image_url,
         }
         if chart_type == "top_tracks":
             item["track_title"] = e.track_title

@@ -1688,8 +1688,14 @@ function chartsLibraryBadge(entry) {
 
 function chartsThumbnail(entry) {
   var src = (entry.library && entry.library.cover_url) || entry.image_url || '';
-  if (!src) return '<div style="width:40px;height:40px;border-radius:var(--radius-sm);background:var(--hover-overlay);display:flex;align-items:center;justify-content:center;color:var(--text-muted);font-size:16px">\u266B</div>';
-  return '<img src="' + esc(src) + '" alt="" loading="lazy" style="width:40px;height:40px;border-radius:var(--radius-sm);object-fit:cover;display:block" onerror="this.style.display=\'none\'">';
+  // Always render the music-note tile; if src is present, layer the image on
+  // top. If the image 404s, onerror removes it and the tile underneath stays
+  // visible — so we never get an empty hole between adjacent chart rows.
+  var tileOpen = '<div style="position:relative;width:40px;height:40px;border-radius:var(--radius-sm);background:var(--hover-overlay);display:flex;align-items:center;justify-content:center;color:var(--text-muted);font-size:16px">\u266B';
+  if (!src) return tileOpen + '</div>';
+  return tileOpen
+    + '<img src="' + esc(src) + '" alt="" loading="lazy" style="position:absolute;inset:0;width:100%;height:100%;border-radius:var(--radius-sm);object-fit:cover" onerror="this.remove()">'
+    + '</div>';
 }
 
 function chartsDownloadTrack(btn, position) {
