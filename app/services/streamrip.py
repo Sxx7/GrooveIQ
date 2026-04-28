@@ -61,23 +61,40 @@ class StreamripClient:
 
     # -- Search -------------------------------------------------------------
 
-    async def search(self, query: str, limit: int = 10) -> list[dict[str, Any]]:
+    async def search(
+        self,
+        query: str,
+        limit: int = 10,
+        service: str | None = None,
+    ) -> list[dict[str, Any]]:
         """Search streamrip-api for tracks matching a query string.
 
         Returns a list of track dicts shaped like Spotify search results
         (with keys: id, name, artists, album, etc.) so callers that
         already understand Spotizerr/SpotdlClient responses work unchanged.
+
+        ``service`` (qobuz / tidal / deezer / soundcloud) overrides
+        streamrip-api's DEFAULT_SERVICE. Used by the Lidarr backfill engine
+        to walk the configured service-priority list per request.
         """
         await self._throttle()
+        params: dict[str, Any] = {"q": query, "limit": limit}
+        if service:
+            params["service"] = service
         try:
             resp = await self._client.get(
                 f"{self._base_url}/search",
-                params={"q": query, "limit": limit},
+                params=params,
             )
             resp.raise_for_status()
             data = resp.json()
         except Exception as exc:
-            logger.warning("streamrip-api search failed for %r: %s", query, exc)
+            logger.warning(
+                "streamrip-api search failed for %r (service=%s): %s",
+                query,
+                service or "default",
+                exc,
+            )
             return []
 
         # Reshape streamrip-api results to match Spotify-like format

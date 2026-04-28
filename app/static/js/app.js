@@ -1730,12 +1730,13 @@ function buildCharts(btn) {
 // =========================================================================
 // Discovery View (sub-tabs: Lidarr, Fill Library, Soulseek)
 // =========================================================================
-var discoverySubTab = 'lidarr';  // 'lidarr' | 'fill' | 'soulseek'
+var discoverySubTab = 'lidarr';  // 'lidarr' | 'fill' | 'soulseek' | 'backfill'
 var _bulkPollTimer = null;
 
 function loadDiscovery() {
   if (discoverySubTab === 'soulseek') return loadDiscoverySoulseek();
   if (discoverySubTab === 'fill') return loadDiscoveryFill();
+  if (discoverySubTab === 'backfill') return loadDiscoveryBackfill();
   return loadDiscoveryLidarr();
 }
 
@@ -1748,7 +1749,8 @@ function _discoverySubTabBar() {
   var subs = [
     { id: 'lidarr', label: 'Similar Artists' },
     { id: 'fill', label: 'Fill Library' },
-    { id: 'soulseek', label: 'Soulseek' }
+    { id: 'soulseek', label: 'Soulseek' },
+    { id: 'backfill', label: 'Lidarr Backfill' }
   ];
   var bar = '<div class="subtab-bar" style="margin-bottom:1rem">';
   for (var i = 0; i < subs.length; i++) {
@@ -2007,6 +2009,526 @@ function _startBulkPoll() {
 
 function _stopBulkPoll() {
   if (_bulkPollTimer) { clearInterval(_bulkPollTimer); _bulkPollTimer = null; }
+}
+
+// =========================================================================
+// Lidarr Backfill sub-tab (Discovery > Lidarr Backfill)
+// =========================================================================
+//
+// Drains Lidarr's /wanted/missing through the streamrip pipeline. The whole
+// feature is policy-versioned (mirrors the Algorithm tab pattern) plus a
+// queue browser, preview-match modal, and live status panel.
+// =========================================================================
+
+var lbfState = {
+  defaults: null,         // { config, groups }
+  active: null,           // active config row
+  edited: null,           // working copy
+  history: null,          // version list
+  stats: null,            // status panel data
+  requests: { items: [], offset: 0, status: '', artist: '' },
+  pollTimer: null
+};
+
+var LBF_FIELD_META = {
+  enabled: { desc: 'Master switch — when off, the scheduler tick is a no-op', type: 'bool' },
+  dry_run: { desc: 'Match and persist with status=skipped, but never actually download', type: 'bool' },
+  max_downloads_per_hour: { desc: 'Sliding-window cap; counts rows in the last 60 minutes', type: 'int', min: 1, max: 100, step: 1 },
+  max_batch_size: { desc: 'Hard cap on albums processed per scheduler tick', type: 'int', min: 1, max: 25, step: 1 },
+  poll_interval_minutes: { desc: 'How often the scheduler wakes to attempt the next batch', type: 'int', min: 1, max: 60, step: 1 },
+  min_quality_floor: { desc: 'Skip the cascade if streamrip\u2019s declared quality is below this tier', type: 'select', options: ['lossy_low', 'lossy_high', 'lossless', 'hires'] },
+  service_priority: { desc: 'Streaming services tried in this order', type: 'order', options: ['qobuz', 'tidal', 'deezer', 'soundcloud'] },
+  'sources.missing': { desc: 'Drain /api/v1/wanted/missing', type: 'bool' },
+  'sources.cutoff_unmet': { desc: 'Drain /api/v1/wanted/cutoff (quality upgrades)', type: 'bool' },
+  'sources.monitored_only': { desc: 'Skip albums that are unmonitored in Lidarr', type: 'bool' },
+  'match.min_artist_similarity': { desc: 'Reject if artist fuzzy ratio is below this (0\u20131)', type: 'float', min: 0, max: 1, step: 0.01 },
+  'match.min_album_similarity': { desc: 'Reject if album-title fuzzy ratio is below this (0\u20131)', type: 'float', min: 0, max: 1, step: 0.01 },
+  'match.require_year_match': { desc: 'Reject if release year differs by more than 1', type: 'bool' },
+  'match.require_track_count_match': { desc: 'Reject if track count differs from Lidarr\u2019s expectation', type: 'bool' },
+  'match.prefer_album_over_tracks': { desc: 'Album-first: only fall back to per-track downloads when no album hit exists', type: 'bool' },
+  'retry.cooldown_hours': { desc: 'Wait this many hours before retrying a failed album', type: 'float', min: 0, max: 720, step: 0.5 },
+  'retry.max_attempts': { desc: 'Permanently skip after this many failed attempts', type: 'int', min: 1, max: 20, step: 1 },
+  'retry.backoff_multiplier': { desc: 'Cooldown grows on each retry (cooldown \u00D7 multiplier^attempts)', type: 'float', min: 1.0, max: 10.0, step: 0.1 },
+  'import_options.trigger_lidarr_scan': { desc: 'POST DownloadedAlbumsScan after a successful download', type: 'bool' },
+  'import_options.scan_path': { desc: 'Path streamrip writes into (must match Lidarr\u2019s view of that mount)', type: 'text' },
+  'filters.artist_allowlist': { desc: 'If non-empty, only artists on this list are processed (one per line)', type: 'textarea' },
+  'filters.artist_denylist': { desc: 'Artists on this list are skipped', type: 'textarea' }
+};
+
+function loadDiscoveryBackfill() {
+  setAppContent(_discoverySubTabBar() + '<div class="empty">Loading Lidarr backfill\u2026</div>');
+  Promise.all([
+    api('/v1/lidarr-backfill/config/defaults'),
+    api('/v1/lidarr-backfill/config'),
+    api('/v1/lidarr-backfill/config/history?limit=20'),
+    api('/v1/lidarr-backfill/stats'),
+    api('/v1/lidarr-backfill/requests?limit=50' + (lbfState.requests.status ? '&status=' + encodeURIComponent(lbfState.requests.status) : '') + (lbfState.requests.artist ? '&artist=' + encodeURIComponent(lbfState.requests.artist) : ''))
+  ]).then(function(r) {
+    lbfState.defaults = r[0];
+    lbfState.active = r[1];
+    lbfState.edited = JSON.parse(JSON.stringify(r[1].config));
+    lbfState.history = r[2];
+    lbfState.stats = r[3];
+    lbfState.requests.items = (r[4] && r[4].items) || [];
+    renderDiscoveryBackfill();
+    _lbfStartPoll();
+  }).catch(function(e) {
+    setAppContent(_discoverySubTabBar() + '<div class="empty">Failed to load Lidarr backfill: ' + esc(e.message) + '</div>');
+  });
+}
+
+function renderDiscoveryBackfill() {
+  var st = lbfState.stats || {};
+  var cfg = lbfState.edited || {};
+  var hasChanges = JSON.stringify(lbfState.edited) !== JSON.stringify(lbfState.active.config);
+
+  var h = _discoverySubTabBar();
+
+  // Status / ETA card
+  var enabledBadge = st.enabled ? '<span class="badge badge-success">Enabled</span>' : '<span class="badge badge-warning">Disabled</span>';
+  var etaText = '\u2014';
+  if (st.eta_hours != null) {
+    etaText = (st.eta_days != null && st.eta_days >= 1)
+      ? (st.eta_days + ' days')
+      : (st.eta_hours + ' h');
+  }
+  var nextTick = st.next_tick_at ? timeAgo(st.next_tick_at) : '\u2014';
+  var lastTick = st.last_tick_at ? timeAgo(st.last_tick_at) : '\u2014';
+
+  h += '<div class="page-header"><div>';
+  h += '<h1 class="page-title">Lidarr Backfill ' + enabledBadge + '</h1>';
+  h += '<span class="subtitle">Drain Lidarr\u2019s wanted queue through streamrip-api \u2014 rate-limited per hour.</span>';
+  h += '</div><div class="page-actions">';
+  h += '<button class="btn btn-secondary btn-sm" onclick="lbfRunNow(this)">Run Now</button>';
+  h += '<button class="btn btn-secondary btn-sm" onclick="lbfPreview()">Preview Match</button>';
+  h += '<button class="btn btn-secondary btn-sm" onclick="lbfShowHistory()">History</button>';
+  h += '<button class="btn btn-secondary btn-sm" onclick="lbfExport()">Export</button>';
+  h += '<button class="btn btn-secondary btn-sm" onclick="lbfShowImport()">Import</button>';
+  h += '</div></div>';
+
+  // Top stats grid
+  h += '<div class="stats-grid" style="margin-bottom:1rem">';
+  h += '<div class="stat-card"><div class="stat-label">Missing albums</div><div class="stat-value">' + (st.missing_total != null ? st.missing_total : '\u2014') + '</div></div>';
+  h += '<div class="stat-card"><div class="stat-label">Cutoff unmet</div><div class="stat-value">' + (st.cutoff_total != null ? st.cutoff_total : '\u2014') + '</div></div>';
+  h += '<div class="stat-card"><div class="stat-label">Queued + downloading</div><div class="stat-value text-info">' + ((st.queued || 0) + (st.downloading || 0)) + '</div></div>';
+  h += '<div class="stat-card"><div class="stat-label">Complete (24h)</div><div class="stat-value text-success">' + (st.complete_24h || 0) + '</div></div>';
+  h += '<div class="stat-card"><div class="stat-label">Failed (24h)</div><div class="stat-value text-danger">' + (st.failed_24h || 0) + '</div></div>';
+  h += '<div class="stat-card"><div class="stat-label">Permanently skipped</div><div class="stat-value text-warning">' + (st.permanently_skipped || 0) + '</div></div>';
+  h += '<div class="stat-card"><div class="stat-label">Capacity (this hour)</div><div class="stat-value">' + (st.capacity_remaining != null ? st.capacity_remaining : '\u2014') + ' <span style="font-size:0.875rem" class="text-muted">/ ' + (st.max_per_hour || cfg.max_downloads_per_hour || '\u2014') + '</span></div></div>';
+  h += '<div class="stat-card"><div class="stat-label">ETA at current rate</div><div class="stat-value">' + etaText + '</div></div>';
+  h += '</div>';
+
+  h += '<div class="text-xs text-muted" style="margin-bottom:1rem">Last tick ' + lastTick + ' \u00b7 next tick ' + nextTick + ' \u00b7 v' + lbfState.active.version + (lbfState.active.name ? ' \u2014 ' + esc(lbfState.active.name) : '') + '</div>';
+
+  // Settings drawer (collapsible)
+  h += '<div class="card" style="margin-bottom:1rem">';
+  h += '<div class="card-header algo-group-header" onclick="lbfToggleSettings()">';
+  h += '<span><span class="algo-chevron" id="lbf-settings-chev">\u25B6</span> Settings' + (hasChanges ? ' <span class="badge badge-primary" style="font-size:10px">UNSAVED</span>' : '') + '</span>';
+  h += '<span class="text-xs text-muted">All knobs are persisted as a new versioned config.</span>';
+  h += '</div>';
+  h += '<div class="card-body" id="lbf-settings-body" style="display:none">';
+  h += _lbfSettingsHtml();
+  h += '<div style="display:flex;gap:0.5rem;margin-top:1rem;flex-wrap:wrap">';
+  h += '<button class="btn btn-primary btn-sm"' + (hasChanges ? '' : ' disabled') + ' onclick="lbfSaveAndApply()">Save & Apply</button>';
+  if (hasChanges) h += '<button class="btn btn-secondary btn-sm" onclick="lbfDiscardChanges()">Discard</button>';
+  h += '<button class="btn btn-secondary btn-sm" style="color:var(--color-warning)" onclick="lbfResetDefaults()">Reset to Defaults</button>';
+  h += '</div></div></div>';
+
+  // Queue table
+  h += '<div class="card"><div class="card-header"><span>Queue</span>';
+  h += '<div style="display:flex;gap:0.5rem;align-items:center">';
+  h += '<select class="form-select" style="height:28px;font-size:0.75rem" onchange="lbfFilterStatus(this.value)">';
+  var statusOpts = ['', 'queued', 'downloading', 'complete', 'failed', 'no_match', 'permanently_skipped', 'skipped'];
+  for (var si = 0; si < statusOpts.length; si++) {
+    h += '<option value="' + statusOpts[si] + '"' + (statusOpts[si] === lbfState.requests.status ? ' selected' : '') + '>' + (statusOpts[si] || 'all statuses') + '</option>';
+  }
+  h += '</select>';
+  h += '<input class="form-input" style="height:28px;font-size:0.75rem;width:120px" placeholder="Artist" value="' + esc(lbfState.requests.artist || '') + '" onchange="lbfFilterArtist(this.value)">';
+  h += '<button class="btn btn-secondary btn-sm" onclick="lbfBulkReset(\'failed\')">Clear failed</button>';
+  h += '<button class="btn btn-secondary btn-sm" onclick="lbfBulkReset(\'no_match\')">Clear no_match</button>';
+  h += '<button class="btn btn-secondary btn-sm" onclick="lbfBulkReset(\'permanently_skipped\')">Clear skipped</button>';
+  h += '</div></div>';
+  h += '<div class="card-body" style="overflow-x:auto">';
+  if (!lbfState.requests.items.length) {
+    h += '<div class="empty">No backfill requests yet.</div>';
+  } else {
+    h += '<table><tr><th>Status</th><th>Artist</th><th>Album</th><th>Source</th><th>Score</th><th>Service</th><th>Attempts</th><th>Last attempt</th><th></th></tr>';
+    for (var i = 0; i < lbfState.requests.items.length; i++) {
+      var r = lbfState.requests.items[i];
+      var statusCls = ({
+        complete: 'success',
+        downloading: 'info',
+        queued: 'info',
+        failed: 'danger',
+        permanently_skipped: 'warning',
+        skipped: 'warning',
+        no_match: 'warning'
+      })[r.status] || '';
+      var err = r.last_error ? ' title="' + esc(r.last_error) + '"' : '';
+      var actions = '';
+      if (r.status === 'failed' || r.status === 'no_match') actions += '<button class="btn btn-secondary btn-xs" onclick="lbfRetry(' + r.id + ')">Retry</button> ';
+      if (r.status !== 'permanently_skipped' && r.status !== 'complete') actions += '<button class="btn btn-secondary btn-xs" onclick="lbfSkip(' + r.id + ')">Skip</button> ';
+      actions += '<button class="btn btn-secondary btn-xs" onclick="lbfDeleteRow(' + r.id + ')">Forget</button>';
+      h += '<tr' + err + '><td><span class="badge badge-' + statusCls + '">' + esc(r.status) + '</span></td>';
+      h += '<td><strong>' + esc(r.artist || '?') + '</strong></td>';
+      h += '<td>' + esc(r.album_title || '?') + (r.mb_album_id ? '<br><span class="mono text-xs text-muted">' + esc(r.mb_album_id).substring(0, 16) + '\u2026</span>' : '') + '</td>';
+      h += '<td>' + esc(r.source) + '</td>';
+      h += '<td>' + (r.match_score != null ? (r.match_score * 100).toFixed(0) + '%' : '\u2014') + '</td>';
+      h += '<td>' + esc(r.picked_service || '\u2014') + '</td>';
+      h += '<td>' + r.attempt_count + '</td>';
+      h += '<td>' + (r.last_attempt_at ? timeAgo(r.last_attempt_at) : '\u2014') + '</td>';
+      h += '<td>' + actions + '</td></tr>';
+    }
+    h += '</table>';
+  }
+  h += '</div></div>';
+
+  setAppContent(h);
+  _lbfBindInputs();
+}
+
+function _lbfSettingsHtml() {
+  var groups = (lbfState.defaults && lbfState.defaults.groups) || [];
+  var h = '';
+  for (var g = 0; g < groups.length; g++) {
+    var grp = groups[g];
+    h += '<div style="margin-bottom:1rem"><h4 style="margin:0 0 0.5rem;color:var(--text-primary);font-size:0.95rem">' + esc(grp.label) + '</h4>';
+    h += '<div class="text-xs text-muted" style="margin-bottom:0.5rem">' + esc(grp.description) + '</div>';
+    h += '<div class="algo-fields-grid">';
+    for (var fi = 0; fi < grp.fields.length; fi++) {
+      h += _lbfFieldHtml(grp.fields[fi]);
+    }
+    h += '</div></div>';
+  }
+  return h;
+}
+
+function _lbfPathGet(obj, path) {
+  var parts = path.split('.');
+  for (var i = 0; i < parts.length; i++) {
+    if (obj == null) return undefined;
+    obj = obj[parts[i]];
+  }
+  return obj;
+}
+function _lbfPathSet(obj, path, val) {
+  var parts = path.split('.');
+  for (var i = 0; i < parts.length - 1; i++) {
+    if (obj[parts[i]] == null) obj[parts[i]] = {};
+    obj = obj[parts[i]];
+  }
+  obj[parts[parts.length - 1]] = val;
+}
+
+function _lbfFieldHtml(path) {
+  // path may be a top-level key (e.g. "enabled") or a nested group object
+  // (e.g. "sources" / "match"). For nested, render each sub-key in turn.
+  var defaults = lbfState.defaults.config;
+  var defVal = _lbfPathGet(defaults, path);
+  if (defVal != null && typeof defVal === 'object' && !Array.isArray(defVal)) {
+    // nested group — render all sub-fields
+    var h = '';
+    for (var k in defVal) {
+      if (defVal.hasOwnProperty(k)) h += _lbfFieldHtml(path + '.' + k);
+    }
+    return h;
+  }
+  var meta = LBF_FIELD_META[path] || { desc: path, type: 'text' };
+  var cur = _lbfPathGet(lbfState.edited, path);
+  var saved = _lbfPathGet(lbfState.active.config, path);
+  var changed = JSON.stringify(cur) !== JSON.stringify(saved);
+  var label = path.split('.').pop().replace(/_/g, ' ');
+
+  var h = '<div class="algo-field' + (changed ? ' algo-field-changed' : '') + '">';
+  h += '<div class="algo-field-header"><label class="algo-field-label">' + esc(label) + '</label></div>';
+  h += '<div class="algo-field-controls">';
+  if (meta.type === 'bool') {
+    h += '<label style="display:flex;gap:0.5rem;align-items:center"><input type="checkbox" data-lbf-path="' + esc(path) + '" data-lbf-type="bool"' + (cur ? ' checked' : '') + '><span class="text-xs text-muted">' + (cur ? 'on' : 'off') + '</span></label>';
+  } else if (meta.type === 'select') {
+    h += '<select class="form-select" data-lbf-path="' + esc(path) + '" data-lbf-type="select">';
+    for (var oi = 0; oi < meta.options.length; oi++) {
+      var op = meta.options[oi];
+      h += '<option value="' + esc(op) + '"' + (cur === op ? ' selected' : '') + '>' + esc(op) + '</option>';
+    }
+    h += '</select>';
+  } else if (meta.type === 'order') {
+    var arr = Array.isArray(cur) ? cur.slice() : meta.options.slice();
+    h += '<div data-lbf-order-path="' + esc(path) + '">';
+    for (var oj = 0; oj < arr.length; oj++) {
+      var item = arr[oj];
+      h += '<div class="lbf-order-item" data-item="' + esc(item) + '" style="display:flex;align-items:center;gap:0.4rem;padding:4px 6px;border:1px solid var(--border);border-radius:4px;margin-bottom:4px">';
+      h += '<span style="flex:1">' + esc(item) + '</span>';
+      h += '<button type="button" class="btn btn-secondary btn-xs" onclick="lbfMoveOrder(\'' + esc(path) + '\',\'' + esc(item) + '\',-1)" title="Move up">\u25B2</button>';
+      h += '<button type="button" class="btn btn-secondary btn-xs" onclick="lbfMoveOrder(\'' + esc(path) + '\',\'' + esc(item) + '\',1)" title="Move down">\u25BC</button>';
+      h += '</div>';
+    }
+    h += '</div>';
+  } else if (meta.type === 'textarea') {
+    var lines = Array.isArray(cur) ? cur.join('\n') : (cur || '');
+    h += '<textarea class="form-input" rows="3" placeholder="One artist per line" data-lbf-path="' + esc(path) + '" data-lbf-type="textarea">' + esc(lines) + '</textarea>';
+  } else if (meta.type === 'int' || meta.type === 'float') {
+    var step = meta.step != null ? meta.step : (meta.type === 'int' ? 1 : 0.01);
+    h += '<input type="range" class="algo-slider" min="' + meta.min + '" max="' + meta.max + '" step="' + step + '" value="' + cur + '" data-lbf-path="' + esc(path) + '" data-lbf-type="' + meta.type + '">';
+    h += '<input type="number" class="algo-num" min="' + meta.min + '" max="' + meta.max + '" step="' + step + '" value="' + cur + '" data-lbf-path="' + esc(path) + '" data-lbf-type="' + meta.type + '">';
+  } else {
+    h += '<input type="text" class="form-input" value="' + esc(cur != null ? cur : '') + '" data-lbf-path="' + esc(path) + '" data-lbf-type="text">';
+  }
+  h += '</div>';
+  h += '<div class="algo-field-info"><span class="text-muted">' + esc(meta.desc || '') + '</span>';
+  if (changed) h += ' <span style="color:var(--color-primary)">(default: ' + esc(JSON.stringify(_lbfPathGet(defaults, path))) + ')</span>';
+  h += '</div></div>';
+  return h;
+}
+
+function _lbfBindInputs() {
+  document.querySelectorAll('[data-lbf-path]').forEach(function(el) {
+    var path = el.getAttribute('data-lbf-path');
+    var type = el.getAttribute('data-lbf-type');
+    var handler = function() {
+      var val;
+      if (type === 'bool') val = el.checked;
+      else if (type === 'int') val = parseInt(el.value, 10);
+      else if (type === 'float') val = parseFloat(el.value);
+      else if (type === 'textarea') val = el.value.split('\n').map(function(s) { return s.trim(); }).filter(function(s) { return s.length > 0; });
+      else val = el.value;
+      if ((type === 'int' || type === 'float') && isNaN(val)) return;
+      _lbfPathSet(lbfState.edited, path, val);
+      // For sliders + number inputs, sync the partner control without re-rendering.
+      if (type === 'int' || type === 'float') {
+        var partner;
+        if (el.classList.contains('algo-slider')) partner = el.parentElement.querySelector('.algo-num');
+        else partner = el.parentElement.querySelector('.algo-slider');
+        if (partner) partner.value = val;
+      }
+      // Live ETA recompute when knobs that affect it move.
+      if (path === 'max_downloads_per_hour') {
+        var st = lbfState.stats || {};
+        var work = (st.missing_total || 0) + ((lbfState.edited.sources && lbfState.edited.sources.cutoff_unmet) ? (st.cutoff_total || 0) : 0);
+        if (val > 0 && work > 0) {
+          var hrs = Math.round((work / val) * 10) / 10;
+          var tgt = document.querySelector('.stats-grid .stat-card:last-child .stat-value');
+          if (tgt) tgt.textContent = hrs >= 24 ? (Math.round((hrs / 24) * 100) / 100) + ' days' : hrs + ' h';
+        }
+      }
+    };
+    el.addEventListener('change', handler);
+    if (type === 'int' || type === 'float') el.addEventListener('input', handler);
+  });
+}
+
+function lbfToggleSettings() {
+  var body = document.getElementById('lbf-settings-body');
+  var chev = document.getElementById('lbf-settings-chev');
+  if (!body) return;
+  var open = body.style.display !== 'none';
+  body.style.display = open ? 'none' : 'block';
+  if (chev) chev.textContent = open ? '\u25B6' : '\u25BC';
+}
+
+function lbfMoveOrder(path, item, dir) {
+  var arr = (_lbfPathGet(lbfState.edited, path) || []).slice();
+  var idx = arr.indexOf(item);
+  if (idx < 0) return;
+  var ni = idx + dir;
+  if (ni < 0 || ni >= arr.length) return;
+  arr.splice(idx, 1);
+  arr.splice(ni, 0, item);
+  _lbfPathSet(lbfState.edited, path, arr);
+  renderDiscoveryBackfill();
+}
+
+function lbfDiscardChanges() {
+  lbfState.edited = JSON.parse(JSON.stringify(lbfState.active.config));
+  renderDiscoveryBackfill();
+}
+
+function lbfResetDefaults() {
+  if (!confirm('Reset Lidarr backfill config to defaults? This creates a new version.')) return;
+  apiPost('/v1/lidarr-backfill/config/reset').then(function(saved) {
+    lbfState.active = saved;
+    lbfState.edited = JSON.parse(JSON.stringify(saved.config));
+    api('/v1/lidarr-backfill/config/history?limit=20').then(function(h) { lbfState.history = h; renderDiscoveryBackfill(); });
+  }).catch(function(e) { alert('Reset failed: ' + e.message); });
+}
+
+function lbfSaveAndApply() {
+  var name = prompt('Version name (optional):', '');
+  apiPut('/v1/lidarr-backfill/config', { name: name || null, config: lbfState.edited }).then(function(saved) {
+    lbfState.active = saved;
+    lbfState.edited = JSON.parse(JSON.stringify(saved.config));
+    api('/v1/lidarr-backfill/config/history?limit=20').then(function(h) {
+      lbfState.history = h;
+      api('/v1/lidarr-backfill/stats').then(function(s) { lbfState.stats = s; renderDiscoveryBackfill(); });
+    });
+  }).catch(function(e) { alert('Save failed: ' + e.message); });
+}
+
+function lbfRunNow(btn) {
+  if (btn) { btn.disabled = true; btn.textContent = 'Running\u2026'; }
+  apiPost('/v1/lidarr-backfill/run', {}).then(function(summary) {
+    if (btn) { btn.disabled = false; btn.textContent = 'Run Now'; }
+    var msg = summary && summary.skipped ? ('Skipped: ' + summary.skipped) : ('Processed ' + (summary.processed || 0) + ' album(s).');
+    alert(msg);
+    setTimeout(function() { loadDiscoveryBackfill(); }, 500);
+  }).catch(function(e) {
+    if (btn) { btn.disabled = false; btn.textContent = 'Run Now'; }
+    alert('Run failed: ' + e.message);
+  });
+}
+
+function lbfPreview() {
+  var modal = _lbfModal('Preview Match (top 20)', '<div class="empty">Running preview\u2026</div>');
+  apiPost('/v1/lidarr-backfill/preview', { limit: 20, config_override: lbfState.edited }).then(function(res) {
+    var body = modal.querySelector('.lbf-modal-body');
+    var html = '';
+    if (res.error) {
+      html = '<div class="empty">' + esc(res.error) + '</div>';
+    } else {
+      var cands = res.candidates || [];
+      if (!cands.length) {
+        html = '<div class="empty">No missing albums to preview.</div>';
+      } else {
+        html += '<table><tr><th>Decision</th><th>Artist</th><th>Album</th><th>Score</th><th>Service</th><th>Reasons</th></tr>';
+        for (var i = 0; i < cands.length; i++) {
+          var c = cands[i];
+          var cls = c.decision === 'would_queue' ? 'success' : c.decision === 'no_match' ? 'warning' : '';
+          var reasons = (c.reasons || []).join(', ');
+          html += '<tr><td><span class="badge badge-' + cls + '">' + esc(c.decision) + '</span></td>';
+          html += '<td>' + esc(c.artist || '?') + '</td>';
+          html += '<td>' + esc(c.album || '?') + (c.matched_album ? '<br><span class="text-xs text-muted">match: ' + esc(c.matched_album) + '</span>' : '') + '</td>';
+          html += '<td>' + (c.match_score != null ? (c.match_score * 100).toFixed(0) + '%' : '\u2014') + '</td>';
+          html += '<td>' + esc(c.picked_service || '\u2014') + '</td>';
+          html += '<td><span class="text-xs text-muted">' + esc(reasons) + '</span></td></tr>';
+        }
+        html += '</table>';
+      }
+    }
+    body.innerHTML = html;
+  }).catch(function(e) {
+    modal.querySelector('.lbf-modal-body').innerHTML = '<div class="empty">Preview failed: ' + esc(e.message) + '</div>';
+  });
+}
+
+function lbfShowHistory() {
+  var rows = lbfState.history || [];
+  var html = '';
+  if (!rows.length) html = '<div class="empty">No version history yet.</div>';
+  else {
+    html += '<table><tr><th>v</th><th>Name</th><th>Created</th><th>By</th><th>Active</th><th></th></tr>';
+    for (var i = 0; i < rows.length; i++) {
+      var r = rows[i];
+      var actions = r.is_active ? '\u2014' : '<button class="btn btn-secondary btn-xs" onclick="lbfActivateVersion(' + r.version + ')">Activate</button>';
+      html += '<tr><td>' + r.version + '</td><td>' + esc(r.name || '\u2014') + '</td><td>' + timeAgo(r.created_at) + '</td><td>' + esc(r.created_by ? r.created_by.substring(0, 8) + '\u2026' : '\u2014') + '</td><td>' + (r.is_active ? '<span class="badge badge-success">active</span>' : '') + '</td><td>' + actions + '</td></tr>';
+    }
+    html += '</table>';
+  }
+  _lbfModal('Version History', html);
+}
+
+function lbfActivateVersion(version) {
+  if (!confirm('Activate version ' + version + ' as the live config?')) return;
+  apiPost('/v1/lidarr-backfill/config/activate/' + version).then(function() { loadDiscoveryBackfill(); }).catch(function(e) { alert('Activate failed: ' + e.message); });
+}
+
+function lbfExport() {
+  fetch(BASE + '/v1/lidarr-backfill/config/export', { headers: headers() }).then(function(res) {
+    if (!res.ok) throw new Error('Export failed: ' + res.status);
+    return res.blob();
+  }).then(function(blob) {
+    var url = URL.createObjectURL(blob);
+    var a = document.createElement('a');
+    a.href = url;
+    a.download = 'grooveiq-lidarr-backfill-v' + lbfState.active.version + '.json';
+    document.body.appendChild(a); a.click(); a.remove();
+    URL.revokeObjectURL(url);
+  }).catch(function(e) { alert(e.message); });
+}
+
+function lbfShowImport() {
+  var html = '<input type="file" id="lbf-import-file" accept="application/json" style="margin-bottom:0.5rem"><br>';
+  html += '<input type="text" class="form-input" id="lbf-import-name" placeholder="Optional version label"><br>';
+  html += '<button class="btn btn-primary btn-sm" style="margin-top:0.5rem" onclick="lbfDoImport()">Import</button>';
+  _lbfModal('Import Config', html);
+}
+
+function lbfDoImport() {
+  var file = document.getElementById('lbf-import-file').files[0];
+  var name = (document.getElementById('lbf-import-name').value || '').trim();
+  if (!file) { alert('Pick a JSON file first.'); return; }
+  var fr = new FileReader();
+  fr.onload = function() {
+    try {
+      var parsed = JSON.parse(fr.result);
+      var cfg = parsed.config || parsed;  // accept either wrapped exports or raw configs
+      apiPost('/v1/lidarr-backfill/config/import', { name: name || null, config: cfg }).then(function() {
+        loadDiscoveryBackfill();
+      }).catch(function(e) { alert('Import failed: ' + e.message); });
+    } catch (e) {
+      alert('Invalid JSON: ' + e.message);
+    }
+  };
+  fr.readAsText(file);
+}
+
+function lbfFilterStatus(status) {
+  lbfState.requests.status = status;
+  _lbfReloadRequests();
+}
+
+function lbfFilterArtist(artist) {
+  lbfState.requests.artist = artist;
+  _lbfReloadRequests();
+}
+
+function _lbfReloadRequests() {
+  var url = '/v1/lidarr-backfill/requests?limit=50';
+  if (lbfState.requests.status) url += '&status=' + encodeURIComponent(lbfState.requests.status);
+  if (lbfState.requests.artist) url += '&artist=' + encodeURIComponent(lbfState.requests.artist);
+  api(url).then(function(r) { lbfState.requests.items = (r && r.items) || []; renderDiscoveryBackfill(); });
+}
+
+function lbfRetry(id) {
+  apiPost('/v1/lidarr-backfill/requests/' + id + '/retry', {}).then(function() { _lbfReloadRequests(); }).catch(function(e) { alert(e.message); });
+}
+function lbfSkip(id) {
+  apiPost('/v1/lidarr-backfill/requests/' + id + '/skip', {}).then(function() { _lbfReloadRequests(); }).catch(function(e) { alert(e.message); });
+}
+function lbfDeleteRow(id) {
+  if (!confirm('Forget this row? It will be re-picked from Lidarr on the next tick.')) return;
+  fetch(BASE + '/v1/lidarr-backfill/requests/' + id, { method: 'DELETE', headers: headers() }).then(function(r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); }).then(function() { _lbfReloadRequests(); }).catch(function(e) { alert(e.message); });
+}
+function lbfBulkReset(scope) {
+  if (!confirm('Bulk-delete all rows with status=' + scope + '?')) return;
+  apiPost('/v1/lidarr-backfill/requests/reset', { scope: scope }).then(function(res) {
+    alert('Deleted ' + (res.deleted || 0) + ' row(s).');
+    _lbfReloadRequests();
+  }).catch(function(e) { alert(e.message); });
+}
+
+function _lbfModal(title, html) {
+  var existing = document.getElementById('lbf-modal');
+  if (existing) existing.remove();
+  var wrap = document.createElement('div');
+  wrap.id = 'lbf-modal';
+  wrap.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.6);z-index:9999;display:flex;align-items:center;justify-content:center';
+  wrap.innerHTML = '<div class="card" style="max-width:900px;width:92%;max-height:80vh;overflow:auto"><div class="card-header"><span>' + esc(title) + '</span><button class="btn btn-secondary btn-xs" onclick="document.getElementById(\'lbf-modal\').remove()">Close</button></div><div class="card-body lbf-modal-body" style="overflow-x:auto">' + html + '</div></div>';
+  wrap.addEventListener('click', function(e) { if (e.target === wrap) wrap.remove(); });
+  document.body.appendChild(wrap);
+  return wrap;
+}
+
+function _lbfStartPoll() {
+  _lbfStopPoll();
+  lbfState.pollTimer = setInterval(function() {
+    if (currentView !== 'content' || contentSubTab !== 'discovery' || discoverySubTab !== 'backfill') {
+      _lbfStopPoll();
+      return;
+    }
+    api('/v1/lidarr-backfill/stats').then(function(s) { lbfState.stats = s; });
+  }, 10000);
+}
+function _lbfStopPoll() {
+  if (lbfState.pollTimer) { clearInterval(lbfState.pollTimer); lbfState.pollTimer = null; }
 }
 
 // =========================================================================

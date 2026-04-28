@@ -705,6 +705,85 @@ class DownloadRoutingConfig(Base):
     )
 
 
+# ---------------------------------------------------------------------------
+# Lidarr backfill  (drain Lidarr's wanted queue through streamrip-api)
+# ---------------------------------------------------------------------------
+
+
+class LidarrBackfillConfig(Base):
+    """
+    A versioned snapshot of the Lidarr backfill policy.
+
+    Controls which Lidarr queues are drained, the sliding-window rate cap,
+    fuzzy-match thresholds, retry behaviour, and post-download import
+    triggers. Same versioning + active-row semantics as AlgorithmConfig.
+    """
+
+    __tablename__ = "lidarr_backfill_configs"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    version = Column(Integer, nullable=False)
+    name = Column(String(256), nullable=True)
+    config = Column(JSON, nullable=False)
+    is_active = Column(Boolean, nullable=False, default=False)
+    created_at = Column(Integer, nullable=False, default=lambda: int(time.time()))
+    created_by = Column(String(128), nullable=True)
+
+    __table_args__ = (
+        Index("ix_lbf_config_active", "is_active"),
+        Index("ix_lbf_config_version", "version"),
+    )
+
+
+class LidarrBackfillRequest(Base):
+    """
+    Per-album state for the Lidarr backfill engine.
+
+    One row per Lidarr album that has been picked up by the engine.
+    The ``status`` column drives the state machine; ``created_at`` is the
+    sliding-window key for the rate limiter (rows in the last hour count
+    against the per-hour cap).
+
+    State machine:
+        queued → downloading → complete
+                            ↘ failed → (cooldown) → downloading → ...
+                            ↘ permanently_skipped (after max_attempts)
+        no_match (couldn't find a streamrip match)
+        skipped (dry-run; or filtered out)
+    """
+
+    __tablename__ = "lidarr_backfill_requests"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    lidarr_album_id = Column(Integer, nullable=False, unique=True, index=True)
+    mb_album_id = Column(String(64), nullable=True, index=True)
+    artist = Column(String(255), nullable=False)
+    album_title = Column(String(255), nullable=False)
+
+    source = Column(String(16), nullable=False)  # 'missing' | 'cutoff'
+    match_score = Column(Float, nullable=True)
+    picked_service = Column(String(32), nullable=True)
+    picked_album_id = Column(String(64), nullable=True)
+    streamrip_task_id = Column(String(64), nullable=True)
+
+    # State machine — see class docstring for transitions
+    status = Column(String(24), nullable=False, index=True)
+
+    attempt_count = Column(Integer, nullable=False, default=0)
+    last_attempt_at = Column(Integer, nullable=True)
+    next_retry_at = Column(Integer, nullable=True, index=True)
+    last_error = Column(String(1024), nullable=True)
+
+    # The rate-limit window query (created_at > now - 1h) hits this every tick.
+    created_at = Column(Integer, nullable=False, index=True, default=lambda: int(time.time()))
+    updated_at = Column(Integer, nullable=False, default=lambda: int(time.time()))
+
+    __table_args__ = (
+        Index("ix_lbf_status_retry", "status", "next_retry_at"),
+        Index("ix_lbf_created", "created_at"),
+    )
+
+
 class PlaylistTrack(Base):
     """Ordered track within a playlist."""
 
