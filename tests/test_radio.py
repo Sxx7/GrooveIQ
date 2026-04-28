@@ -3,9 +3,9 @@ GrooveIQ — Tests for radio session seed resolution and track ID mapping.
 
 Covers the iOS / Ampster bug where a Navidrome 22-char base62 ID is sent
 as ``seed_value``: validation must accept it, the service must resolve it
-to an internal track_id before passing to FAISS, and the response must
-return the external_track_id so the client can resolve tracks against
-Navidrome.
+to the internal track_id before passing to FAISS, and the response must
+surface the canonical ``track_id`` (which after library/sync IS the
+current Navidrome id — the sync renames track_id to the server id).
 """
 
 from __future__ import annotations
@@ -183,10 +183,12 @@ class TestRadioStartSeedValidation:
             lambda tid: np.ones(64, dtype=np.float32),
         )
         # Stub get_next_tracks so we don't need a built index for candidate gen.
+        # The real service returns the internal `track_id` (which post-sync is
+        # the current Navidrome id) rather than the legacy external_track_id.
         async def _fake_get_next_tracks(session_id, count, db, *, collect_audit=False):
             track_data = {
                 "position": 0,
-                "track_id": "qhiFiRW0x0Ux612N02Xmgu",
+                "track_id": "42",  # internal/canonical track_id
                 "source": "radio_drift",
                 "score": 1.0,
                 "title": "Test Song",
@@ -213,9 +215,11 @@ class TestRadioStartSeedValidation:
         )
         assert resp.status_code == 201, resp.text
         data = resp.json()
+        # Route echoes back the seed_value the caller passed — preserved as-is
+        # in the session record so iOS knows what it asked for.
         assert data["seed_value"] == "qhiFiRW0x0Ux612N02Xmgu"
-        # Returned track_id is the external (Navidrome-resolvable) id.
-        assert data["tracks"][0]["track_id"] == "qhiFiRW0x0Ux612N02Xmgu"
+        # The returned track_id is the canonical id (post-sync = Navidrome id).
+        assert data["tracks"][0]["track_id"] == "42"
 
     async def test_seed_unknown_id_still_404s(self, client: AsyncClient):
         """Unknown seed values must still produce a 404 (regression check on
@@ -237,35 +241,24 @@ class TestRadioStartSeedValidation:
 
 
 # ---------------------------------------------------------------------------
-# Response-level: get_next_tracks returns external_track_id when present
+# Response-level: get_next_tracks returns the canonical track_id
 # ---------------------------------------------------------------------------
 
 
 class TestRadioResponseTrackIdMapping:
-    async def test_response_returns_external_track_id_when_available(self, monkeypatch):
-        """When a track has an external_track_id, the radio response must
-        carry that ID (so Navidrome can resolve it), not the internal one."""
-        from app.services import radio as radio_service
+    """After library/sync runs, ``TrackFeatures.track_id`` IS the current
+    media-server id (sync renames it).  ``external_track_id`` holds the
+    *previous* id and is generally stale after a media-server upgrade, so
+    the radio response must surface the internal/canonical ``tid`` and
+    must NOT fall back to ``external_track_id``."""
 
-        await _seed_user_and_track(internal_id="42", external_id="qhiFiRW0x0Ux612N02Xmgu")
-
-        # Build a session manually so we don't need the full create flow.
-        s = radio_service.RadioSession(
-            session_id="sess-1",
-            user_id="testuser",
-            seed_type="track",
-            seed_value="42",
-            seed_track_ids=["42"],
-            seed_embedding=np.ones(64, dtype=np.float32),
-            drift_embedding=np.ones(64, dtype=np.float32),
-        )
-        radio_service.store_session(s)
-
-        # Stub FAISS / candidate sources to feed our internal id through.
+    @staticmethod
+    def _stub_pipeline(monkeypatch, candidate_id: str) -> None:
+        """Stub FAISS / ranker / reranker so a single candidate flows through."""
         monkeypatch.setattr("app.services.faiss_index.is_ready", lambda: True)
         monkeypatch.setattr(
             "app.services.faiss_index.search",
-            lambda emb, k=50, exclude_ids=None: [("42", 0.99)],
+            lambda emb, k=50, exclude_ids=None: [(candidate_id, 0.99)],
         )
         monkeypatch.setattr(
             "app.services.faiss_index.search_by_track_id",
@@ -275,7 +268,6 @@ class TestRadioResponseTrackIdMapping:
         monkeypatch.setattr("app.services.lastfm_candidates.is_ready", lambda: False)
         monkeypatch.setattr("app.services.collab_filter.is_ready", lambda: False)
 
-        # Skip ranker / reranker entanglement — pass-through scoring.
         async def _fake_score_candidates(user_id, candidate_ids, db, **_):
             return [(tid, 1.0) for tid in candidate_ids]
 
@@ -286,21 +278,48 @@ class TestRadioResponseTrackIdMapping:
         monkeypatch.setattr("app.services.reranker.rerank", _fake_rerank)
         monkeypatch.setattr("app.services.reranker.get_last_rerank_actions", lambda: [])
 
+    async def test_response_returns_internal_track_id_post_sync(self, monkeypatch):
+        """Post-sync, track_id IS the current Navidrome id.  Even though the
+        track also has a (stale) external_track_id from a previous sync,
+        the response must use track_id so the client hits Navidrome with
+        the *current* id, not the stale one."""
+        from app.services import radio as radio_service
+
+        # Mimics a track that the new sync just renamed: track_id is the
+        # 22-char Navidrome id, external_track_id is the previous (stale)
+        # 16-hex id from an older sync.
+        await _seed_user_and_track(
+            internal_id="iDkrnC4UrRVJ6HHEa83nc9",  # current Navidrome id
+            external_id="85637f2c0b1968aa",  # legacy 16-hex
+        )
+
+        s = radio_service.RadioSession(
+            session_id="sess-1",
+            user_id="testuser",
+            seed_type="track",
+            seed_value="iDkrnC4UrRVJ6HHEa83nc9",
+            seed_track_ids=["iDkrnC4UrRVJ6HHEa83nc9"],
+            seed_embedding=np.ones(64, dtype=np.float32),
+            drift_embedding=np.ones(64, dtype=np.float32),
+        )
+        radio_service.store_session(s)
+        self._stub_pipeline(monkeypatch, "iDkrnC4UrRVJ6HHEa83nc9")
+
         async with _TestSession() as db:
             tracks = await radio_service.get_next_tracks("sess-1", 1, db)
 
         assert tracks is not None and len(tracks) == 1
-        # The track_id surfaced to the client is the EXTERNAL one.
-        assert tracks[0]["track_id"] == "qhiFiRW0x0Ux612N02Xmgu"
+        # MUST be the current id (track_id), NOT the stale external_track_id.
+        assert tracks[0]["track_id"] == "iDkrnC4UrRVJ6HHEa83nc9"
         # Internal bookkeeping still uses the internal id.
-        assert "42" in s.played_set
+        assert "iDkrnC4UrRVJ6HHEa83nc9" in s.played_set
 
-    async def test_response_falls_back_to_internal_when_no_external(self, monkeypatch):
-        """Tracks without an external_track_id must still surface the internal
-        id so legacy installs (no media-server sync) keep working."""
+    async def test_response_uses_internal_when_no_external(self, monkeypatch):
+        """Tracks that the sync hasn't matched yet (no external_track_id)
+        still surface the internal id — that's all we have, and the client
+        will simply 404 on it (no different from any other unmatched track)."""
         from app.services import radio as radio_service
 
-        # Seed a track with NO external_track_id.
         now = int(time.time())
         async with _TestSession() as db:
             db.add(User(user_id="testuser", display_name="Test User", profile_updated_at=now))
@@ -328,29 +347,7 @@ class TestRadioResponseTrackIdMapping:
             drift_embedding=np.ones(64, dtype=np.float32),
         )
         radio_service.store_session(s)
-
-        monkeypatch.setattr("app.services.faiss_index.is_ready", lambda: True)
-        monkeypatch.setattr(
-            "app.services.faiss_index.search",
-            lambda emb, k=50, exclude_ids=None: [("legacy-1", 0.99)],
-        )
-        monkeypatch.setattr(
-            "app.services.faiss_index.search_by_track_id",
-            lambda tid, k=50, exclude_ids=None: [],
-        )
-        monkeypatch.setattr("app.services.session_embeddings.is_ready", lambda: False)
-        monkeypatch.setattr("app.services.lastfm_candidates.is_ready", lambda: False)
-        monkeypatch.setattr("app.services.collab_filter.is_ready", lambda: False)
-
-        async def _fake_score_candidates(user_id, candidate_ids, db, **_):
-            return [(tid, 1.0) for tid in candidate_ids]
-
-        async def _fake_rerank(scored, user_id, db, **_):
-            return scored
-
-        monkeypatch.setattr("app.services.ranker.score_candidates", _fake_score_candidates)
-        monkeypatch.setattr("app.services.reranker.rerank", _fake_rerank)
-        monkeypatch.setattr("app.services.reranker.get_last_rerank_actions", lambda: [])
+        self._stub_pipeline(monkeypatch, "legacy-1")
 
         async with _TestSession() as db:
             tracks = await radio_service.get_next_tracks("sess-2", 1, db)
