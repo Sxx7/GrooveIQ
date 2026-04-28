@@ -1686,15 +1686,27 @@ function chartsLibraryBadge(entry) {
   return badges || '<span class="badge badge-neutral" style="opacity:0.4">not in library</span>';
 }
 
+function _chartsImgErr(img) {
+  // Chained fallback for chart thumbnails. If the primary <img> 404s,
+  // try the data-fallback URL once. If that also fails, remove the img
+  // and let the music-note tile underneath show through.
+  var fb = img.getAttribute('data-fallback');
+  if (fb && img.src !== fb) { img.setAttribute('data-fallback', ''); img.src = fb; }
+  else { img.remove(); }
+}
+
 function chartsThumbnail(entry) {
-  var src = (entry.library && entry.library.cover_url) || entry.image_url || '';
-  // Always render the music-note tile; if src is present, layer the image on
-  // top. If the image 404s, onerror removes it and the tile underneath stays
-  // visible — so we never get an empty hole between adjacent chart rows.
+  var primary = (entry.library && entry.library.cover_url) || '';
+  var fallback = entry.image_url || '';
+  var src = primary || fallback;
+  // Always render the music-note tile; if a src is present, layer the
+  // image on top with object-fit:cover. onerror chains through the
+  // fallback URL and finally removes the img, revealing the tile.
   var tileOpen = '<div style="position:relative;width:40px;height:40px;border-radius:var(--radius-sm);background:var(--hover-overlay);display:flex;align-items:center;justify-content:center;color:var(--text-muted);font-size:16px">\u266B';
   if (!src) return tileOpen + '</div>';
+  var fbAttr = (primary && fallback && primary !== fallback) ? ' data-fallback="' + esc(fallback) + '"' : '';
   return tileOpen
-    + '<img src="' + esc(src) + '" alt="" loading="lazy" style="position:absolute;inset:0;width:100%;height:100%;border-radius:var(--radius-sm);object-fit:cover" onerror="this.remove()">'
+    + '<img src="' + esc(src) + '" alt="" loading="lazy" style="position:absolute;inset:0;width:100%;height:100%;border-radius:var(--radius-sm);object-fit:cover"' + fbAttr + ' onerror="_chartsImgErr(this)">'
     + '</div>';
 }
 
