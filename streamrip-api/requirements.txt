@@ -1,4 +1,4 @@
-streamrip>=2.0.5,<3
+streamrip>=2.1.0,<3
 fastapi>=0.136.1,<1
 uvicorn[standard]>=0.46.0,<1
 tomlkit
