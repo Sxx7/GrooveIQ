@@ -364,9 +364,7 @@ async def test_process_album_dry_run_persists_skipped_no_download(db_session, cf
     assert result["decision"] == "dry_run"
     assert fake.download_calls == []  # never queued
     row = (
-        await db_session.execute(
-            select(LidarrBackfillRequest).where(LidarrBackfillRequest.lidarr_album_id == 4001)
-        )
+        await db_session.execute(select(LidarrBackfillRequest).where(LidarrBackfillRequest.lidarr_album_id == 4001))
     ).scalar_one()
     assert row.status == "skipped"
     assert row.streamrip_task_id is None
@@ -384,9 +382,7 @@ async def test_process_album_download_path_creates_downloading_row(db_session, c
     assert result["decision"] == "downloading"
     assert fake.download_calls == [("qobuz", "qobuz-currents")]
     row = (
-        await db_session.execute(
-            select(LidarrBackfillRequest).where(LidarrBackfillRequest.lidarr_album_id == 4002)
-        )
+        await db_session.execute(select(LidarrBackfillRequest).where(LidarrBackfillRequest.lidarr_album_id == 4002))
     ).scalar_one()
     assert row.status == "downloading"
     assert row.streamrip_task_id == "task-123"
@@ -409,9 +405,7 @@ async def test_process_album_no_match_when_artist_mismatch(db_session, cfg):
     assert result["decision"] == "no_match"
     assert fake.download_calls == []
     row = (
-        await db_session.execute(
-            select(LidarrBackfillRequest).where(LidarrBackfillRequest.lidarr_album_id == 4003)
-        )
+        await db_session.execute(select(LidarrBackfillRequest).where(LidarrBackfillRequest.lidarr_album_id == 4003))
     ).scalar_one()
     assert row.status == "no_match"
     assert row.attempt_count == 1
@@ -472,9 +466,7 @@ async def test_retry_request_resets_attempt_count(db_session):
     await db_session.commit()
     assert ok is True
     refreshed = (
-        await db_session.execute(
-            select(LidarrBackfillRequest).where(LidarrBackfillRequest.id == row.id)
-        )
+        await db_session.execute(select(LidarrBackfillRequest).where(LidarrBackfillRequest.id == row.id))
     ).scalar_one()
     assert refreshed.status == "queued"
     assert refreshed.attempt_count == 0
@@ -503,9 +495,7 @@ async def test_skip_request_marks_permanently_skipped(db_session):
     await db_session.commit()
     assert ok is True
     refreshed = (
-        await db_session.execute(
-            select(LidarrBackfillRequest).where(LidarrBackfillRequest.id == row.id)
-        )
+        await db_session.execute(select(LidarrBackfillRequest).where(LidarrBackfillRequest.id == row.id))
     ).scalar_one()
     assert refreshed.status == "permanently_skipped"
 
@@ -516,16 +506,31 @@ async def test_reset_backfill_state_scope_failed(db_session):
     db_session.add_all(
         [
             LidarrBackfillRequest(
-                lidarr_album_id=6001, artist="A", album_title="X", source="missing",
-                status="failed", created_at=now, updated_at=now,
+                lidarr_album_id=6001,
+                artist="A",
+                album_title="X",
+                source="missing",
+                status="failed",
+                created_at=now,
+                updated_at=now,
             ),
             LidarrBackfillRequest(
-                lidarr_album_id=6002, artist="A", album_title="Y", source="missing",
-                status="complete", created_at=now, updated_at=now,
+                lidarr_album_id=6002,
+                artist="A",
+                album_title="Y",
+                source="missing",
+                status="complete",
+                created_at=now,
+                updated_at=now,
             ),
             LidarrBackfillRequest(
-                lidarr_album_id=6003, artist="A", album_title="Z", source="missing",
-                status="failed", created_at=now, updated_at=now,
+                lidarr_album_id=6003,
+                artist="A",
+                album_title="Z",
+                source="missing",
+                status="failed",
+                created_at=now,
+                updated_at=now,
             ),
         ]
     )
@@ -536,8 +541,10 @@ async def test_reset_backfill_state_scope_failed(db_session):
     assert deleted == 2
 
     remaining = (
-        await db_session.execute(select(LidarrBackfillRequest).order_by(LidarrBackfillRequest.lidarr_album_id))
-    ).scalars().all()
+        (await db_session.execute(select(LidarrBackfillRequest).order_by(LidarrBackfillRequest.lidarr_album_id)))
+        .scalars()
+        .all()
+    )
     assert [r.lidarr_album_id for r in remaining] == [6002]
 
 
@@ -755,11 +762,15 @@ class _FakeLidarrClient:
         self.missing_calls: list[dict[str, Any]] = []
         self.cutoff_calls: list[dict[str, Any]] = []
 
-    async def get_missing_albums(self, page_size=100, monitored=True, sort_key="albums.releaseDate", sort_direction="descending"):
+    async def get_missing_albums(
+        self, page_size=100, monitored=True, sort_key="albums.releaseDate", sort_direction="descending"
+    ):
         self.missing_calls.append({"sort_key": sort_key, "sort_direction": sort_direction, "monitored": monitored})
         return list(self.missing_rows)
 
-    async def get_cutoff_unmet_albums(self, page_size=100, monitored=True, sort_key="albums.releaseDate", sort_direction="descending"):
+    async def get_cutoff_unmet_albums(
+        self, page_size=100, monitored=True, sort_key="albums.releaseDate", sort_direction="descending"
+    ):
         self.cutoff_calls.append({"sort_key": sort_key, "sort_direction": sort_direction, "monitored": monitored})
         return list(self.cutoff_rows)
 
@@ -844,9 +855,7 @@ async def test_no_match_gets_cooldown_to_avoid_back_to_back_retries(db_session, 
     assert result["decision"] == "no_match"
 
     row = (
-        await db_session.execute(
-            select(LidarrBackfillRequest).where(LidarrBackfillRequest.lidarr_album_id == 8001)
-        )
+        await db_session.execute(select(LidarrBackfillRequest).where(LidarrBackfillRequest.lidarr_album_id == 8001))
     ).scalar_one()
     assert row.status == "no_match"
     assert row.attempt_count == 1
@@ -904,9 +913,7 @@ async def test_no_match_existing_row_gets_cooldown_on_retry(db_session, cfg):
     await db_session.commit()
 
     row = (
-        await db_session.execute(
-            select(LidarrBackfillRequest).where(LidarrBackfillRequest.lidarr_album_id == 8003)
-        )
+        await db_session.execute(select(LidarrBackfillRequest).where(LidarrBackfillRequest.lidarr_album_id == 8003))
     ).scalar_one()
     assert row.attempt_count == 2  # bumped
     assert row.next_retry_at is not None  # cooldown now applied

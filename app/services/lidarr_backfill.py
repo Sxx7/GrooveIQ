@@ -220,10 +220,13 @@ def _score_match(
         track_count_diff = abs(target_track_count - sr_track_count)
 
     track_count_ok = track_count_diff == 0 if track_count_diff is not None else False
-    year_ok = (year_diff is not None and year_diff <= 1)
+    year_ok = year_diff is not None and year_diff <= 1
 
-    score = 0.50 * artist_sim + 0.40 * album_sim + 0.05 * (1.0 if track_count_ok else 0.0) + 0.05 * (
-        1.0 if year_ok else 0.0
+    score = (
+        0.50 * artist_sim
+        + 0.40 * album_sim
+        + 0.05 * (1.0 if track_count_ok else 0.0)
+        + 0.05 * (1.0 if year_ok else 0.0)
     )
 
     reasons: list[str] = []
@@ -238,15 +241,8 @@ def _score_match(
         artist_exact = artist_sim >= 0.95
         track_count_exact = track_count_diff is not None and track_count_diff == 0
         year_close = year_diff is not None and year_diff <= 1
-        if (
-            cfg.match.allow_structural_fallback
-            and artist_exact
-            and track_count_exact
-            and year_close
-        ):
-            reasons.append(
-                f"album_similarity={album_sim:.2f}<{cfg.match.min_album_similarity}_structural_ok"
-            )
+        if cfg.match.allow_structural_fallback and artist_exact and track_count_exact and year_close:
+            reasons.append(f"album_similarity={album_sim:.2f}<{cfg.match.min_album_similarity}_structural_ok")
         else:
             accepted = False
             reasons.append(f"album_similarity={album_sim:.2f}<{cfg.match.min_album_similarity}")
@@ -377,9 +373,7 @@ async def _find_streamrip_album(
                 album_artist=entry.get("artist") or "",
                 album_title=entry.get("album") or "",
                 score=score,
-                track_count=entry.get("album_track_count")
-                if isinstance(entry.get("album_track_count"), int)
-                else None,
+                track_count=entry.get("album_track_count") if isinstance(entry.get("album_track_count"), int) else None,
                 year=entry.get("album_year") if isinstance(entry.get("album_year"), int) else None,
             )
             scored.append((score.score, match))
@@ -403,9 +397,7 @@ async def _compute_capacity(session: AsyncSession, cfg: LidarrBackfillConfigData
     cutoff = datetime.now(timezone.utc) - timedelta(hours=1)
     cutoff_ts = int(cutoff.timestamp())
     in_window = await session.scalar(
-        select(func.count())
-        .select_from(LidarrBackfillRequest)
-        .where(LidarrBackfillRequest.created_at > cutoff_ts)
+        select(func.count()).select_from(LidarrBackfillRequest).where(LidarrBackfillRequest.created_at > cutoff_ts)
     )
     in_window = in_window or 0
     capacity = cfg.max_downloads_per_hour - in_window
@@ -425,9 +417,7 @@ async def _filter_by_cooldown_and_state(
     ids = [c.get("id") for c in candidates if c.get("id")]
     if not ids:
         return []
-    rows = await session.execute(
-        select(LidarrBackfillRequest).where(LidarrBackfillRequest.lidarr_album_id.in_(ids))
-    )
+    rows = await session.execute(select(LidarrBackfillRequest).where(LidarrBackfillRequest.lidarr_album_id.in_(ids)))
     state_by_id: dict[int, LidarrBackfillRequest] = {r.lidarr_album_id: r for r in rows.scalars().all()}
     now = _now_ts()
     out: list[dict[str, Any]] = []
@@ -466,9 +456,7 @@ async def _fetch_candidates(
     ``random`` we use the recent-release sort as the base fetch order and
     then shuffle in Python — Lidarr's API doesn't support random sort.
     """
-    sort_key, sort_direction = _QUEUE_SORT.get(
-        cfg.sources.queue_order, _QUEUE_SORT[QueueOrder.RECENT_RELEASE]
-    )
+    sort_key, sort_direction = _QUEUE_SORT.get(cfg.sources.queue_order, _QUEUE_SORT[QueueOrder.RECENT_RELEASE])
 
     candidates: list[dict[str, Any]] = []
     if cfg.sources.missing:
@@ -636,7 +624,9 @@ async def _process_album(
     }
 
     match = await _find_streamrip_album(
-        streamrip_client, lidarr_album, cfg,
+        streamrip_client,
+        lidarr_album,
+        cfg,
         available_services=available_services,
     )
     if match is None:
@@ -785,7 +775,10 @@ async def run_backfill_tick(session: AsyncSession) -> dict[str, Any]:
                 try:
                     results.append(
                         await _process_album(
-                            session, album, cfg, streamrip_client,
+                            session,
+                            album,
+                            cfg,
+                            streamrip_client,
                             available_services=available_services,
                         )
                     )
@@ -820,13 +813,17 @@ async def poll_in_flight(session: AsyncSession) -> dict[str, Any]:
         return {"skipped": "streamrip_not_configured"}
 
     rows = (
-        await session.execute(
-            select(LidarrBackfillRequest).where(
-                LidarrBackfillRequest.status == STATUS_DOWNLOADING,
-                LidarrBackfillRequest.streamrip_task_id.isnot(None),
+        (
+            await session.execute(
+                select(LidarrBackfillRequest).where(
+                    LidarrBackfillRequest.status == STATUS_DOWNLOADING,
+                    LidarrBackfillRequest.streamrip_task_id.isnot(None),
+                )
             )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
 
     if not rows:
         return {"checked": 0}
@@ -966,7 +963,9 @@ async def preview_matches(
                 continue
 
             match = await _find_streamrip_album(
-                streamrip_client, album, cfg,
+                streamrip_client,
+                album,
+                cfg,
                 available_services=available_services,
             )
             if match is None:
@@ -1024,9 +1023,7 @@ async def reset_backfill_state(session: AsyncSession, scope: str) -> int:
     elif scope in {STATUS_FAILED, STATUS_NO_MATCH, STATUS_PERMANENTLY_SKIPPED}:
         stmt = delete(LidarrBackfillRequest).where(LidarrBackfillRequest.status == scope)
     else:
-        raise ValueError(
-            f"unknown scope {scope!r}; expected one of failed / no_match / permanently_skipped / all"
-        )
+        raise ValueError(f"unknown scope {scope!r}; expected one of failed / no_match / permanently_skipped / all")
     result = await session.execute(stmt)
     return result.rowcount or 0
 
@@ -1034,9 +1031,7 @@ async def reset_backfill_state(session: AsyncSession, scope: str) -> int:
 async def retry_request(session: AsyncSession, request_id: int) -> bool:
     """Reset a single row so it gets re-picked on the next tick."""
     row = (
-        await session.execute(
-            select(LidarrBackfillRequest).where(LidarrBackfillRequest.id == request_id)
-        )
+        await session.execute(select(LidarrBackfillRequest).where(LidarrBackfillRequest.id == request_id))
     ).scalar_one_or_none()
     if row is None:
         return False
@@ -1083,17 +1078,14 @@ async def get_stats(session: AsyncSession) -> dict[str, Any]:
 
     by_status: dict[str, int] = {}
     rows = await session.execute(
-        select(LidarrBackfillRequest.status, func.count())
-        .group_by(LidarrBackfillRequest.status)
+        select(LidarrBackfillRequest.status, func.count()).group_by(LidarrBackfillRequest.status)
     )
     for status_, n in rows.all():
         by_status[status_] = int(n or 0)
 
     in_window = (
         await session.scalar(
-            select(func.count())
-            .select_from(LidarrBackfillRequest)
-            .where(LidarrBackfillRequest.created_at > cutoff_ts)
+            select(func.count()).select_from(LidarrBackfillRequest).where(LidarrBackfillRequest.created_at > cutoff_ts)
         )
     ) or 0
 
