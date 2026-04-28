@@ -703,6 +703,129 @@ class TestMatcherPriorityChain:
         assert result.tracks_matched_by_path == 0
 
     @patch("app.services.media_server.settings")
+    async def test_rename_merges_colliding_interactions(self, mock_settings):
+        """Repro for issue #28: a TrackInteraction already exists at the
+        post-rename track_id (e.g. left over from a previous sync, or from
+        events that came in tagged with the Navidrome ID directly).  The
+        naive UPDATE in the rename loop trips uq_user_track; the fix merges
+        the two rows by summing counts and deleting the old row.
+        """
+        self._settings(mock_settings)
+
+        async with _TestSession() as session:
+            # GrooveIQ track currently at the legacy hash id.
+            session.add(
+                TrackFeatures(
+                    track_id="legacy-23946",
+                    file_path="/music/Artist/Album/song.flac",
+                    title="Song",
+                    artist="Artist",
+                    album="Album",
+                    duration=180.0,
+                )
+            )
+            session.add(User(user_id="u1"))
+            now = int(time.time())
+            # u1 has interactions on the legacy id AND on the post-rename id
+            # (the latter typically arrives via events ingested before sync,
+            # or from a previous partial sync).
+            session.add(
+                TrackInteraction(
+                    user_id="u1",
+                    track_id="legacy-23946",
+                    play_count=3,
+                    skip_count=1,
+                    like_count=1,
+                    early_skip_count=1,
+                    full_listen_count=2,
+                    total_dwell_ms=120_000,
+                    avg_completion=0.9,
+                    first_played_at=now - 100,
+                    last_played_at=now - 10,
+                    satisfaction_score=0.7,
+                    last_event_id=10,
+                    updated_at=now,
+                )
+            )
+            session.add(
+                TrackInteraction(
+                    user_id="u1",
+                    track_id="nav-target-id",
+                    play_count=2,
+                    skip_count=0,
+                    full_listen_count=2,
+                    total_dwell_ms=80_000,
+                    avg_completion=0.8,
+                    first_played_at=now - 50,
+                    last_played_at=now - 5,
+                    satisfaction_score=0.5,
+                    last_event_id=15,
+                    updated_at=now,
+                )
+            )
+            # And one interaction for a different user on the legacy id only —
+            # this should be UPDATEd normally (no collision).
+            session.add(
+                TrackInteraction(
+                    user_id="u2",
+                    track_id="legacy-23946",
+                    play_count=4,
+                    last_event_id=7,
+                    updated_at=now,
+                )
+            )
+            await session.commit()
+
+        server_tracks = [
+            MediaServerTrack(
+                server_id="nav-target-id",
+                title="Song",
+                artist="Artist",
+                album="Album",
+                file_path="x/y/z.flac",
+                duration=180.0,
+            ),
+        ]
+        with patch("app.services.media_server.fetch_tracks", new_callable=AsyncMock, return_value=server_tracks):
+            async with _TestSession() as session:
+                result = await sync_track_ids(session)
+
+        # No UNIQUE constraint errors.
+        assert all("UNIQUE" not in e for e in result.errors), f"unexpected UNIQUE errors: {result.errors}"
+        assert result.tracks_updated == 1
+
+        from sqlalchemy import select
+
+        async with _TestSession() as session:
+            # u1: one merged row at the new id with summed counts.
+            u1 = (
+                (await session.execute(select(TrackInteraction).where(TrackInteraction.user_id == "u1")))
+                .scalars()
+                .all()
+            )
+            assert len(u1) == 1
+            merged = u1[0]
+            assert merged.track_id == "nav-target-id"
+            assert merged.play_count == 5  # 3 + 2
+            assert merged.skip_count == 1  # 1 + 0
+            assert merged.like_count == 1  # 1 + 0
+            assert merged.full_listen_count == 4  # 2 + 2
+            assert merged.total_dwell_ms == 200_000  # 120_000 + 80_000
+            assert merged.last_event_id == 15  # max(10, 15)
+            assert merged.first_played_at == now - 100  # earliest
+            assert merged.last_played_at == now - 5  # latest
+
+            # u2: non-colliding row was renamed normally.
+            u2 = (
+                (await session.execute(select(TrackInteraction).where(TrackInteraction.user_id == "u2")))
+                .scalars()
+                .all()
+            )
+            assert len(u2) == 1
+            assert u2[0].track_id == "nav-target-id"
+            assert u2[0].play_count == 4
+
+    @patch("app.services.media_server.settings")
     async def test_uses_duration_ms_when_set(self, mock_settings):
         """If duration_ms is populated (from ID3 reader) it takes precedence
         over the analyzer's float ``duration`` for AATD comparisons."""
