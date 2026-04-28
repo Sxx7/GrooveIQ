@@ -83,13 +83,12 @@ services:
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]
     tmpfs:
+      # spotDL's lazy init writes its config + caches under $HOME. The image
+      # sets HOME=/tmp/spotdl-home (see spotdl-api/Dockerfile), so this single
+      # /tmp tmpfs covers config, cache, and scratch space. Earlier separate
+      # /home/spotdl/.{config,cache} mounts were broken — Docker tmpfs defaults
+      # to root ownership, but spotdl runs as UID 1000 and got PermissionError.
       - /tmp:noexec,nosuid,size=128M
-      # spotDL writes its config (cached Spotify token, etc.) to ~/.config and
-      # ~/.cache.  Without writable paths here the container starts but every
-      # /search and /download silently returns empty (init crashes, /health stays
-      # green because we don't restart-loop on missing creds — see main.py:415).
-      - /home/spotdl/.config:noexec,nosuid,size=16M
-      - /home/spotdl/.cache:noexec,nosuid,size=64M
     # No host ports — reachable by grooveiq via Docker network at spotdl-api:8181.
     # Exposing on the host would bypass GrooveIQ's auth layer (spotdl-api has no
     # auth of its own).  For debug access: docker compose exec spotdl-api curl ...

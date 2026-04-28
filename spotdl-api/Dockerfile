@@ -23,6 +23,13 @@ RUN useradd -m -s /bin/bash spotdl \
     && mkdir -p /music /cache \
     && chown -R spotdl:spotdl /app /music /cache
 
+# Redirect HOME to /tmp at runtime. The compose stack mounts the rootfs
+# read_only and adds a /tmp tmpfs, so the real /home/spotdl is not
+# writable — spotdl's lazy init (~/.config/spotdl, ~/.cache) crashes with
+# PermissionError otherwise. /tmp is the only writable location we can
+# rely on. Subdir is created on first use via os.makedirs(exist_ok=True).
+ENV HOME=/tmp/spotdl-home
+
 USER spotdl
 
 EXPOSE 8181
