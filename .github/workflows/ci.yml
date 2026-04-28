@@ -30,7 +30,6 @@ jobs:
   ruff-format:
     name: Lint (ruff format)
     runs-on: ubuntu-latest
-    continue-on-error: true  # advisory until codebase is fully formatted
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
