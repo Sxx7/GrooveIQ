@@ -403,3 +403,115 @@ class TestUserRename:
     async def test_empty_update_rejected(self, client: AsyncClient):
         resp = await client.patch("/v1/users/1", json={})
         assert resp.status_code == 422
+
+
+# ---------------------------------------------------------------------------
+# /v1/tracks/lookup — resolve external IDs to internal track_id (issue #37)
+# ---------------------------------------------------------------------------
+
+
+class TestTrackLookup:
+    async def _seed(self):
+        async with _TestSession() as session:
+            session.add(
+                TrackFeatures(
+                    track_id="aaaa1234bbbb5678",
+                    file_path="/music/a.mp3",
+                    title="Test Song",
+                    artist="An Artist",
+                    album="An Album",
+                    duration=200.0,
+                    media_server_id="nv-22charNavidromeID01",
+                    spotify_id="sp-xyz",
+                    musicbrainz_track_id="mb-uuid-aaaa-bbbb",
+                )
+            )
+            session.add(
+                TrackFeatures(
+                    track_id="ffff0000aaaa1111",
+                    file_path="/music/b.mp3",
+                    title="Other Song",
+                    media_server_id="nv-other-id-here",
+                )
+            )
+            await session.commit()
+
+    async def test_lookup_by_media_server_id(self, client: AsyncClient):
+        await self._seed()
+        r = await client.get("/v1/tracks/lookup", params={"media_server_id": "nv-22charNavidromeID01"})
+        assert r.status_code == 200
+        body = r.json()
+        assert body["track_id"] == "aaaa1234bbbb5678"
+        assert body["title"] == "Test Song"
+        assert body["mb_track_id"] == "mb-uuid-aaaa-bbbb"
+
+    async def test_lookup_by_spotify_id(self, client: AsyncClient):
+        await self._seed()
+        r = await client.get("/v1/tracks/lookup", params={"spotify_id": "sp-xyz"})
+        assert r.status_code == 200
+        assert r.json()["track_id"] == "aaaa1234bbbb5678"
+
+    async def test_lookup_by_mb_track_id(self, client: AsyncClient):
+        await self._seed()
+        r = await client.get("/v1/tracks/lookup", params={"mb_track_id": "mb-uuid-aaaa-bbbb"})
+        assert r.status_code == 200
+        assert r.json()["track_id"] == "aaaa1234bbbb5678"
+
+    async def test_lookup_unknown_returns_404(self, client: AsyncClient):
+        await self._seed()
+        r = await client.get("/v1/tracks/lookup", params={"spotify_id": "does-not-exist"})
+        assert r.status_code == 404
+
+    async def test_lookup_no_param_returns_400(self, client: AsyncClient):
+        await self._seed()
+        r = await client.get("/v1/tracks/lookup")
+        assert r.status_code == 400
+
+    async def test_lookup_multiple_params_returns_400(self, client: AsyncClient):
+        await self._seed()
+        r = await client.get(
+            "/v1/tracks/lookup",
+            params={"spotify_id": "sp-xyz", "qobuz_id": "q-1"},
+        )
+        assert r.status_code == 400
+
+    async def test_batch_lookup(self, client: AsyncClient):
+        await self._seed()
+        r = await client.post(
+            "/v1/tracks/lookup",
+            json={"media_server_ids": ["nv-22charNavidromeID01", "nv-other-id-here", "missing"]},
+        )
+        assert r.status_code == 200
+        resolved = r.json()["resolved"]
+        assert resolved["nv-22charNavidromeID01"] == "aaaa1234bbbb5678"
+        assert resolved["nv-other-id-here"] == "ffff0000aaaa1111"
+        assert resolved["missing"] is None
+
+    async def test_batch_lookup_no_field_returns_400(self, client: AsyncClient):
+        await self._seed()
+        r = await client.post("/v1/tracks/lookup", json={})
+        assert r.status_code == 400
+
+    async def test_batch_lookup_multiple_fields_returns_400(self, client: AsyncClient):
+        await self._seed()
+        r = await client.post(
+            "/v1/tracks/lookup",
+            json={"spotify_ids": ["a"], "qobuz_ids": ["b"]},
+        )
+        assert r.status_code == 400
+
+    async def test_batch_lookup_empty_list(self, client: AsyncClient):
+        await self._seed()
+        r = await client.post("/v1/tracks/lookup", json={"spotify_ids": []})
+        assert r.status_code == 200
+        assert r.json()["resolved"] == {}
+
+    async def test_features_response_includes_per_backend_ids(self, client: AsyncClient):
+        await self._seed()
+        r = await client.get("/v1/tracks/aaaa1234bbbb5678/features")
+        assert r.status_code == 200
+        body = r.json()
+        assert body["media_server_id"] == "nv-22charNavidromeID01"
+        assert body["spotify_id"] == "sp-xyz"
+        assert body["mb_track_id"] == "mb-uuid-aaaa-bbbb"
+        assert body["qobuz_id"] is None

@@ -286,26 +286,17 @@ async def _fetch_track_features(session: AsyncSession, track_ids: list[str]) -> 
     if not track_ids:
         return {}
 
-    # Batch in groups of 500 to avoid huge IN clauses.
-    # Match on both track_id and external_track_id so events using
-    # media-server IDs (stored as external_track_id) resolve correctly.
-    from sqlalchemy import or_
-
+    # Post-#37, every TrackInteraction.track_id / ListenEvent.track_id is the
+    # internal GrooveIQ id (a stable file-path hash). A plain track_id JOIN
+    # is sufficient — the legacy OR-on-external_track_id is no longer needed.
     features_map: dict[str, TrackFeatures] = {}
     for i in range(0, len(track_ids), 500):
         batch = track_ids[i : i + 500]
         result = await session.execute(
-            select(TrackFeatures).where(
-                or_(
-                    TrackFeatures.track_id.in_(batch),
-                    TrackFeatures.external_track_id.in_(batch),
-                )
-            )
+            select(TrackFeatures).where(TrackFeatures.track_id.in_(batch))
         )
         for tf in result.scalars().all():
             features_map[tf.track_id] = tf
-            if tf.external_track_id:
-                features_map[tf.external_track_id] = tf
 
     return features_map
 
@@ -870,11 +861,13 @@ async def build_seed_profile(
         if onboarding.get("favourite_tracks"):
             from sqlalchemy import or_
 
+            # Onboarding may carry either internal track_ids or media_server_ids
+            # (an iOS client typically only knows the latter at first-launch).
             result = await session.execute(
                 select(TrackFeatures).where(
                     or_(
                         TrackFeatures.track_id.in_(onboarding["favourite_tracks"]),
-                        TrackFeatures.external_track_id.in_(onboarding["favourite_tracks"]),
+                        TrackFeatures.media_server_id.in_(onboarding["favourite_tracks"]),
                     )
                 )
             )

@@ -139,9 +139,34 @@ class TrackFeatures(Base):
     __tablename__ = "track_features"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
+
+    # Stable internal GrooveIQ identifier — SHA-256(rel_path)[:16] hex.
+    # Computed at first scan, never overwritten thereafter. The single source of
+    # truth referenced by every ListenEvent / TrackInteraction / FAISS entry /
+    # model token / playlist row. See issue #37.
     track_id = Column(String(128), nullable=False, unique=True, index=True)
 
-    # Media server mapping — populated when matching scanner tracks to Navidrome/Plex IDs
+    # Per-backend external identifiers. Populated on demand:
+    #   - media_server_id   <- POST /v1/library/sync (Navidrome song ID)
+    #   - spotify_id        <- download cascade / charts (Spotify track ID)
+    #   - qobuz_id          <- streamrip Qobuz download
+    #   - tidal_id          <- streamrip Tidal download
+    #   - deezer_id         <- streamrip Deezer download
+    #   - soundcloud_id     <- streamrip SoundCloud download
+    # All nullable + unique so duplicate detection at sync/download time is a
+    # single SQL constraint. NULLs are treated as distinct in both SQLite and
+    # PostgreSQL UNIQUE indexes, so many rows may legitimately have NULL here.
+    media_server_id = Column(String(64), nullable=True, unique=True, index=True)
+    spotify_id = Column(String(64), nullable=True, unique=True, index=True)
+    qobuz_id = Column(String(64), nullable=True, unique=True, index=True)
+    tidal_id = Column(String(64), nullable=True, unique=True, index=True)
+    deezer_id = Column(String(64), nullable=True, unique=True, index=True)
+    soundcloud_id = Column(String(64), nullable=True, unique=True, index=True)
+
+    # DEPRECATED — kept through the #37 migration window. Old rows held either
+    # the legacy 16-hex pre-sync hash or the media-server ID depending on which
+    # path created them. Phase 2 of #37 redistributes its content into
+    # `track_id` / `media_server_id`; Phase 5 drops this column.
     external_track_id = Column(String(128), nullable=True, unique=True, index=True)
 
     # Track metadata (populated from media server sync + ID3 tags)
@@ -152,7 +177,7 @@ class TrackFeatures(Base):
     genre = Column(String(512), nullable=True)  # comma-separated, e.g. "Hip-Hop, Rap"
     track_number = Column(Integer, nullable=True)
     duration_ms = Column(Integer, nullable=True)  # from ID3 tags (integer ms)
-    musicbrainz_track_id = Column(String(64), nullable=True)
+    musicbrainz_track_id = Column(String(64), nullable=True, index=True)
 
     # File metadata
     file_path = Column(Text, nullable=False)

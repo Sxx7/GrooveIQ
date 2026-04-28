@@ -18,8 +18,37 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.security import require_admin, require_api_key
 from app.db.session import get_session
 from app.models.db import ScanLog, TrackFeatures
-from app.models.schemas import ScanStatusResponse, ScanTriggerResponse, TrackFeaturesResponse
+from app.models.schemas import (
+    ScanStatusResponse,
+    ScanTriggerResponse,
+    TrackFeaturesResponse,
+    TrackLookupBatchRequest,
+    TrackLookupBatchResponse,
+)
 from app.workers.library_scanner import get_scan_status, trigger_scan
+
+
+# ---------------------------------------------------------------------------
+# Per-backend ID columns exposed by the API
+# ---------------------------------------------------------------------------
+# Map: (API field name) -> (TrackFeatures column name). They differ only for
+# `mb_track_id`, which is the public-facing alias for `musicbrainz_track_id`.
+
+_BACKEND_ID_COLS = {
+    "media_server_id": "media_server_id",
+    "spotify_id": "spotify_id",
+    "qobuz_id": "qobuz_id",
+    "tidal_id": "tidal_id",
+    "deezer_id": "deezer_id",
+    "soundcloud_id": "soundcloud_id",
+    "mb_track_id": "musicbrainz_track_id",
+}
+
+
+def _serialize_track_ids(tf: TrackFeatures) -> dict:
+    """Return the per-backend identifier subset of a TrackFeatures row,
+    serialising `musicbrainz_track_id` under the public name `mb_track_id`."""
+    return {api_name: getattr(tf, col_name) for api_name, col_name in _BACKEND_ID_COLS.items()}
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -78,8 +107,8 @@ async def trigger_sync(
         "tracks_matched_by_aatd": result.tracks_matched_by_aatd,
         "tracks_matched_by_path": result.tracks_matched_by_path,
         "tracks_aatd_ambiguous": result.tracks_aatd_ambiguous,
-        "tracks_updated": result.tracks_updated,
-        "tracks_metadata": result.tracks_metadata,
+        "media_server_id_updated": result.media_server_id_updated,
+        "metadata_updated": result.metadata_updated,
         "tracks_unmatched": result.tracks_unmatched,
         "errors": result.errors,
         "elapsed_seconds": result.elapsed_s,
@@ -397,10 +426,131 @@ async def list_tracks(
                 "mood_tags": t.mood_tags,
                 "analyzed_at": t.analyzed_at,
                 "analysis_version": t.analysis_version,
+                **_serialize_track_ids(t),
             }
             for t in tracks
         ],
     }
+
+
+# ---------------------------------------------------------------------------
+# Track lookup (resolve external id → internal track_id)
+# ---------------------------------------------------------------------------
+
+
+@router.get(
+    "/tracks/lookup",
+    summary="Resolve an external identifier to the internal track_id",
+    description="""
+Looks up a TrackFeatures row by any of its external identifiers. Used by
+clients (iOS app, web dashboard, Last.fm scrobbler) that hold an ID from a
+specific backend and need to find the GrooveIQ internal `track_id` before
+posting events / requesting features / starting radio.
+
+Pass exactly one of the lookup parameters. Returns 404 if no track matches,
+400 if zero or multiple lookup parameters are supplied.
+""",
+)
+async def lookup_track(
+    media_server_id: str | None = Query(None),
+    spotify_id: str | None = Query(None),
+    qobuz_id: str | None = Query(None),
+    tidal_id: str | None = Query(None),
+    deezer_id: str | None = Query(None),
+    soundcloud_id: str | None = Query(None),
+    mb_track_id: str | None = Query(None, description="MusicBrainz Recording ID."),
+    session: AsyncSession = Depends(get_session),
+    _key: str = Depends(require_api_key),
+):
+    supplied = {
+        "media_server_id": media_server_id,
+        "spotify_id": spotify_id,
+        "qobuz_id": qobuz_id,
+        "tidal_id": tidal_id,
+        "deezer_id": deezer_id,
+        "soundcloud_id": soundcloud_id,
+        "mb_track_id": mb_track_id,
+    }
+    populated = {k: v for k, v in supplied.items() if v is not None}
+    if len(populated) != 1:
+        raise HTTPException(
+            status_code=400,
+            detail="Pass exactly one lookup parameter "
+            "(media_server_id / spotify_id / qobuz_id / tidal_id / "
+            "deezer_id / soundcloud_id / mb_track_id).",
+        )
+    api_name, value = next(iter(populated.items()))
+    col = getattr(TrackFeatures, _BACKEND_ID_COLS[api_name])
+
+    result = await session.execute(select(TrackFeatures).where(col == value))
+    track = result.scalar_one_or_none()
+    if track is None:
+        raise HTTPException(status_code=404, detail="No track matches the given external ID.")
+
+    return {
+        "track_id": track.track_id,
+        "title": track.title,
+        "artist": track.artist,
+        "album": track.album,
+        "duration": track.duration,
+        **_serialize_track_ids(track),
+    }
+
+
+@router.post(
+    "/tracks/lookup",
+    response_model=TrackLookupBatchResponse,
+    summary="Batch-resolve external identifiers to internal track_ids",
+    description="""
+Resolves a batch of external IDs of one type to their corresponding internal
+track_ids. Pass exactly one of the *_ids lists. Returns a `resolved` map of
+`external_id → track_id` (with `null` for IDs that don't match any track).
+""",
+)
+async def lookup_tracks_batch(
+    body: TrackLookupBatchRequest,
+    session: AsyncSession = Depends(get_session),
+    _key: str = Depends(require_api_key),
+):
+    # Map request field name -> (column name, list of ids)
+    fields = {
+        "media_server_ids": ("media_server_id", body.media_server_ids),
+        "spotify_ids": ("spotify_id", body.spotify_ids),
+        "qobuz_ids": ("qobuz_id", body.qobuz_ids),
+        "tidal_ids": ("tidal_id", body.tidal_ids),
+        "deezer_ids": ("deezer_id", body.deezer_ids),
+        "soundcloud_ids": ("soundcloud_id", body.soundcloud_ids),
+        "mb_track_ids": ("musicbrainz_track_id", body.mb_track_ids),
+    }
+    supplied = {name: (col, ids) for name, (col, ids) in fields.items() if ids is not None}
+    if len(supplied) != 1:
+        raise HTTPException(
+            status_code=400,
+            detail="Pass exactly one *_ids list "
+            "(media_server_ids / spotify_ids / qobuz_ids / tidal_ids / "
+            "deezer_ids / soundcloud_ids / mb_track_ids).",
+        )
+    _, (col_name, ids) = next(iter(supplied.items()))
+    col = getattr(TrackFeatures, col_name)
+
+    # Empty list is a valid no-op — return an empty map.
+    if not ids:
+        return TrackLookupBatchResponse(resolved={})
+
+    # Chunk to avoid blowing past SQLite's IN-list limit on huge requests.
+    found: dict[str, str] = {}
+    chunk = 500
+    for i in range(0, len(ids), chunk):
+        sub = ids[i : i + chunk]
+        result = await session.execute(
+            select(TrackFeatures.track_id, col).where(col.in_(sub))
+        )
+        for tid, ext in result.all():
+            found[ext] = tid
+
+    # Preserve None for inputs that didn't match.
+    resolved = {ext_id: found.get(ext_id) for ext_id in ids}
+    return TrackLookupBatchResponse(resolved=resolved)
 
 
 # ---------------------------------------------------------------------------
@@ -415,9 +565,9 @@ async def list_tracks(
     description="""
 Returns the Essentia-extracted acoustic features for a track.
 
-`track_id` must match the identifier used when sending events —
-typically the track ID from your media server (Navidrome, Jellyfin, etc.)
-or the file stem if using direct library mode.
+`track_id` is the **internal GrooveIQ identifier** — a 16-char hex hash
+of the file's relative path. Resolve from a Navidrome / streaming-service
+ID via `GET /v1/tracks/lookup` first.
 
 Returns **404** if the track has not been analyzed yet.
 """,
@@ -434,7 +584,28 @@ async def get_track_features(
             status_code=404,
             detail="Not found.",
         )
-    return track
+    # Build the response dict explicitly so musicbrainz_track_id is exposed
+    # under its public name `mb_track_id`.
+    return TrackFeaturesResponse(
+        track_id=track.track_id,
+        title=track.title,
+        artist=track.artist,
+        album=track.album,
+        genre=track.genre,
+        duration=track.duration,
+        bpm=track.bpm,
+        key=track.key,
+        mode=track.mode,
+        energy=track.energy,
+        danceability=track.danceability,
+        valence=track.valence,
+        acousticness=track.acousticness,
+        instrumentalness=track.instrumentalness,
+        mood_tags=track.mood_tags,
+        analyzed_at=track.analyzed_at,
+        analysis_version=track.analysis_version,
+        **_serialize_track_ids(track),
+    )
 
 
 @router.get(

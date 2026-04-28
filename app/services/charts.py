@@ -645,10 +645,10 @@ async def _build_track_chart(
 
         # Fallback cover art: Last.fm dropped the placeholder filter above and
         # we have no URL. Resolve via spotdl-api for *every* such entry — even
-        # matched ones — because TrackFeatures.external_track_id is sometimes a
-        # stale legacy hash that Navidrome doesn't recognise (it returns
-        # "Artwork not found" XML), and the frontend uses image_url as the
-        # fallback when library.cover_url 404s.
+        # matched ones — because TrackFeatures.media_server_id may point at a
+        # song Navidrome no longer has (returns "Artwork not found" XML), and
+        # the frontend uses image_url as the fallback when library.cover_url
+        # 404s.
         if image_url is None and cover_client is not None and artist_name and title:
             resolved = await _resolve_cover_art(
                 session,

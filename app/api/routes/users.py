@@ -106,12 +106,14 @@ async def submit_onboarding(
     matched_artists = 0
 
     # --- Match favourite tracks against library ---
+    # Accept either internal track_ids or media_server_ids — the iOS app may
+    # hold either. We resolve to the internal track_id and persist that.
     if body.favourite_tracks:
         result = await session.execute(
             select(TrackFeatures.track_id).where(
                 or_(
                     TrackFeatures.track_id.in_(body.favourite_tracks),
-                    TrackFeatures.external_track_id.in_(body.favourite_tracks),
+                    TrackFeatures.media_server_id.in_(body.favourite_tracks),
                 )
             )
         )
@@ -240,17 +242,9 @@ async def get_user_interactions(
     )
     total = (await session.execute(count_q)).scalar() or 0
 
-    from sqlalchemy import or_
-
     q = (
         select(TrackInteraction, TrackFeatures)
-        .outerjoin(
-            TrackFeatures,
-            or_(
-                TrackInteraction.track_id == TrackFeatures.track_id,
-                TrackInteraction.track_id == TrackFeatures.external_track_id,
-            ),
-        )
+        .outerjoin(TrackFeatures, TrackInteraction.track_id == TrackFeatures.track_id)
         .where(TrackInteraction.user_id == user_id)
         .order_by(order)
         .offset(offset)
@@ -305,8 +299,6 @@ async def get_user_history(
     enriched with track metadata and completion info from matching play_end events."""
     await _resolve_user(session, user_id, _key)
 
-    from sqlalchemy import or_
-
     # Count total play_start events for this user
     count_q = select(func.count()).select_from(
         select(ListenEvent.id)
@@ -337,19 +329,11 @@ async def get_user_history(
     # Collect track IDs and find matching play_end events
     track_ids = list({s.track_id for s in starts})
 
-    # Fetch track metadata
-    tf_q = select(TrackFeatures).where(
-        or_(
-            TrackFeatures.track_id.in_(track_ids),
-            TrackFeatures.external_track_id.in_(track_ids),
-        )
-    )
+    # Fetch track metadata. ListenEvent.track_id is the internal GrooveIQ id
+    # post-#37, so a single track_id JOIN is sufficient.
+    tf_q = select(TrackFeatures).where(TrackFeatures.track_id.in_(track_ids))
     tf_rows = (await session.execute(tf_q)).scalars().all()
-    tf_map = {}
-    for tf in tf_rows:
-        tf_map[tf.track_id] = tf
-        if tf.external_track_id:
-            tf_map[tf.external_track_id] = tf
+    tf_map = {tf.track_id: tf for tf in tf_rows}
 
     # For each play_start, find the closest subsequent play_end for the same
     # (user, track) to get completion/dwell info.

@@ -205,14 +205,14 @@ async def create_radio_session(
     )
 
     if seed_type == "track":
-        # The seed_value can be either an internal track_id or an external_track_id
-        # (e.g. a Navidrome ID from an iOS client).  FAISS and seed_track_ids are
-        # keyed by internal track_id, so resolve to internal here.
+        # seed_value may be an internal track_id or a per-backend external ID
+        # (typically media_server_id from an iOS client). FAISS and
+        # seed_track_ids are keyed by internal track_id, so resolve here.
         row = await db.execute(
             select(TrackFeatures.track_id, TrackFeatures.title, TrackFeatures.artist).where(
                 or_(
                     TrackFeatures.track_id == seed_value,
-                    TrackFeatures.external_track_id == seed_value,
+                    TrackFeatures.media_server_id == seed_value,
                 )
             )
         )
@@ -564,13 +564,10 @@ async def get_next_tracks(
         s.total_served += 1
 
         tf = feat_map.get(tid)
-        # `tid` is what the client will use to resolve against the media
-        # server.  After library/sync runs, `TrackFeatures.track_id` IS the
-        # current Navidrome / Plex ID (the sync renames it).  We deliberately
-        # do NOT fall back to `external_track_id` — that field stores the
-        # *previous* id (a historical breadcrumb) and is generally stale
-        # after a media-server upgrade, so preferring it would make the
-        # client 404 even on tracks the sync correctly matched.
+        # `tid` is the internal GrooveIQ track_id (a stable hash of the file
+        # path; never rewritten by sync). The client receives both the
+        # internal id and the media_server_id so it can hand the latter to
+        # Navidrome for playback.
         track_data = {
             "position": i,
             "track_id": tid,
@@ -592,6 +589,7 @@ async def get_next_tracks(
                     "valence": tf.valence,
                     "mood_tags": tf.mood_tags,
                     "duration": tf.duration,
+                    "media_server_id": tf.media_server_id,
                 }
             )
         tracks.append(track_data)
