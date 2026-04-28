@@ -564,13 +564,16 @@ async def get_next_tracks(
         s.total_served += 1
 
         tf = feat_map.get(tid)
-        # Return the media-server ID when we have one so the iOS / web client
-        # can resolve it directly against Navidrome / Plex.  FAISS, played_set,
-        # and feedback bookkeeping continue to use the internal `tid`.
-        client_tid = tf.external_track_id if tf and tf.external_track_id else tid
+        # `tid` is what the client will use to resolve against the media
+        # server.  After library/sync runs, `TrackFeatures.track_id` IS the
+        # current Navidrome / Plex ID (the sync renames it).  We deliberately
+        # do NOT fall back to `external_track_id` — that field stores the
+        # *previous* id (a historical breadcrumb) and is generally stale
+        # after a media-server upgrade, so preferring it would make the
+        # client 404 even on tracks the sync correctly matched.
         track_data = {
             "position": i,
-            "track_id": client_tid,
+            "track_id": tid,
             "source": source_map.get(tid, "unknown"),
             "score": round(score, 4),
         }
