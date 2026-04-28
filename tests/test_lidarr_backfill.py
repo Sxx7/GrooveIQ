@@ -738,6 +738,90 @@ async def test_find_streamrip_album_none_means_dont_filter(db_session, cfg):
 
 
 @pytest.mark.asyncio
+async def test_no_match_gets_cooldown_to_avoid_back_to_back_retries(db_session, cfg):
+    """Regression: no_match rows previously had next_retry_at=None, so the
+    cooldown filter let them through every scheduler tick. With default
+    poll_interval_minutes=5 and max_attempts=3, users saw 3 attempts on the
+    same album within ~15 minutes. They should follow the same cooldown
+    curve as STATUS_FAILED rows."""
+    # Empty search → no_match outcome
+    fake = _FakeStreamrip(search_results={"qobuz": [], "tidal": [], "deezer": [], "soundcloud": []})
+
+    result = await lbf._process_album(db_session, _lidarr_album(album_id=8001), cfg, fake)
+    await db_session.commit()
+    assert result["decision"] == "no_match"
+
+    row = (
+        await db_session.execute(
+            select(LidarrBackfillRequest).where(LidarrBackfillRequest.lidarr_album_id == 8001)
+        )
+    ).scalar_one()
+    assert row.status == "no_match"
+    assert row.attempt_count == 1
+    # The fix: next_retry_at MUST be set for no_match so the row isn't
+    # immediately re-picked on the next tick.
+    assert row.next_retry_at is not None
+    assert row.next_retry_at > int(time.time())  # in the future
+
+
+@pytest.mark.asyncio
+async def test_no_match_filter_honours_its_cooldown(db_session, cfg):
+    """An in-cooldown no_match row should not be re-picked from Lidarr."""
+    now = int(time.time())
+    db_session.add(
+        LidarrBackfillRequest(
+            lidarr_album_id=8002,
+            artist="A",
+            album_title="T",
+            source="missing",
+            status="no_match",
+            attempt_count=1,
+            next_retry_at=now + 3600,  # 1h cooldown still active
+            created_at=now - 86400,
+            updated_at=now - 60,
+        )
+    )
+    await db_session.commit()
+    filtered = await lbf._filter_by_cooldown_and_state(db_session, [_lidarr_album(album_id=8002)], cfg)
+    assert filtered == []
+
+
+@pytest.mark.asyncio
+async def test_no_match_existing_row_gets_cooldown_on_retry(db_session, cfg):
+    """When an existing no_match row (next_retry_at=None from old code) is
+    re-picked and stays no_match, the new code sets a cooldown going
+    forward — so the third retry doesn't fire on the very next tick."""
+    now = int(time.time())
+    db_session.add(
+        LidarrBackfillRequest(
+            lidarr_album_id=8003,
+            artist="A",
+            album_title="T",
+            source="missing",
+            status="no_match",
+            attempt_count=1,
+            next_retry_at=None,  # legacy row from the buggy code path
+            created_at=now - 86400,
+            updated_at=now - 86400,
+        )
+    )
+    await db_session.commit()
+
+    fake = _FakeStreamrip(search_results={"qobuz": [], "tidal": [], "deezer": [], "soundcloud": []})
+    await lbf._process_album(db_session, _lidarr_album(album_id=8003), cfg, fake)
+    await db_session.commit()
+
+    row = (
+        await db_session.execute(
+            select(LidarrBackfillRequest).where(LidarrBackfillRequest.lidarr_album_id == 8003)
+        )
+    ).scalar_one()
+    assert row.attempt_count == 2  # bumped
+    assert row.next_retry_at is not None  # cooldown now applied
+    assert row.next_retry_at > int(time.time())
+
+
+@pytest.mark.asyncio
 async def test_tick_in_progress_flag_lifecycle():
     """The flag flips on inside the context, off on exit, even on exception."""
     assert lbf.is_tick_in_progress() is False
