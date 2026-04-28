@@ -401,6 +401,173 @@ class TestSyncEndpoint:
 
 
 # ---------------------------------------------------------------------------
+# Stale-track cleanup endpoint (issue #29)
+# ---------------------------------------------------------------------------
+
+
+class TestCleanupStale:
+    async def test_dry_run_reports_counts_without_deleting(self, client: AsyncClient, tmp_path):
+        """Default dry_run=true returns counts and deletes nothing."""
+        real_file = tmp_path / "exists.flac"
+        real_file.write_bytes(b"x")  # touch
+        async with _TestSession() as session:
+            session.add(
+                TrackFeatures(
+                    track_id="0123456789abcdef",  # 16-hex, file exists
+                    file_path=str(real_file),
+                )
+            )
+            session.add(
+                TrackFeatures(
+                    track_id="fedcba9876543210",  # 16-hex, file gone
+                    file_path="/this/path/does/not/exist.flac",
+                )
+            )
+            session.add(
+                TrackFeatures(
+                    track_id="22charNavidromeID000A",  # not 16-hex — ignored
+                    file_path="/anywhere.flac",
+                )
+            )
+            await session.commit()
+
+        resp = await client.post("/v1/library/cleanup-stale")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["pattern"] == "legacy_hex"
+        assert body["dry_run"] is True
+        assert body["candidates_total"] == 2  # both 16-hex rows
+        assert body["files_present"] == 1
+        assert body["files_missing"] == 1
+        assert body["deleted_track_features"] == 0  # dry run
+
+        # Verify nothing was actually deleted.
+        from sqlalchemy import select
+
+        async with _TestSession() as session:
+            count = (await session.execute(select(TrackFeatures))).all()
+        assert len(count) == 3
+
+    async def test_actual_delete_removes_only_missing_files(self, client: AsyncClient, tmp_path):
+        """dry_run=false deletes track_features rows whose files are gone,
+        plus their orphan interactions and events.  Rows whose files still
+        exist are left for the next sync to re-match."""
+        real_file = tmp_path / "still_there.flac"
+        real_file.write_bytes(b"x")
+        now = int(time.time())
+        async with _TestSession() as session:
+            # File exists — keep this row.
+            session.add(
+                TrackFeatures(
+                    track_id="aaaaaaaaaaaaaaaa",
+                    file_path=str(real_file),
+                )
+            )
+            # File missing — delete this row + its orphans.
+            session.add(
+                TrackFeatures(
+                    track_id="bbbbbbbbbbbbbbbb",
+                    file_path="/gone/forever.flac",
+                )
+            )
+            # 22-char id — must be untouched.
+            session.add(
+                TrackFeatures(
+                    track_id="22charNavidromeID000A",
+                    file_path="/something.flac",
+                )
+            )
+            session.add(User(user_id="u1"))
+            # Orphan interaction + event at the doomed id.
+            session.add(
+                TrackInteraction(
+                    user_id="u1",
+                    track_id="bbbbbbbbbbbbbbbb",
+                    play_count=1,
+                    last_event_id=1,
+                    updated_at=now,
+                )
+            )
+            session.add(
+                ListenEvent(
+                    user_id="u1",
+                    track_id="bbbbbbbbbbbbbbbb",
+                    event_type="play_end",
+                    value=0.5,
+                    timestamp=now,
+                )
+            )
+            # Interaction at the kept id — must survive.
+            session.add(
+                TrackInteraction(
+                    user_id="u1",
+                    track_id="aaaaaaaaaaaaaaaa",
+                    play_count=2,
+                    last_event_id=2,
+                    updated_at=now,
+                )
+            )
+            await session.commit()
+
+        resp = await client.post("/v1/library/cleanup-stale?dry_run=false")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["dry_run"] is False
+        assert body["files_missing"] == 1
+        assert body["files_present"] == 1
+        assert body["deleted_track_features"] == 1
+        assert body["deleted_interactions"] == 1
+        assert body["deleted_events"] == 1
+
+        from sqlalchemy import select
+
+        async with _TestSession() as session:
+            remaining_tf = (
+                (await session.execute(select(TrackFeatures.track_id))).scalars().all()
+            )
+            remaining_int = (
+                (await session.execute(select(TrackInteraction.track_id))).scalars().all()
+            )
+            remaining_ev = (
+                (await session.execute(select(ListenEvent.track_id))).scalars().all()
+            )
+
+        # The doomed id is gone everywhere.
+        assert "bbbbbbbbbbbbbbbb" not in remaining_tf
+        assert "bbbbbbbbbbbbbbbb" not in remaining_int
+        assert "bbbbbbbbbbbbbbbb" not in remaining_ev
+        # The kept ids are intact.
+        assert "aaaaaaaaaaaaaaaa" in remaining_tf
+        assert "aaaaaaaaaaaaaaaa" in remaining_int
+        assert "22charNavidromeID000A" in remaining_tf
+
+    async def test_unknown_pattern_rejected(self, client: AsyncClient):
+        resp = await client.post("/v1/library/cleanup-stale?pattern=mystery")
+        assert resp.status_code == 400
+        assert "Unknown pattern" in resp.json()["detail"]
+
+    async def test_does_not_match_22char_base62(self, client: AsyncClient):
+        """A 22-char Navidrome base62 id like 'abc...XYZ' must never be
+        flagged as legacy-hex even by accident."""
+        async with _TestSession() as session:
+            # Looks hex but is 22 chars (well outside the 16-char filter).
+            session.add(TrackFeatures(track_id="abcdef0123456789abcdef", file_path="/x.flac"))
+            await session.commit()
+        resp = await client.post("/v1/library/cleanup-stale")
+        assert resp.json()["candidates_total"] == 0
+
+    async def test_skips_16char_non_hex(self, client: AsyncClient):
+        """A 16-character non-hex id (e.g. some external system's slug)
+        must not be touched."""
+        async with _TestSession() as session:
+            # 16 chars but contains 'g', 'h', etc — not hex.
+            session.add(TrackFeatures(track_id="zzzz1234ghyypoll", file_path="/x.flac"))
+            await session.commit()
+        resp = await client.post("/v1/library/cleanup-stale")
+        assert resp.json()["candidates_total"] == 0
+
+
+# ---------------------------------------------------------------------------
 # Canonicalisation helpers (MBID / AATD matcher)
 # ---------------------------------------------------------------------------
 
