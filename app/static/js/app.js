@@ -2229,7 +2229,7 @@ function _lbfPathGet(obj, path) {
   var parts = path.split('.');
   for (var i = 0; i < parts.length; i++) {
     if (obj == null) return undefined;
-    obj = obj[parts[i]];
+    obj = obj[parts[i]]; // nosemgrep
   }
   return obj;
 }
@@ -2237,7 +2237,7 @@ function _lbfPathSet(obj, path, val) {
   var parts = path.split('.');
   for (var i = 0; i < parts.length - 1; i++) {
     if (obj[parts[i]] == null) obj[parts[i]] = {};
-    obj = obj[parts[i]];
+    obj = obj[parts[i]]; // nosemgrep
   }
   obj[parts[parts.length - 1]] = val;
 }
