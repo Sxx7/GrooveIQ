@@ -30,7 +30,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 import numpy as np
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.db import Playlist, PlaylistTrack, TrackFeatures, TrackInteraction
@@ -205,17 +205,25 @@ async def create_radio_session(
     )
 
     if seed_type == "track":
-        session.seed_track_ids = [seed_value]
-        # Get display name
+        # The seed_value can be either an internal track_id or an external_track_id
+        # (e.g. a Navidrome ID from an iOS client).  FAISS and seed_track_ids are
+        # keyed by internal track_id, so resolve to internal here.
         row = await db.execute(
-            select(TrackFeatures.title, TrackFeatures.artist).where(TrackFeatures.track_id == seed_value)
+            select(TrackFeatures.track_id, TrackFeatures.title, TrackFeatures.artist).where(
+                or_(
+                    TrackFeatures.track_id == seed_value,
+                    TrackFeatures.external_track_id == seed_value,
+                )
+            )
         )
         meta = row.first()
+        internal_tid = meta.track_id if meta else seed_value
+        session.seed_track_ids = [internal_tid]
         if meta and meta.title:
             session.seed_display_name = f"{meta.artist} — {meta.title}" if meta.artist else meta.title
 
         # Seed embedding is the track's own embedding
-        session.seed_embedding = faiss_index.get_embedding(seed_value)
+        session.seed_embedding = faiss_index.get_embedding(internal_tid)
 
     elif seed_type == "artist":
         # Find all tracks by this artist
@@ -556,9 +564,13 @@ async def get_next_tracks(
         s.total_served += 1
 
         tf = feat_map.get(tid)
+        # Return the media-server ID when we have one so the iOS / web client
+        # can resolve it directly against Navidrome / Plex.  FAISS, played_set,
+        # and feedback bookkeeping continue to use the internal `tid`.
+        client_tid = tf.external_track_id if tf and tf.external_track_id else tid
         track_data = {
             "position": i,
-            "track_id": tid,
+            "track_id": client_tid,
             "source": source_map.get(tid, "unknown"),
             "score": round(score, 4),
         }

@@ -23,7 +23,7 @@ import time
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
@@ -76,7 +76,17 @@ async def start_radio(
 
     # Validate seed based on type.
     if body.seed_type == "track":
-        result = await db.execute(select(TrackFeatures.track_id).where(TrackFeatures.track_id == body.seed_value))
+        # Accept either the internal track_id or the media-server external_track_id
+        # (e.g. a Navidrome 22-char base62 ID from an iOS client).  Mirrors the
+        # pattern used by users.py for onboarding's favourite_tracks.
+        result = await db.execute(
+            select(TrackFeatures.track_id).where(
+                or_(
+                    TrackFeatures.track_id == body.seed_value,
+                    TrackFeatures.external_track_id == body.seed_value,
+                )
+            )
+        )
         if result.scalar_one_or_none() is None:
             raise HTTPException(status_code=404, detail="Seed track not found.")
 
