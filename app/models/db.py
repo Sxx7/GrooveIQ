@@ -184,6 +184,9 @@ class TrackFeatures(Base):
     file_hash = Column(String(64), nullable=True)  # SHA-256, detects file changes
     duration = Column(Float, nullable=True)  # seconds
     analyzed_at = Column(Integer, nullable=True)  # Unix timestamp
+    # Last successful ffmpeg pre-flight decode (or successful analysis) for the
+    # current file_hash. Lets the scanner skip re-validating unchanged files.
+    bitstream_validated_at = Column(Integer, nullable=True)
 
     # --- Rhythm ---
     bpm = Column(Float, nullable=True, index=True)

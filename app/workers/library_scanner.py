@@ -31,7 +31,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import settings
 from app.db.session import AsyncSessionLocal
 from app.models.db import LibraryScanState, ScanLog, TrackFeatures
-from app.services.audio_analysis import generate_track_id
+from app.services.audio_analysis import ANALYSIS_VERSION, compute_file_hash, generate_track_id
 
 logger = logging.getLogger(__name__)
 
@@ -207,18 +207,25 @@ async def _run_scan(scan_id: int) -> None:
 
         await _update_scan(scan_id, files_found=counters["found"])
 
-        # Pre-load all existing hashes in one query (avoids per-file DB round-trips)
-        hash_cache: dict[str, tuple[str, str]] = {}  # file_path → (file_hash, analysis_version)
+        # Pre-load all existing hashes in one query (avoids per-file DB round-trips).
+        # The third tuple field — bitstream_validated_at — drives the pre-flight
+        # decode skip in _analyze_one: a file whose live hash matches the cached
+        # one and whose validated_at is set has already been confirmed to decode
+        # cleanly, so re-running ffmpeg would be pure overhead.
+        hash_cache: dict[str, tuple[str, str, int | None]] = {}
         async with AsyncSessionLocal() as session:
             rows = (
                 await session.execute(
-                    select(TrackFeatures.file_path, TrackFeatures.file_hash, TrackFeatures.analysis_version).where(
-                        TrackFeatures.file_hash.isnot(None)
-                    )
+                    select(
+                        TrackFeatures.file_path,
+                        TrackFeatures.file_hash,
+                        TrackFeatures.analysis_version,
+                        TrackFeatures.bitstream_validated_at,
+                    ).where(TrackFeatures.file_hash.isnot(None))
                 )
             ).all()
             for row in rows:
-                hash_cache[row[0]] = (row[1], row[2])
+                hash_cache[row[0]] = (row[1], row[2], row[3])
         logger.info(f"[Scan {scan_id}] Pre-loaded {len(hash_cache)} file hashes for skip detection")
 
         # Ensure the worker pool is running before processing
@@ -364,6 +371,61 @@ def _log_progress(scan_id: int, found: int, analyzed: int, skipped: int, failed:
     )
 
 
+async def _validate_bitstream(path: str, timeout_s: float = 30.0) -> tuple[bool, str | None]:
+    """Pre-flight decode probe via ffmpeg. Returns (ok, error_message).
+
+    Catches truncated / corrupt files that would otherwise hang Essentia's
+    MonoLoader for 5+ minutes inside libavcodec (issue #32). Cost: ~50-150ms
+    on a clean file; near-instant on a bad one.
+
+    The caller is expected to skip the worker pool entirely when ``ok`` is
+    False and persist the file with ``analysis_error="corrupt bitstream: …"``.
+
+    If ffmpeg itself is missing or crashes, validation is treated as a pass
+    so the worker pool still gets to handle the file — the goal here is to
+    cheaply weed out known-bad bitstreams, not to gate analysis.
+    """
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "ffmpeg",
+            "-hide_banner",
+            "-nostats",
+            "-loglevel",
+            "error",
+            "-err_detect",
+            "+explode",
+            "-i",
+            path,
+            "-f",
+            "null",
+            "-",
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.PIPE,
+        )
+    except FileNotFoundError:
+        logger.warning("ffmpeg not found; skipping bitstream pre-validation for %s", path)
+        return True, None
+    except Exception as e:
+        logger.warning("Bitstream validation could not start for %s: %s", path, e)
+        return True, None
+
+    try:
+        _, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout_s)
+    except TimeoutError:
+        try:
+            proc.kill()
+            await proc.wait()
+        except Exception:
+            pass
+        return False, f"validation timed out (>{int(timeout_s)}s)"
+
+    if proc.returncode != 0:
+        text = (stderr or b"").decode("utf-8", errors="replace").strip()
+        first = text.splitlines()[0] if text else "unknown decode error"
+        return False, first[:200]
+    return True, None
+
+
 async def _process_batch(
     file_paths: list[str],
     scan_id: int,
@@ -384,8 +446,49 @@ async def _process_batch(
         t_file = time.monotonic()
         async with sem:
             cached = hash_cache.get(fp)
+            cached_for_worker = cached[:2] if cached is not None else None
+
+            # Decide whether to run a pre-flight ffmpeg decode. Files whose
+            # current on-disk hash matches a previously-validated row can
+            # safely skip — we already proved the bitstream is OK and the
+            # content hasn't changed. New / changed / never-validated files
+            # always run the probe so a corrupt bitstream can't hang the
+            # worker pool for 5+ minutes inside libavcodec (issue #32).
+            needs_validation = True
+            if cached is not None and cached[2] is not None:
+                try:
+                    if compute_file_hash(fp) == cached[0]:
+                        needs_validation = False
+                except Exception:
+                    pass  # fall through to validation
+
+            if needs_validation:
+                ok, err = await _validate_bitstream(fp)
+                if not ok:
+                    logger.warning("[Scan %d] CORRUPT %s: %s", scan_id, Path(fp).name, err)
+                    try:
+                        bad_hash = compute_file_hash(fp)
+                    except Exception:
+                        bad_hash = None
+                    bad_result = {
+                        "file_path": fp,
+                        "analyzed_at": int(time.time()),
+                        "analysis_version": ANALYSIS_VERSION,
+                        "analysis_error": f"corrupt bitstream: {err}",
+                    }
+                    if bad_hash is not None:
+                        bad_result["file_hash"] = bad_hash
+                    elapsed_file = time.monotonic() - t_file
+                    async with lock:
+                        batch_results.append((fp, bad_result, elapsed_file))
+                    return
+
             try:
-                result = await pool.analyze(fp, cached)
+                result = await pool.analyze(fp, cached_for_worker)
+                # Stamp validation success on the way back so future scans of
+                # an unchanged file (matching file_hash) skip the probe entirely.
+                if isinstance(result, dict) and not result.get("analysis_error"):
+                    result["bitstream_validated_at"] = int(time.time())
             except Exception as exc:
                 result = exc
             elapsed_file = time.monotonic() - t_file
