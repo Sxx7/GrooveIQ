@@ -191,6 +191,14 @@ async def stop_scheduler() -> None:
     _scheduler.shutdown(wait=False)
 
 
+def get_job_next_run(job_id: str) -> int | None:
+    """Return next-fire epoch seconds for a registered scheduler job, or None."""
+    job = _scheduler.get_job(job_id)
+    if job is None or job.next_run_time is None:
+        return None
+    return int(job.next_run_time.timestamp())
+
+
 async def _delayed_startup_pipeline() -> None:
     """Run the recommendation pipeline after the initial scan finishes.
 

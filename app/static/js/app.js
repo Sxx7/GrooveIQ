@@ -1716,9 +1716,29 @@ function chartsDownloadTrack(btn, position) {
 }
 
 function renderCharts(available, stats, chartData) {
-  var h = '<div class="page-header"><h1 class="page-title">Charts</h1><div class="page-actions"><button class="btn btn-primary btn-sm" onclick="buildCharts(this)">Build Charts</button></div></div>';
+  var cronBadge = '';
   if (stats) {
-    h += '<div class="stats-grid"><div class="stat-card"><div class="stat-label">Charts</div><div class="stat-value">' + (stats.chart_count||0) + '</div></div><div class="stat-card"><div class="stat-label">Total Entries</div><div class="stat-value">' + (stats.total_entries||0) + '</div></div><div class="stat-card"><div class="stat-label">Library Matches</div><div class="stat-value text-success">' + (stats.library_matches||0) + '</div></div><div class="stat-card"><div class="stat-label">Match Rate</div><div class="stat-value">' + ((stats.match_rate||0) * 100).toFixed(1) + '%</div>' + (stats.last_fetched_at ? '<div class="stat-sub">Updated ' + timeAgo(stats.last_fetched_at) + '</div>' : '') + '</div></div>';
+    if (stats.auto_rebuild_enabled) {
+      var nextTxt = stats.next_run_at ? ' — next ' + timeAgo(stats.next_run_at).replace(' ago', '') : '';
+      cronBadge = '<span class="badge badge-success" title="Periodic chart build is registered">✅ Auto-rebuild every ' + (stats.interval_hours || 24) + 'h' + nextTxt + '</span>';
+    } else {
+      cronBadge = '<span class="badge badge-warning" title="Set CHARTS_ENABLED=true (and LASTFM_API_KEY) in your .env to enable the periodic build">⚠️ Auto-rebuild OFF — set CHARTS_ENABLED=true to enable</span>';
+    }
+  }
+  var h = '<div class="page-header"><h1 class="page-title">Charts</h1><div class="page-actions">' + cronBadge + ' <button class="btn btn-primary btn-sm" onclick="buildCharts(this)">Build Charts</button></div></div>';
+  if (stats) {
+    var freshClass = 'stat-value';
+    var freshSub = '';
+    if (stats.last_fetched_at) {
+      var ageH = (Math.floor(Date.now() / 1000) - stats.last_fetched_at) / 3600;
+      var interval = stats.interval_hours || 24;
+      if (ageH < interval * 1.5) freshClass += ' text-success';
+      else if (ageH < interval * 3) freshClass += ' text-warning';
+      else freshClass += ' text-danger';
+      freshSub = '<div class="stat-sub">' + new Date(stats.last_fetched_at * 1000).toISOString().replace('T', ' ').substring(0, 16) + ' UTC</div>';
+    }
+    var freshValue = stats.last_fetched_at ? timeAgo(stats.last_fetched_at) : 'Never';
+    h += '<div class="stats-grid"><div class="stat-card"><div class="stat-label">Last Build</div><div class="' + freshClass + '">' + freshValue + '</div>' + freshSub + '</div><div class="stat-card"><div class="stat-label">Charts</div><div class="stat-value">' + (stats.chart_count||0) + '</div></div><div class="stat-card"><div class="stat-label">Total Entries</div><div class="stat-value">' + (stats.total_entries||0) + '</div></div><div class="stat-card"><div class="stat-label">Library Matches</div><div class="stat-value text-success">' + (stats.library_matches||0) + '</div></div><div class="stat-card"><div class="stat-label">Match Rate</div><div class="stat-value">' + ((stats.match_rate||0) * 100).toFixed(1) + '%</div></div></div>';
   }
   var charts = (available && available.charts) || [];
   if (!charts.length) { h += '<div class="empty">No charts built yet. Click "Build Charts" to fetch from Last.fm.<br><br>Configure <code>CHARTS_ENABLED=true</code> and <code>CHARTS_TAGS</code> / <code>CHARTS_COUNTRIES</code> in your .env file.</div>'; setAppContent(h); return; }
