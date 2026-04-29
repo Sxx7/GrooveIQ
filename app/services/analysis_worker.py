@@ -148,6 +148,11 @@ class AnalysisWorkerPool:
         self._input_queue: mp.Queue | None = None
         self._output_queue: mp.Queue | None = None
         self._pending: dict[str, asyncio.Future] = {}
+        # Tracks which worker is currently processing each in-flight request
+        # so analyze()'s timeout path can SIGKILL the specific subprocess
+        # that's stuck (e.g. spinning in libavcodec recovery on a corrupted
+        # FLAC). See #30.
+        self._in_flight: dict[str, dict] = {}
         self._collector_task: asyncio.Task | None = None
         self._running = False
 
@@ -197,8 +202,9 @@ class AnalysisWorkerPool:
 
         try:
             return await asyncio.wait_for(future, timeout=settings.ANALYSIS_TIMEOUT)
-        except TimeoutError:
+        except (TimeoutError, asyncio.TimeoutError):
             self._pending.pop(request_id, None)
+            self._kill_worker_holding(request_id, settings.ANALYSIS_TIMEOUT)
             return {
                 "file_path": file_path,
                 "analysis_error": f"Timed out after {settings.ANALYSIS_TIMEOUT}s",
@@ -237,12 +243,21 @@ class AnalysisWorkerPool:
                     }
                 )
         self._pending.clear()
+        self._in_flight.clear()
         logger.info("Analysis worker pool shut down")
 
     # -- internal ---------------------------------------------------------
 
     async def _collect_results(self) -> None:
-        """Background task: drain output queue → resolve asyncio futures."""
+        """Background task: drain output queue → resolve asyncio futures.
+
+        Output-queue protocol is a 3-tuple ``(request_id, kind, payload)``:
+          - ``kind="started"`` — payload is the worker subprocess pid.
+            Recorded in ``_in_flight`` so a future timeout in ``analyze()``
+            can SIGKILL the right subprocess. (#30)
+          - ``kind="result"`` — payload is the analysis result dict. Clears
+            the in-flight entry and resolves the asyncio future.
+        """
         loop = asyncio.get_running_loop()
         while self._running:
             try:
@@ -256,14 +271,73 @@ class AnalysisWorkerPool:
                 await asyncio.sleep(0.1)
                 continue
 
-            request_id, result = data
-            future = self._pending.pop(request_id, None)
-            if future is not None and not future.done():
-                future.set_result(result)
+            try:
+                request_id, kind, payload = data
+            except (TypeError, ValueError):
+                continue  # malformed message from a crashing worker
+
+            if kind == "started":
+                pid = payload
+                worker_index = next(
+                    (i for i, w in enumerate(self._workers) if w.pid == pid),
+                    None,
+                )
+                self._in_flight[request_id] = {
+                    "worker_index": worker_index,
+                    "pid": pid,
+                    "started_at": time.monotonic(),
+                }
+            elif kind == "result":
+                self._in_flight.pop(request_id, None)
+                future = self._pending.pop(request_id, None)
+                if future is not None and not future.done():
+                    future.set_result(payload)
 
     def _blocking_get(self):
         """Block up to 1 s for a result (runs in thread via run_in_executor)."""
         return self._output_queue.get(timeout=1.0)
+
+    def _kill_worker_holding(self, request_id: str, timeout_s: float) -> None:
+        """SIGKILL the worker subprocess that's currently processing
+        ``request_id``. No-op if the request finished or was never started.
+
+        Called from ``analyze()`` when the per-task timeout fires. Without
+        this, a worker spinning in C code (e.g. libavcodec on a corrupted
+        FLAC bitstream — see #31) keeps holding the CPU after we've already
+        returned a synthetic timeout to the caller, blocking the entire pool
+        for many minutes per stuck task. (#30)
+        """
+        info = self._in_flight.pop(request_id, None)
+        if info is None:
+            return  # finished cleanly between deadline and lookup
+        pid = info["pid"]
+        worker_index = info["worker_index"]
+        if worker_index is None or worker_index >= len(self._workers):
+            return
+        proc = self._workers[worker_index]
+        # Only kill if this worker still holds that pid (race: a prior
+        # respawn may have already replaced it).
+        if proc.pid != pid or not proc.is_alive():
+            return
+        try:
+            proc.kill()
+            logger.warning(
+                "Killed hung analysis worker %d (pid=%d) holding request %s after %.1fs",
+                worker_index,
+                pid,
+                request_id,
+                timeout_s,
+            )
+        except Exception as e:
+            logger.warning("Failed to SIGKILL worker %d (pid=%d): %s", worker_index, pid, e)
+            return
+        # Drop any other in-flight entries pointing at the dead pid — the
+        # work in flight on that worker is gone too.
+        for rid, meta in list(self._in_flight.items()):
+            if meta.get("pid") == pid:
+                self._in_flight.pop(rid, None)
+        # Trigger respawn now instead of waiting for the next idle tick.
+        self._respawn_dead_workers()
 
     def _respawn_dead_workers(self) -> None:
         """Detect crashed workers and replace them."""
@@ -277,6 +351,11 @@ class AnalysisWorkerPool:
                     i,
                     p.exitcode,
                 )
+                # Reap the zombie before discarding the handle.
+                try:
+                    p.join(timeout=0)
+                except Exception:
+                    pass
                 new_p = ctx.Process(
                     target=_worker_main,
                     args=(self._input_queue, self._output_queue, i),
@@ -330,12 +409,21 @@ def _worker_main(
         clap_audio_session is not None,
     )
 
+    my_pid = os.getpid()
     while True:
         item = input_queue.get()
         if item is None:
             break  # poison pill → graceful exit
 
         request_id, file_path, cached = item
+        # Heartbeat so the pool's collector can record which worker (by pid)
+        # is processing this request. Lets analyze()'s timeout path SIGKILL
+        # the right subprocess if we hang in libavcodec C code. (#30)
+        try:
+            output_queue.put((request_id, "started", my_pid))
+        except Exception:
+            pass  # if the queue is broken we'll fail loudly on the result put
+
         try:
             if not has_essentia:
                 result = {
@@ -361,7 +449,7 @@ def _worker_main(
                 "analysis_version": _get_version(),
             }
 
-        output_queue.put((request_id, result))
+        output_queue.put((request_id, "result", result))
 
 
 def _worker_init_env() -> None:
