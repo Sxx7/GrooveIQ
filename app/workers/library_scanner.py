@@ -589,9 +589,7 @@ async def _upsert_track_features(session: AsyncSession, data: dict) -> None:
     existing = result.scalar_one_or_none()
 
     if existing is None:
-        row = TrackFeatures(
-            track_id=track_id, **{k: v for k, v in data.items() if hasattr(TrackFeatures, k)}
-        )
+        row = TrackFeatures(track_id=track_id, **{k: v for k, v in data.items() if hasattr(TrackFeatures, k)})
         session.add(row)
     else:
         for k, v in data.items():

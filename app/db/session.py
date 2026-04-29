@@ -150,17 +150,14 @@ async def _apply_column_migrations(conn) -> None:
             raise ValueError(f"Unsafe identifier in unique-index migration: {table}.{column}")
         index_name = f"ix_{table}_{column}"
         try:
-            await conn.exec_driver_sql(
-                f"CREATE UNIQUE INDEX IF NOT EXISTS {index_name} ON {table} ({column})"
-            )
+            await conn.exec_driver_sql(f"CREATE UNIQUE INDEX IF NOT EXISTS {index_name} ON {table} ({column})")
         except Exception as e:
             logger.warning("Migration: could not create unique index %s: %s", index_name, e)
 
     # Plain (non-unique) index on musicbrainz_track_id for the lookup endpoint.
     try:
         await conn.exec_driver_sql(
-            "CREATE INDEX IF NOT EXISTS ix_track_features_musicbrainz_track_id "
-            "ON track_features (musicbrainz_track_id)"
+            "CREATE INDEX IF NOT EXISTS ix_track_features_musicbrainz_track_id ON track_features (musicbrainz_track_id)"
         )
     except Exception as e:
         logger.warning("Migration: could not create musicbrainz_track_id index: %s", e)
