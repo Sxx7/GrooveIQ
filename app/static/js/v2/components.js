@@ -509,6 +509,27 @@ GIQ.components.modal = function modal(opts) {
     return { overlay, dialog, body, close };
 };
 
+/* ── Related rail (top of split pages) ────────────────────────────── */
+
+GIQ.components.relatedRail = function relatedRail(opts) {
+    const links = (opts && opts.links) || [];
+    const el = document.createElement('div');
+    el.className = 'related-rail';
+    const lbl = document.createElement('span');
+    lbl.className = 'related-rail-label';
+    lbl.textContent = (opts && opts.label) || 'related →';
+    el.appendChild(lbl);
+    links.forEach(l => {
+        if (!l) return;
+        el.appendChild(GIQ.components.jumpLink({
+            prefix: l.prefix,
+            label: l.label,
+            href: l.href,
+        }));
+    });
+    return el;
+};
+
 /* ── Cross-link "jump" pill ───────────────────────────────────────── */
 
 GIQ.components.jumpLink = function jumpLink(opts) {
@@ -549,6 +570,11 @@ GIQ.components.jumpLink = function jumpLink(opts) {
  *   saveSideEffect: { label, onSave?: ()=>Promise, jumpHash, jumpLabel } (optional)
  *   paths:          override for default API paths (optional)
  *   exportName:     filename prefix for downloaded JSON (e.g. 'grooveiq-config')
+ *   topRail:        Element | (ctx)=>Element (rendered above the header)
+ *   headerExtras:   Element | (ctx)=>Element (rendered between header and groups)
+ *   extraButtons:   Array of {label, kind, onClick} or (ctx)=>Array (between Discard and Save)
+ *   renderGroupBody: (ctx)=>Element (replaces the default field grid for that group)
+ *   bodyClass:      extra CSS class on the host (e.g. 'lbf-disabled')
  *
  * Returns { mount(host), refresh(), dispose() }.
  */
@@ -610,7 +636,13 @@ GIQ.components.versionedConfigShell = function versionedConfigShell(opts) {
         if (typeof a === 'number' && typeof b === 'number') {
             return Math.abs(a - b) < 1e-9;
         }
-        return a === b;
+        if (a === b) return true;
+        if (a == null || b == null) return false;
+        if (typeof a !== typeof b) return false;
+        if (typeof a === 'object') {
+            try { return JSON.stringify(a) === JSON.stringify(b); } catch (_) { return false; }
+        }
+        return false;
     }
 
     function groupDirty(groupKey) {
@@ -655,6 +687,53 @@ GIQ.components.versionedConfigShell = function versionedConfigShell(opts) {
         // Use toFixed with the step's decimal count to prevent FP drift
         const decimals = (String(step).split('.')[1] || '').length;
         return parseFloat(value.toFixed(Math.max(decimals, 0)));
+    }
+
+    /* Dotted-path nested getter / setter (used by structured configs). */
+    function pathGet(obj, path) {
+        if (!path || obj == null) return obj;
+        const parts = String(path).split('.');
+        let cur = obj;
+        for (let i = 0; i < parts.length; i++) {
+            if (cur == null) return undefined;
+            cur = cur[parts[i]];
+        }
+        return cur;
+    }
+    function pathSet(obj, path, value) {
+        const parts = String(path).split('.');
+        let cur = obj;
+        for (let i = 0; i < parts.length - 1; i++) {
+            if (cur[parts[i]] == null || typeof cur[parts[i]] !== 'object') cur[parts[i]] = {};
+            cur = cur[parts[i]];
+        }
+        cur[parts[parts.length - 1]] = value;
+    }
+
+    /* Build the ctx object passed to renderGroupBody / headerExtras / topRail / extraButtons.
+     * Provides read-only state references and refresh callbacks. The renderer mutates
+     * `working` directly via setWorking() (or by hand) and then calls refreshXxx().
+     */
+    function buildCtx(extra) {
+        return Object.assign({
+            working: state.working,
+            saved: state.active && state.active.config,
+            defaults: state.defaults && state.defaults.config,
+            groupsMeta: (state.defaults && state.defaults.groups) || [],
+            pathGet,
+            pathSet,
+            setWorking(path, value) {
+                if (state.working == null) return;
+                pathSet(state.working, path, value);
+            },
+            anyDirty,
+            groupDirty,
+            fieldDirty(gk, fk) { return fieldDirty(gk, fk); },
+            refresh() { renderAll(); },
+            refreshHeader: _refreshHeaderWithBanner,
+            refreshGroup(gk) { _refreshGroupBody(gk); },
+            refreshGroupBadge(gk) { _refreshGroupBadges(gk); },
+        }, extra || {});
     }
 
     /* ---- Data loading ---------------------------------------------- */
@@ -922,6 +1001,15 @@ GIQ.components.versionedConfigShell = function versionedConfigShell(opts) {
         if (!state.host) return;
         const host = state.host;
         host.innerHTML = '';
+        const dynBodyClass = (typeof cfg.bodyClass === 'function')
+            ? (cfg.bodyClass(buildCtx()) || '')
+            : (cfg.bodyClass || '');
+        host.className = 'vc-shell' + (dynBodyClass ? ' ' + dynBodyClass : '');
+
+        if (cfg.topRail) {
+            const rail = (typeof cfg.topRail === 'function') ? cfg.topRail(buildCtx()) : cfg.topRail;
+            if (rail instanceof Element) host.appendChild(rail);
+        }
         host.appendChild(_buildHeader());
         if (state.loading) {
             host.appendChild(_loading());
@@ -930,6 +1018,13 @@ GIQ.components.versionedConfigShell = function versionedConfigShell(opts) {
         if (state.error) {
             host.appendChild(_errorPanel());
             return;
+        }
+        if (cfg.headerExtras) {
+            const extras = (typeof cfg.headerExtras === 'function') ? cfg.headerExtras(buildCtx()) : cfg.headerExtras;
+            if (extras instanceof Element) {
+                extras.classList.add('vc-header-extras');
+                host.appendChild(extras);
+            }
         }
         if (anyDirty() && retrainTriggered()) host.appendChild(_buildRetrainBanner());
         host.appendChild(_buildGroups());
@@ -970,6 +1065,15 @@ GIQ.components.versionedConfigShell = function versionedConfigShell(opts) {
         if (dirty) right.appendChild(_btn('Discard', 'ghost', discardChanges));
         right.appendChild(_btn('Export', 'ghost', exportConfig, { disabled: state.loading || state.error }));
         right.appendChild(_btn('Import', 'ghost', showImport, { disabled: state.loading }));
+
+        const extraBtns = (typeof cfg.extraButtons === 'function') ? cfg.extraButtons(buildCtx()) : cfg.extraButtons;
+        if (Array.isArray(extraBtns)) {
+            extraBtns.forEach(b => {
+                if (!b || !b.label) return;
+                right.appendChild(_btn(b.label, b.kind || 'ghost', b.onClick, { disabled: !!b.disabled || state.loading }));
+            });
+        }
+
         right.appendChild(_btn(cfg.saveButtonLabel, 'primary', saveAndApply, { disabled: !dirty }));
 
         head.appendChild(right);
@@ -1046,14 +1150,62 @@ GIQ.components.versionedConfigShell = function versionedConfigShell(opts) {
 
         const body = document.createElement('div');
         body.className = 'vc-group-body';
-        const grid = document.createElement('div');
-        grid.className = 'vc-fields';
-        const defaults = state.defaults?.config?.[gk] || {};
-        Object.keys(defaults).forEach(fk => grid.appendChild(_buildField(gk, fk)));
-        body.appendChild(grid);
+        if (typeof cfg.renderGroupBody === 'function') {
+            const custom = cfg.renderGroupBody(buildCtx({ groupKey: gk, groupMeta: group }));
+            if (custom instanceof Element) body.appendChild(custom);
+        } else {
+            const grid = document.createElement('div');
+            grid.className = 'vc-fields';
+            const defaults = state.defaults?.config?.[gk] || {};
+            Object.keys(defaults).forEach(fk => grid.appendChild(_buildField(gk, fk)));
+            body.appendChild(grid);
+        }
         sect.appendChild(body);
 
         return sect;
+    }
+
+    /* Re-render just one group's body — used by renderGroupBody callers
+     * after they mutate the working copy (e.g. chain reorder) so other
+     * groups keep their open/scroll state. */
+    function _refreshGroupBody(groupKey) {
+        if (!state.host) return;
+        const sect = state.host.querySelector('.vc-group[data-group-key="' + cssEscape(groupKey) + '"]');
+        if (!sect) return;
+        const body = sect.querySelector(':scope > .vc-group-body');
+        if (!body) return;
+        const groupMeta = (state.defaults?.groups || []).find(g => g.key === groupKey);
+        body.innerHTML = '';
+        if (typeof cfg.renderGroupBody === 'function') {
+            const custom = cfg.renderGroupBody(buildCtx({ groupKey, groupMeta }));
+            if (custom instanceof Element) body.appendChild(custom);
+        } else {
+            const grid = document.createElement('div');
+            grid.className = 'vc-fields';
+            const defaults = state.defaults?.config?.[groupKey] || {};
+            Object.keys(defaults).forEach(fk => grid.appendChild(_buildField(groupKey, fk)));
+            body.appendChild(grid);
+        }
+        _refreshGroupBadges(groupKey);
+    }
+
+    function _refreshHeaderWithBanner() {
+        _refreshHeader();
+        // Header refresh already handles the retrain banner; if headerExtras
+        // depends on dirty state, also refresh it.
+        if (state.host && cfg.headerExtras) {
+            const oldExtras = state.host.querySelector(':scope > .vc-header-extras');
+            const extras = (typeof cfg.headerExtras === 'function') ? cfg.headerExtras(buildCtx()) : cfg.headerExtras;
+            if (extras instanceof Element) extras.classList.add('vc-header-extras');
+            if (oldExtras && extras instanceof Element) {
+                oldExtras.replaceWith(extras);
+            } else if (oldExtras && !(extras instanceof Element)) {
+                oldExtras.remove();
+            } else if (!oldExtras && extras instanceof Element) {
+                const oldHeader = state.host.querySelector(':scope > .vc-header');
+                if (oldHeader) oldHeader.after(extras);
+            }
+        }
     }
 
     function _buildField(groupKey, fieldKey) {

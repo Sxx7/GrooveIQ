@@ -85,10 +85,18 @@
     function parseHash() {
         const raw = (window.location.hash || '').replace(/^#\/?/, '').trim();
         if (!raw) return null;
-        const parts = raw.split('/').filter(Boolean);
+        const [pathPart, queryPart] = raw.split('?');
+        const parts = pathPart.split('/').filter(Boolean);
         const bucket = parts[0];
         const subpage = parts[1];
-        return { bucket, subpage };
+        const params = {};
+        if (queryPart) {
+            queryPart.split('&').forEach(pair => {
+                const [k, v] = pair.split('=');
+                if (k) params[decodeURIComponent(k)] = v == null ? '' : decodeURIComponent(v.replace(/\+/g, ' '));
+            });
+        }
+        return { bucket, subpage, params };
     }
 
     function resolve(parsed) {
@@ -103,9 +111,12 @@
     }
 
     function dispatch() {
-        const { bucket, subpage } = resolve(parseHash());
+        const parsed = parseHash();
+        const { bucket, subpage } = resolve(parsed);
+        const params = (parsed && parsed.params) || {};
         GIQ.state.currentBucket = bucket;
         GIQ.state.currentSubpage = subpage;
+        GIQ.state.currentParams = params;
 
         if (typeof _cleanup === 'function') {
             try { _cleanup(); } catch (e) { console.error('cleanup failed', e); }
@@ -121,7 +132,7 @@
         const renderer = GIQ.pages[bucket] && GIQ.pages[bucket][subpage];
         if (typeof renderer === 'function') {
             try {
-                _cleanup = renderer(root) || null;
+                _cleanup = renderer(root, params) || null;
             } catch (e) {
                 console.error('Page render error', e);
                 root.innerHTML = '<div class="page-message"><h2>Render error</h2><p>'
@@ -135,9 +146,16 @@
         }
     }
 
-    function navigate(bucket, subpage) {
+    function navigate(bucket, subpage, params) {
         const sp = subpage || DEFAULTS[bucket] || '';
-        const next = '#/' + bucket + (sp ? '/' + sp : '');
+        let next = '#/' + bucket + (sp ? '/' + sp : '');
+        if (params && typeof params === 'object') {
+            const qs = Object.keys(params)
+                .filter(k => params[k] != null && params[k] !== '')
+                .map(k => encodeURIComponent(k) + '=' + encodeURIComponent(params[k]))
+                .join('&');
+            if (qs) next += '?' + qs;
+        }
         if (window.location.hash === next) {
             dispatch();
             return;
