@@ -13,17 +13,47 @@ from __future__ import annotations
 import logging
 import time
 
-from sqlalchemy import select, update
+from sqlalchemy import or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
-from app.models.db import ListenEvent, User
+from app.models.db import ListenEvent, TrackFeatures, User
 from app.models.schemas import EventCreate, EventResponse
 
 logger = logging.getLogger(__name__)
 
 # Dedup window: ignore identical (user, track, type) within this many seconds
 _DEDUP_WINDOW_SECONDS = 2
+
+
+async def _resolve_track_id(session: AsyncSession, supplied: str) -> str | None:
+    """Translate a client-supplied track_id to the canonical internal hex.
+
+    Clients (iOS, web) typically know a per-backend identifier such as a
+    Navidrome song ID or a Spotify track ID; the recommendation pipeline
+    keys everything off the internal GrooveIQ hex track_id (a SHA-256-prefix
+    hash of the file path, set once at scan time). This helper accepts
+    either the canonical hex OR any per-backend external ID and returns
+    the canonical hex from the matching ``TrackFeatures`` row.
+
+    Returns None if the supplied id matches no row — caller should drop
+    the event with a 400, since attribution is impossible.
+    """
+    result = await session.execute(
+        select(TrackFeatures.track_id).where(
+            or_(
+                TrackFeatures.track_id == supplied,
+                TrackFeatures.media_server_id == supplied,
+                TrackFeatures.spotify_id == supplied,
+                TrackFeatures.qobuz_id == supplied,
+                TrackFeatures.tidal_id == supplied,
+                TrackFeatures.deezer_id == supplied,
+                TrackFeatures.soundcloud_id == supplied,
+                TrackFeatures.musicbrainz_track_id == supplied,
+            )
+        ).limit(1)
+    )
+    return result.scalar_one_or_none()
 
 
 async def process_event(
@@ -36,19 +66,39 @@ async def process_event(
     """
 
     # ------------------------------------------------------------------
-    # 1. Noise filtering
+    # 1. Resolve client-supplied track_id to the canonical internal hex.
+    # ------------------------------------------------------------------
+    # The client may have sent the GrooveIQ hex, a Navidrome song ID, a
+    # Spotify track ID, etc. — all of those route to the same TrackFeatures
+    # row. Use the row's canonical track_id from here on so dedup,
+    # persistence, and downstream hooks (radio feedback, scrobble queue) all
+    # key on the same value.
+    resolved_track_id = await _resolve_track_id(session, event.track_id)
+    if resolved_track_id is None:
+        logger.debug(
+            "Dropping event with unresolvable track_id",
+            extra={"track_id": event.track_id, "event_type": event.event_type},
+        )
+        return EventResponse(
+            accepted=0,
+            rejected=1,
+            errors=[f"track_id {event.track_id!r} matches no TrackFeatures row"],
+        )
+
+    # ------------------------------------------------------------------
+    # 2. Noise filtering
     # ------------------------------------------------------------------
     if event.event_type == "play_end":
         if event.value is not None and event.value < settings.MIN_PLAY_PERCENTAGE:
             # Accidental tap / autoplay that user immediately stopped
             logger.debug(
                 "Dropping low-completion play_end",
-                extra={"track_id": event.track_id, "value": event.value},
+                extra={"track_id": resolved_track_id, "value": event.value},
             )
             return EventResponse(accepted=0, rejected=1, errors=["play_end completion below threshold"])
 
     # ------------------------------------------------------------------
-    # 2. Duplicate detection
+    # 3. Duplicate detection
     # ------------------------------------------------------------------
     # Compare against the *event's* timestamp, not the server clock.
     # This catches retries where the client re-sends the same event.
@@ -59,7 +109,7 @@ async def process_event(
         select(ListenEvent.id)
         .where(
             ListenEvent.user_id == event.user_id,
-            ListenEvent.track_id == event.track_id,
+            ListenEvent.track_id == resolved_track_id,
             ListenEvent.event_type == event.event_type,
             ListenEvent.timestamp >= ts_lo,
             ListenEvent.timestamp <= ts_hi,
@@ -72,16 +122,16 @@ async def process_event(
         return EventResponse(accepted=1, rejected=0)  # silent accept (idempotent)
 
     # ------------------------------------------------------------------
-    # 3. Ensure user exists
+    # 4. Ensure user exists
     # ------------------------------------------------------------------
     await _upsert_user(session, event.user_id, int(time.time()))
 
     # ------------------------------------------------------------------
-    # 4. Persist
+    # 5. Persist
     # ------------------------------------------------------------------
     row = ListenEvent(
         user_id=event.user_id,
-        track_id=event.track_id,
+        track_id=resolved_track_id,
         event_type=event.event_type,
         value=event.value,
         context=event.context,
@@ -130,7 +180,9 @@ async def process_event(
             try:
                 from app.services.radio import record_feedback
 
-                record_feedback(event.context_id, event.track_id, event.event_type)
+                # Radio sessions key on the canonical internal track_id —
+                # FAISS / drift embedding / played_set all use that form.
+                record_feedback(event.context_id, resolved_track_id, event.event_type)
             except Exception:
                 logger.debug("Radio feedback hook error", exc_info=True)
 
@@ -148,7 +200,8 @@ async def process_event(
         "Event accepted",
         extra={
             "user_id": event.user_id,
-            "track_id": event.track_id,
+            "track_id": resolved_track_id,
+            "supplied_track_id": event.track_id,
             "event_type": event.event_type,
         },
     )
