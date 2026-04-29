@@ -407,10 +407,16 @@ async def chart_stats(
         )
     ).scalar() or 0
 
+    from app.core.config import settings as _settings
+    from app.workers.scheduler import get_job_next_run
+
     return {
         "total_entries": total,
         "library_matches": matched,
         "match_rate": round(matched / total, 3) if total > 0 else 0,
         "chart_count": chart_count,
         "last_fetched_at": last_fetch,
+        "auto_rebuild_enabled": bool(_settings.charts_enabled),
+        "interval_hours": _settings.CHARTS_INTERVAL_HOURS,
+        "next_run_at": get_job_next_run("charts_build"),
     }
