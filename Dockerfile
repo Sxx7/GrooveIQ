@@ -62,6 +62,7 @@ RUN pip install --no-cache-dir --no-index --find-links=/wheels /wheels/* && \
 
 # Copy application source
 COPY --chown=grooveiq:grooveiq app/ ./app/
+COPY --chown=grooveiq:grooveiq migrations/ ./migrations/
 
 # Data directories (override with volume mounts)
 RUN mkdir -p /data /data/models /music /cache/essentia/onnx && \
