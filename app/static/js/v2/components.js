@@ -554,6 +554,171 @@ GIQ.components.jumpLink = function jumpLink(opts) {
     return a;
 };
 
+/* ── Action card (Actions bucket — Shape B from design hand-off) ──── */
+
+/* Renders one action trigger inside an Actions page. Pattern: name +
+ * optional state dot / destructive chip on the left, "▶ Run" primary button
+ * on the right; description below; optional mono sub-line ("last run · …").
+ *
+ * opts:
+ *   name:        string (required)
+ *   description: string
+ *   lastRun:     string — sub-line below description (e.g. "last run · 14m ago · ok")
+ *   state:       'good' | 'bad' | 'neutral' | null — left dot
+ *   destructive: bool — replaces dot with a "destructive" chip
+ *   busy:        bool — disables the Run button + shows "Running…"
+ *   runLabel:    string — defaults to "▶ Run"
+ *   onRun:       async () => any — called on Run click. Toast + monitor jump
+ *                wired automatically based on its return value (any non-throw
+ *                = success).
+ *   monitorPath: string — hash to redirect to ~800ms after a successful run.
+ *                Toast becomes "{name} triggered. View in Monitor →".
+ *   monitorLabel:string — overrides "View in Monitor →" toast label.
+ *   confirm:     string — if present, browser confirm() is shown before run.
+ *   extras:      Element | Element[] — extra controls inserted above the
+ *                description (used by Cleanup-stale dry-run toggle).
+ *
+ * The card re-renders itself in place when busy/last-run state changes —
+ * consumer pages that want to refresh from the API can call .refresh(opts2)
+ * on the returned wrapper to swap any subset of fields.
+ */
+GIQ.components.actionCard = function actionCard(opts) {
+    const cfg = Object.assign({
+        runLabel: '▶ Run',
+        state: null,
+        destructive: false,
+        busy: false,
+    }, opts || {});
+
+    const card = document.createElement('section');
+    card.className = 'action-card';
+
+    function build() {
+        card.innerHTML = '';
+
+        const top = document.createElement('div');
+        top.className = 'action-card-top';
+
+        const left = document.createElement('div');
+        left.className = 'action-card-name-row';
+
+        if (cfg.destructive) {
+            const chip = document.createElement('span');
+            chip.className = 'action-card-chip action-card-chip-destructive';
+            chip.textContent = 'destructive';
+            left.appendChild(chip);
+        } else if (cfg.state) {
+            const dot = document.createElement('span');
+            dot.className = 'action-card-dot action-card-dot-' + cfg.state;
+            left.appendChild(dot);
+        }
+
+        const nameEl = document.createElement('span');
+        nameEl.className = 'action-card-name';
+        nameEl.textContent = cfg.name || '';
+        left.appendChild(nameEl);
+
+        top.appendChild(left);
+
+        const runBtn = document.createElement('button');
+        runBtn.type = 'button';
+        runBtn.className = 'vc-btn vc-btn-primary action-card-run';
+        runBtn.textContent = cfg.busy ? 'Running…' : cfg.runLabel;
+        runBtn.disabled = !!cfg.busy;
+        runBtn.addEventListener('click', handleRun);
+        top.appendChild(runBtn);
+
+        card.appendChild(top);
+
+        if (cfg.extras) {
+            const ex = document.createElement('div');
+            ex.className = 'action-card-extras';
+            const items = Array.isArray(cfg.extras) ? cfg.extras : [cfg.extras];
+            items.forEach(el => { if (el instanceof Element) ex.appendChild(el); });
+            card.appendChild(ex);
+        }
+
+        if (cfg.description) {
+            const desc = document.createElement('div');
+            desc.className = 'action-card-desc';
+            desc.textContent = cfg.description;
+            card.appendChild(desc);
+        }
+
+        if (cfg.lastRun) {
+            const sub = document.createElement('div');
+            sub.className = 'action-card-sub mono';
+            sub.textContent = cfg.lastRun;
+            card.appendChild(sub);
+        }
+    }
+
+    async function handleRun() {
+        if (cfg.busy) return;
+        if (cfg.confirm && !window.confirm(cfg.confirm)) return;
+        if (typeof cfg.onRun !== 'function') return;
+        wrapper.refresh({ busy: true });
+        try {
+            await cfg.onRun();
+            const monitorPath = cfg.monitorPath;
+            if (monitorPath) {
+                _actionToastWithJump(cfg.name + ' triggered.', monitorPath, cfg.monitorLabel || 'View in Monitor →');
+                setTimeout(() => {
+                    if (window.location.hash !== monitorPath) {
+                        window.location.hash = monitorPath;
+                    }
+                }, 800);
+            } else {
+                GIQ.toast(cfg.name + ' triggered.', 'success');
+            }
+        } catch (e) {
+            GIQ.toast((cfg.name || 'Action') + ' failed: ' + (e && e.message ? e.message : e), 'error');
+        } finally {
+            wrapper.refresh({ busy: false });
+        }
+    }
+
+    build();
+
+    const wrapper = {
+        el: card,
+        refresh(patch) {
+            Object.assign(cfg, patch || {});
+            build();
+        },
+    };
+    return wrapper;
+};
+
+/* Internal helper: a toast with a trailing "→" jump link, mirrors the
+ * versioned-config shell's save-toast pattern. Lives here so any page can
+ * use it without depending on settings.js.
+ */
+function _actionToastWithJump(message, hash, jumpLabel) {
+    let stack = document.getElementById('toast-stack');
+    if (!stack) {
+        stack = document.createElement('div');
+        stack.id = 'toast-stack';
+        document.body.appendChild(stack);
+    }
+    const t = document.createElement('div');
+    t.className = 'toast toast-success toast-with-jump';
+    t.innerHTML = '<span class="toast-icon">✓</span>'
+                + '<div class="toast-body"></div>'
+                + '<a class="toast-jump" href="#"></a>'
+                + '<button class="toast-close" type="button" aria-label="Dismiss">×</button>';
+    t.querySelector('.toast-body').textContent = message;
+    const jump = t.querySelector('.toast-jump');
+    jump.textContent = jumpLabel;
+    jump.href = hash;
+    jump.addEventListener('click', () => GIQ._dismissToast(t));
+    t.querySelector('.toast-close').addEventListener('click', () => GIQ._dismissToast(t));
+    stack.appendChild(t);
+    setTimeout(() => GIQ._dismissToast(t), 6000);
+    return t;
+}
+GIQ.components._actionToastWithJump = _actionToastWithJump;
+
 /* ── Versioned-config shell ───────────────────────────────────────── */
 
 /* Shared shell for Algorithm, Download Routing, Lidarr Backfill configs.
@@ -1479,4 +1644,202 @@ function _defaultConfigPaths(kind) {
         export: sub + '/export',
         import: sub + '/import',
     };
+}
+
+/* ── Candidate panel (Recs Debug detail + Live Debug) ─────────────── */
+
+/* Renders the shared "candidate sources / reranker actions / candidates
+ * with feature vector inspector" set of panels, used by both Audit
+ * Request Detail and Live Debug Recs.
+ *
+ * opts:
+ *   candidatesByCount: { source: count } map
+ *   candidates: array of audit candidates (each with track_id, title,
+ *               artist, sources[], raw_score, final_score,
+ *               pre_rerank_position, final_position, shown,
+ *               reranker_actions[], feature_vector{})
+ *   candidatesTotal: optional number — total considered (for header)
+ *   limitRequested: optional number — original `?limit=`
+ *
+ * Returns a DOM container with the three panels appended.
+ */
+GIQ.components.candidatePanel = function candidatePanel(opts) {
+    const cfg = opts || {};
+    const wrap = document.createElement('div');
+    wrap.className = 'candidate-panel-wrap';
+
+    const grid = document.createElement('div');
+    grid.className = 'candidate-panel-grid';
+
+    // Sources panel
+    const cbsKeys = Object.keys(cfg.candidatesByCount || {});
+    const cbsTotal = cbsKeys.reduce((s, k) => s + (cfg.candidatesByCount[k] || 0), 0) || 1;
+    const cbsRows = cbsKeys
+        .sort((a, b) => (cfg.candidatesByCount[b] || 0) - (cfg.candidatesByCount[a] || 0))
+        .map(k => ({ label: k, value: cfg.candidatesByCount[k] || 0 }));
+    const cbsMax = cbsRows.reduce((m, r) => Math.max(m, r.value), 1);
+    const cbsList = document.createElement('div');
+    cbsList.className = 'bar-list';
+    if (!cbsRows.length) {
+        cbsList.innerHTML = '<div class="empty-row">No candidate sources captured.</div>';
+    } else {
+        cbsRows.forEach(r => {
+            const pct = (r.value / cbsMax) * 100;
+            const sharePct = (r.value / cbsTotal) * 100;
+            const row = document.createElement('div');
+            row.className = 'bar-row';
+            row.innerHTML = '<div class="bar-label"><span class="rd-source-chip">' + GIQ.fmt.esc(r.label) + '</span></div>'
+                + '<div class="bar-track"><div class="bar-fill bar-fill-accent" style="width:' + Math.max(2, pct).toFixed(1) + '%"></div></div>'
+                + '<div class="bar-count mono">' + GIQ.fmt.esc(String(r.value)) + ' <span class="muted">· ' + sharePct.toFixed(0) + '%</span></div>';
+            cbsList.appendChild(row);
+        });
+    }
+    grid.appendChild(GIQ.components.panel({
+        title: 'Candidate sources',
+        sub: cbsKeys.length ? cbsKeys.length + ' sources' : 'no breakdown',
+        children: cbsList,
+    }));
+
+    // Reranker actions panel
+    const actionCounts = {};
+    (cfg.candidates || []).forEach(c => {
+        (c.reranker_actions || []).forEach(a => {
+            const name = a.action || 'unknown';
+            actionCounts[name] = (actionCounts[name] || 0) + 1;
+        });
+    });
+    const actKeys = Object.keys(actionCounts);
+    const actMax = actKeys.reduce((m, k) => Math.max(m, actionCounts[k]), 1);
+    const actBody = document.createElement('div');
+    if (!actKeys.length) {
+        actBody.innerHTML = '<div class="empty-row">No reranker actions for this request.</div>';
+    } else {
+        const summary = document.createElement('div');
+        summary.className = 'rd-action-summary';
+        actKeys.forEach(k => {
+            const chip = document.createElement('span');
+            chip.className = 'rd-source-chip';
+            chip.textContent = k + ' × ' + actionCounts[k];
+            summary.appendChild(chip);
+        });
+        actBody.appendChild(summary);
+        const list = document.createElement('div');
+        list.className = 'bar-list';
+        actKeys.sort((a, b) => actionCounts[b] - actionCounts[a]).forEach(k => {
+            const pct = (actionCounts[k] / actMax) * 100;
+            const colorClass = (k.indexOf('boost') >= 0 || k === 'exploration_slot') ? 'accent' : 'wine';
+            const row = document.createElement('div');
+            row.className = 'bar-row';
+            row.innerHTML = '<div class="bar-label">' + GIQ.fmt.esc(k.replace(/_/g, ' ')) + '</div>'
+                + '<div class="bar-track"><div class="bar-fill bar-fill-' + colorClass + '" style="width:' + Math.max(2, pct).toFixed(1) + '%"></div></div>'
+                + '<div class="bar-count mono">' + actionCounts[k] + '</div>';
+            list.appendChild(row);
+        });
+        actBody.appendChild(list);
+    }
+    let actSub = (cfg.candidatesTotal != null ? cfg.candidatesTotal : (cfg.candidates || []).length) + ' total';
+    if (cfg.limitRequested != null) actSub += ' · limit ' + cfg.limitRequested;
+    grid.appendChild(GIQ.components.panel({
+        title: 'Reranker actions',
+        sub: actSub,
+        children: actBody,
+    }));
+
+    wrap.appendChild(grid);
+
+    // Candidates table
+    const candTable = document.createElement('div');
+    candTable.className = 'rd-candidates-table';
+    const head = document.createElement('div');
+    head.className = 'rd-row rd-cand-head';
+    head.innerHTML = '<span>Rank</span><span>Track</span><span>Sources</span><span>Raw</span><span>Final</span><span>Actions</span><span></span>';
+    candTable.appendChild(head);
+
+    (cfg.candidates || []).forEach((c, i) => {
+        const name = (c.artist ? c.artist + ' — ' : '') + (c.title || c.track_id || '—');
+        let rankCell;
+        if (c.shown && c.final_position != null) {
+            const delta = (c.pre_rerank_position != null) ? (c.pre_rerank_position - c.final_position) : 0;
+            const arrow = delta > 0 ? '<span class="rd-up">↑' + delta + '</span>'
+                : delta < 0 ? '<span class="rd-down">↓' + Math.abs(delta) + '</span>'
+                : '';
+            rankCell = '<strong class="mono">' + (c.final_position + 1) + '</strong> ' + arrow;
+        } else {
+            rankCell = '<span class="mono muted" title="filtered out">—</span>';
+        }
+
+        const sources = (c.sources || []).map(s => '<span class="rd-source-chip">' + GIQ.fmt.esc(s) + '</span>').join(' ');
+        const actions = (c.reranker_actions || []).map(a => '<span class="rd-source-chip">' + GIQ.fmt.esc(a.action || '?') + '</span>').join(' ');
+
+        const row = document.createElement('div');
+        row.className = 'rd-row rd-cand-row';
+        row.innerHTML = '<span class="rd-cand-rank">' + rankCell + '</span>'
+            + '<span class="rd-truncate" title="' + GIQ.fmt.esc(c.track_id || '') + '">' + GIQ.fmt.esc(name) + '</span>'
+            + '<span class="rd-cand-sources">' + (sources || '<span class="mono muted">—</span>') + '</span>'
+            + '<span class="mono muted">' + (c.raw_score != null ? c.raw_score.toFixed(3) : '—') + '</span>'
+            + '<span class="mono">' + (c.final_score != null ? c.final_score.toFixed(3) : '—') + '</span>'
+            + '<span class="rd-cand-actions">' + (actions || '<span class="mono muted">—</span>') + '</span>'
+            + '<span></span>';
+
+        const whyBtn = document.createElement('button');
+        whyBtn.type = 'button';
+        whyBtn.className = 'vc-btn vc-btn-ghost vc-btn-sm';
+        whyBtn.textContent = 'Why?';
+        const whyRow = document.createElement('div');
+        whyRow.className = 'rd-cand-why';
+        whyRow.style.display = 'none';
+        whyBtn.addEventListener('click', () => {
+            const showing = whyRow.style.display !== 'none';
+            if (showing) { whyRow.style.display = 'none'; return; }
+            if (!whyRow.dataset.built) {
+                whyRow.appendChild(buildFeatureInspector(c.feature_vector || {}));
+                whyRow.dataset.built = '1';
+            }
+            whyRow.style.display = '';
+        });
+        row.lastElementChild.appendChild(whyBtn);
+        candTable.appendChild(row);
+        candTable.appendChild(whyRow);
+    });
+
+    wrap.appendChild(GIQ.components.panel({
+        title: 'Candidates',
+        sub: (cfg.candidates || []).length + ' rows',
+        children: candTable,
+    }));
+
+    return wrap;
+};
+
+function buildFeatureInspector(fv) {
+    const wrap = document.createElement('div');
+    wrap.className = 'rd-feature-inspector';
+    const keys = Object.keys(fv || {});
+    if (!keys.length) {
+        wrap.innerHTML = '<div class="empty-row">No feature vector persisted.</div>';
+        return wrap;
+    }
+    keys.sort((a, b) => Math.abs(fv[b] || 0) - Math.abs(fv[a] || 0));
+    const head = document.createElement('div');
+    head.className = 'eyebrow';
+    head.textContent = 'TOP FEATURES BY MAGNITUDE · ' + keys.length + ' TOTAL';
+    wrap.appendChild(head);
+    const grid = document.createElement('div');
+    grid.className = 'rd-feature-grid';
+    keys.forEach(k => {
+        const v = fv[k];
+        let vstr;
+        if (typeof v === 'number') {
+            vstr = Number.isInteger(v) ? String(v) : v.toFixed(4);
+        } else {
+            vstr = String(v);
+        }
+        const cell = document.createElement('div');
+        cell.className = 'rd-feature-cell';
+        cell.innerHTML = '<span class="mono muted">' + GIQ.fmt.esc(k) + '</span>'
+            + '<span class="mono">' + GIQ.fmt.esc(vstr) + '</span>';
+        grid.appendChild(cell);
+    });
+    wrap.appendChild(grid);
+    return wrap;
 }
