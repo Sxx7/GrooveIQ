@@ -827,7 +827,11 @@ class TestMatcherPriorityChain:
 
         async with _TestSession() as session:
             row = (await session.execute(select(TrackFeatures))).scalar_one()
-            assert row.track_id == "server-studio"
+            # Post-#37: sync writes the per-backend ID into media_server_id;
+            # track_id stays as the immutable internal hash (here the "old-id"
+            # placeholder used by _seed_one).
+            assert row.track_id == "old-id"
+            assert row.media_server_id == "server-studio"
 
     @patch("app.services.media_server.settings")
     async def test_aatd_ambiguous_skips_match(self, mock_settings):
@@ -1154,4 +1158,6 @@ class TestMatcherPriorityChain:
 
         async with _TestSession() as session:
             row = (await session.execute(select(TrackFeatures))).scalar_one()
-            assert row.track_id == "match"
+            # Post-#37: sync writes media_server_id, never mutates track_id.
+            assert row.track_id == "old-id"
+            assert row.media_server_id == "match"
