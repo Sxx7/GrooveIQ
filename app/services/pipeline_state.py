@@ -45,6 +45,7 @@ PIPELINE_STEPS = [
     "lastfm_cache",
     "sasrec",
     "session_gru",
+    "music_map",
 ]
 
 
