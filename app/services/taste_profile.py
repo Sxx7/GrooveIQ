@@ -292,9 +292,7 @@ async def _fetch_track_features(session: AsyncSession, track_ids: list[str]) -> 
     features_map: dict[str, TrackFeatures] = {}
     for i in range(0, len(track_ids), 500):
         batch = track_ids[i : i + 500]
-        result = await session.execute(
-            select(TrackFeatures).where(TrackFeatures.track_id.in_(batch))
-        )
+        result = await session.execute(select(TrackFeatures).where(TrackFeatures.track_id.in_(batch)))
         for tf in result.scalars().all():
             features_map[tf.track_id] = tf
 

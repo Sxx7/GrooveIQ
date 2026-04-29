@@ -27,7 +27,6 @@ from app.models.schemas import (
 )
 from app.workers.library_scanner import get_scan_status, trigger_scan
 
-
 # ---------------------------------------------------------------------------
 # Per-backend ID columns exposed by the API
 # ---------------------------------------------------------------------------
@@ -49,6 +48,7 @@ def _serialize_track_ids(tf: TrackFeatures) -> dict:
     """Return the per-backend identifier subset of a TrackFeatures row,
     serialising `musicbrainz_track_id` under the public name `mb_track_id`."""
     return {api_name: getattr(tf, col_name) for api_name, col_name in _BACKEND_ID_COLS.items()}
+
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -542,9 +542,7 @@ async def lookup_tracks_batch(
     chunk = 500
     for i in range(0, len(ids), chunk):
         sub = ids[i : i + chunk]
-        result = await session.execute(
-            select(TrackFeatures.track_id, col).where(col.in_(sub))
-        )
+        result = await session.execute(select(TrackFeatures.track_id, col).where(col.in_(sub)))
         for tid, ext in result.all():
             found[ext] = tid
 

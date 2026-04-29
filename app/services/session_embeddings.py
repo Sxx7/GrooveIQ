@@ -183,9 +183,7 @@ def load_latest() -> bool:
     if not model_dir.exists():
         return False
 
-    candidates = sorted(
-        model_dir.glob("word2vec_sessions_*.model"), key=lambda p: p.stat().st_mtime, reverse=True
-    )
+    candidates = sorted(model_dir.glob("word2vec_sessions_*.model"), key=lambda p: p.stat().st_mtime, reverse=True)
     if not candidates:
         return False
 
