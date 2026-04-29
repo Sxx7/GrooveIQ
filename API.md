@@ -52,7 +52,7 @@ No authentication required. Serves the single-page web dashboard.
 
 ## Events
 
-> **Track-ID model — read this first.** Every track has one stable internal GrooveIQ identifier (`track_id`, a 16-char hex hash) and zero or more per-backend external IDs (`media_server_id`, `spotify_id`, `qobuz_id`, `tidal_id`, `deezer_id`, `soundcloud_id`, `mb_track_id`). The events API requires the **internal `track_id`**. Clients that hold a media-server / streaming-service ID resolve it via [`GET /v1/tracks/lookup`](#get-v1trackslookup--resolve-an-external-id-to-the-internal-track_id) and cache the mapping locally. See the schema rework in [#37](https://github.com/Sxx7/GrooveIQ/issues/37) for background.
+> **Track-ID model — read this first.** Every track has one stable internal GrooveIQ identifier (`track_id`, a 16-char hex hash) and zero or more per-backend external IDs (`media_server_id`, `spotify_id`, `qobuz_id`, `tidal_id`, `deezer_id`, `soundcloud_id`, `mb_track_id`). **The events API accepts either the internal `track_id` OR any per-backend external ID** — the server resolves to the canonical internal hex at ingest time and stores that. Clients that don't want to think about it can keep sending Navidrome / Spotify / Qobuz IDs. Events whose `track_id` matches no `TrackFeatures` row at all are silently dropped (no attribution possible). See the schema rework in [#37](https://github.com/Sxx7/GrooveIQ/issues/37) for background.
 
 ### `POST /v1/events` — Ingest a single event
 
@@ -81,7 +81,7 @@ A `track_id` that does not match any analysed `TrackFeatures` row is reported in
 | Field | Type | Description |
 |-------|------|-------------|
 | `user_id` | string (1-128) | Stable user identifier. Should match what `GET /v1/users` returns. |
-| `track_id` | string (1-128) | **Internal GrooveIQ track ID** — 16-char hex hash. Resolve from a Navidrome / Spotify / Qobuz ID via `GET /v1/tracks/lookup`. |
+| `track_id` | string (1-128) | The internal GrooveIQ hex track_id, OR any per-backend ID known to GrooveIQ (Navidrome song ID, Spotify ID, Qobuz numeric ID, etc.). The server resolves to the canonical internal hex via the `TrackFeatures` table and stores that. Unmatched IDs are silently dropped. |
 | `event_type` | string | One of the event types below |
 
 #### Event types
