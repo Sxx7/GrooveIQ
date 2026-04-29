@@ -88,6 +88,81 @@ def _save_model(model, engine: str, version: str) -> str | None:
         return None
 
 
+def load_latest() -> bool:
+    """
+    Load the most recently saved ranker model from ``_MODEL_DIR`` into the
+    in-memory singleton. Returns True on success, False if no file is found
+    or loading fails.
+
+    Called from the FastAPI lifespan so the ranker is warm immediately after a
+    container restart, instead of falling back to the satisfaction_score
+    baseline until the next scheduled pipeline run. (#43)
+    """
+    model_dir = Path(_MODEL_DIR)
+    if not model_dir.exists():
+        return False
+
+    # Prefer the newer LightGBM .lgb files; fall back to sklearn .pkl.
+    candidates = sorted(
+        list(model_dir.glob("ranker_*.lgb")) + list(model_dir.glob("ranker_*.pkl")),
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
+    )
+    if not candidates:
+        return False
+
+    path = candidates[0]
+    try:
+        if path.suffix == ".lgb":
+            import lightgbm as lgb
+
+            model = lgb.Booster(model_file=str(path))
+            engine = "lgbm-booster"
+        else:
+            import joblib
+
+            model = joblib.load(str(path))
+            engine = "sklearn-gbr"
+    except Exception as e:
+        logger.warning(f"Ranker load_latest failed for {path}: {e}")
+        return False
+
+    version = path.stem.replace("ranker_", "")
+
+    feature_importances: dict[str, float] = {}
+    try:
+        if hasattr(model, "feature_importance"):
+            importances = model.feature_importance()
+        else:
+            importances = model.feature_importances_
+        for i, col in enumerate(FEATURE_COLUMNS):
+            if i < len(importances):
+                feature_importances[col] = float(importances[i])
+    except Exception:
+        pass
+
+    stats = {
+        "trained": True,
+        "training_samples": None,
+        "n_features": NUM_FEATURES,
+        "model_version": version,
+        "engine": engine,
+        "trained_at": int(path.stat().st_mtime),
+        "saved_path": str(path),
+        "feature_importances": feature_importances,
+        "loaded_from_disk": True,
+    }
+
+    with _lock:
+        global _model, _model_version, _model_stats
+        _model = model
+        _model_version = version
+        _model_stats = stats
+
+    logger.info(f"Ranker loaded from disk: {path.name} (engine={engine})")
+    return True
+
+
 def _train_ranker_sync(features, labels, sample_weights=None) -> tuple:
     """CPU-bound model training.  Runs in a thread executor."""
     model, engine = _create_model()

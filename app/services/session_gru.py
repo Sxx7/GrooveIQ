@@ -21,7 +21,10 @@ from __future__ import annotations
 
 import logging
 import math
+import os
 import threading
+import time
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -31,6 +34,8 @@ from app.db.session import AsyncSessionLocal
 from app.models.db import ListenEvent, ListenSession, TrackFeatures
 
 logger = logging.getLogger(__name__)
+
+_MODEL_DIR = os.environ.get("GROOVEIQ_MODEL_DIR", "/data/models")
 
 # Singleton state.
 _lock = threading.Lock()
@@ -300,6 +305,9 @@ async def train() -> dict[str, Any]:
         global _model, _user_predicted_vectors
         _model = model
         _user_predicted_vectors = user_predictions
+        track_embs_snapshot = dict(_track_embeddings)
+
+    _save_model(model, user_predictions, track_embs_snapshot)
 
     logger.info(
         f"Session GRU trained: {eligible_count} users, {sum(len(s) for s in user_data.values())} total sessions."
@@ -311,6 +319,72 @@ async def train() -> dict[str, Any]:
         "total_sessions": sum(len(s) for s in user_data.values()),
         "hidden_dim": _HIDDEN_DIM,
     }
+
+
+def _save_model(model, user_predictions, track_embs) -> str | None:
+    """Persist the GRU model + predicted next-session vectors + the
+    track-embedding cache used at serving time. (#43)"""
+    try:
+        model_dir = Path(_MODEL_DIR)
+        model_dir.mkdir(parents=True, exist_ok=True)
+        import pickle
+
+        version = str(int(time.time()))
+        path = model_dir / f"session_gru_{version}.pkl"
+        with open(path, "wb") as f:
+            pickle.dump(
+                {
+                    "model": model,
+                    "user_predictions": user_predictions,
+                    "track_embeddings": track_embs,
+                    "version": version,
+                },
+                f,
+                protocol=pickle.HIGHEST_PROTOCOL,
+            )
+        logger.info(f"Session GRU saved: {path}")
+        return str(path)
+    except Exception as e:
+        logger.warning(f"Could not save session GRU to disk: {e}")
+        return None
+
+
+def load_latest() -> bool:
+    """Load the most recent session GRU bundle. Returns True on success.
+
+    Restores the GRU model, the per-user predicted next-session vectors and
+    the track-embedding cache so ``predict_drift_scores`` works immediately
+    after a restart. (#43)
+    """
+    model_dir = Path(_MODEL_DIR)
+    if not model_dir.exists():
+        return False
+
+    candidates = sorted(model_dir.glob("session_gru_*.pkl"), key=lambda p: p.stat().st_mtime, reverse=True)
+    if not candidates:
+        return False
+
+    path = candidates[0]
+    try:
+        import pickle
+
+        with open(path, "rb") as f:
+            bundle = pickle.load(f)
+    except Exception as e:
+        logger.warning(f"Session GRU load_latest failed for {path}: {e}")
+        return False
+
+    with _lock:
+        global _model, _user_predicted_vectors, _track_embeddings
+        _model = bundle["model"]
+        _user_predicted_vectors = bundle["user_predictions"]
+        _track_embeddings = bundle["track_embeddings"]
+
+    logger.info(
+        f"Session GRU loaded from disk: {path.name} "
+        f"({len(bundle['user_predictions'])} users, {len(bundle['track_embeddings'])} tracks)"
+    )
+    return True
 
 
 def predict_drift_scores(

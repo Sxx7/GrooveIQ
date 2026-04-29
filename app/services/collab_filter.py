@@ -18,7 +18,10 @@ Edge cases:
 from __future__ import annotations
 
 import logging
+import os
 import threading
+import time
+from pathlib import Path
 
 import numpy as np
 from sqlalchemy import func, select
@@ -40,6 +43,8 @@ _interaction_matrix = None  # scipy.sparse.csr_matrix (user × track)
 # Minimum interactions to bother training.
 _MIN_INTERACTIONS = 10
 _MIN_USERS = 2
+
+_MODEL_DIR = os.environ.get("GROOVEIQ_MODEL_DIR", "/data/models")
 
 
 def _train_als_sync(rows: list) -> tuple[object, dict[str, int], list[str], dict[str, int], list[str], object]:
@@ -138,8 +143,78 @@ async def build_model() -> dict:
         _idx_to_track = track_ids
         _interaction_matrix = matrix
 
+    _save_model(model, user_map, user_ids, track_map, track_ids, matrix)
+
     logger.info(f"CF model trained: {n_users} users, {n_tracks} tracks, {len(rows)} interactions.")
     return {"tracks": n_tracks, "users": n_users, "interactions": len(rows), "trained": True}
+
+
+def _save_model(model, user_map, user_ids, track_map, track_ids, matrix) -> str | None:
+    """Persist the ALS model + index maps so the next process boot can warm
+    the singleton without retraining. (#43)"""
+    try:
+        model_dir = Path(_MODEL_DIR)
+        model_dir.mkdir(parents=True, exist_ok=True)
+        import pickle
+
+        version = str(int(time.time()))
+        path = model_dir / f"cf_als_{version}.pkl"
+        with open(path, "wb") as f:
+            pickle.dump(
+                {
+                    "model": model,
+                    "user_map": user_map,
+                    "user_ids": user_ids,
+                    "track_map": track_map,
+                    "track_ids": track_ids,
+                    "matrix": matrix,
+                    "version": version,
+                },
+                f,
+                protocol=pickle.HIGHEST_PROTOCOL,
+            )
+        logger.info(f"CF model saved: {path}")
+        return str(path)
+    except Exception as e:
+        logger.warning(f"Could not save CF model to disk: {e}")
+        return None
+
+
+def load_latest() -> bool:
+    """Load the most recently saved CF bundle from ``_MODEL_DIR``. Returns
+    True on success, False if no file exists or loading fails. (#43)"""
+    model_dir = Path(_MODEL_DIR)
+    if not model_dir.exists():
+        return False
+
+    candidates = sorted(model_dir.glob("cf_als_*.pkl"), key=lambda p: p.stat().st_mtime, reverse=True)
+    if not candidates:
+        return False
+
+    path = candidates[0]
+    try:
+        import pickle
+
+        with open(path, "rb") as f:
+            bundle = pickle.load(f)
+    except Exception as e:
+        logger.warning(f"CF load_latest failed for {path}: {e}")
+        return False
+
+    with _lock:
+        global _model, _user_to_idx, _idx_to_user, _track_to_idx, _idx_to_track, _interaction_matrix
+        _model = bundle["model"]
+        _user_to_idx = bundle["user_map"]
+        _idx_to_user = bundle["user_ids"]
+        _track_to_idx = bundle["track_map"]
+        _idx_to_track = bundle["track_ids"]
+        _interaction_matrix = bundle["matrix"]
+
+    logger.info(
+        f"CF loaded from disk: {path.name} "
+        f"({len(bundle['user_ids'])} users, {len(bundle['track_ids'])} tracks)"
+    )
+    return True
 
 
 def get_cf_candidates(user_id: str, k: int = 200) -> list[tuple[str, float]]:

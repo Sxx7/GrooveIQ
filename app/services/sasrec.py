@@ -20,7 +20,10 @@ from __future__ import annotations
 
 import logging
 import math
+import os
 import threading
+import time
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -30,6 +33,8 @@ from app.db.session import AsyncSessionLocal
 from app.models.db import ListenEvent, ListenSession
 
 logger = logging.getLogger(__name__)
+
+_MODEL_DIR = os.environ.get("GROOVEIQ_MODEL_DIR", "/data/models")
 
 # Singleton state.
 _lock = threading.Lock()
@@ -382,6 +387,8 @@ async def train() -> dict[str, Any]:
         _inv_vocab = inv_vocab
         _user_sequences = user_recent
 
+    _save_model(model, vocab, inv_vocab, user_recent)
+
     logger.info(f"SASRec trained: {len(sequences)} sessions, {len(vocab)} tracks in vocabulary.")
 
     return {
@@ -391,6 +398,72 @@ async def train() -> dict[str, Any]:
         "embed_dim": _EMBED_DIM,
         "num_layers": _NUM_LAYERS,
     }
+
+
+def _save_model(model, vocab, inv_vocab, user_sequences) -> str | None:
+    """Persist the SASRec model + vocab + per-user recent sequences. (#43)
+
+    Pickles the whole bundle — the SASRecModel is small (a handful of numpy
+    arrays) and pickling is the simplest way to round-trip the layer dicts.
+    """
+    try:
+        model_dir = Path(_MODEL_DIR)
+        model_dir.mkdir(parents=True, exist_ok=True)
+        import pickle
+
+        version = str(int(time.time()))
+        path = model_dir / f"sasrec_{version}.pkl"
+        with open(path, "wb") as f:
+            pickle.dump(
+                {
+                    "model": model,
+                    "vocab": vocab,
+                    "inv_vocab": inv_vocab,
+                    "user_sequences": user_sequences,
+                    "version": version,
+                },
+                f,
+                protocol=pickle.HIGHEST_PROTOCOL,
+            )
+        logger.info(f"SASRec model saved: {path}")
+        return str(path)
+    except Exception as e:
+        logger.warning(f"Could not save SASRec model to disk: {e}")
+        return None
+
+
+def load_latest() -> bool:
+    """Load the most recent SASRec bundle. Returns True on success. (#43)"""
+    model_dir = Path(_MODEL_DIR)
+    if not model_dir.exists():
+        return False
+
+    candidates = sorted(model_dir.glob("sasrec_*.pkl"), key=lambda p: p.stat().st_mtime, reverse=True)
+    if not candidates:
+        return False
+
+    path = candidates[0]
+    try:
+        import pickle
+
+        with open(path, "rb") as f:
+            bundle = pickle.load(f)
+    except Exception as e:
+        logger.warning(f"SASRec load_latest failed for {path}: {e}")
+        return False
+
+    with _lock:
+        global _model, _vocab, _inv_vocab, _user_sequences
+        _model = bundle["model"]
+        _vocab = bundle["vocab"]
+        _inv_vocab = bundle["inv_vocab"]
+        _user_sequences = bundle["user_sequences"]
+
+    logger.info(
+        f"SASRec loaded from disk: {path.name} "
+        f"({len(bundle['vocab'])} tracks, {len(bundle['user_sequences'])} users)"
+    )
+    return True
 
 
 def predict_next_scores(
