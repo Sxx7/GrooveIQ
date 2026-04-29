@@ -417,6 +417,18 @@ async def _process_batch(
             log_entries.append(ScanLog(scan_id=scan_id, level="fail", filename=fname, message=result["analysis_error"]))
             counters["failed"] += 1
             _scan_meta["analyze_elapsed"] = _scan_meta.get("analyze_elapsed", 0.0) + elapsed_file
+            # Persist a "previously failed" marker iff we got far enough to
+            # hash the file (deterministic failure for THIS file content —
+            # too-short, unsupported codec, LOST_SYNC, etc.). The hash is
+            # what powers _analyze_file's skip check, so on the next scan
+            # the file is treated as already-known and not re-attempted.
+            # Transient failures (worker timeout, pool shutdown, hash error)
+            # never have file_hash set so they skip this branch and remain
+            # eligible for retry. Downstream queries already filter
+            # `analysis_error IS NOT NULL` (tracks.py / playlist_service /
+            # clap_backfill) so these rows don't pollute recommendations.
+            if result.get("file_hash"):
+                to_upsert.append(result)
 
         else:
             counters["ok"] += 1
