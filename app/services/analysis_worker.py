@@ -1095,9 +1095,15 @@ def _build_embedding(
                 vec[8 : 8 + len(mean_hpcp)] = mean_hpcp
 
         # L2 normalise (FAISS IndexFlatIP expects unit vectors)
+        # If the source vector is degenerate (all-zero — happens occasionally
+        # with EffNet on silent intros / sub-1s clips), return None rather than
+        # base64-encoding the zero vector. Storing zeros silently breaks FAISS
+        # and ~36% of our library went invisible to similarity search. (#42)
         norm = float(np.linalg.norm(vec))
-        if norm > 1e-8:
-            vec = vec / norm
+        if norm < 1e-8:
+            logger.debug("Embedding is degenerate (zero norm); returning None")
+            return None
+        vec = vec / norm
 
         return base64.b64encode(vec.astype(np.float32).tobytes()).decode("ascii")
 
