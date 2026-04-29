@@ -17,7 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from app.core.config import settings
 from app.db.session import get_session
 from app.main import app
-from app.models.db import Base
+from app.models.db import Base, TrackFeatures
 
 # Use in-memory SQLite for tests
 TEST_DB_URL = "sqlite+aiosqlite:///:memory:"
@@ -45,6 +45,22 @@ async def setup_db():
     async with _test_engine.begin() as conn:
         await conn.run_sync(Base.metadata.drop_all)
     app.dependency_overrides.clear()
+
+
+@pytest_asyncio.fixture(autouse=True)
+async def _seed_test_tracks(setup_db):
+    # Post-#37 ingest drops events whose track_id resolves to no
+    # TrackFeatures row, so every placeholder used in this file needs a stub.
+    track_ids = [
+        "track-001", "track-002", "track-003",
+        "track-rich", "track-ctx", "track-imp", "track-old", "track-xyz",
+        "t1", "t2", "t-req",
+    ]
+    track_ids.extend(f"track-{i:03d}" for i in range(10))
+    async with _TestSession() as session:
+        for tid in track_ids:
+            session.add(TrackFeatures(track_id=tid, file_path=f"/music/{tid}.mp3"))
+        await session.commit()
 
 
 @pytest_asyncio.fixture
