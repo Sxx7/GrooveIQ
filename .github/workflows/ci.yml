@@ -48,6 +48,15 @@ jobs:
       SECRET_KEY: ci-secret-not-real
       DATABASE_URL: sqlite+aiosqlite:///test.db
       DISABLE_AUTH: 'true'
+      # Tests that exercise /v1/recommend trigger fire-and-forget audit
+      # writes via asyncio.create_task. Those tasks open their own
+      # AsyncSessionLocal session pointing at DATABASE_URL above, which
+      # is a separate engine from the test fixture's in-memory engine,
+      # so the table doesn't exist there and the task logs an ERROR.
+      # The audit code path is exercised explicitly in tests/test_reco_audit.py
+      # via monkeypatch, so flipping the master switch here just silences
+      # incidental noise from unrelated tests.
+      RECO_AUDIT_ENABLED: 'false'
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-python@v6
