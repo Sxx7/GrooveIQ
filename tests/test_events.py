@@ -52,9 +52,17 @@ async def _seed_test_tracks(setup_db):
     # Post-#37 ingest drops events whose track_id resolves to no
     # TrackFeatures row, so every placeholder used in this file needs a stub.
     track_ids = [
-        "track-001", "track-002", "track-003",
-        "track-rich", "track-ctx", "track-imp", "track-old", "track-xyz",
-        "t1", "t2", "t-req",
+        "track-001",
+        "track-002",
+        "track-003",
+        "track-rich",
+        "track-ctx",
+        "track-imp",
+        "track-old",
+        "track-xyz",
+        "t1",
+        "t2",
+        "t-req",
     ]
     track_ids.extend(f"track-{i:03d}" for i in range(10))
     async with _TestSession() as session:

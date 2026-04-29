@@ -62,9 +62,7 @@ async def test_failure_marker_persisted_for_too_short_track():
         await session.commit()
 
         row = (
-            await session.execute(
-                select(TrackFeatures).where(TrackFeatures.file_path == failure_result["file_path"])
-            )
+            await session.execute(select(TrackFeatures).where(TrackFeatures.file_path == failure_result["file_path"]))
         ).scalar_one()
 
     assert row.analysis_error == "Track too short (<10 s)"
