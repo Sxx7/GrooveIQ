@@ -51,20 +51,12 @@ async def setup_db():
 async def _seed_test_tracks(setup_db):
     # Post-#37 ingest drops events whose track_id resolves to no
     # TrackFeatures row, so every placeholder used in this file needs a stub.
-    track_ids = [
-        "track-001",
-        "track-002",
-        "track-003",
-        "track-rich",
-        "track-ctx",
-        "track-imp",
-        "track-old",
-        "track-xyz",
-        "t1",
-        "t2",
-        "t-req",
-    ]
-    track_ids.extend(f"track-{i:03d}" for i in range(10))
+    # range(10) covers track-000 .. track-009 (used by the batch test); the
+    # bespoke names (track-rich / t1 / etc.) are added separately. Use a set
+    # so overlap with the range — track-001 / -002 / -003 — doesn't trip
+    # the UNIQUE constraint on track_features.track_id.
+    track_ids = {f"track-{i:03d}" for i in range(10)}
+    track_ids.update({"track-rich", "track-ctx", "track-imp", "track-old", "track-xyz", "t1", "t2", "t-req"})
     async with _TestSession() as session:
         for tid in track_ids:
             session.add(TrackFeatures(track_id=tid, file_path=f"/music/{tid}.mp3"))
