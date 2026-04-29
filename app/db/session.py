@@ -113,6 +113,8 @@ async def _apply_column_migrations(conn) -> None:
         ("track_features", "tidal_id", "VARCHAR(64)"),
         ("track_features", "deezer_id", "VARCHAR(64)"),
         ("track_features", "soundcloud_id", "VARCHAR(64)"),
+        # Bitstream pre-flight validation marker (issue #32)
+        ("track_features", "bitstream_validated_at", "INTEGER"),
     ]
     for table, column, col_type in migrations:
         # Validate identifiers to prevent SQL injection via migration list.
