@@ -186,7 +186,6 @@ async def trigger_pipeline(
     description="Truncates sessions, interactions, and taste profiles, then reruns the full pipeline from raw events.",
 )
 async def reset_pipeline(
-    session: AsyncSession = Depends(get_session),
     _key: str = Depends(require_api_key),
 ):
     require_admin(_key)
@@ -195,18 +194,27 @@ async def reset_pipeline(
     from sqlalchemy import delete, update
 
     from app.core.audit import audit_log
+    from app.db.session import AsyncSessionLocal
+    from app.services.pipeline_state import get_current_run
     from app.workers.scheduler import run_recommendation_pipeline_now
 
     audit_log("pipeline_reset", api_key=_key)
 
-    # Clear derived data
-    await session.execute(delete(TrackInteraction))
-    await session.execute(delete(ListenSession))
-    await session.execute(update(User).values(taste_profile=None, profile_updated_at=None))
-    await session.commit()
+    # Refuse if a pipeline is mid-flight: the in-flight sessionizer would
+    # race the truncate and reinsert rows whose session_keys then collide
+    # with the rebuild's inserts (issue #39).
+    if get_current_run():
+        return {"message": "Pipeline already running; wait for it to finish before resetting", "status": "running"}
 
-    # Rebuild from scratch
-    asyncio.create_task(run_recommendation_pipeline_now(trigger="manual"))
+    async def _truncate_and_rebuild():
+        async with AsyncSessionLocal() as s:
+            await s.execute(delete(TrackInteraction))
+            await s.execute(delete(ListenSession))
+            await s.execute(update(User).values(taste_profile=None, profile_updated_at=None))
+            await s.commit()
+        await run_recommendation_pipeline_now(trigger="manual")
+
+    asyncio.create_task(_truncate_and_rebuild())
     return {"message": "Pipeline reset and rebuild started", "status": "running"}
 
 
