@@ -9,12 +9,16 @@
         // Render the shell scaffold first so the router has a #page-root to populate.
         GIQ.shell.init();
 
-        // If no key, validate (it'll just be /health without auth) so we know the
-        // server is reachable; this also catches a server-down case at boot.
+        // Start activity polling immediately — it gracefully no-ops without a key.
+        if (GIQ.activity?.start) GIQ.activity.start();
+
+        // If a key is already present, validate it and kick off SSE + activity.
         if (GIQ.state.apiKey) {
             GIQ.api.validateKey().then(ok => {
                 GIQ.state.apiKeyValid = ok;
                 GIQ.shell.renderSidebar();
+                if (ok && GIQ.sse?.connect) GIQ.sse.connect();
+                if (GIQ.activity?.refresh) GIQ.activity.refresh();
             });
         }
 

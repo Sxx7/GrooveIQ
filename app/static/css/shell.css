@@ -218,7 +218,7 @@
 .sidebar.collapsed .activity-pill-body,
 .sidebar.collapsed .activity-pill-chevron { display: none; }
 .sidebar.collapsed .activity-pill::after {
-    content: '3';
+    content: attr(data-count);
     font-size: 9px;
     color: var(--accent);
     font-weight: 600;

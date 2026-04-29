@@ -61,13 +61,13 @@
         // Spacer
         html += '<div class="sidebar-spacer"></div>';
 
-        // Activity pill (placeholder — content wired in session 02+)
-        html += '<button class="activity-pill" data-action="activity-pill" aria-label="Activity">'
-            + '<span class="pulse-dot"></span>';
+        // Activity pill — content driven by GIQ.activity (session 02+)
+        html += '<button class="activity-pill idle" data-count="0" aria-label="Activity">'
+            + '<span class="idle-dot"></span>';
         if (!collapsed) {
             html += '<div class="activity-pill-body">'
-                + '<div class="activity-pill-title">3 active</div>'
-                + '<div class="activity-pill-sub">pipeline · scan · 2 dl</div>'
+                + '<div class="activity-pill-title">idle</div>'
+                + '<div class="activity-pill-sub">no active jobs</div>'
                 + '</div>'
                 + '<span class="activity-pill-chevron">▾</span>';
         }
@@ -85,6 +85,7 @@
 
         aside.innerHTML = html;
         wireSidebar(aside);
+        if (GIQ.activity?.rebind) GIQ.activity.rebind();
     }
 
     function renderApiKeyBlock() {
@@ -121,9 +122,6 @@
             saveCollapsed(false);
             renderSidebar();
         });
-        aside.querySelector('[data-action="activity-pill"]')?.addEventListener('click', () => {
-            GIQ.toast('Activity popover — wired in session 02', 'info');
-        });
         aside.querySelector('[data-action="search"]')?.addEventListener('click', () => {
             GIQ.toast('Search palette — planned (⌘K)', 'info');
         });
@@ -135,6 +133,8 @@
                 if (!k) {
                     GIQ.apiKey.clear();
                     GIQ.state.apiKeyValid = false;
+                    if (GIQ.sse?.disconnect) GIQ.sse.disconnect();
+                    if (GIQ.activity?.refresh) GIQ.activity.refresh();
                     GIQ.toast('API key cleared', 'info');
                     renderSidebar();
                     GIQ.router.dispatch();
@@ -149,8 +149,11 @@
                 btn.textContent = 'Connect';
                 if (ok) {
                     GIQ.toast('Connected', 'success');
+                    if (GIQ.sse?.connect) GIQ.sse.connect();
+                    if (GIQ.activity?.refresh) GIQ.activity.refresh();
                 } else {
                     GIQ.toast('Health check failed — server unreachable or down', 'error');
+                    if (GIQ.sse?.disconnect) GIQ.sse.disconnect();
                 }
                 renderSidebar();
                 GIQ.router.dispatch();
