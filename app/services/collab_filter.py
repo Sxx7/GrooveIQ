@@ -160,6 +160,7 @@ def _save_model(model, user_map, user_ids, track_map, track_ids, matrix) -> str 
         version = str(int(time.time()))
         path = model_dir / f"cf_als_{version}.pkl"
         with open(path, "wb") as f:
+            # nosemgrep: python.lang.security.deserialization.pickle.avoid-pickle
             pickle.dump(
                 {
                     "model": model,
@@ -196,7 +197,8 @@ def load_latest() -> bool:
         import pickle
 
         with open(path, "rb") as f:
-            bundle = pickle.load(f)
+            # nosemgrep: python.lang.security.deserialization.pickle.avoid-pickle
+            bundle = pickle.load(f)  # noqa: S301 - trusted local model artefact
     except Exception as e:
         logger.warning(f"CF load_latest failed for {path}: {e}")
         return False
@@ -211,8 +213,7 @@ def load_latest() -> bool:
         _interaction_matrix = bundle["matrix"]
 
     logger.info(
-        f"CF loaded from disk: {path.name} "
-        f"({len(bundle['user_ids'])} users, {len(bundle['track_ids'])} tracks)"
+        f"CF loaded from disk: {path.name} ({len(bundle['user_ids'])} users, {len(bundle['track_ids'])} tracks)"
     )
     return True
 

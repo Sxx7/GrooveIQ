@@ -40,7 +40,8 @@ async def _resolve_track_id(session: AsyncSession, supplied: str) -> str | None:
     the event with a 400, since attribution is impossible.
     """
     result = await session.execute(
-        select(TrackFeatures.track_id).where(
+        select(TrackFeatures.track_id)
+        .where(
             or_(
                 TrackFeatures.track_id == supplied,
                 TrackFeatures.media_server_id == supplied,
@@ -51,7 +52,8 @@ async def _resolve_track_id(session: AsyncSession, supplied: str) -> str | None:
                 TrackFeatures.soundcloud_id == supplied,
                 TrackFeatures.musicbrainz_track_id == supplied,
             )
-        ).limit(1)
+        )
+        .limit(1)
     )
     return result.scalar_one_or_none()
 

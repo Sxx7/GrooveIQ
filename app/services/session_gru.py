@@ -332,6 +332,7 @@ def _save_model(model, user_predictions, track_embs) -> str | None:
         version = str(int(time.time()))
         path = model_dir / f"session_gru_{version}.pkl"
         with open(path, "wb") as f:
+            # nosemgrep: python.lang.security.deserialization.pickle.avoid-pickle
             pickle.dump(
                 {
                     "model": model,
@@ -369,7 +370,8 @@ def load_latest() -> bool:
         import pickle
 
         with open(path, "rb") as f:
-            bundle = pickle.load(f)
+            # nosemgrep: python.lang.security.deserialization.pickle.avoid-pickle
+            bundle = pickle.load(f)  # noqa: S301 - trusted local model artefact
     except Exception as e:
         logger.warning(f"Session GRU load_latest failed for {path}: {e}")
         return False

@@ -202,7 +202,7 @@ class AnalysisWorkerPool:
 
         try:
             return await asyncio.wait_for(future, timeout=settings.ANALYSIS_TIMEOUT)
-        except (TimeoutError, asyncio.TimeoutError):
+        except TimeoutError:
             self._pending.pop(request_id, None)
             self._kill_worker_holding(request_id, settings.ANALYSIS_TIMEOUT)
             return {
