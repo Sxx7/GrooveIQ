@@ -242,10 +242,13 @@ def _build_session_row(user_id: str, events: list) -> dict | None:
     hour_of_day = first.hour_of_day
     day_of_week = first.day_of_week
 
-    # Session key: prefer client session_id, fall back to user:start_ts.
+    # Session key includes started_at so a sid reused across multi-day windows
+    # (split into N sub-sessions by the 24h gap rule) gets N distinct keys
+    # rather than colliding on the UNIQUE index. The sid-less branch already
+    # works this way; this matches it. (#38)
     session_id = first.session_id
     if session_id:
-        session_key = f"{user_id}:{session_id}"
+        session_key = f"{user_id}:{session_id}:{started_at}"
     else:
         session_key = f"{user_id}:ts:{started_at}"
 
