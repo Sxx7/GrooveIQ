@@ -1,4 +1,326 @@
-/* Shared components — populated from session 02 onwards.
- * Currently empty by design. Add panel, stat tile, LIVE badge etc.
- * here as new sessions need them.
+/* Shared components — populated in session 02.
+ * Stat tile · Panel · LIVE badge · Page header · Range toggle · Area chart
+ * · Activity popover overrides.
  */
+
+/* ── Page header ──────────────────────────────────────────────────── */
+
+.page-header {
+    padding: var(--page-pad-y) var(--page-pad-x) 16px;
+    display: flex;
+    align-items: flex-end;
+    justify-content: space-between;
+    gap: 16px;
+}
+.page-header .eyebrow { margin-bottom: 6px; }
+.page-header .page-title {
+    font-family: var(--display);
+    font-size: 26px;
+    font-weight: 600;
+    letter-spacing: -0.02em;
+    color: var(--ink);
+    margin: 0;
+}
+.page-header-right {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-shrink: 0;
+}
+
+/* ── Range toggle ─────────────────────────────────────────────────── */
+
+.range-toggle {
+    display: flex;
+    gap: 2px;
+    background: var(--paper);
+    border-radius: 7px;
+    padding: 2px;
+    border: 1px solid var(--line-faint);
+}
+.range-toggle-btn {
+    padding: 4px 12px;
+    font-size: 11px;
+    background: transparent;
+    color: var(--ink-3);
+    border: none;
+    border-radius: 5px;
+    cursor: pointer;
+    font-weight: 400;
+    font-family: inherit;
+    line-height: 1.2;
+}
+.range-toggle-btn:hover { color: var(--ink-2); }
+.range-toggle-btn.active {
+    background: var(--paper-2);
+    color: var(--ink);
+    font-weight: 600;
+}
+
+.last-update {
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--ink-3);
+}
+
+/* ── Stat tile ────────────────────────────────────────────────────── */
+
+.stat-tile {
+    background: var(--paper);
+    border: 1px solid var(--line-faint);
+    border-radius: var(--r-panel);
+    padding: var(--tile-pad-y) var(--tile-pad-x);
+    min-width: 0;
+}
+.stat-tile .eyebrow { margin-bottom: 8px; }
+.stat-value {
+    font-family: var(--display);
+    font-size: 22px;
+    font-weight: 600;
+    letter-spacing: -0.02em;
+    color: var(--ink);
+    line-height: 1.1;
+    margin-bottom: 4px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.stat-delta {
+    font-size: 11px;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    line-height: 1.2;
+    min-height: 14px;
+}
+.stat-delta.delta-good { color: var(--accent); }
+.stat-delta.delta-bad { color: var(--wine); }
+.stat-delta.delta-flat { color: var(--ink-3); }
+.stat-arrow { line-height: 1; }
+
+/* ── Panel ────────────────────────────────────────────────────────── */
+
+.panel {
+    background: var(--paper);
+    border: 1px solid var(--line-faint);
+    border-radius: var(--r-panel);
+    padding: var(--panel-pad);
+    min-width: 0;
+}
+.panel-head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 10px;
+    margin-bottom: 12px;
+}
+.panel-head-left { min-width: 0; flex: 1; }
+.panel-title-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+.panel-title {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--ink);
+}
+.panel-sub {
+    font-family: var(--mono);
+    font-size: 10px;
+    color: var(--ink-3);
+    margin-top: 3px;
+    letter-spacing: 0.04em;
+}
+.panel-action {
+    font-size: 11px;
+    color: var(--accent);
+    font-weight: 500;
+    background: none;
+    border: none;
+    padding: 0;
+    cursor: pointer;
+    font-family: inherit;
+    flex-shrink: 0;
+    text-decoration: none;
+}
+.panel-action:hover { filter: brightness(1.15); }
+.panel-body { min-width: 0; }
+
+/* ── LIVE badge ───────────────────────────────────────────────────── */
+
+.live-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    background: rgba(168, 135, 206, 0.16);
+    color: var(--accent);
+    font-family: var(--mono);
+    font-size: 8px;
+    font-weight: 700;
+    letter-spacing: 0.1em;
+    padding: 2px 6px;
+    border-radius: 3px;
+}
+.live-badge .live-dot {
+    width: 5px;
+    height: 5px;
+    border-radius: 50%;
+    background: var(--accent);
+    display: inline-block;
+}
+
+/* ── Area chart ───────────────────────────────────────────────────── */
+
+.area-chart { width: 100%; }
+.area-chart-svg {
+    display: block;
+    width: 100%;
+    height: 180px;
+}
+.area-chart-axis {
+    display: flex;
+    justify-content: space-between;
+    font-family: var(--mono);
+    font-size: 9px;
+    color: var(--ink-3);
+    margin-top: 6px;
+}
+.area-chart-legend {
+    display: flex;
+    gap: 14px;
+    margin-top: 8px;
+    font-size: 11px;
+    color: var(--ink-2);
+}
+.area-chart-legend-item {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+}
+.area-chart-legend-swatch {
+    width: 8px;
+    height: 8px;
+    border-radius: 2px;
+    display: inline-block;
+}
+.chart-empty {
+    height: 180px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--ink-3);
+    font-size: 12px;
+    font-family: var(--mono);
+}
+
+/* ── Activity pill (idle / count states) ──────────────────────────── */
+
+.activity-pill .idle-dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--ink-3);
+    flex-shrink: 0;
+    display: inline-block;
+}
+.activity-pill.idle {
+    background: rgba(236, 232, 242, 0.04);
+    border-color: var(--line-faint);
+}
+.sidebar.collapsed .activity-pill::after {
+    content: attr(data-count);
+}
+.activity-pill.idle.activity-pill::after,
+.sidebar.collapsed .activity-pill.idle::after {
+    color: var(--ink-3);
+}
+
+/* ── Activity popover ─────────────────────────────────────────────── */
+
+.activity-popover {
+    background: var(--paper);
+    border: 1px solid var(--line-soft);
+    border-radius: 10px;
+    box-shadow: 0 12px 32px rgba(0, 0, 0, 0.35);
+    z-index: 1100;
+    overflow: hidden;
+    font-size: 12px;
+    max-height: 70vh;
+    display: flex;
+    flex-direction: column;
+}
+.activity-popover-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--line-faint);
+}
+.activity-popover-title {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--ink);
+}
+.activity-popover-close {
+    background: none;
+    border: none;
+    color: var(--ink-3);
+    font-size: 16px;
+    line-height: 1;
+    cursor: pointer;
+    padding: 0;
+}
+.activity-popover-close:hover { color: var(--ink); }
+.activity-popover-empty {
+    padding: 16px 12px;
+    color: var(--ink-3);
+    font-size: 11px;
+    text-align: center;
+}
+.activity-popover-list {
+    overflow: auto;
+}
+.activity-popover-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--line-faint);
+    color: var(--ink);
+    text-decoration: none;
+}
+.activity-popover-row:last-child { border-bottom: none; }
+.activity-popover-row:hover { background: rgba(168, 135, 206, 0.08); }
+.activity-popover-icon {
+    width: 22px;
+    height: 22px;
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--paper-2);
+    border-radius: 5px;
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--accent);
+}
+.activity-popover-row-body { flex: 1; min-width: 0; }
+.activity-popover-row-title {
+    font-size: 12px;
+    font-weight: 500;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+.activity-popover-row-sub {
+    font-family: var(--mono);
+    font-size: 10px;
+    color: var(--ink-3);
+    margin-top: 2px;
+}
+.activity-popover-arrow {
+    font-size: 11px;
+    color: var(--accent);
+    flex-shrink: 0;
+}
