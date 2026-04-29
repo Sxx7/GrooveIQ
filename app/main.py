@@ -84,6 +84,19 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"FAISS index build failed on startup: {e}")
 
+    # Warm in-memory model singletons from disk so recommendations don't
+    # collapse to defaults for up to ~1h after restart while we wait for the
+    # next scheduled pipeline tick. (#43)
+    from app.services import collab_filter, ranker, sasrec, session_embeddings, session_gru
+
+    for mod in (ranker, collab_filter, session_embeddings, sasrec, session_gru):
+        try:
+            loaded = mod.load_latest()
+            if not loaded:
+                logger.info(f"{mod.__name__}: no saved model on disk to warm.")
+        except Exception as e:
+            logger.warning(f"{mod.__name__} load_latest failed on startup: {e}")
+
     await start_scheduler()
     yield
     logger.info("GrooveIQ shutting down...")

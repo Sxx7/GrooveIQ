@@ -13,7 +13,10 @@ and exposed as a module-level singleton for fast similarity lookups.
 from __future__ import annotations
 
 import logging
+import os
 import threading
+import time
+from pathlib import Path
 
 import numpy as np
 from sqlalchemy import select
@@ -28,6 +31,8 @@ logger = logging.getLogger(__name__)
 _lock = threading.Lock()
 _model: object | None = None  # gensim Word2Vec
 _track_ids: list[str] = []  # tracks in the model vocabulary
+
+_MODEL_DIR = os.environ.get("GROOVEIQ_MODEL_DIR", "/data/models")
 
 
 async def _load_session_sequences() -> list[list[str]]:
@@ -143,6 +148,8 @@ async def train() -> dict:
         _model = model
         _track_ids = list(model.wv.index_to_key)
 
+    _save_model(model)
+
     logger.info(f"Session embeddings trained: {len(sequences)} sessions, {vocab_size} tracks in vocabulary.")
 
     return {
@@ -151,6 +158,53 @@ async def train() -> dict:
         "vocab_size": vocab_size,
         "embedding_dim": cfg.embedding_dim,
     }
+
+
+def _save_model(model) -> str | None:
+    """Persist the Word2Vec model via its built-in serializer so the next
+    process boot can warm the singleton without retraining. (#43)"""
+    try:
+        model_dir = Path(_MODEL_DIR)
+        model_dir.mkdir(parents=True, exist_ok=True)
+        version = str(int(time.time()))
+        path = model_dir / f"word2vec_sessions_{version}.model"
+        model.save(str(path))
+        logger.info(f"Session embeddings saved: {path}")
+        return str(path)
+    except Exception as e:
+        logger.warning(f"Could not save session embeddings to disk: {e}")
+        return None
+
+
+def load_latest() -> bool:
+    """Load the most recent Word2Vec model from ``_MODEL_DIR``. Returns True
+    on success, False if no file exists or loading fails. (#43)"""
+    model_dir = Path(_MODEL_DIR)
+    if not model_dir.exists():
+        return False
+
+    candidates = sorted(
+        model_dir.glob("word2vec_sessions_*.model"), key=lambda p: p.stat().st_mtime, reverse=True
+    )
+    if not candidates:
+        return False
+
+    path = candidates[0]
+    try:
+        from gensim.models import Word2Vec
+
+        model = Word2Vec.load(str(path))
+    except Exception as e:
+        logger.warning(f"Session embeddings load_latest failed for {path}: {e}")
+        return False
+
+    with _lock:
+        global _model, _track_ids
+        _model = model
+        _track_ids = list(model.wv.index_to_key)
+
+    logger.info(f"Session embeddings loaded from disk: {path.name} ({len(model.wv)} tracks)")
+    return True
 
 
 def get_similar_tracks(
