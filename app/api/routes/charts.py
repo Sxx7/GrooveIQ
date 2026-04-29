@@ -106,6 +106,50 @@ async def list_charts(
 
 
 @router.get(
+    "/charts/stats",
+    summary="Chart statistics",
+    description="Returns summary stats about stored charts: total entries, library match rate, last build time.",
+)
+async def chart_stats(
+    session: AsyncSession = Depends(get_session),
+    _key: str = Depends(require_api_key),
+):
+    total = (await session.execute(select(func.count()).select_from(ChartEntry))).scalar() or 0
+
+    matched = (
+        await session.execute(
+            select(func.count()).select_from(ChartEntry).where(ChartEntry.matched_track_id.isnot(None))
+        )
+    ).scalar() or 0
+
+    last_fetch = (await session.execute(select(func.max(ChartEntry.fetched_at)))).scalar()
+
+    chart_count = (
+        await session.execute(
+            select(func.count()).select_from(
+                select(ChartEntry.chart_type, ChartEntry.scope)
+                .group_by(ChartEntry.chart_type, ChartEntry.scope)
+                .subquery()
+            )
+        )
+    ).scalar() or 0
+
+    from app.core.config import settings as _settings
+    from app.workers.scheduler import get_job_next_run
+
+    return {
+        "total_entries": total,
+        "library_matches": matched,
+        "match_rate": round(matched / total, 3) if total > 0 else 0,
+        "chart_count": chart_count,
+        "last_fetched_at": last_fetch,
+        "auto_rebuild_enabled": bool(_settings.charts_enabled),
+        "interval_hours": _settings.CHARTS_INTERVAL_HOURS,
+        "next_run_at": get_job_next_run("charts_build"),
+    }
+
+
+@router.get(
     "/charts/{chart_type}",
     summary="Get chart entries",
     description="""
@@ -375,48 +419,4 @@ async def download_chart_track(
         "spotify_id": result.get("spotify_id", ""),
         "matched_artist": result.get("matched_artist", ""),
         "matched_title": result.get("matched_title", ""),
-    }
-
-
-@router.get(
-    "/charts/stats",
-    summary="Chart statistics",
-    description="Returns summary stats about stored charts: total entries, library match rate, last build time.",
-)
-async def chart_stats(
-    session: AsyncSession = Depends(get_session),
-    _key: str = Depends(require_api_key),
-):
-    total = (await session.execute(select(func.count()).select_from(ChartEntry))).scalar() or 0
-
-    matched = (
-        await session.execute(
-            select(func.count()).select_from(ChartEntry).where(ChartEntry.matched_track_id.isnot(None))
-        )
-    ).scalar() or 0
-
-    last_fetch = (await session.execute(select(func.max(ChartEntry.fetched_at)))).scalar()
-
-    chart_count = (
-        await session.execute(
-            select(func.count()).select_from(
-                select(ChartEntry.chart_type, ChartEntry.scope)
-                .group_by(ChartEntry.chart_type, ChartEntry.scope)
-                .subquery()
-            )
-        )
-    ).scalar() or 0
-
-    from app.core.config import settings as _settings
-    from app.workers.scheduler import get_job_next_run
-
-    return {
-        "total_entries": total,
-        "library_matches": matched,
-        "match_rate": round(matched / total, 3) if total > 0 else 0,
-        "chart_count": chart_count,
-        "last_fetched_at": last_fetch,
-        "auto_rebuild_enabled": bool(_settings.charts_enabled),
-        "interval_hours": _settings.CHARTS_INTERVAL_HOURS,
-        "next_run_at": get_job_next_run("charts_build"),
     }
