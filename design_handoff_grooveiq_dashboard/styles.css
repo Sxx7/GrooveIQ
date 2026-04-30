@@ -1,0 +1,262 @@
+/* GrooveIQ wireframes — sketchy + clean, b&w + 2-3 accents, dark/light */
+
+:root {
+  /* light mode — lavender + wine on warm off-white, derived from user palette */
+  --bg: #f3f0f5;
+  --paper: #ffffff;
+  --paper-2: #f7f5f9;
+  --ink: #171821;
+  --ink-2: #4d3e50;
+  --ink-3: #7b6e7f;
+  --ink-4: #c4bcc8;
+  --line: #292631;
+  --line-soft: rgba(41,38,49,0.18);
+  --line-faint: rgba(41,38,49,0.08);
+  --grid: rgba(41,38,49,0.045);
+  --accent: #a887ce;
+  --accent-soft: #ece2f5;
+  --wine: #9c526d;
+  --wine-soft: #f1dde4;
+  --good: #a887ce;
+  --good-soft: #ece2f5;
+  --warn: #9c526d;
+  --warn-soft: #f1dde4;
+  --bad: #9c526d;
+  --bad-soft: #f1dde4;
+
+  --hand: 'Caveat', 'Patrick Hand', 'Comic Sans MS', cursive;
+  --display: 'Inter Tight', 'Inter', system-ui, -apple-system, sans-serif;
+  --body: 'Inter', system-ui, -apple-system, sans-serif;
+  --mono: 'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+}
+
+[data-theme="dark"] {
+  /* dark mode — exact hex from user screenshot */
+  --bg: #171821;        /* deepest — page background */
+  --paper: #292631;     /* card / panel surface */
+  --paper-2: #4d3e50;   /* elevated surface, hover */
+  --ink: #ece8f2;
+  --ink-2: #b8b0c4;
+  --ink-3: #7b6e7f;     /* muted mauve-grey from palette */
+  --ink-4: #4d3e50;
+  --line: #ece8f2;
+  --line-soft: rgba(236,232,242,0.14);
+  --line-faint: rgba(236,232,242,0.06);
+  --grid: rgba(236,232,242,0.04);
+  --accent: #a887ce;       /* lavender — primary */
+  --accent-soft: rgba(168,135,206,0.18);
+  --wine: #9c526d;         /* dusty wine — destructive / warning state */
+  --wine-soft: rgba(156,82,109,0.20);
+  --good: #a887ce;         /* re-use lavender for "ok" — restraint */
+  --good-soft: rgba(168,135,206,0.16);
+  --warn: #9c526d;
+  --warn-soft: rgba(156,82,109,0.18);
+  --bad: #9c526d;
+  --bad-soft: rgba(156,82,109,0.20);
+}
+
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; }
+body {
+  font-family: var(--body);
+  color: var(--ink);
+  background: var(--bg);
+  -webkit-font-smoothing: antialiased;
+  font-size: 14px;
+  line-height: 1.45;
+}
+
+/* ── Wireframe primitives ──────────────────────────────── */
+
+.wf {
+  background: var(--paper);
+  color: var(--ink);
+  border: 1.5px solid var(--line);
+  position: relative;
+}
+.wf-rounded { border-radius: 10px; }
+
+/* Sketchy scribble fill — for placeholders */
+.wf-scribble {
+  background-image: repeating-linear-gradient(
+    -45deg,
+    transparent 0 6px,
+    var(--line-soft) 6px 7px
+  );
+  border: 1.5px solid var(--line);
+}
+.wf-dotted { border-style: dashed !important; border-color: var(--line-soft) !important; }
+
+/* Hand-drawn label */
+.hand {
+  font-family: var(--hand);
+  font-weight: 500;
+  font-size: 18px;
+  line-height: 1.1;
+  color: var(--ink);
+}
+.hand-sm { font-size: 14px; }
+.hand-lg { font-size: 24px; }
+.hand-xl { font-size: 32px; }
+
+/* Margin / annotation arrows + notes */
+.note {
+  font-family: var(--hand);
+  color: var(--accent);
+  font-size: 16px;
+  line-height: 1.15;
+}
+.note-line {
+  stroke: var(--accent);
+  stroke-width: 1.5;
+  fill: none;
+  stroke-linecap: round;
+}
+
+/* Display / clean type */
+.display { font-family: var(--display); font-weight: 600; letter-spacing: -0.01em; }
+.mono { font-family: var(--mono); font-size: 12px; }
+.eyebrow {
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+}
+
+/* Pills / chips */
+.chip {
+  display: inline-flex; align-items: center; gap: 6px;
+  border: 1.25px solid var(--line);
+  border-radius: 999px;
+  padding: 3px 10px;
+  font-size: 12px;
+  background: var(--paper);
+}
+.chip.ghost { border-style: dashed; color: var(--ink-3); border-color: var(--line-soft); }
+.chip.solid { background: var(--ink); color: var(--paper); border-color: var(--ink); }
+.chip.accent { background: var(--accent); color: white; border-color: var(--accent); }
+.chip.good   { background: var(--good-soft); color: var(--good); border-color: var(--good); }
+.chip.warn   { background: var(--warn-soft); color: var(--warn); border-color: var(--warn); }
+.chip.bad    { background: var(--bad-soft); color: var(--bad); border-color: var(--bad); }
+
+/* Buttons */
+.btn {
+  display: inline-flex; align-items: center; gap: 6px;
+  border: 1.5px solid var(--line);
+  background: var(--paper);
+  color: var(--ink);
+  padding: 7px 14px;
+  border-radius: 8px;
+  font-family: var(--body);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+}
+.btn.primary { background: var(--ink); color: var(--paper); }
+.btn.accent  { background: var(--accent); color: white; border-color: var(--accent); }
+.btn.ghost   { border-style: dashed; color: var(--ink-2); }
+.btn.sm { padding: 4px 10px; font-size: 12px; border-radius: 6px; }
+
+/* Status dots */
+.dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--ink-3); flex-shrink: 0; }
+.dot.good { background: var(--good); }
+.dot.warn { background: var(--warn); }
+.dot.bad { background: var(--bad); }
+.dot.live { background: var(--accent); animation: pulse 1.6s ease-in-out infinite; }
+@keyframes pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.5; transform: scale(1.3); }
+}
+
+/* Sketchy underline (for headers) */
+.uline {
+  position: relative; padding-bottom: 4px;
+}
+.uline::after {
+  content: ''; position: absolute; left: 0; right: 0; bottom: 0;
+  height: 4px;
+  background: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 4' preserveAspectRatio='none'><path d='M 0,2 Q 12,0 24,2 T 48,2 T 72,2 T 100,2' fill='none' stroke='%23c96442' stroke-width='1.5' stroke-linecap='round'/></svg>") repeat-x;
+  background-size: 100px 4px;
+}
+
+/* Sketchy box helper - rougher edges via SVG filter */
+.rough {
+  /* applied via parent svg filter */
+}
+
+/* Layout helpers */
+.row { display: flex; align-items: center; gap: 8px; }
+.col { display: flex; flex-direction: column; gap: 8px; }
+.between { justify-content: space-between; }
+.center { justify-content: center; align-items: center; }
+.stretch { align-items: stretch; }
+.gap-2 { gap: 4px; } .gap-3 { gap: 8px; } .gap-4 { gap: 12px; } .gap-5 { gap: 16px; } .gap-6 { gap: 24px; }
+.grow { flex: 1; }
+
+/* Bar chart — sketchy */
+.bar { background: var(--ink); height: 100%; border-radius: 2px 2px 0 0; }
+.bar.dim { background: var(--line-soft); }
+.bar.accent { background: var(--accent); }
+
+/* Sparkline */
+.spark { stroke: var(--ink); stroke-width: 1.5; fill: none; }
+.spark-fill { fill: var(--line-faint); stroke: none; }
+
+/* Margin annotations container */
+.annot { position: absolute; }
+
+/* Sketchy connector arrow (for nav diagrams) */
+.connector { stroke: var(--accent); stroke-width: 1.5; fill: none; }
+.connector-head { fill: var(--accent); }
+
+/* Caption above each artboard */
+.artboard-caption {
+  font-family: var(--display);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ink-2);
+  letter-spacing: 0.02em;
+  margin-bottom: 6px;
+}
+.artboard-caption .num {
+  display: inline-block;
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--ink-3);
+  margin-right: 6px;
+  border: 1px solid var(--line-soft);
+  padding: 1px 5px;
+  border-radius: 4px;
+}
+
+/* Section titles on the canvas */
+.canvas-section-title {
+  font-family: var(--hand);
+  font-size: 32px;
+  color: var(--ink);
+}
+.canvas-section-sub {
+  font-family: var(--display);
+  font-size: 14px;
+  color: var(--ink-3);
+  font-weight: 400;
+}
+
+/* Frame chrome — fakes a browser/app window */
+.frame {
+  background: var(--paper);
+  border: 1.5px solid var(--line);
+  border-radius: 10px;
+  overflow: hidden;
+}
+.frame-bar {
+  display: flex; align-items: center; gap: 8px;
+  padding: 8px 12px;
+  border-bottom: 1.5px solid var(--line);
+  background: var(--bg);
+}
+.frame-dot { width: 9px; height: 9px; border-radius: 50%; border: 1.25px solid var(--line); }
+
+/* Tweaks panel branding overrides */
+.tweaks-panel-host { font-family: var(--body) !important; }
