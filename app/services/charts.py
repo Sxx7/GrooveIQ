@@ -679,6 +679,7 @@ async def _build_track_chart(
                 listeners=listeners,
                 image_url=image_url,
                 matched_track_id=matched_track_id,
+                in_library=matched_track_id is not None,
                 fetched_at=now,
             )
         )

@@ -1014,6 +1014,20 @@
         body.className = 'mm-body';
         root.appendChild(body);
 
+        const explainer = document.createElement('div');
+        explainer.className = 'mm-explainer';
+        explainer.innerHTML = ''
+            + '<strong>What is this?</strong> Each dot is a track in your library. '
+            + 'Their position is a UMAP projection of the 64-dim audio embedding GrooveIQ '
+            + 'computes during analysis — so dots near each other <em>sound similar</em>, '
+            + 'even when their genre tags or BPM differ. '
+            + '<strong>Color</strong> overlays one audio dimension on top (Energy, Mood, …); '
+            + 'switching it just repaints, the layout itself doesn\'t move. '
+            + '<strong>How to use it:</strong> click any track to pin it as <em>A</em>, '
+            + 'then click another to pin <em>B</em> and build a Song Path playlist that '
+            + 'sonically interpolates from A → B.';
+        body.appendChild(explainer);
+
         // CSS handles the visibility toggle at <700px. Always insert.
         const notice = document.createElement('div');
         notice.className = 'mm-mobile-notice';
@@ -2514,16 +2528,21 @@
 
         const cover = document.createElement('div');
         cover.className = 'artist-card-cover';
+        const fallbackLetter = (a.name || '').charAt(0).toUpperCase() || '?';
+        const useEmptyFallback = () => {
+            cover.innerHTML = '';
+            cover.classList.add('artist-card-cover-empty');
+            cover.textContent = fallbackLetter;
+        };
         if (a.image_url) {
             const img = document.createElement('img');
             img.src = a.image_url;
             img.alt = '';
             img.loading = 'lazy';
-            img.addEventListener('error', () => img.remove());
+            img.addEventListener('error', useEmptyFallback);
             cover.appendChild(img);
         } else {
-            cover.classList.add('artist-card-cover-empty');
-            cover.textContent = (a.name || '').charAt(0).toUpperCase() || '?';
+            useEmptyFallback();
         }
         card.appendChild(cover);
 
