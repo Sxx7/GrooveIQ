@@ -854,23 +854,31 @@ GIQ.components.versionedConfigShell = function versionedConfigShell(opts) {
         return parseFloat(value.toFixed(Math.max(decimals, 0)));
     }
 
-    /* Dotted-path nested getter / setter (used by structured configs). */
+    /* Dotted-path nested getter / setter (used by structured configs).
+     * Reject any segment that could traverse Object.prototype. */
+    const _UNSAFE_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
     function pathGet(obj, path) {
         if (!path || obj == null) return obj;
         const parts = String(path).split('.');
         let cur = obj;
         for (let i = 0; i < parts.length; i++) {
             if (cur == null) return undefined;
-            cur = cur[parts[i]];
+            const k = parts[i];
+            if (_UNSAFE_KEYS.has(k)) return undefined;
+            cur = cur[k];
         }
         return cur;
     }
     function pathSet(obj, path, value) {
         const parts = String(path).split('.');
+        for (const k of parts) {
+            if (_UNSAFE_KEYS.has(k)) return;
+        }
         let cur = obj;
         for (let i = 0; i < parts.length - 1; i++) {
-            if (cur[parts[i]] == null || typeof cur[parts[i]] !== 'object') cur[parts[i]] = {};
-            cur = cur[parts[i]];
+            const k = parts[i];
+            if (cur[k] == null || typeof cur[k] !== 'object') cur[k] = {};
+            cur = cur[k];
         }
         cur[parts[parts.length - 1]] = value;
     }
