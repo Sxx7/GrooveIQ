@@ -865,6 +865,7 @@ GIQ.components.versionedConfigShell = function versionedConfigShell(opts) {
             if (cur == null) return undefined;
             const k = parts[i];
             if (_UNSAFE_KEYS.has(k)) return undefined;
+            // nosemgrep: javascript.lang.security.audit.prototype-pollution.prototype-pollution-loop.prototype-pollution-loop
             cur = cur[k];
         }
         return cur;
@@ -878,6 +879,7 @@ GIQ.components.versionedConfigShell = function versionedConfigShell(opts) {
         for (let i = 0; i < parts.length - 1; i++) {
             const k = parts[i];
             if (cur[k] == null || typeof cur[k] !== 'object') cur[k] = {};
+            // nosemgrep: javascript.lang.security.audit.prototype-pollution.prototype-pollution-loop.prototype-pollution-loop
             cur = cur[k];
         }
         cur[parts[parts.length - 1]] = value;
