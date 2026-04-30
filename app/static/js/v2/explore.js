@@ -381,7 +381,7 @@
                 + '<div class="panel-sub">'
                 + (s.search ? 'matching “' + GIQ.fmt.esc(s.search) + '” · ' : '')
                 + s.total.toLocaleString() + ' total · sorted by '
-                + GIQ.fmt.esc(s.sortBy) + ' ' + (s.sortDir === 'asc' ? '↑' : '↓')
+                + GIQ.fmt.esc(s.sortBy) + ' ' + (s.sortDir === 'asc' ? '▲︎' : '▼︎')
                 + '</div></div>';
             tableHost.appendChild(head);
 

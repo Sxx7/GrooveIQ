@@ -28,6 +28,32 @@ from app.services.audio_analysis import ANALYSIS_VERSION
 router = APIRouter()
 
 
+def _library_coverage_payload(
+    *,
+    total_tracks: int,
+    files_found: int,
+    version_distribution: dict,
+    failed_files: list,
+) -> dict:
+    """Compose a coverage payload that never reports >100%.
+
+    `total_tracks` is the row count in `track_features` (all-time, may include
+    stale entries whose audio file is gone) and `files_found` is the count from
+    the most recent scan. When `total_tracks > files_found`, the difference is
+    surfaced as `stale_rows` and the coverage analyzed-count is clamped so the
+    UI percentage stays bounded to [0, 100].
+    """
+
+    stale_rows = max(0, total_tracks - files_found)
+    return {
+        "total_analyzed": min(total_tracks, files_found) if files_found else total_tracks,
+        "total_files": files_found,
+        "stale_rows": stale_rows,
+        "version_distribution": version_distribution,
+        "failed_files": failed_files,
+    }
+
+
 @router.get("/stats", summary="Aggregate stats for the dashboard")
 async def get_stats(
     session: AsyncSession = Depends(get_session),
@@ -148,12 +174,12 @@ async def get_stats(
         "top_tracks_24h": top_tracks,
         "latest_scan": latest_scan,
         "analysis_version": ANALYSIS_VERSION,
-        "library_coverage": {
-            "total_analyzed": total_tracks,
-            "total_files": scan_row.files_found if scan_row else 0,
-            "version_distribution": version_distribution,
-            "failed_files": failed_files,
-        },
+        "library_coverage": _library_coverage_payload(
+            total_tracks=total_tracks,
+            files_found=scan_row.files_found if scan_row else 0,
+            version_distribution=version_distribution,
+            failed_files=failed_files,
+        ),
     }
 
 
