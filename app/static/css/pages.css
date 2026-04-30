@@ -4443,3 +4443,132 @@
     .news-list { grid-template-columns: 1fr; }
     .radio-feedback-row { flex-wrap: wrap; }
 }
+
+/* ── Session 12 cross-cutting responsive pass ────────────────────── */
+
+/* 700–1099 px: shrink page padding, fold 6-col stat rows to 3-col,
+ * 2-col body grids to 1-col where the layout is vertical-friendly.
+ * The [class*="-body"] selector covers every page-body class
+ * (overview-body, ud-body, op-page-body, etc.) without an explicit
+ * enumeration. */
+@media (max-width: 1099px) {
+    #page-root [class$="-body"]:not(.panel-body):not(.modal-body):not(.vc-group-body) {
+        padding-left: 18px !important;
+        padding-right: 18px !important;
+    }
+    .overview-stat-row { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    .overview-grid,
+    .overview-twoup { grid-template-columns: 1fr; }
+
+    .ud-stat-grid { grid-template-columns: repeat(3, 1fr) !important; }
+
+    .lbf-stat-grid,
+    .lbf-stats-grid {
+        grid-template-columns: repeat(3, 1fr) !important;
+    }
+
+    /* Diff modals stack their two columns. */
+    .vc-diff-grid,
+    .diff-grid,
+    .lbf-diff-grid {
+        grid-template-columns: 1fr !important;
+    }
+}
+
+/* < 700 px (mobile portrait): fold all 6-col stat rows to 2-col,
+ * single-column body grids, pipeline flow vertical, music-map notice. */
+@media (max-width: 699px) {
+    #page-root [class$="-body"]:not(.panel-body):not(.modal-body):not(.vc-group-body) {
+        padding-left: 12px !important;
+        padding-right: 12px !important;
+    }
+    .page-header,
+    .overview-header {
+        padding-left: 12px !important;
+        padding-right: 12px !important;
+        flex-wrap: wrap;
+        gap: 10px;
+    }
+    .overview-stat-row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .ud-stat-grid { grid-template-columns: repeat(2, 1fr) !important; }
+    .lbf-stat-grid,
+    .lbf-stats-grid {
+        grid-template-columns: repeat(2, 1fr) !important;
+    }
+
+    /* Pipeline flow diagram → vertical stack with ↓ between nodes. */
+    .pipeline-flow {
+        flex-direction: column !important;
+        align-items: stretch !important;
+        overflow-x: visible !important;
+    }
+    .pipeline-flow .pf-node {
+        width: 100% !important;
+        min-width: 0 !important;
+    }
+    .pipeline-flow .pf-arrow {
+        transform: rotate(90deg);
+        margin: 4px auto;
+        align-self: center;
+    }
+
+    /* Music Map: hide the canvas, show "Best on desktop" notice. */
+    .mm-canvas-wrap,
+    .mm-stage,
+    .mm-canvas {
+        display: none !important;
+    }
+    .mm-mobile-notice {
+        display: block !important;
+        padding: 24px;
+        margin: 16px 0;
+        text-align: center;
+        background: var(--paper-2);
+        border: 1px dashed var(--line-soft);
+        border-radius: var(--r-panel);
+        color: var(--ink-3);
+        font-size: 13px;
+        line-height: 1.6;
+    }
+
+    /* Modals: take full width on mobile. */
+    .modal-dialog {
+        max-width: calc(100vw - 16px) !important;
+        margin: 8px !important;
+    }
+    .modal-overlay {
+        align-items: flex-start;
+    }
+    /* Diff side-by-side becomes vertical stack already (above) */
+
+    /* Toast stack: don't collide with FAB on mobile */
+    #toast-stack {
+        right: 8px;
+        left: 8px;
+        bottom: 130px;
+        max-width: none;
+    }
+    .toast {
+        max-width: none;
+    }
+
+    /* Track-table headers shrink */
+    .track-table-pagination,
+    .track-table-pagination-bar {
+        flex-wrap: wrap;
+        gap: 8px;
+    }
+
+    /* Versioned config header buttons stack */
+    .vc-header,
+    .vc-header-row {
+        flex-wrap: wrap !important;
+        gap: 8px;
+    }
+    .vc-btns,
+    .vc-header-actions {
+        flex-wrap: wrap !important;
+    }
+}
+
+.mm-mobile-notice { display: none; }

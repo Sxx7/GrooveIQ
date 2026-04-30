@@ -30,18 +30,18 @@ Each session is a self-contained prompt for a fresh Claude window. Status update
 
 | #  | Session | Status | Depends on | Notes |
 |----|---------|--------|------------|-------|
-| 01 | [Foundation](01-foundation.md) — shell, tokens, router, stub pages | pending | — | Sets everything up; subsequent sessions assume this is done |
-| 02 | [Monitor → Overview](02-overview.md) at full fidelity + activity pill | pending | 01 | Canonical visual reference; do this before any other content |
-| 03 | [Settings: versioned-config shell + Algorithm](03-settings-config-shell-algorithm.md) | pending | 01, 02 | Shell is reused by sessions 04 too |
-| 04 | [Settings: Routing + Backfill + Connections + Users](04-settings-rest.md) | pending | 03 | Reuses versioned-config shell from 03 |
-| 05 | [Actions bucket](05-actions.md) — 5 grouped pages | pending | 01, 02 | Independent of Settings; can run in parallel with 03/04 |
-| 06 | [Monitor: Pipeline + Models + Recs Debug](06-monitor-pipeline.md) | pending | 02 | Heaviest visualization work |
-| 07 | [Monitor: System Health + User Diagnostics + Integrations](07-monitor-health.md) | pending | 02 | Independent of 06; can run in parallel |
-| 08 | [Monitor: Downloads + Backfill + Discovery + Charts stats](08-monitor-ops.md) | pending | 02 | Independent of 06, 07; can run in parallel |
-| 09 | [Explore: track table + Recommendations + Tracks](09-explore-recs-tracks.md) | pending | 02 | Extracts reusable track-table component |
+| 01 | [Foundation](01-foundation.md) — shell, tokens, router, stub pages | done | — | Sets everything up; subsequent sessions assume this is done |
+| 02 | [Monitor → Overview](02-overview.md) at full fidelity + activity pill | done | 01 | Canonical visual reference; do this before any other content |
+| 03 | [Settings: versioned-config shell + Algorithm](03-settings-config-shell-algorithm.md) | done | 01, 02 | Shell is reused by sessions 04 too |
+| 04 | [Settings: Routing + Backfill + Connections + Users](04-settings-rest.md) | done | 03 | Reuses versioned-config shell from 03 |
+| 05 | [Actions bucket](05-actions.md) — 5 grouped pages | done | 01, 02 | Independent of Settings; can run in parallel with 03/04 |
+| 06 | [Monitor: Pipeline + Models + Recs Debug](06-monitor-pipeline.md) | done | 02 | Heaviest visualization work |
+| 07 | [Monitor: System Health + User Diagnostics + Integrations](07-monitor-health.md) | done | 02 | Independent of 06; can run in parallel |
+| 08 | [Monitor: Downloads + Backfill + Discovery + Charts stats](08-monitor-ops.md) | done | 02 | Independent of 06, 07; can run in parallel |
+| 09 | [Explore: track table + Recommendations + Tracks](09-explore-recs-tracks.md) | done | 02 | Extracts reusable track-table component |
 | 10 | [Explore: Playlists + modal + Text Search + Music Map](10-explore-playlists-search-map.md) | done | 09 | Reuses track-table from 09 |
 | 11 | [Explore: Radio + Charts + Artists + News](11-explore-radio-charts.md) | done | 09 | Radio is the most stateful surface |
-| 12 | [Cross-cutting + mobile + cutover](12-cutover.md) | pending | all above | Wires deep links; flips `/dashboard` to new HTML |
+| 12 | [Cross-cutting + mobile + cutover](12-cutover.md) | done | all above | Wires deep links; flips `/dashboard` to new HTML |
 
 **Parallelism:** sessions 03+04 (Settings), 05 (Actions), 06+07+08 (Monitor), 09 → 10 → 11 (Explore) form four independent tracks once 02 is done. If you have multiple humans driving Claude windows, you can run those tracks concurrently. Otherwise run sequentially in the listed order.
 

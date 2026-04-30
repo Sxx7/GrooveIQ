@@ -402,3 +402,157 @@
     overflow: auto;
     padding: 0;
 }
+
+/* ── Bottom tab bar (mobile only — < 700px) ──────────────────────── */
+
+.bottom-tabbar {
+    display: none;
+}
+
+.mobile-activity-fab {
+    display: none;
+}
+
+/* ── Responsive: 700–1099px ─────────────────────────────────────── */
+/* At narrow desktop widths we auto-force the sidebar into its collapsed
+ * variant. The collapse toggle is hidden so the user can't expand it.
+ * (See shell.js ensureResponsiveSidebar.) */
+@media (max-width: 1099px) {
+    .sidebar .sidebar-toggle,
+    .sidebar .sidebar-toggle-collapsed { display: none !important; }
+}
+
+/* ── Responsive: < 700px (bottom tab bar replaces sidebar) ──────── */
+
+@media (max-width: 699px) {
+    #app {
+        flex-direction: column;
+        height: 100vh;
+    }
+    .sidebar { display: none; }
+    .main {
+        flex: 1;
+        min-height: 0;
+        padding-bottom: 60px; /* leave room for bottom tab bar */
+    }
+    .topbar {
+        padding: 0 12px;
+    }
+
+    .bottom-tabbar {
+        display: flex;
+        position: fixed;
+        bottom: 0;
+        left: 0;
+        right: 0;
+        height: 60px;
+        background: var(--paper);
+        border-top: 1px solid var(--line-faint);
+        z-index: 50;
+        padding: 0;
+    }
+    .bottom-tabbar-item {
+        flex: 1;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 2px;
+        background: none;
+        border: none;
+        color: var(--ink-3);
+        font-family: inherit;
+        font-size: 10px;
+        font-weight: 500;
+        cursor: pointer;
+        padding: 8px 4px 6px;
+        position: relative;
+    }
+    .bottom-tabbar-item .bottom-tabbar-icon {
+        font-size: 18px;
+        line-height: 1;
+    }
+    .bottom-tabbar-item.active {
+        color: var(--accent);
+    }
+    .bottom-tabbar-item.active::before {
+        content: '';
+        position: absolute;
+        top: 0;
+        left: 18%;
+        right: 18%;
+        height: 2px;
+        background: var(--accent);
+        border-radius: 0 0 2px 2px;
+    }
+
+    /* Activity pill becomes a floating action button bottom-right above tab bar */
+    .mobile-activity-fab {
+        display: flex;
+        position: fixed;
+        right: 14px;
+        bottom: 70px;
+        width: 44px;
+        height: 44px;
+        border-radius: 50%;
+        background: var(--paper);
+        border: 1px solid rgba(168, 135, 206, 0.30);
+        align-items: center;
+        justify-content: center;
+        color: var(--accent);
+        font-family: var(--mono);
+        font-size: 11px;
+        font-weight: 600;
+        z-index: 49;
+        box-shadow: 0 4px 16px rgba(0, 0, 0, 0.30);
+        cursor: pointer;
+    }
+    .mobile-activity-fab.idle {
+        color: var(--ink-3);
+        border-color: var(--line-soft);
+    }
+    .mobile-activity-fab .pulse-dot,
+    .mobile-activity-fab .idle-dot {
+        width: 6px;
+        height: 6px;
+        border-radius: 50%;
+        background: var(--accent);
+        position: absolute;
+        top: 8px;
+        right: 8px;
+    }
+    .mobile-activity-fab .idle-dot { background: var(--ink-3); opacity: 0.7; }
+    .mobile-activity-fab .pulse-dot { animation: pulse 1.6s ease-in-out infinite; }
+    .mobile-activity-fab.idle .pulse-dot { display: none; }
+    .mobile-activity-fab:not(.idle) .idle-dot { display: none; }
+    .mobile-activity-fab-count {
+        position: absolute;
+        top: 4px;
+        right: 4px;
+        background: var(--accent);
+        color: white;
+        font-size: 9px;
+        font-weight: 700;
+        min-width: 16px;
+        height: 16px;
+        border-radius: 999px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 0 4px;
+    }
+    .mobile-activity-fab.idle .mobile-activity-fab-count { display: none; }
+
+    /* Activity popover positions itself differently on mobile (above the FAB) */
+    .activity-popover.mobile-popover {
+        position: fixed !important;
+        right: 8px !important;
+        left: 8px !important;
+        bottom: 124px !important;
+        top: auto !important;
+        width: auto !important;
+        transform: none !important;
+        max-height: calc(100vh - 200px);
+        overflow: auto;
+    }
+}

@@ -150,8 +150,16 @@ GIQ.apiKey = {
 /* ── Toast ────────────────────────────────────────────────────────── */
 
 GIQ.toast = function (message, kind, duration) {
-    if (kind == null) kind = 'info';
-    if (duration == null) duration = (kind === 'error' ? 7000 : 4000);
+    /* Accepts either a string + (kind, duration) or a single object form:
+     *   GIQ.toast({ message, kind?, duration?, jump?: { hash, label } }). */
+    let opts;
+    if (message && typeof message === 'object' && !Array.isArray(message)) {
+        opts = message;
+    } else {
+        opts = { message: String(message), kind, duration };
+    }
+    const k = opts.kind || 'info';
+    const dur = opts.duration != null ? opts.duration : (k === 'error' ? 7000 : 4000);
     let stack = document.getElementById('toast-stack');
     if (!stack) {
         stack = document.createElement('div');
@@ -160,14 +168,27 @@ GIQ.toast = function (message, kind, duration) {
     }
     const icons = { success: '✓', error: '!', warning: '!', info: 'i' };
     const t = document.createElement('div');
-    t.className = 'toast toast-' + kind;
-    t.innerHTML = '<span class="toast-icon">' + (icons[kind] || icons.info) + '</span>'
-                + '<div class="toast-body"></div>'
-                + '<button class="toast-close" type="button" aria-label="Dismiss">×</button>';
-    t.querySelector('.toast-body').textContent = String(message);
-    t.querySelector('.toast-close').addEventListener('click', () => GIQ._dismissToast(t));
+    t.className = 'toast toast-' + k + (opts.jump ? ' toast-with-jump' : '');
+    t.innerHTML = '<span class="toast-icon">' + (icons[k] || icons.info) + '</span>'
+                + '<div class="toast-body"></div>';
+    t.querySelector('.toast-body').textContent = String(opts.message != null ? opts.message : '');
+    if (opts.jump && opts.jump.hash) {
+        const a = document.createElement('a');
+        a.className = 'toast-jump';
+        a.href = opts.jump.hash;
+        a.textContent = opts.jump.label || 'View →';
+        a.addEventListener('click', () => GIQ._dismissToast(t));
+        t.appendChild(a);
+    }
+    const close = document.createElement('button');
+    close.className = 'toast-close';
+    close.type = 'button';
+    close.setAttribute('aria-label', 'Dismiss');
+    close.textContent = '×';
+    close.addEventListener('click', () => GIQ._dismissToast(t));
+    t.appendChild(close);
     stack.appendChild(t);
-    if (duration > 0) setTimeout(() => GIQ._dismissToast(t), duration);
+    if (dur > 0) setTimeout(() => GIQ._dismissToast(t), dur);
     return t;
 };
 
