@@ -2403,3 +2403,625 @@
 @media (max-width: 700px) {
     .integrations-grid { padding-left: 16px; padding-right: 16px; }
 }
+
+/* =====================================================================
+ * Session 08 — Monitor → Ops surfaces
+ * (Downloads, Lidarr Backfill, Discovery, Charts)
+ * ===================================================================== */
+
+.op-page-body {
+    display: flex;
+    flex-direction: column;
+    gap: var(--grid-gap);
+    padding: 0 var(--page-pad-x) 32px;
+}
+
+/* Page-header right rail (shared across ops pages) */
+.op-head-right {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+
+/* Auto-refresh indicator (Downloads page) */
+.op-autorefresh {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 10px;
+    border-radius: 999px;
+    background: rgba(168, 135, 206, 0.10);
+    border: 1px solid rgba(168, 135, 206, 0.30);
+    color: var(--accent);
+    font-size: 11px;
+    cursor: pointer;
+    transition: opacity 120ms ease;
+}
+.op-autorefresh:not(.active) {
+    background: rgba(236, 232, 242, 0.04);
+    border-color: var(--line-soft);
+    color: var(--ink-3);
+}
+.op-autorefresh:hover { opacity: 0.85; }
+.op-autorefresh-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--ink-3);
+    flex-shrink: 0;
+}
+.op-autorefresh-dot.pulse {
+    background: var(--accent);
+    animation: pulse 1.6s ease-in-out infinite;
+}
+.op-autorefresh-text {
+    font-size: 10px;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+}
+
+/* "Live" pill on Lidarr Backfill page header */
+.op-live-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    color: var(--ink-2);
+}
+.op-live-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--accent);
+    box-shadow: 0 0 0 0 rgba(168, 135, 206, 0.50);
+}
+.op-live-dot.pulse { animation: pulse 1.6s ease-in-out infinite; }
+.op-last-checked { font-size: 11px; }
+
+/* Backend dot + chip (used in download rows + telemetry table) */
+.op-backend-dot {
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    margin-right: 8px;
+    flex-shrink: 0;
+}
+.op-backend-dot-accent { background: var(--accent); }
+.op-backend-dot-muted { background: var(--ink-3); }
+.op-backend-dot-wine { background: var(--wine); }
+
+.op-backend-chip {
+    display: inline-block;
+    padding: 2px 7px;
+    border: 1px solid var(--line-soft);
+    border-radius: 3px;
+    color: var(--ink-2);
+    font-size: 9px;
+    letter-spacing: 0.10em;
+    text-transform: uppercase;
+    background: transparent;
+}
+
+/* Status badge (typographic, never colour-fill background) */
+.op-status-badge {
+    display: inline-block;
+    padding: 2px 7px;
+    border: 1px solid var(--line-soft);
+    border-radius: 3px;
+    font-size: 9px;
+    letter-spacing: 0.10em;
+    text-transform: uppercase;
+    background: transparent;
+}
+.op-status-badge.good   { color: var(--accent); border-color: rgba(168, 135, 206, 0.40); }
+.op-status-badge.bad    { color: var(--wine);   border-color: rgba(156, 82, 109, 0.45); }
+.op-status-badge.warn   { color: var(--ink-2);  border-color: rgba(168, 135, 206, 0.25); }
+.op-status-badge.muted  { color: var(--ink-3); }
+
+/* Success-rate row (one of the brief's allowed colour-as-data exceptions) */
+.op-srate-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-width: 120px;
+}
+.op-srate-bar {
+    flex: 1;
+    height: 6px;
+    background: var(--line-faint);
+    border-radius: 3px;
+    overflow: hidden;
+    min-width: 60px;
+}
+.op-srate-fill {
+    height: 100%;
+    border-radius: 3px;
+    transition: width 240ms ease;
+}
+.op-srate-good { background: #6fbf6f; }   /* green */
+.op-srate-warn { background: #d4a64a; }   /* amber */
+.op-srate-bad  { background: var(--wine); }
+.op-srate-txt { font-size: 11px; min-width: 42px; text-align: right; }
+.op-srate-txt-good { color: #6fbf6f; }
+.op-srate-txt-warn { color: #d4a64a; }
+.op-srate-txt-bad  { color: var(--wine); }
+
+/* Vertical bar chart (Lidarr Backfill throughput) */
+.op-vchart {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+.op-vchart-bars {
+    display: flex;
+    align-items: flex-end;
+    gap: 6px;
+    padding: 4px 0 0;
+    border-bottom: 1px solid var(--line-faint);
+}
+.op-vchart-col {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 4px;
+    height: 100%;
+    justify-content: flex-end;
+}
+.op-vchart-fill {
+    width: 100%;
+    max-width: 32px;
+    min-height: 1px;
+    background: rgba(168, 135, 206, 0.45);
+    border-radius: 3px 3px 0 0;
+    transition: height 240ms ease;
+}
+.op-vchart-fill.op-vchart-accent {
+    background: var(--accent);
+}
+.op-vchart-lbl {
+    font-size: 10px;
+    color: var(--ink-3);
+}
+
+/* Common collapse toggle */
+.op-collapse-toggle {
+    background: transparent;
+    border: none;
+    color: var(--ink-3);
+    font-family: var(--mono);
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    cursor: pointer;
+    padding: 6px 0;
+    width: 100%;
+    text-align: left;
+}
+.op-collapse-toggle:hover { color: var(--ink-2); }
+
+/* ── Downloads page ────────────────────────────────────────────────── */
+
+.op-inflight-list,
+.op-recent-list {
+    display: flex;
+    flex-direction: column;
+}
+
+.op-dl-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 0;
+    border-bottom: 1px solid var(--line-faint);
+    flex-wrap: wrap;
+}
+.op-dl-row:last-child { border-bottom: none; }
+.op-dl-row-left {
+    display: flex;
+    align-items: center;
+    min-width: 110px;
+}
+.op-dl-row-main {
+    flex: 1;
+    min-width: 200px;
+    overflow: hidden;
+}
+.op-dl-row-title {
+    color: var(--ink);
+    font-size: 13px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.op-dl-row-sub {
+    font-size: 10px;
+    margin-top: 2px;
+}
+.op-dl-row-sub.wine { color: var(--wine); }
+.op-dl-row-progress {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 140px;
+}
+.op-dl-row-status {
+    min-width: 80px;
+    text-align: right;
+}
+.op-dl-bar {
+    flex: 1;
+    height: 6px;
+    background: var(--line-faint);
+    border-radius: 3px;
+    overflow: hidden;
+    min-width: 80px;
+}
+.op-dl-bar-fill {
+    height: 100%;
+    background: var(--accent);
+    border-radius: 3px;
+    transition: width 240ms ease;
+}
+.op-dl-bar-shimmer {
+    background-image: linear-gradient(90deg, transparent 0%, rgba(168, 135, 206, 0.55) 50%, transparent 100%);
+    background-size: 50% 100%;
+    background-repeat: no-repeat;
+    animation: opShimmer 1.4s linear infinite;
+}
+@keyframes opShimmer {
+    0%   { background-position: -50% 0; }
+    100% { background-position: 150% 0; }
+}
+.op-dl-pct {
+    min-width: 40px;
+    font-size: 11px;
+    color: var(--ink-2);
+    text-align: right;
+}
+
+/* Per-backend telemetry table */
+.op-telemetry-wrap {
+    overflow-x: auto;
+}
+.op-telemetry-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 12px;
+}
+.op-telemetry-table thead th {
+    text-align: left;
+    padding: 6px 12px 8px;
+    border-bottom: 1px solid var(--line-soft);
+    font-weight: 500;
+}
+.op-telemetry-table thead th.op-num { text-align: right; }
+.op-telemetry-table tbody td {
+    padding: 8px 12px;
+    border-bottom: 1px solid var(--line-faint);
+    color: var(--ink-2);
+}
+.op-telemetry-table tbody tr:last-child td { border-bottom: none; }
+.op-telemetry-table .op-num { text-align: right; }
+.op-telemetry-table .op-srate-col { min-width: 160px; padding: 8px 12px; }
+.op-telemetry-name {
+    width: 140px;
+}
+
+/* Download history */
+.op-history-list {
+    display: flex;
+    flex-direction: column;
+}
+.op-dl-history-row {
+    display: grid;
+    grid-template-columns: 80px 110px 1fr 90px;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 0;
+    border-bottom: 1px solid var(--line-faint);
+    font-size: 12px;
+}
+.op-dl-history-row:last-child { border-bottom: none; }
+.op-dl-history-ts { font-size: 11px; }
+.op-dl-history-track {
+    color: var(--ink-2);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.op-dl-history-status { text-align: right; }
+
+/* ── Lidarr Backfill page ──────────────────────────────────────────── */
+
+.lbf-stats-grid {
+    display: grid;
+    grid-template-columns: repeat(6, 1fr);
+    gap: 10px;
+}
+
+@media (max-width: 1100px) {
+    .lbf-stats-grid { grid-template-columns: repeat(3, 1fr); }
+}
+@media (max-width: 700px) {
+    .lbf-stats-grid { grid-template-columns: repeat(2, 1fr); }
+}
+
+/* ── Discovery page ────────────────────────────────────────────────── */
+
+.op-subnav {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding: 0 var(--page-pad-x) 12px;
+    border-bottom: 1px solid var(--line-faint);
+    margin-bottom: 14px;
+}
+.op-subnav-btn {
+    background: transparent;
+    border: none;
+    color: var(--ink-3);
+    font-size: 12px;
+    font-weight: 500;
+    padding: 6px 12px;
+    border-radius: 6px;
+    cursor: pointer;
+    transition: background 120ms ease, color 120ms ease;
+}
+.op-subnav-btn:hover { color: var(--ink-2); background: rgba(236, 232, 242, 0.04); }
+.op-subnav-btn.active {
+    color: var(--accent);
+    background: rgba(168, 135, 206, 0.14);
+}
+
+.op-stat-row {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 10px;
+    margin-bottom: var(--grid-gap);
+}
+.op-stat-row-six {
+    grid-template-columns: repeat(6, 1fr);
+}
+@media (max-width: 1100px) {
+    .op-stat-row { grid-template-columns: repeat(2, 1fr); }
+    .op-stat-row-six { grid-template-columns: repeat(3, 1fr); }
+}
+@media (max-width: 700px) {
+    .op-stat-row { grid-template-columns: 1fr; }
+    .op-stat-row-six { grid-template-columns: repeat(2, 1fr); }
+}
+
+/* Generic history table for Discovery / Fill */
+.op-history-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 12px;
+}
+.op-history-table thead th {
+    text-align: left;
+    padding: 6px 10px 8px;
+    border-bottom: 1px solid var(--line-soft);
+    font-weight: 500;
+    background: transparent;
+}
+.op-history-table thead th.op-num { text-align: right; }
+.op-history-table tbody td {
+    padding: 8px 10px;
+    border-bottom: 1px solid var(--line-faint);
+    color: var(--ink-2);
+    vertical-align: middle;
+}
+.op-history-table tbody tr:last-child td { border-bottom: none; }
+.op-history-table .op-num { text-align: right; }
+.op-history-table .op-mbid { font-size: 9px; margin-top: 2px; }
+
+.op-source-chip {
+    display: inline-block;
+    padding: 2px 6px;
+    border: 1px solid var(--line-soft);
+    border-radius: 3px;
+    font-size: 9px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--ink-2);
+}
+
+.op-sim-cell {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 110px;
+}
+.op-mini-bar {
+    flex: 1;
+    height: 5px;
+    background: var(--line-faint);
+    border-radius: 3px;
+    overflow: hidden;
+    min-width: 60px;
+}
+.op-mini-bar-fill {
+    height: 100%;
+    background: var(--accent);
+    border-radius: 3px;
+}
+.op-mini-bar-pct { font-size: 10px; min-width: 36px; text-align: right; }
+.op-err-snip {
+    font-size: 10px;
+    margin-top: 2px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+/* Soulseek bulk download */
+.op-soulseek-progress { display: flex; flex-direction: column; gap: 6px; }
+.op-soulseek-progress-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+.op-soulseek-progress-row .mono { font-size: 11px; color: var(--ink-2); min-width: 50px; }
+.op-soulseek-progress-row .op-dl-bar { flex: 1; }
+.op-soulseek-current {
+    font-size: 11px;
+    margin-top: 4px;
+}
+.op-soulseek-artist { color: var(--ink); }
+.op-soulseek-errors {
+    max-height: 240px;
+    overflow: auto;
+    background: var(--bg);
+    border-radius: 6px;
+    padding: 10px 12px;
+    font-size: 11px;
+}
+.op-soulseek-error-row {
+    padding: 2px 0;
+    word-break: break-word;
+}
+
+/* Not-configured panel (Discovery sub-pages) */
+.op-not-configured {
+    background: var(--paper);
+    border: 1.5px dashed var(--line-soft);
+    border-radius: 10px;
+    padding: 18px;
+    color: var(--ink-2);
+}
+.op-not-configured-title {
+    font-weight: 600;
+    margin-bottom: 6px;
+    color: var(--ink);
+}
+.op-not-configured-sub { font-size: 12px; color: var(--ink-3); margin-bottom: 10px; }
+.op-not-configured-list {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+    font-size: 11px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+.op-not-configured-list li {
+    background: var(--bg);
+    padding: 4px 8px;
+    border-radius: 3px;
+    color: var(--accent);
+}
+
+/* ── Charts page ───────────────────────────────────────────────────── */
+
+.op-build-banner {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin: 0 var(--page-pad-x) var(--grid-gap);
+    padding: 10px 14px;
+    border-radius: 8px;
+    border: 1px solid var(--line-soft);
+    background: var(--paper);
+    font-size: 12px;
+}
+.op-build-banner.good {
+    background: rgba(168, 135, 206, 0.08);
+    border-color: rgba(168, 135, 206, 0.30);
+}
+.op-build-banner.warn {
+    background: rgba(212, 166, 74, 0.08);
+    border-color: rgba(212, 166, 74, 0.35);
+}
+.op-build-banner.bad {
+    background: rgba(156, 82, 109, 0.10);
+    border-color: rgba(156, 82, 109, 0.45);
+}
+.op-build-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--ink-3);
+    flex-shrink: 0;
+}
+.op-build-banner.good .op-build-dot { background: var(--accent); }
+.op-build-banner.warn .op-build-dot { background: #d4a64a; }
+.op-build-banner.bad  .op-build-dot { background: var(--wine); }
+.op-build-state {
+    font-size: 10px;
+    letter-spacing: 0.10em;
+    text-transform: uppercase;
+}
+.op-build-banner.good .op-build-state { color: var(--accent); }
+.op-build-banner.warn .op-build-state { color: #d4a64a; }
+.op-build-banner.bad  .op-build-state { color: var(--wine); }
+.op-build-msg {
+    color: var(--ink-2);
+}
+
+.op-charts-breakdown {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+}
+.op-charts-group {
+    border-top: 1px solid var(--line-faint);
+    padding-top: 10px;
+}
+.op-charts-group:first-child {
+    border-top: none;
+    padding-top: 0;
+}
+.op-charts-group-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    margin-bottom: 8px;
+    font-size: 10px;
+    letter-spacing: 0.10em;
+    color: var(--ink-3);
+}
+.op-charts-group-count { font-size: 10px; }
+.op-charts-group-list {
+    display: flex;
+    flex-direction: column;
+}
+.op-charts-row {
+    display: grid;
+    grid-template-columns: 1fr 110px 100px 100px;
+    align-items: center;
+    gap: 10px;
+    padding: 6px 0;
+    border-bottom: 1px solid var(--line-faint);
+    font-size: 12px;
+}
+.op-charts-row:last-child { border-bottom: none; }
+.op-charts-row-name {
+    color: var(--ink-2);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.op-charts-row-meta {
+    font-size: 11px;
+    text-align: right;
+}
+
+/* Empty row helper for ops panels */
+.op-page-body .empty-row {
+    padding: 16px 4px;
+    color: var(--ink-3);
+    font-size: 12px;
+}
+.op-page-body .empty-row.wine { color: var(--wine); }
+.op-page-body .muted { color: var(--ink-3); }
+
+@media (max-width: 700px) {
+    .op-page-body { padding-left: 16px; padding-right: 16px; }
+    .op-build-banner { margin-left: 16px; margin-right: 16px; }
+    .op-subnav { padding-left: 16px; padding-right: 16px; }
+    .op-dl-history-row { grid-template-columns: 80px 1fr 80px; }
+    .op-dl-history-backend { display: none; }
+    .op-charts-row { grid-template-columns: 1fr 90px; }
+    .op-charts-row > :nth-child(n+3) { display: none; }
+}

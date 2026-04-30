@@ -1,26 +1,12 @@
 /* monitor.js — Monitor bucket pages.
  * Overview (session 02), Pipeline / Models / Recs Debug (session 06),
- * System Health / User Diagnostics / Integrations (session 07).
- * Other sub-pages (downloads, lidarr-backfill, discovery, charts)
- * remain stubs and are filled in by session 08.
+ * System Health / User Diagnostics / Integrations (session 07),
+ * Downloads / Lidarr Backfill / Discovery / Charts (session 08).
+ * Monitor bucket is now complete.
  */
 
 (function () {
     GIQ.pages.monitor = GIQ.pages.monitor || {};
-
-    const STUBS = [
-        'downloads', 'lidarr-backfill', 'discovery', 'charts',
-    ];
-    for (const sp of STUBS) {
-        GIQ.pages.monitor[sp] = function (root) {
-            const label = GIQ.router.SUBPAGE_LABELS[sp] || sp;
-            root.innerHTML = '<div class="page-stub">'
-                + '<div class="eyebrow">MONITOR</div>'
-                + '<h1>' + GIQ.fmt.esc(label) + '</h1>'
-                + '<p class="muted">Page: monitor → ' + GIQ.fmt.esc(sp) + ' — TBD</p>'
-                + '</div>';
-        };
-    }
 
     GIQ.pages.monitor.overview = renderOverview;
     GIQ.pages.monitor.pipeline = renderPipeline;
@@ -29,6 +15,10 @@
     GIQ.pages.monitor['system-health'] = renderSystemHealth;
     GIQ.pages.monitor['user-diagnostics'] = renderUserDiagnostics;
     GIQ.pages.monitor.integrations = renderIntegrations;
+    GIQ.pages.monitor.downloads = renderDownloadsMonitor;
+    GIQ.pages.monitor['lidarr-backfill'] = renderLidarrBackfillMonitor;
+    GIQ.pages.monitor.discovery = renderDiscoveryMonitor;
+    GIQ.pages.monitor.charts = renderChartsMonitor;
 
     /* ---- Step metadata (used across Pipeline + Models pages) --------- */
 
@@ -3573,6 +3563,1348 @@
         }
 
         return () => clearInterval(pollTimer);
+    }
+
+    /* =====================================================================
+     * Session 08 — Ops surfaces (Downloads · Lidarr Backfill · Discovery · Charts)
+     * ===================================================================== */
+
+    /* Backend palette — neutral families per the brief.
+     * Success-track backends use --accent, in-progress uses --ink-3,
+     * failure-track uses --wine. The dot is a state marker, not a per-backend
+     * rainbow. A backend's class is decided by row.bucket, not row.source.
+     */
+    function backendDot(bucket) {
+        const cls = bucket === 'failed' ? 'wine'
+            : bucket === 'in_flight' ? 'muted'
+            : 'accent';
+        const span = document.createElement('span');
+        span.className = 'op-backend-dot op-backend-dot-' + cls;
+        return span;
+    }
+
+    function backendChip(name) {
+        const span = document.createElement('span');
+        span.className = 'op-backend-chip mono';
+        span.textContent = (name || 'unknown').toUpperCase();
+        return span;
+    }
+
+    /* Success-rate as data — one of the brief's allowed colour exceptions.
+     * Returns a flex row: bar (width = pct, color by tier) + percent text.
+     */
+    function successRateBar(rate, opts) {
+        const wrap = document.createElement('div');
+        wrap.className = 'op-srate-row';
+        if (rate == null) {
+            wrap.innerHTML = '<span class="mono muted">—</span>';
+            return wrap;
+        }
+        const pct = Math.max(0, Math.min(1, rate));
+        const tier = pct >= 0.8 ? 'good' : pct >= 0.5 ? 'warn' : 'bad';
+        const bar = document.createElement('div');
+        bar.className = 'op-srate-bar';
+        const fill = document.createElement('div');
+        fill.className = 'op-srate-fill op-srate-' + tier;
+        fill.style.width = (pct * 100).toFixed(1) + '%';
+        bar.appendChild(fill);
+        wrap.appendChild(bar);
+        const txt = document.createElement('span');
+        txt.className = 'op-srate-txt mono op-srate-txt-' + tier;
+        const decimals = opts && opts.decimals != null ? opts.decimals : 1;
+        txt.textContent = (pct * 100).toFixed(decimals) + '%';
+        wrap.appendChild(txt);
+        return wrap;
+    }
+
+    /* Vertical monochrome bar chart — used for the Lidarr Backfill throughput
+     * panel. rows: [{label, value}], opts: { height, accentLast }
+     */
+    function verticalBarChart(rows, opts) {
+        const cfg = Object.assign({ height: 110 }, opts || {});
+        const wrap = document.createElement('div');
+        wrap.className = 'op-vchart';
+        if (!rows || !rows.length) {
+            wrap.innerHTML = '<div class="empty-row">No data.</div>';
+            return wrap;
+        }
+        const max = Math.max(1, rows.reduce((m, r) => Math.max(m, r.value || 0), 0));
+        const bars = document.createElement('div');
+        bars.className = 'op-vchart-bars';
+        bars.style.height = cfg.height + 'px';
+        rows.forEach((r, i) => {
+            const col = document.createElement('div');
+            col.className = 'op-vchart-col';
+            const fill = document.createElement('div');
+            const pct = (r.value || 0) / max * 100;
+            fill.className = 'op-vchart-fill';
+            if (cfg.accentLast && i === rows.length - 1) fill.classList.add('op-vchart-accent');
+            fill.style.height = pct.toFixed(1) + '%';
+            fill.title = r.label + ' · ' + (r.value || 0);
+            col.appendChild(fill);
+            const lbl = document.createElement('div');
+            lbl.className = 'op-vchart-lbl mono';
+            lbl.textContent = r.label;
+            col.appendChild(lbl);
+            bars.appendChild(col);
+        });
+        wrap.appendChild(bars);
+        return wrap;
+    }
+
+    /* Auto-refresh indicator — pulsing dot + label. Click to pause.
+     * Returns { el, set(active), refresh, stop }.
+     */
+    function autoRefreshIndicator(opts) {
+        const cfg = Object.assign({ label: 'Auto-refresh', intervalMs: 3000 }, opts || {});
+        const el = document.createElement('button');
+        el.type = 'button';
+        el.className = 'op-autorefresh active';
+        let active = true;
+        let timer = null;
+
+        function rebuild() {
+            el.innerHTML = '';
+            const dot = document.createElement('span');
+            dot.className = active ? 'op-autorefresh-dot pulse' : 'op-autorefresh-dot';
+            el.appendChild(dot);
+            const span = document.createElement('span');
+            span.className = 'op-autorefresh-text mono';
+            const seconds = Math.round(cfg.intervalMs / 1000);
+            span.textContent = (active ? 'auto · ' : 'paused · ') + seconds + 's';
+            el.appendChild(span);
+            el.classList.toggle('active', active);
+            el.title = active ? 'Click to pause auto-refresh' : 'Click to resume auto-refresh';
+        }
+        rebuild();
+
+        el.addEventListener('click', () => {
+            active = !active;
+            rebuild();
+            if (active) {
+                if (cfg.onStart) cfg.onStart();
+            } else {
+                if (cfg.onStop) cfg.onStop();
+            }
+        });
+
+        return {
+            el,
+            isActive: () => active,
+            set(a) { active = !!a; rebuild(); },
+        };
+    }
+
+    /* =====================================================================
+     * Monitor → Downloads
+     * ===================================================================== */
+
+    function renderDownloadsMonitor(root) {
+        const state = {
+            range: '24h',
+            queue: null,
+            stats: null,
+            history: null,
+            historyOpen: true,
+            recentOpen: true,
+            error: null,
+        };
+        const RANGE_TO_DAYS = { '1h': 1, '24h': 1, '7d': 7, '30d': 30 };
+
+        let queueTimer = null;
+        let bgTimer = null;
+
+        const range = GIQ.components.rangeToggle({
+            values: ['1h', '24h', '7d', '30d'],
+            current: state.range,
+            onChange: v => { state.range = v; loadStats(); },
+        });
+
+        const auto = autoRefreshIndicator({
+            intervalMs: 3000,
+            onStart: () => { startQueuePolling(); },
+            onStop: () => { stopQueuePolling(); },
+        });
+
+        const headerRight = document.createElement('div');
+        headerRight.className = 'op-head-right';
+        headerRight.appendChild(range);
+        headerRight.appendChild(auto.el);
+
+        root.appendChild(GIQ.components.pageHeader({
+            eyebrow: 'MONITOR',
+            title: 'Downloads',
+            right: headerRight,
+        }));
+
+        const body = document.createElement('div');
+        body.className = 'op-page-body';
+        root.appendChild(body);
+
+        const inflightHost = document.createElement('div');
+        const recentHost = document.createElement('div');
+        const telemetryHost = document.createElement('div');
+        const historyHost = document.createElement('div');
+        body.appendChild(inflightHost);
+        body.appendChild(recentHost);
+        body.appendChild(telemetryHost);
+        body.appendChild(historyHost);
+
+        loadAll();
+        startQueuePolling();
+        bgTimer = setInterval(loadBackground, 30000);
+
+        function loadAll() {
+            return Promise.all([loadQueue(), loadStats(), loadHistory()]);
+        }
+
+        function loadBackground() {
+            loadStats();
+            loadHistory();
+        }
+
+        function loadQueue() {
+            return GIQ.api.get('/v1/downloads/queue?recent_limit=10&in_flight_limit=50').then(d => {
+                state.queue = d;
+                state.error = null;
+                renderInflight();
+                renderRecent();
+            }).catch(e => {
+                state.error = e.message || 'Queue unavailable';
+                renderInflight();
+            });
+        }
+
+        function loadStats() {
+            const days = RANGE_TO_DAYS[state.range] || 30;
+            return GIQ.api.get('/v1/downloads/stats?days=' + days).then(d => {
+                state.stats = d;
+                renderTelemetry();
+            }).catch(() => {
+                state.stats = { backends: [] };
+                renderTelemetry();
+            });
+        }
+
+        function loadHistory() {
+            return GIQ.api.get('/v1/downloads?limit=10').then(d => {
+                state.history = d;
+                renderHistory();
+            }).catch(() => {
+                state.history = { downloads: [], total: 0 };
+                renderHistory();
+            });
+        }
+
+        function startQueuePolling() {
+            stopQueuePolling();
+            queueTimer = setInterval(loadQueue, 3000);
+        }
+
+        function stopQueuePolling() {
+            if (queueTimer) { clearInterval(queueTimer); queueTimer = null; }
+        }
+
+        function renderInflight() {
+            inflightHost.innerHTML = '';
+            const inFlight = (state.queue && state.queue.in_flight) || [];
+            const sub = inFlight.length
+                ? inFlight.length + (inFlight.length === 1 ? ' download' : ' downloads')
+                : 'idle';
+            const body = document.createElement('div');
+            body.className = 'op-inflight-list';
+            if (state.error && !state.queue) {
+                body.innerHTML = '<div class="empty-row wine">Queue unavailable: ' + GIQ.fmt.esc(state.error) + '</div>';
+            } else if (!inFlight.length) {
+                body.innerHTML = '<div class="empty-row">No downloads in flight. Trigger one from Actions → Downloads.</div>';
+            } else {
+                inFlight.forEach(row => body.appendChild(buildInflightRow(row)));
+            }
+            inflightHost.appendChild(GIQ.components.panel({
+                title: 'In flight',
+                sub: sub,
+                badge: inFlight.length ? 'LIVE' : null,
+                children: body,
+            }));
+        }
+
+        function buildInflightRow(row) {
+            const r = document.createElement('div');
+            r.className = 'op-dl-row op-dl-row-active';
+            const left = document.createElement('div');
+            left.className = 'op-dl-row-left';
+            left.appendChild(backendDot('in_flight'));
+            left.appendChild(backendChip(row.source || 'unknown'));
+            r.appendChild(left);
+
+            const main = document.createElement('div');
+            main.className = 'op-dl-row-main';
+            const label = (row.artist_name || '') + (row.artist_name && row.track_title ? ' — ' : '') + (row.track_title || '(unnamed)');
+            const lbl = document.createElement('div');
+            lbl.className = 'op-dl-row-title';
+            lbl.textContent = label;
+            main.appendChild(lbl);
+
+            const sub = document.createElement('div');
+            sub.className = 'op-dl-row-sub mono muted';
+            const status = row.live_status || row.status || 'queued';
+            sub.textContent = status + ' · ' + fmtElapsed(row.elapsed_s);
+            main.appendChild(sub);
+            r.appendChild(main);
+
+            const progress = document.createElement('div');
+            progress.className = 'op-dl-row-progress';
+            const p = row.progress;
+            if (typeof p === 'number' && p >= 0) {
+                const pct = Math.max(0, Math.min(100, Math.round(p * 100)));
+                progress.innerHTML = '<div class="op-dl-bar"><div class="op-dl-bar-fill" style="width:' + pct + '%"></div></div>'
+                    + '<span class="op-dl-pct mono">' + pct + '%</span>';
+            } else {
+                progress.innerHTML = '<div class="op-dl-bar op-dl-bar-shimmer"></div>'
+                    + '<span class="op-dl-pct mono muted">…</span>';
+            }
+            r.appendChild(progress);
+            return r;
+        }
+
+        function renderRecent() {
+            recentHost.innerHTML = '';
+            const completed = (state.queue && state.queue.recent_completed) || [];
+            const failed = (state.queue && state.queue.recent_failed) || [];
+            const recent = completed.concat(failed)
+                .sort((a, b) => (b.updated_at || 0) - (a.updated_at || 0))
+                .slice(0, 10);
+
+            const head = document.createElement('button');
+            head.type = 'button';
+            head.className = 'op-collapse-toggle';
+            const arrow = state.recentOpen ? '▾' : '▸';
+            head.textContent = arrow + ' Recent activity (' + completed.length + ' ✓ / ' + failed.length + ' ✗)';
+            head.addEventListener('click', () => {
+                state.recentOpen = !state.recentOpen;
+                renderRecent();
+            });
+
+            const body = document.createElement('div');
+            body.className = 'op-recent-list';
+            if (state.recentOpen) {
+                if (!recent.length) {
+                    body.innerHTML = '<div class="empty-row">No recent terminal downloads.</div>';
+                } else {
+                    recent.forEach(row => {
+                        const isFailed = (row.status === 'error' || row.status === 'failed' || row.status === 'stalled' || row.status === 'cancelled');
+                        body.appendChild(buildRecentRow(row, isFailed ? 'failed' : 'completed'));
+                    });
+                }
+            }
+
+            const wrap = document.createElement('div');
+            wrap.appendChild(head);
+            wrap.appendChild(body);
+
+            recentHost.appendChild(GIQ.components.panel({
+                title: 'Recent activity',
+                sub: 'last 10 terminal · interleaved by updated_at',
+                children: wrap,
+            }));
+        }
+
+        function buildRecentRow(row, bucket) {
+            const r = document.createElement('div');
+            r.className = 'op-dl-row op-dl-row-' + bucket;
+
+            const left = document.createElement('div');
+            left.className = 'op-dl-row-left';
+            left.appendChild(backendDot(bucket));
+            left.appendChild(backendChip(row.source || 'unknown'));
+            r.appendChild(left);
+
+            const main = document.createElement('div');
+            main.className = 'op-dl-row-main';
+            const label = (row.artist_name || '') + (row.artist_name && row.track_title ? ' — ' : '') + (row.track_title || '(unnamed)');
+            const lbl = document.createElement('div');
+            lbl.className = 'op-dl-row-title';
+            lbl.textContent = label;
+            main.appendChild(lbl);
+            const sub = document.createElement('div');
+            sub.className = 'op-dl-row-sub mono muted';
+            sub.textContent = (row.status || 'unknown') + ' · ' + GIQ.fmt.timeAgo(row.updated_at || row.created_at);
+            if (row.error_message) {
+                sub.textContent += ' · ' + row.error_message;
+                sub.classList.add('wine');
+            }
+            main.appendChild(sub);
+            r.appendChild(main);
+
+            const status = document.createElement('div');
+            status.className = 'op-dl-row-status';
+            status.appendChild(buildDlStatusBadge(row, bucket));
+            r.appendChild(status);
+
+            return r;
+        }
+
+        function buildDlStatusBadge(row, bucket) {
+            const badge = document.createElement('span');
+            badge.className = 'op-status-badge mono';
+            const status = row.status || 'unknown';
+            if (bucket === 'completed' || status === 'completed' || status === 'complete' || status === 'done') {
+                badge.classList.add('good');
+                badge.textContent = '✓ done';
+            } else if (status === 'duplicate') {
+                badge.classList.add('warn');
+                badge.textContent = 'duplicate';
+            } else if (bucket === 'failed') {
+                badge.classList.add('bad');
+                badge.textContent = '✗ ' + status;
+            } else {
+                badge.classList.add('muted');
+                badge.textContent = status;
+            }
+            return badge;
+        }
+
+        function renderTelemetry() {
+            telemetryHost.innerHTML = '';
+            const backends = (state.stats && state.stats.backends) || [];
+            const days = RANGE_TO_DAYS[state.range] || 30;
+
+            const body = document.createElement('div');
+            body.className = 'op-telemetry-wrap';
+            if (!backends.length) {
+                body.innerHTML = '<div class="empty-row">No backend activity in the last ' + days + (days === 1 ? ' day' : ' days') + '.</div>';
+            } else {
+                const tbl = document.createElement('table');
+                tbl.className = 'op-telemetry-table';
+                tbl.innerHTML = ''
+                    + '<thead><tr>'
+                    + '<th class="eyebrow">Backend</th>'
+                    + '<th class="eyebrow op-num">Total</th>'
+                    + '<th class="eyebrow op-num">Success</th>'
+                    + '<th class="eyebrow op-num">Failure</th>'
+                    + '<th class="eyebrow op-num">In-flight</th>'
+                    + '<th class="eyebrow op-srate-col">Success rate</th>'
+                    + '</tr></thead>';
+                const tb = document.createElement('tbody');
+                backends.forEach(b => {
+                    const tr = document.createElement('tr');
+                    const tdName = document.createElement('td');
+                    tdName.className = 'op-telemetry-name';
+                    tdName.appendChild(backendChip(b.backend));
+                    tr.appendChild(tdName);
+                    tr.innerHTML += ''
+                        + '<td class="op-num mono">' + GIQ.fmt.fmtNumber(b.total || 0) + '</td>'
+                        + '<td class="op-num mono">' + GIQ.fmt.fmtNumber(b.success || 0) + '</td>'
+                        + '<td class="op-num mono">' + GIQ.fmt.fmtNumber(b.failure || 0) + '</td>'
+                        + '<td class="op-num mono">' + GIQ.fmt.fmtNumber(b.in_flight || 0) + '</td>';
+                    const tdSr = document.createElement('td');
+                    tdSr.className = 'op-srate-col';
+                    tdSr.appendChild(successRateBar(b.success_rate));
+                    tr.appendChild(tdSr);
+                    tb.appendChild(tr);
+                });
+                tbl.appendChild(tb);
+                body.appendChild(tbl);
+            }
+
+            telemetryHost.appendChild(GIQ.components.panel({
+                title: 'Per-backend telemetry',
+                sub: 'last ' + (days === 1 ? '24 hours' : days + ' days') + ' · success vs failure',
+                children: body,
+            }));
+        }
+
+        function renderHistory() {
+            historyHost.innerHTML = '';
+            const rows = (state.history && state.history.downloads) || [];
+            const total = (state.history && state.history.total) || 0;
+
+            const body = document.createElement('div');
+            body.className = 'op-history-list';
+            if (!rows.length) {
+                body.innerHTML = '<div class="empty-row">No persisted download requests yet.</div>';
+            } else {
+                rows.forEach(r => body.appendChild(buildHistoryRow(r)));
+            }
+
+            historyHost.appendChild(GIQ.components.panel({
+                title: 'Recent ad-hoc requests',
+                sub: 'last 10 · of ' + GIQ.fmt.fmtNumber(total) + ' total',
+                children: body,
+            }));
+        }
+
+        function buildHistoryRow(row) {
+            const r = document.createElement('div');
+            r.className = 'op-dl-history-row';
+
+            const ts = document.createElement('div');
+            ts.className = 'op-dl-history-ts mono muted';
+            ts.textContent = GIQ.fmt.timeAgo(row.created_at);
+            r.appendChild(ts);
+
+            const back = document.createElement('div');
+            back.className = 'op-dl-history-backend';
+            back.appendChild(backendChip(row.source || 'unknown'));
+            r.appendChild(back);
+
+            const track = document.createElement('div');
+            track.className = 'op-dl-history-track';
+            const label = (row.artist_name || '') + (row.artist_name && row.track_title ? ' — ' : '') + (row.track_title || '(unnamed)');
+            track.textContent = label;
+            track.title = label;
+            r.appendChild(track);
+
+            const status = document.createElement('div');
+            status.className = 'op-dl-history-status';
+            const isFailed = (row.status === 'error' || row.status === 'failed' || row.status === 'stalled' || row.status === 'cancelled');
+            const isDone = (row.status === 'completed' || row.status === 'complete' || row.status === 'done');
+            status.appendChild(buildDlStatusBadge(row, isFailed ? 'failed' : isDone ? 'completed' : 'in_flight'));
+            r.appendChild(status);
+
+            return r;
+        }
+
+        function fmtElapsed(s) {
+            if (typeof s !== 'number' || s < 0) return '—';
+            if (s < 60) return s + 's';
+            if (s < 3600) return Math.floor(s / 60) + 'm ' + (s % 60) + 's';
+            return Math.floor(s / 3600) + 'h ' + Math.floor((s % 3600) / 60) + 'm';
+        }
+
+        return () => {
+            stopQueuePolling();
+            if (bgTimer) clearInterval(bgTimer);
+        };
+    }
+
+    /* =====================================================================
+     * Monitor → Lidarr Backfill
+     * ===================================================================== */
+
+    function renderLidarrBackfillMonitor(root) {
+        const state = {
+            stats: null,
+            requests: null,
+            checkedAt: null,
+        };
+        let pollTimer = null;
+
+        const liveBadge = document.createElement('div');
+        liveBadge.className = 'op-live-pill';
+        liveBadge.innerHTML = '<span class="op-live-dot pulse"></span><span class="mono">live</span>'
+            + '<span class="op-last-checked mono muted">last checked · —</span>';
+
+        root.appendChild(GIQ.components.pageHeader({
+            eyebrow: 'MONITOR',
+            title: 'Lidarr Backfill Stats',
+            right: liveBadge,
+        }));
+
+        root.appendChild(GIQ.components.relatedRail({
+            label: 'related →',
+            links: [
+                { prefix: 'Settings', label: 'Edit config', href: '#/settings/lidarr-backfill' },
+                { prefix: 'Actions', label: 'Manage queue', href: '#/actions/discovery' },
+            ],
+        }));
+
+        const body = document.createElement('div');
+        body.className = 'op-page-body';
+        root.appendChild(body);
+
+        const statsHost = document.createElement('div');
+        statsHost.className = 'lbf-stats-grid';
+        body.appendChild(statsHost);
+
+        const throughputHost = document.createElement('div');
+        body.appendChild(throughputHost);
+
+        const serviceHost = document.createElement('div');
+        body.appendChild(serviceHost);
+
+        load();
+        pollTimer = setInterval(load, 30000);
+
+        function load() {
+            return Promise.all([
+                GIQ.api.get('/v1/lidarr-backfill/stats').catch(() => null),
+                GIQ.api.get('/v1/lidarr-backfill/requests?limit=200').catch(() => null),
+            ]).then(([stats, reqs]) => {
+                state.stats = stats || {};
+                state.requests = (reqs && Array.isArray(reqs.items)) ? reqs.items : [];
+                state.checkedAt = Math.floor(Date.now() / 1000);
+                liveBadge.querySelector('.op-last-checked').textContent =
+                    'last checked · ' + GIQ.fmt.timeAgo(state.checkedAt);
+                renderStats();
+                renderThroughput();
+                renderServices();
+            });
+        }
+
+        function renderStats() {
+            statsHost.innerHTML = '';
+            const st = state.stats || {};
+
+            const missing = st.missing_total != null ? st.missing_total : '—';
+            const cutoff = st.cutoff_total != null ? st.cutoff_total : '—';
+
+            statsHost.appendChild(GIQ.components.statTile({
+                label: 'Missing',
+                value: GIQ.fmt.fmtNumber(missing),
+                delta: st.cutoff_total != null ? '+ ' + GIQ.fmt.fmtNumber(cutoff) + ' cutoff' : null,
+                deltaKind: 'flat',
+            }));
+
+            const completeTotal = st.complete != null ? st.complete : 0;
+            statsHost.appendChild(GIQ.components.statTile({
+                label: 'Complete',
+                value: GIQ.fmt.fmtNumber(completeTotal),
+                delta: '+' + (st.complete_24h || 0) + ' / 24h',
+                deltaKind: 'good',
+            }));
+
+            const failedTotal = st.failed != null ? st.failed : 0;
+            const totalAttempts = (completeTotal + failedTotal + (st.permanently_skipped || 0)) || 1;
+            const failPct = (failedTotal / totalAttempts * 100).toFixed(1);
+            statsHost.appendChild(GIQ.components.statTile({
+                label: 'Failed',
+                value: GIQ.fmt.fmtNumber(failedTotal),
+                delta: '+' + (st.failed_24h || 0) + ' / 24h · ' + failPct + '%',
+                deltaKind: failedTotal > 0 ? 'bad' : 'flat',
+            }));
+
+            const used = (st.max_per_hour || 0) - (st.capacity_remaining != null ? st.capacity_remaining : 0);
+            const capPct = st.max_per_hour ? Math.round(used / st.max_per_hour * 100) : 0;
+            statsHost.appendChild(GIQ.components.statTile({
+                label: 'Capacity',
+                value: capPct + '%',
+                delta: (st.capacity_remaining != null ? st.capacity_remaining : '—') + ' / ' + (st.max_per_hour != null ? st.max_per_hour : '—') + ' · this hour',
+                deltaKind: 'flat',
+            }));
+
+            let etaTxt = '—';
+            if (st.eta_days != null && st.eta_days >= 1) etaTxt = '~' + st.eta_days + ' d';
+            else if (st.eta_hours != null) etaTxt = '~' + st.eta_hours + ' h';
+            statsHost.appendChild(GIQ.components.statTile({
+                label: 'ETA',
+                value: etaTxt,
+                delta: 'at current rate',
+                deltaKind: 'flat',
+            }));
+
+            const tickAt = st.last_tick_at ? GIQ.fmt.timeAgo(st.last_tick_at) : '—';
+            const status = st.tick_in_progress ? 'running' : (st.enabled ? 'idle' : 'paused');
+            statsHost.appendChild(GIQ.components.statTile({
+                label: 'Status',
+                value: status.toUpperCase(),
+                delta: 'last tick · ' + tickAt,
+                deltaKind: status === 'running' ? 'good' : status === 'paused' ? 'bad' : 'flat',
+            }));
+        }
+
+        function renderThroughput() {
+            throughputHost.innerHTML = '';
+            const reqs = state.requests || [];
+
+            // Build 7-day buckets keyed by YYYY-MM-DD (UTC). Counts only
+            // status === 'complete' rows whose updated_at falls in the window.
+            const now = Math.floor(Date.now() / 1000);
+            const dayMs = 86400;
+            const buckets = [];
+            for (let i = 6; i >= 0; i--) {
+                const dayStart = Math.floor(now / dayMs) * dayMs - i * dayMs;
+                buckets.push({ start: dayStart, end: dayStart + dayMs, value: 0 });
+            }
+            const oldest = buckets[0].start;
+            reqs.forEach(r => {
+                if (r.status !== 'complete') return;
+                const ts = r.updated_at || r.created_at;
+                if (!ts || ts < oldest) return;
+                const idx = buckets.findIndex(b => ts >= b.start && ts < b.end);
+                if (idx >= 0) buckets[idx].value++;
+            });
+
+            const rows = buckets.map(b => {
+                const d = new Date(b.start * 1000);
+                return {
+                    label: (d.getMonth() + 1) + '/' + d.getDate(),
+                    value: b.value,
+                };
+            });
+
+            const noData = rows.every(r => r.value === 0);
+            const sub = noData
+                ? 'no completed downloads in the last 7 days'
+                : 'derived from /v1/lidarr-backfill/requests · status = complete';
+
+            throughputHost.appendChild(GIQ.components.panel({
+                title: 'Throughput · last 7 days',
+                sub: sub,
+                action: 'albums / day',
+                children: verticalBarChart(rows, { height: 110, accentLast: !noData }),
+            }));
+        }
+
+        function renderServices() {
+            serviceHost.innerHTML = '';
+            const reqs = state.requests || [];
+
+            // Group recent (any status) by picked_service. Skip rows without
+            // a picked_service so we only count actual download attempts.
+            const byService = {};
+            reqs.forEach(r => {
+                const s = r.picked_service;
+                if (!s) return;
+                const b = byService[s] || (byService[s] = { service: s, complete: 0, failed: 0, in_flight: 0, total: 0 });
+                b.total++;
+                if (r.status === 'complete') b.complete++;
+                else if (r.status === 'failed' || r.status === 'no_match' || r.status === 'permanently_skipped') b.failed++;
+                else b.in_flight++;
+            });
+
+            const order = ['qobuz', 'tidal', 'deezer', 'soundcloud'];
+            const services = Object.values(byService).sort((a, b) => {
+                const ai = order.indexOf(a.service);
+                const bi = order.indexOf(b.service);
+                if (ai === -1 && bi === -1) return a.service.localeCompare(b.service);
+                if (ai === -1) return 1;
+                if (bi === -1) return -1;
+                return ai - bi;
+            });
+
+            const body = document.createElement('div');
+            body.className = 'op-telemetry-wrap';
+            if (!services.length) {
+                body.innerHTML = '<div class="empty-row">No service-tagged attempts yet. Service stats appear once the engine has dispatched downloads via streamrip.</div>';
+            } else {
+                const tbl = document.createElement('table');
+                tbl.className = 'op-telemetry-table';
+                tbl.innerHTML = ''
+                    + '<thead><tr>'
+                    + '<th class="eyebrow">Service</th>'
+                    + '<th class="eyebrow op-num">Attempts</th>'
+                    + '<th class="eyebrow op-num">Complete</th>'
+                    + '<th class="eyebrow op-num">Failed</th>'
+                    + '<th class="eyebrow op-srate-col">Success rate</th>'
+                    + '</tr></thead>';
+                const tb = document.createElement('tbody');
+                services.forEach(s => {
+                    const tr = document.createElement('tr');
+                    const tdName = document.createElement('td');
+                    tdName.className = 'op-telemetry-name';
+                    tdName.appendChild(backendChip(s.service));
+                    tr.appendChild(tdName);
+                    const terminal = s.complete + s.failed;
+                    const rate = terminal > 0 ? s.complete / terminal : null;
+                    tr.innerHTML += ''
+                        + '<td class="op-num mono">' + s.total + '</td>'
+                        + '<td class="op-num mono">' + s.complete + '</td>'
+                        + '<td class="op-num mono">' + s.failed + '</td>';
+                    const tdSr = document.createElement('td');
+                    tdSr.className = 'op-srate-col';
+                    tdSr.appendChild(successRateBar(rate));
+                    tr.appendChild(tdSr);
+                    tb.appendChild(tr);
+                });
+                tbl.appendChild(tb);
+                body.appendChild(tbl);
+            }
+
+            serviceHost.appendChild(GIQ.components.panel({
+                title: 'Per-service success rate',
+                sub: 'derived from picked_service across recent attempts',
+                children: body,
+            }));
+        }
+
+        return () => { if (pollTimer) clearInterval(pollTimer); };
+    }
+
+    /* =====================================================================
+     * Monitor → Discovery
+     * ===================================================================== */
+
+    function renderDiscoveryMonitor(root) {
+        const state = {
+            mode: 'lidarr', // 'lidarr' | 'fill' | 'soulseek'
+            lidarr: null,
+            fill: null,
+            soulseek: null,
+        };
+        let pollTimer = null;
+
+        root.appendChild(GIQ.components.pageHeader({
+            eyebrow: 'MONITOR',
+            title: 'Discovery',
+        }));
+
+        const subnav = document.createElement('div');
+        subnav.className = 'op-subnav';
+        const SUBS = [
+            { id: 'lidarr', label: 'Lidarr Discovery' },
+            { id: 'fill', label: 'Fill Library' },
+            { id: 'soulseek', label: 'Soulseek Bulk' },
+        ];
+        function buildSubnav() {
+            subnav.innerHTML = '';
+            SUBS.forEach(s => {
+                const btn = document.createElement('button');
+                btn.type = 'button';
+                btn.className = 'op-subnav-btn' + (state.mode === s.id ? ' active' : '');
+                btn.textContent = s.label;
+                btn.addEventListener('click', () => {
+                    if (state.mode === s.id) return;
+                    state.mode = s.id;
+                    buildSubnav();
+                    loadCurrent();
+                    schedulePolling();
+                });
+                subnav.appendChild(btn);
+            });
+        }
+        buildSubnav();
+        root.appendChild(subnav);
+
+        const body = document.createElement('div');
+        body.className = 'op-page-body';
+        root.appendChild(body);
+
+        loadCurrent();
+        schedulePolling();
+
+        function schedulePolling() {
+            if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+            const interval = state.mode === 'soulseek' ? 3000 : 30000;
+            pollTimer = setInterval(loadCurrent, interval);
+        }
+
+        function loadCurrent() {
+            if (state.mode === 'lidarr') return loadLidarr();
+            if (state.mode === 'fill') return loadFill();
+            return loadSoulseek();
+        }
+
+        function loadLidarr() {
+            return Promise.all([
+                GIQ.api.get('/v1/discovery/stats').catch(() => null),
+                GIQ.api.get('/v1/discovery?limit=50').catch(() => null),
+            ]).then(([stats, list]) => {
+                state.lidarr = { stats: stats || {}, list: list || { requests: [], total: 0 } };
+                renderLidarr();
+            });
+        }
+
+        function loadFill() {
+            return Promise.all([
+                GIQ.api.get('/v1/fill-library/stats').catch(() => null),
+                GIQ.api.get('/v1/fill-library?limit=50').catch(() => null),
+            ]).then(([stats, list]) => {
+                state.fill = { stats: stats || {}, list: list || { requests: [], total: 0 } };
+                renderFill();
+            });
+        }
+
+        function loadSoulseek() {
+            return GIQ.api.get('/v1/soulseek/bulk-download/status').then(job => {
+                state.soulseek = job || { status: 'no_job' };
+                renderSoulseek();
+            }).catch(() => {
+                state.soulseek = { status: 'no_job' };
+                renderSoulseek();
+            });
+        }
+
+        function renderLidarr() {
+            body.innerHTML = '';
+            const st = state.lidarr.stats || {};
+            const list = state.lidarr.list || {};
+            const requests = list.requests || [];
+
+            if (!st.enabled) {
+                body.appendChild(notConfiguredPanel(
+                    'Music Discovery is not configured.',
+                    ['LASTFM_API_KEY', 'LIDARR_URL', 'LIDARR_API_KEY'],
+                ));
+                return;
+            }
+
+            const sent = (st.by_status?.sent || 0) + (st.by_status?.in_lidarr || 0);
+            const stats = document.createElement('div');
+            stats.className = 'op-stat-row';
+            stats.appendChild(GIQ.components.statTile({
+                label: 'Artists discovered', value: GIQ.fmt.fmtNumber(st.total || 0),
+            }));
+            stats.appendChild(GIQ.components.statTile({
+                label: 'Sent to Lidarr', value: GIQ.fmt.fmtNumber(sent),
+                delta: 'success', deltaKind: 'good',
+            }));
+            stats.appendChild(GIQ.components.statTile({
+                label: 'Pending', value: GIQ.fmt.fmtNumber(st.by_status?.pending || 0),
+            }));
+            stats.appendChild(GIQ.components.statTile({
+                label: 'Today',
+                value: (st.today_count || 0) + ' / ' + (st.daily_limit || '—'),
+                delta: 'daily limit',
+            }));
+            body.appendChild(stats);
+
+            const tableBody = document.createElement('div');
+            if (!requests.length) {
+                tableBody.innerHTML = '<div class="empty-row">No discovery requests yet. Run from Actions → Discovery.</div>';
+            } else {
+                tableBody.appendChild(buildDiscoveryTable(requests));
+            }
+            body.appendChild(GIQ.components.panel({
+                title: 'Discovery history',
+                sub: GIQ.fmt.fmtNumber(list.total || 0) + ' total · last ' + requests.length,
+                children: tableBody,
+            }));
+        }
+
+        function buildDiscoveryTable(requests) {
+            const tbl = document.createElement('table');
+            tbl.className = 'op-history-table';
+            tbl.innerHTML = ''
+                + '<thead><tr>'
+                + '<th class="eyebrow">Artist</th>'
+                + '<th class="eyebrow">Source</th>'
+                + '<th class="eyebrow">Seed</th>'
+                + '<th class="eyebrow">Similarity</th>'
+                + '<th class="eyebrow">Status</th>'
+                + '<th class="eyebrow">When</th>'
+                + '</tr></thead>';
+            const tb = document.createElement('tbody');
+            requests.forEach(r => {
+                const tr = document.createElement('tr');
+                const seed = r.seed_artist
+                    ? GIQ.fmt.esc(r.seed_artist)
+                    : (r.seed_genre ? '<span class="muted">' + GIQ.fmt.esc(r.seed_genre) + '</span>' : '—');
+                const simBar = r.similarity_score != null
+                    ? '<div class="op-mini-bar"><div class="op-mini-bar-fill" style="width:' + (r.similarity_score * 100).toFixed(0) + '%"></div></div>'
+                    + '<span class="mono muted op-mini-bar-pct">' + (r.similarity_score * 100).toFixed(0) + '%</span>'
+                    : '<span class="mono muted">—</span>';
+                tr.innerHTML = ''
+                    + '<td><strong>' + GIQ.fmt.esc(r.artist_name || '') + '</strong>'
+                    + (r.artist_mbid ? '<div class="mono muted op-mbid">' + GIQ.fmt.esc(r.artist_mbid).slice(0, 16) + '…</div>' : '')
+                    + '</td>'
+                    + '<td><span class="op-source-chip mono">' + GIQ.fmt.esc((r.source || '').replace('_', ' ')) + '</span></td>'
+                    + '<td>' + seed + '</td>'
+                    + '<td><div class="op-sim-cell">' + simBar + '</div></td>'
+                    + '<td>' + buildDiscoveryStatusChip(r.status) + (r.error_message ? '<div class="mono wine op-err-snip" title="' + GIQ.fmt.esc(r.error_message) + '">' + GIQ.fmt.esc(r.error_message).slice(0, 40) + '…</div>' : '') + '</td>'
+                    + '<td class="mono muted">' + GIQ.fmt.timeAgo(r.created_at) + '</td>';
+                tb.appendChild(tr);
+            });
+            tbl.appendChild(tb);
+            return tbl;
+        }
+
+        function buildDiscoveryStatusChip(status) {
+            const cls = (status === 'in_lidarr' || status === 'sent') ? 'good'
+                : status === 'failed' ? 'bad'
+                : 'muted';
+            return '<span class="op-status-badge mono ' + cls + '">' + GIQ.fmt.esc(status || 'unknown') + '</span>';
+        }
+
+        function renderFill() {
+            body.innerHTML = '';
+            const st = state.fill.stats || {};
+            const list = state.fill.list || {};
+            const requests = list.requests || [];
+
+            if (!st.enabled) {
+                body.appendChild(notConfiguredPanel(
+                    'Fill Library is not configured.',
+                    ['FILL_LIBRARY_ENABLED=true', 'AB_LOOKUP_URL', 'LIDARR_URL', 'LIDARR_API_KEY'],
+                ));
+                return;
+            }
+
+            const sent = st.by_status?.sent || 0;
+            const avgMatch = st.avg_distance_sent != null
+                ? ((1 - st.avg_distance_sent) * 100).toFixed(0) + '%'
+                : '—';
+
+            const stats = document.createElement('div');
+            stats.className = 'op-stat-row';
+            stats.appendChild(GIQ.components.statTile({
+                label: 'Albums queued', value: GIQ.fmt.fmtNumber(sent),
+                delta: 'success', deltaKind: 'good',
+            }));
+            stats.appendChild(GIQ.components.statTile({
+                label: 'Total processed', value: GIQ.fmt.fmtNumber(st.total || 0),
+            }));
+            stats.appendChild(GIQ.components.statTile({
+                label: 'Avg match', value: avgMatch,
+                delta: '1 - distance',
+            }));
+            stats.appendChild(GIQ.components.statTile({
+                label: 'Today',
+                value: (st.today_count || 0) + ' / ' + (st.max_per_run || '—'),
+                delta: 'max per run',
+            }));
+            body.appendChild(stats);
+
+            const tableBody = document.createElement('div');
+            if (!requests.length) {
+                tableBody.innerHTML = '<div class="empty-row">No fill-library requests yet. Run from Actions → Discovery.</div>';
+            } else {
+                tableBody.appendChild(buildFillTable(requests));
+            }
+            body.appendChild(GIQ.components.panel({
+                title: 'Fill Library history',
+                sub: GIQ.fmt.fmtNumber(list.total || 0) + ' total · last ' + requests.length,
+                children: tableBody,
+            }));
+        }
+
+        function buildFillTable(requests) {
+            const tbl = document.createElement('table');
+            tbl.className = 'op-history-table';
+            tbl.innerHTML = ''
+                + '<thead><tr>'
+                + '<th class="eyebrow">Artist</th>'
+                + '<th class="eyebrow">Album</th>'
+                + '<th class="eyebrow op-num">Tracks</th>'
+                + '<th class="eyebrow">Match</th>'
+                + '<th class="eyebrow">Status</th>'
+                + '<th class="eyebrow">When</th>'
+                + '</tr></thead>';
+            const tb = document.createElement('tbody');
+            requests.forEach(fl => {
+                const tr = document.createElement('tr');
+                const matchPct = fl.avg_distance != null ? ((1 - fl.avg_distance) * 100).toFixed(0) : null;
+                const bestPct = fl.best_distance != null ? ((1 - fl.best_distance) * 100).toFixed(0) : null;
+                const matchCell = matchPct != null
+                    ? '<div class="op-sim-cell">'
+                        + '<div class="op-mini-bar"><div class="op-mini-bar-fill" style="width:' + matchPct + '%"></div></div>'
+                        + '<span class="mono muted op-mini-bar-pct">' + matchPct + '%' + (bestPct != null ? ' (best ' + bestPct + '%)' : '') + '</span>'
+                    + '</div>'
+                    : '<span class="mono muted">—</span>';
+                const albumCell = fl.album_name
+                    ? GIQ.fmt.esc(fl.album_name)
+                    : (fl.album_mbid
+                        ? '<span class="mono muted">' + GIQ.fmt.esc(fl.album_mbid).slice(0, 16) + '…</span>'
+                        : '<span class="muted">—</span>');
+                tr.innerHTML = ''
+                    + '<td><strong>' + GIQ.fmt.esc(fl.artist_name || '') + '</strong></td>'
+                    + '<td>' + albumCell + '</td>'
+                    + '<td class="op-num mono">' + (fl.matched_tracks != null ? fl.matched_tracks : '—') + '</td>'
+                    + '<td>' + matchCell + '</td>'
+                    + '<td>' + buildDiscoveryStatusChip(fl.status) + (fl.error_message ? '<div class="mono wine op-err-snip" title="' + GIQ.fmt.esc(fl.error_message) + '">' + GIQ.fmt.esc(fl.error_message).slice(0, 40) + '…</div>' : '') + '</td>'
+                    + '<td class="mono muted">' + GIQ.fmt.timeAgo(fl.created_at) + '</td>';
+                tb.appendChild(tr);
+            });
+            tbl.appendChild(tb);
+            return tbl;
+        }
+
+        function renderSoulseek() {
+            body.innerHTML = '';
+            const job = state.soulseek || {};
+
+            if (!job.status || job.status === 'no_job') {
+                const empty = document.createElement('div');
+                empty.innerHTML = '<div class="empty-row">No Soulseek bulk job has run yet. Start one from Actions → Discovery → Soulseek.</div>';
+                body.appendChild(GIQ.components.panel({
+                    title: 'Soulseek bulk download',
+                    sub: 'no active job',
+                    children: empty,
+                }));
+                return;
+            }
+
+            const isRunning = job.status === 'running';
+            const total = job.total_artists || 0;
+            const done = job.artists_processed || 0;
+            const pct = total > 0 ? Math.round(done / total * 100) : 0;
+
+            const stats = document.createElement('div');
+            stats.className = 'op-stat-row';
+            stats.appendChild(GIQ.components.statTile({
+                label: 'Tracks found', value: GIQ.fmt.fmtNumber(job.total_tracks || 0),
+            }));
+            stats.appendChild(GIQ.components.statTile({
+                label: 'Queued', value: GIQ.fmt.fmtNumber(job.tracks_queued || 0),
+                delta: 'sent to slskd', deltaKind: 'good',
+            }));
+            stats.appendChild(GIQ.components.statTile({
+                label: 'Searched', value: GIQ.fmt.fmtNumber(job.tracks_searched || 0),
+            }));
+            stats.appendChild(GIQ.components.statTile({
+                label: 'Skipped', value: GIQ.fmt.fmtNumber(job.tracks_skipped || 0),
+            }));
+            stats.appendChild(GIQ.components.statTile({
+                label: 'Failed', value: GIQ.fmt.fmtNumber(job.tracks_failed || 0),
+                deltaKind: (job.tracks_failed || 0) > 0 ? 'bad' : 'flat',
+            }));
+            const elapsed = job.started_at
+                ? ((job.finished_at || Math.floor(Date.now() / 1000)) - job.started_at)
+                : null;
+            stats.appendChild(GIQ.components.statTile({
+                label: 'Elapsed',
+                value: elapsed != null ? fmtElapsedSeconds(elapsed) : '—',
+                delta: job.started_at ? 'started ' + GIQ.fmt.timeAgo(job.started_at) : null,
+            }));
+            body.appendChild(stats);
+
+            const progBody = document.createElement('div');
+            progBody.className = 'op-soulseek-progress';
+            progBody.innerHTML = ''
+                + '<div class="op-soulseek-progress-row">'
+                + '<span class="mono">artists</span>'
+                + '<div class="op-dl-bar"><div class="op-dl-bar-fill" style="width:' + pct + '%"></div></div>'
+                + '<span class="mono">' + done + ' / ' + total + ' · ' + pct + '%</span>'
+                + '</div>'
+                + (job.current_artist && isRunning
+                    ? '<div class="op-soulseek-current mono muted">currently · <strong class="op-soulseek-artist">' + GIQ.fmt.esc(job.current_artist) + '</strong></div>'
+                    : '');
+
+            body.appendChild(GIQ.components.panel({
+                title: 'Soulseek bulk download',
+                sub: 'status · ' + job.status,
+                badge: isRunning ? 'LIVE' : null,
+                children: progBody,
+            }));
+
+            if (job.errors && job.errors.length) {
+                const errBody = document.createElement('div');
+                errBody.className = 'op-soulseek-errors mono';
+                for (let i = job.errors.length - 1; i >= Math.max(0, job.errors.length - 20); i--) {
+                    const row = document.createElement('div');
+                    row.className = 'op-soulseek-error-row wine';
+                    row.textContent = job.errors[i];
+                    errBody.appendChild(row);
+                }
+                body.appendChild(GIQ.components.panel({
+                    title: 'Recent errors',
+                    sub: GIQ.fmt.fmtNumber(job.errors.length) + ' total',
+                    children: errBody,
+                }));
+            }
+        }
+
+        function notConfiguredPanel(title, envVars) {
+            const wrap = document.createElement('div');
+            wrap.className = 'op-not-configured';
+            wrap.innerHTML = '<div class="op-not-configured-title">' + GIQ.fmt.esc(title) + '</div>'
+                + '<div class="op-not-configured-sub">Set the following in your <span class="mono">.env</span>:</div>'
+                + '<ul class="op-not-configured-list mono">'
+                + envVars.map(v => '<li>' + GIQ.fmt.esc(v) + '</li>').join('')
+                + '</ul>';
+            return wrap;
+        }
+
+        function fmtElapsedSeconds(s) {
+            if (s == null) return '—';
+            const m = Math.floor(s / 60);
+            const sec = s % 60;
+            if (m === 0) return sec + 's';
+            const h = Math.floor(m / 60);
+            if (h === 0) return m + 'm ' + sec + 's';
+            return h + 'h ' + (m % 60) + 'm';
+        }
+
+        return () => { if (pollTimer) clearInterval(pollTimer); };
+    }
+
+    /* =====================================================================
+     * Monitor → Charts
+     * ===================================================================== */
+
+    function renderChartsMonitor(root) {
+        const state = {
+            stats: null,
+            charts: null,
+        };
+        let pollTimer = null;
+
+        root.appendChild(GIQ.components.pageHeader({
+            eyebrow: 'MONITOR',
+            title: 'Charts Stats',
+        }));
+
+        const banner = document.createElement('div');
+        banner.className = 'op-build-banner';
+        root.appendChild(banner);
+
+        const body = document.createElement('div');
+        body.className = 'op-page-body';
+        root.appendChild(body);
+
+        const statsHost = document.createElement('div');
+        statsHost.className = 'op-stat-row op-stat-row-six';
+        body.appendChild(statsHost);
+
+        const breakdownHost = document.createElement('div');
+        body.appendChild(breakdownHost);
+
+        load();
+        pollTimer = setInterval(load, 30000);
+
+        function load() {
+            return Promise.all([
+                GIQ.api.get('/v1/charts/stats').catch(() => null),
+                GIQ.api.get('/v1/charts').catch(() => null),
+            ]).then(([stats, charts]) => {
+                state.stats = stats;
+                state.charts = charts;
+                renderBanner();
+                renderStats();
+                renderBreakdown();
+            });
+        }
+
+        function renderBanner() {
+            banner.innerHTML = '';
+            banner.className = 'op-build-banner';
+            const st = state.stats;
+            if (!st) {
+                banner.classList.add('warn');
+                banner.innerHTML = '<span class="op-build-dot"></span>'
+                    + '<span class="mono"><strong>UNAVAILABLE</strong></span>'
+                    + '<span class="op-build-msg">Could not load /v1/charts/stats. Charts may not be enabled.</span>';
+                return;
+            }
+            const auto = !!st.auto_rebuild_enabled;
+            const last = st.last_fetched_at;
+            const interval = st.interval_hours || 24;
+            const ageH = last ? (Math.floor(Date.now() / 1000) - last) / 3600 : null;
+
+            let kind = 'warn';
+            let title = 'STALE';
+            let msg = '';
+            if (last == null) {
+                title = 'NOT YET BUILT';
+                msg = 'No charts have been built. Trigger a build from Actions → Charts.';
+            } else if (ageH < interval * 1.5) {
+                kind = 'good';
+                title = 'FRESH';
+                msg = 'Built ' + GIQ.fmt.timeAgo(last) + (auto ? ' · auto-rebuild every ' + interval + 'h' : ' · auto-rebuild OFF');
+            } else if (ageH < interval * 3) {
+                kind = 'warn';
+                title = 'AGING';
+                msg = 'Built ' + GIQ.fmt.timeAgo(last) + ' · expected within ' + interval + 'h';
+            } else {
+                kind = 'bad';
+                title = 'STALE';
+                msg = 'Last built ' + GIQ.fmt.timeAgo(last) + ' · expected every ' + interval + 'h';
+            }
+            if (!auto) {
+                msg += ' · set CHARTS_ENABLED=true in your .env to enable scheduled builds';
+            }
+
+            banner.classList.add(kind);
+            banner.innerHTML = '<span class="op-build-dot"></span>'
+                + '<span class="mono op-build-state"><strong>' + title + '</strong></span>'
+                + '<span class="op-build-msg">' + GIQ.fmt.esc(msg) + '</span>';
+        }
+
+        function renderStats() {
+            statsHost.innerHTML = '';
+            const st = state.stats || {};
+
+            const lastValue = st.last_fetched_at ? GIQ.fmt.timeAgo(st.last_fetched_at) : 'Never';
+            statsHost.appendChild(GIQ.components.statTile({
+                label: 'Last build',
+                value: lastValue,
+                delta: st.last_fetched_at ? new Date(st.last_fetched_at * 1000).toISOString().slice(0, 16).replace('T', ' ') + ' UTC' : null,
+            }));
+            statsHost.appendChild(GIQ.components.statTile({
+                label: 'Total charts',
+                value: GIQ.fmt.fmtNumber(st.chart_count || 0),
+            }));
+            statsHost.appendChild(GIQ.components.statTile({
+                label: 'Total entries',
+                value: GIQ.fmt.fmtNumber(st.total_entries || 0),
+            }));
+            statsHost.appendChild(GIQ.components.statTile({
+                label: 'Library matches',
+                value: GIQ.fmt.fmtNumber(st.library_matches || 0),
+                delta: 'in your library',
+                deltaKind: 'good',
+            }));
+
+            const matchRate = st.match_rate != null ? (st.match_rate * 100).toFixed(1) + '%' : '—';
+            statsHost.appendChild(GIQ.components.statTile({
+                label: 'Match rate',
+                value: matchRate,
+            }));
+
+            const unmatched = (st.total_entries || 0) - (st.library_matches || 0);
+            statsHost.appendChild(GIQ.components.statTile({
+                label: 'Unmatched',
+                value: GIQ.fmt.fmtNumber(unmatched),
+                delta: unmatched > 0 ? 'candidates for download' : null,
+                deltaKind: 'flat',
+            }));
+        }
+
+        function renderBreakdown() {
+            breakdownHost.innerHTML = '';
+            const charts = (state.charts && state.charts.charts) || [];
+
+            if (!charts.length) {
+                const body = document.createElement('div');
+                body.innerHTML = '<div class="empty-row">No charts built yet. Trigger from Actions → Charts.</div>';
+                breakdownHost.appendChild(GIQ.components.panel({
+                    title: 'Per-scope breakdown',
+                    sub: 'no charts available',
+                    children: body,
+                }));
+                return;
+            }
+
+            // Group charts by scope.
+            const groups = {};
+            charts.forEach(c => {
+                const scope = c.scope || 'global';
+                let groupKey = 'Global';
+                if (scope.indexOf('tag:') === 0) groupKey = 'Tags';
+                else if (scope.indexOf('geo:') === 0) groupKey = 'Countries';
+                const g = groups[groupKey] || (groups[groupKey] = []);
+                g.push(c);
+            });
+
+            const tbody = document.createElement('div');
+            tbody.className = 'op-charts-breakdown';
+
+            Object.keys(groups).forEach(k => {
+                const items = groups[k];
+                const groupSection = document.createElement('div');
+                groupSection.className = 'op-charts-group';
+                groupSection.innerHTML = '<div class="op-charts-group-head"><span class="mono">' + GIQ.fmt.esc(k.toUpperCase()) + '</span><span class="op-charts-group-count mono muted">' + items.length + ' chart' + (items.length === 1 ? '' : 's') + '</span></div>';
+
+                const inner = document.createElement('div');
+                inner.className = 'op-charts-group-list';
+                items.forEach(c => {
+                    const scopeLabel = c.scope === 'global' ? 'global'
+                        : c.scope.indexOf('tag:') === 0 ? c.scope.slice(4)
+                        : c.scope.indexOf('geo:') === 0 ? c.scope.slice(4)
+                        : c.scope;
+                    const row = document.createElement('div');
+                    row.className = 'op-charts-row';
+                    row.innerHTML = ''
+                        + '<span class="op-charts-row-name">' + GIQ.fmt.esc(scopeLabel) + '</span>'
+                        + '<span class="op-source-chip mono">' + GIQ.fmt.esc((c.chart_type || '').replace('_', ' ')) + '</span>'
+                        + '<span class="op-charts-row-meta mono muted">' + GIQ.fmt.fmtNumber(c.entry_count || c.total || 0) + ' entries</span>'
+                        + (c.fetched_at
+                            ? '<span class="op-charts-row-meta mono muted">' + GIQ.fmt.timeAgo(c.fetched_at) + '</span>'
+                            : '<span class="op-charts-row-meta mono muted">—</span>');
+                    inner.appendChild(row);
+                });
+                groupSection.appendChild(inner);
+                tbody.appendChild(groupSection);
+            });
+
+            breakdownHost.appendChild(GIQ.components.panel({
+                title: 'Per-scope breakdown',
+                sub: charts.length + ' charts grouped by scope',
+                children: tbody,
+            }));
+        }
+
+        return () => { if (pollTimer) clearInterval(pollTimer); };
     }
 
 })();
