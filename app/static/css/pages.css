@@ -155,8 +155,11 @@
     font-family: var(--mono);
     font-size: 10px;
     color: var(--ink-3);
-    width: 60px;
+    width: 80px;
     flex-shrink: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
 }
 .recent-event-type {
     font-family: var(--mono);
@@ -167,9 +170,13 @@
     border-radius: 3px;
     border: 1px solid rgba(236, 232, 242, 0.12);
     color: var(--ink-2);
-    width: 70px;
+    width: 90px;
     text-align: center;
     flex-shrink: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    box-sizing: border-box;
 }
 .recent-event-user {
     color: var(--accent);
@@ -245,6 +252,8 @@
 .scan-progress-head {
     display: flex;
     justify-content: space-between;
+    align-items: baseline;
+    gap: 12px;
     font-size: 11px;
     color: var(--ink-2);
     margin-bottom: 6px;
@@ -575,6 +584,14 @@
     font-size: 12px;
     width: 100%;
     box-sizing: border-box;
+    -moz-appearance: textfield;
+    appearance: textfield;
+}
+.actions-num-field input[type="number"]::-webkit-outer-spin-button,
+.actions-num-field input[type="number"]::-webkit-inner-spin-button {
+    -webkit-appearance: none;
+    appearance: none;
+    margin: 0;
 }
 .actions-num-field input[type="number"]:focus {
     outline: none;
@@ -775,6 +792,14 @@
     padding: 8px 8px;
     font-family: var(--mono);
     font-size: 12px;
+    -moz-appearance: textfield;
+    appearance: textfield;
+}
+.actions-search-num::-webkit-outer-spin-button,
+.actions-search-num::-webkit-inner-spin-button {
+    -webkit-appearance: none;
+    appearance: none;
+    margin: 0;
 }
 .actions-search-num:focus {
     outline: none;
@@ -4327,8 +4352,8 @@
 .artist-detail-sim-chip {
     display: inline-flex;
     align-items: center;
-    gap: 4px;
-    padding: 4px 10px;
+    gap: 6px;
+    padding: 3px 10px 3px 3px;
     border-radius: 999px;
     border: 1px solid var(--line-soft);
     background: var(--paper);
@@ -4339,6 +4364,33 @@
 .artist-detail-sim-chip:hover {
     border-color: var(--accent);
     color: var(--accent);
+}
+.artist-detail-sim-avatar {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 22px;
+    height: 22px;
+    border-radius: 50%;
+    overflow: hidden;
+    background: var(--paper-sub);
+    flex-shrink: 0;
+}
+.artist-detail-sim-avatar img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+}
+.artist-detail-sim-avatar-empty {
+    font-family: var(--display);
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--ink-3);
+}
+.artist-detail-sim-text {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
 }
 
 /* ── News (session 11) ───────────────────────────────────────────── */
