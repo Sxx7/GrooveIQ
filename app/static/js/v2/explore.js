@@ -3,15 +3,19 @@
  * Session 09 lands:
  *   - GIQ.pages.explore.recommendations
  *   - GIQ.pages.explore.tracks
+ * Session 10 lands:
+ *   - GIQ.pages.explore.playlists       (list + #/explore/playlists/{id} detail)
+ *   - GIQ.pages.explore['text-search']
+ *   - GIQ.pages.explore['music-map']
  *
- * Other Explore sub-pages (radio, playlists, text-search, music-map,
- * charts, artists, news) keep stub renderers — sessions 10/11 fill them.
+ * Other Explore sub-pages (radio, charts, artists, news) keep stub renderers —
+ * session 11 fills them.
  */
 
 (function () {
     GIQ.pages.explore = GIQ.pages.explore || {};
 
-    const STUBS = ['radio', 'playlists', 'text-search', 'music-map', 'charts', 'artists', 'news'];
+    const STUBS = ['radio', 'charts', 'artists', 'news'];
     STUBS.forEach(sp => {
         GIQ.pages.explore[sp] = function (root) {
             const label = GIQ.router.SUBPAGE_LABELS[sp] || sp;
@@ -473,11 +477,852 @@
             load();
         });
         genBtn.addEventListener('click', () => {
-            GIQ.toast('Generate Playlist modal — session 10', 'info');
+            GIQ.components.generatePlaylistModal({
+                prefill: { strategy: 'flow' },
+            });
         });
 
         load();
 
         return function cleanup() { /* state persists in GIQ.state.trackList */ };
+    };
+
+    /* ── Playlists ──────────────────────────────────────────────────── */
+
+    function _strategyChip(strategy) {
+        const span = document.createElement('span');
+        span.className = 'rd-source-chip pl-strategy';
+        span.textContent = String(strategy || 'unknown').replace(/_/g, ' ');
+        return span;
+    }
+
+    function _fmtPlaylistDuration(secs) {
+        if (secs == null) return '—';
+        const s = Math.max(0, Math.round(secs));
+        const m = Math.floor(s / 60);
+        if (m < 60) return m + 'm';
+        const h = Math.floor(m / 60);
+        const rm = m % 60;
+        return h + 'h ' + (rm < 10 ? '0' + rm : rm) + 'm';
+    }
+
+    GIQ.pages.explore.playlists = function renderPlaylists(root, params) {
+        const tail = (params && params._tail) || [];
+        if (tail.length && tail[0]) {
+            const id = parseInt(tail[0], 10);
+            if (!isNaN(id)) return _renderPlaylistDetail(root, id);
+        }
+        return _renderPlaylistList(root);
+    };
+
+    function _renderPlaylistList(root) {
+        const right = document.createElement('div');
+        right.className = 'pl-header-controls';
+        const genBtn = document.createElement('button');
+        genBtn.type = 'button';
+        genBtn.className = 'vc-btn vc-btn-primary vc-btn-sm';
+        genBtn.textContent = 'Generate Playlist';
+        right.appendChild(genBtn);
+
+        const header = GIQ.components.pageHeader({
+            eyebrow: 'EXPLORE',
+            title: 'Playlists (…)',
+            right: right,
+        });
+        root.appendChild(header);
+
+        const body = document.createElement('div');
+        body.className = 'pl-body';
+        root.appendChild(body);
+
+        const grid = document.createElement('div');
+        grid.className = 'pl-grid';
+        body.appendChild(grid);
+
+        function setTitle(n) {
+            const t = header.querySelector('.page-title');
+            if (t) t.textContent = 'Playlists (' + n + ')';
+        }
+
+        async function load() {
+            grid.innerHTML = '<div class="vc-loading">Loading playlists…</div>';
+            try {
+                const data = await GIQ.api.get('/v1/playlists?limit=50');
+                const list = Array.isArray(data) ? data : (data && data.playlists) || [];
+                setTitle(list.length);
+                grid.innerHTML = '';
+                if (!list.length) {
+                    const empty = document.createElement('div');
+                    empty.className = 'reco-empty';
+                    empty.innerHTML = 'No playlists yet. Click <strong>Generate Playlist</strong> to create one.';
+                    grid.appendChild(empty);
+                    return;
+                }
+                list.forEach(p => grid.appendChild(_renderPlaylistCard(p)));
+            } catch (e) {
+                grid.innerHTML = '';
+                const err = document.createElement('div');
+                err.className = 'reco-error';
+                err.textContent = 'Failed to load playlists: ' + e.message;
+                grid.appendChild(err);
+            }
+        }
+
+        genBtn.addEventListener('click', () => {
+            GIQ.components.generatePlaylistModal({
+                onCreated(detail) {
+                    if (detail && detail.id != null) {
+                        GIQ.router.navigate('explore', 'playlists/' + detail.id);
+                    } else {
+                        load();
+                    }
+                },
+            });
+        });
+
+        load();
+        return function cleanup() { /* nothing */ };
+    }
+
+    function _renderPlaylistCard(p) {
+        const esc = GIQ.fmt.esc;
+        const card = document.createElement('a');
+        card.className = 'pl-card';
+        card.href = '#/explore/playlists/' + encodeURIComponent(p.id);
+
+        const name = document.createElement('div');
+        name.className = 'pl-card-name';
+        name.textContent = p.name || ('Playlist #' + p.id);
+        card.appendChild(name);
+
+        const meta = document.createElement('div');
+        meta.className = 'pl-card-meta';
+        const chip = _strategyChip(p.strategy);
+        meta.appendChild(chip);
+        const stats = document.createElement('span');
+        stats.className = 'mono muted';
+        stats.textContent = (p.track_count || 0) + ' tracks · '
+            + _fmtPlaylistDuration(p.total_duration) + ' · '
+            + GIQ.fmt.timeAgo(p.created_at);
+        meta.appendChild(stats);
+        card.appendChild(meta);
+
+        if (p.seed_track_id) {
+            const seed = document.createElement('div');
+            seed.className = 'pl-card-seed mono muted';
+            seed.textContent = 'seed: ' + esc(String(p.seed_track_id).slice(0, 16));
+            seed.title = p.seed_track_id;
+            card.appendChild(seed);
+        }
+        return card;
+    }
+
+    function _renderPlaylistDetail(root, playlistId) {
+        const right = document.createElement('div');
+        right.className = 'pl-header-controls';
+
+        const backBtn = document.createElement('a');
+        backBtn.className = 'vc-btn vc-btn-sm';
+        backBtn.href = '#/explore/playlists';
+        backBtn.textContent = '← Back';
+        backBtn.style.textDecoration = 'none';
+
+        const delBtn = document.createElement('button');
+        delBtn.type = 'button';
+        delBtn.className = 'vc-btn vc-btn-sm pl-delete';
+        delBtn.textContent = 'Delete';
+        delBtn.disabled = true;
+
+        right.appendChild(backBtn);
+        right.appendChild(delBtn);
+
+        const header = GIQ.components.pageHeader({
+            eyebrow: 'EXPLORE',
+            title: 'Playlist',
+            right: right,
+        });
+        root.appendChild(header);
+
+        /* Subtitle bar (strategy chip · count · duration) sits below the header. */
+        const sub = document.createElement('div');
+        sub.className = 'pl-subtitle';
+        root.appendChild(sub);
+
+        const body = document.createElement('div');
+        body.className = 'pl-detail-body';
+        root.appendChild(body);
+
+        const tableHost = document.createElement('section');
+        tableHost.className = 'panel pl-detail-panel';
+        body.appendChild(tableHost);
+
+        let loaded = null;
+
+        async function load() {
+            tableHost.innerHTML = '<div class="vc-loading">Loading playlist…</div>';
+            try {
+                const p = await GIQ.api.get('/v1/playlists/' + encodeURIComponent(playlistId));
+                loaded = p;
+                const t = header.querySelector('.page-title');
+                if (t) t.textContent = p.name || ('Playlist #' + p.id);
+                sub.innerHTML = '';
+                sub.appendChild(_strategyChip(p.strategy));
+                const meta = document.createElement('span');
+                meta.className = 'mono muted pl-subtitle-meta';
+                meta.textContent = (p.track_count || 0) + ' tracks · '
+                    + _fmtPlaylistDuration(p.total_duration) + ' · '
+                    + 'created ' + GIQ.fmt.timeAgo(p.created_at);
+                sub.appendChild(meta);
+
+                delBtn.disabled = false;
+
+                tableHost.innerHTML = '';
+                const head = document.createElement('div');
+                head.className = 'panel-head';
+                head.innerHTML = '<div class="panel-head-left"><div class="panel-title-row">'
+                    + '<div class="panel-title">Tracks</div></div></div>';
+                tableHost.appendChild(head);
+
+                const panelBody = document.createElement('div');
+                panelBody.className = 'panel-body';
+                const table = GIQ.components.trackTable({
+                    columns: ['rank', 'title', 'artist', 'bpm', 'key', 'energy', 'mood', 'duration'],
+                    rows: p.tracks || [],
+                    empty: 'This playlist has no tracks.',
+                });
+                panelBody.appendChild(table);
+                tableHost.appendChild(panelBody);
+            } catch (e) {
+                tableHost.innerHTML = '';
+                const err = document.createElement('div');
+                err.className = 'reco-error';
+                err.textContent = (e.status === 404)
+                    ? 'Playlist not found.'
+                    : 'Failed to load playlist: ' + e.message;
+                tableHost.appendChild(err);
+                delBtn.disabled = true;
+            }
+        }
+
+        delBtn.addEventListener('click', async () => {
+            if (!loaded) return;
+            const ok = window.confirm('Delete playlist "' + (loaded.name || ('#' + loaded.id)) + '"? This cannot be undone.');
+            if (!ok) return;
+            delBtn.disabled = true;
+            const oldText = delBtn.textContent;
+            delBtn.textContent = 'Deleting…';
+            try {
+                await GIQ.api.del('/v1/playlists/' + encodeURIComponent(loaded.id));
+                GIQ.toast('Playlist deleted', 'success');
+                GIQ.router.navigate('explore', 'playlists');
+            } catch (e) {
+                delBtn.disabled = false;
+                delBtn.textContent = oldText;
+                GIQ.toast('Failed to delete: ' + e.message, 'error');
+            }
+        });
+
+        load();
+        return function cleanup() { /* nothing */ };
+    }
+
+    /* ── Text Search (CLAP) ─────────────────────────────────────────── */
+
+    GIQ.state.textSearch = GIQ.state.textSearch || {
+        prompt: '',
+        limit: 50,
+        result: null,
+        clapStats: null,
+    };
+
+    const TEXT_SEARCH_EXAMPLES = [
+        'upbeat summer night driving',
+        'chill lofi study session',
+        'aggressive workout metal',
+        'rainy coffee shop jazz',
+    ];
+
+    GIQ.pages.explore['text-search'] = function renderTextSearch(root) {
+        const s = GIQ.state.textSearch;
+
+        root.appendChild(GIQ.components.pageHeader({
+            eyebrow: 'EXPLORE',
+            title: 'Text Search',
+        }));
+
+        const body = document.createElement('div');
+        body.className = 'ts-body';
+        root.appendChild(body);
+
+        const gateHost = document.createElement('div');
+        body.appendChild(gateHost);
+
+        const panel = document.createElement('section');
+        panel.className = 'panel ts-search-panel';
+        body.appendChild(panel);
+
+        const panelBody = document.createElement('div');
+        panelBody.className = 'panel-body';
+        panel.appendChild(panelBody);
+
+        const controls = document.createElement('div');
+        controls.className = 'ts-controls';
+        panelBody.appendChild(controls);
+
+        const promptInput = document.createElement('input');
+        promptInput.type = 'text';
+        promptInput.className = 'ts-prompt';
+        promptInput.placeholder = 'Describe what you want to hear — e.g. melancholic piano at 2am';
+        promptInput.value = s.prompt || '';
+        controls.appendChild(promptInput);
+
+        const limitInput = document.createElement('input');
+        limitInput.type = 'number';
+        limitInput.min = '5';
+        limitInput.max = '200';
+        limitInput.className = 'reco-input ts-limit';
+        limitInput.value = String(s.limit || 50);
+        controls.appendChild(limitInput);
+
+        const searchBtn = document.createElement('button');
+        searchBtn.type = 'button';
+        searchBtn.className = 'vc-btn vc-btn-primary vc-btn-sm';
+        searchBtn.textContent = 'Search';
+        controls.appendChild(searchBtn);
+
+        const chipsRow = document.createElement('div');
+        chipsRow.className = 'ts-examples';
+        const chipsLbl = document.createElement('span');
+        chipsLbl.className = 'eyebrow';
+        chipsLbl.textContent = 'Try';
+        chipsRow.appendChild(chipsLbl);
+        TEXT_SEARCH_EXAMPLES.forEach(ex => {
+            const c = document.createElement('button');
+            c.type = 'button';
+            c.className = 'ts-example-chip';
+            c.textContent = ex;
+            c.addEventListener('click', () => {
+                promptInput.value = ex;
+                s.prompt = ex;
+                runSearch();
+            });
+            chipsRow.appendChild(c);
+        });
+        panelBody.appendChild(chipsRow);
+
+        const results = document.createElement('div');
+        results.className = 'ts-results';
+        body.appendChild(results);
+
+        function disableControls(hide) {
+            panel.style.display = hide ? 'none' : '';
+            results.style.display = hide ? 'none' : '';
+        }
+
+        function gateMessage(text) {
+            gateHost.innerHTML = '';
+            const g = document.createElement('div');
+            g.className = 'ts-gate';
+            g.innerHTML = text;
+            gateHost.appendChild(g);
+        }
+
+        async function checkClap() {
+            try {
+                const stats = s.clapStats || await GIQ.api.get('/v1/tracks/clap/stats');
+                s.clapStats = stats;
+                if (!stats || stats.enabled === false) {
+                    gateMessage('CLAP is disabled. Enable <code>CLAP_ENABLED=true</code> in <code>.env</code> '
+                        + 'and run a CLAP backfill from <a href="#/actions/pipeline-ml">Actions → Pipeline &amp; ML</a>.');
+                    disableControls(true);
+                    return false;
+                }
+                if (!stats.with_clap_embedding) {
+                    gateMessage('No tracks have CLAP embeddings yet. Run a CLAP backfill from '
+                        + '<a href="#/actions/pipeline-ml">Actions → Pipeline &amp; ML</a>.');
+                    disableControls(true);
+                    return false;
+                }
+                gateHost.innerHTML = '';
+                const cov = document.createElement('div');
+                cov.className = 'ts-coverage mono muted';
+                cov.textContent = 'CLAP index: ' + stats.with_clap_embedding + ' / '
+                    + stats.total_tracks + ' tracks ('
+                    + Math.round((stats.coverage || 0) * 100) + '%)';
+                gateHost.appendChild(cov);
+                disableControls(false);
+                return true;
+            } catch (e) {
+                gateMessage('Failed to check CLAP availability: ' + GIQ.fmt.esc(e.message));
+                disableControls(true);
+                return false;
+            }
+        }
+
+        async function runSearch() {
+            const q = (promptInput.value || '').trim();
+            if (!q) {
+                GIQ.toast('Type a prompt first.', 'warning');
+                return;
+            }
+            s.prompt = q;
+            const lim = Math.max(5, Math.min(200, parseInt(limitInput.value, 10) || 50));
+            s.limit = lim;
+            results.innerHTML = '<div class="vc-loading">Searching…</div>';
+            searchBtn.disabled = true;
+            try {
+                const data = await GIQ.api.get('/v1/tracks/text-search?q='
+                    + encodeURIComponent(q) + '&limit=' + lim);
+                s.result = data;
+                renderResults();
+            } catch (e) {
+                results.innerHTML = '';
+                const err = document.createElement('div');
+                err.className = 'reco-error';
+                err.textContent = 'Search failed: ' + e.message;
+                results.appendChild(err);
+            } finally {
+                searchBtn.disabled = false;
+            }
+        }
+
+        function renderResults() {
+            const data = s.result;
+            results.innerHTML = '';
+            if (!data) return;
+            const tracks = data.tracks || [];
+            tracks.forEach(t => {
+                if (typeof t.similarity === 'number' && typeof t.score !== 'number') t.score = t.similarity;
+            });
+
+            const tableHost = document.createElement('section');
+            tableHost.className = 'panel ts-results-panel';
+            const head = document.createElement('div');
+            head.className = 'panel-head';
+            const subParts = [
+                tracks.length + ' results',
+                'q="' + GIQ.fmt.esc(data.query || s.prompt) + '"',
+            ];
+            if (data.model_version) subParts.push('model ' + GIQ.fmt.esc(data.model_version));
+            if (data.request_id) subParts.push('req ' + GIQ.fmt.esc(String(data.request_id).slice(0, 12)));
+            head.innerHTML = '<div class="panel-head-left"><div class="panel-title-row">'
+                + '<div class="panel-title">Results</div></div>'
+                + '<div class="panel-sub mono">' + subParts.join(' · ') + '</div></div>';
+            const genWrap = document.createElement('div');
+            const genBtn = document.createElement('button');
+            genBtn.type = 'button';
+            genBtn.className = 'vc-btn vc-btn-primary vc-btn-sm';
+            genBtn.textContent = 'Generate Playlist';
+            genBtn.addEventListener('click', () => {
+                GIQ.components.generatePlaylistModal({
+                    prefill: {
+                        strategy: 'text',
+                        prompt: s.prompt,
+                        name: 'Prompt: ' + s.prompt.slice(0, 60),
+                    },
+                });
+            });
+            genWrap.appendChild(genBtn);
+            head.appendChild(genWrap);
+            tableHost.appendChild(head);
+
+            const pBody = document.createElement('div');
+            pBody.className = 'panel-body';
+            const table = GIQ.components.trackTable({
+                columns: ['rank', 'title', 'artist', 'score', 'bpm', 'key', 'energy', 'mood', 'duration'],
+                rows: tracks,
+                empty: 'No matches for that prompt. Try different words.',
+            });
+            pBody.appendChild(table);
+            tableHost.appendChild(pBody);
+            results.appendChild(tableHost);
+        }
+
+        promptInput.addEventListener('input', () => { s.prompt = promptInput.value; });
+        promptInput.addEventListener('keydown', e => { if (e.key === 'Enter') runSearch(); });
+        limitInput.addEventListener('input', () => {
+            const v = parseInt(limitInput.value, 10);
+            s.limit = (isNaN(v) || v < 5) ? 5 : Math.min(200, v);
+        });
+        searchBtn.addEventListener('click', runSearch);
+
+        checkClap().then(ok => { if (ok && s.result) renderResults(); });
+
+        return function cleanup() { /* state persists in GIQ.state.textSearch */ };
+    };
+
+    /* ── Music Map ──────────────────────────────────────────────────── */
+
+    GIQ.state.musicMap = GIQ.state.musicMap || {
+        tracks: null,
+        colorBy: 'by_energy',
+        selectedA: null,
+        selectedB: null,
+        loading: false,
+        error: null,
+    };
+
+    const MAP_COLOR_OPTIONS = [
+        ['by_energy', 'Color: Energy'],
+        ['by_danceability', 'Color: Danceability'],
+        ['by_valence', 'Color: Valence'],
+        ['by_acousticness', 'Color: Acousticness'],
+        ['by_key', 'Color: Key'],
+        ['by_mood', 'Color: Mood'],
+    ];
+
+    /* by_mood / by_key are categorical; everything else is monochrome ramp
+     * from --paper-2 to --accent (perceptually-uniform-ish; doesn't claim
+     * to be viridis but reads cleanly on the dark background). */
+    const MOOD_COLOR = {
+        happy: '#e6c77a', sad: '#7fb0d6', aggressive: '#c66f6f', relaxed: '#8fc6a8',
+        party: '#d49ec0', acoustic: '#b8a489', electronic: '#7fbac6',
+    };
+    const KEY_COLOR = {
+        'C': '#a887ce', 'C#': '#b48fcf', 'D': '#c098cf', 'D#': '#cba0d0',
+        'E': '#d4a8c5', 'F': '#d4a8b0', 'F#': '#d4b09a', 'G': '#cdb98a',
+        'G#': '#bcc187', 'A': '#a4c293', 'A#': '#88c1a6', 'B': '#82bdc0',
+    };
+    /* Lavender ramp endpoints in linear-ish RGB space — tweaked to match the
+     * palette's --paper-2 (#4d3e50) and --accent (#a887ce). */
+    const RAMP = { lo: [77, 62, 80], hi: [168, 135, 206] };
+    function rampColor(t) {
+        const c = Math.max(0, Math.min(1, t));
+        const r = Math.round(RAMP.lo[0] + (RAMP.hi[0] - RAMP.lo[0]) * c);
+        const g = Math.round(RAMP.lo[1] + (RAMP.hi[1] - RAMP.lo[1]) * c);
+        const b = Math.round(RAMP.lo[2] + (RAMP.hi[2] - RAMP.lo[2]) * c);
+        return 'rgb(' + r + ',' + g + ',' + b + ')';
+    }
+
+    GIQ.pages.explore['music-map'] = function renderMusicMap(root) {
+        const s = GIQ.state.musicMap;
+
+        const right = document.createElement('div');
+        right.className = 'mm-header-controls';
+        const colorSel = document.createElement('select');
+        colorSel.className = 'reco-select';
+        MAP_COLOR_OPTIONS.forEach(([v, lbl]) => {
+            const o = document.createElement('option');
+            o.value = v; o.textContent = lbl;
+            if (v === s.colorBy) o.selected = true;
+            colorSel.appendChild(o);
+        });
+        const reloadBtn = document.createElement('button');
+        reloadBtn.type = 'button';
+        reloadBtn.className = 'vc-btn vc-btn-sm';
+        reloadBtn.textContent = 'Reload';
+        right.appendChild(colorSel);
+        right.appendChild(reloadBtn);
+
+        root.appendChild(GIQ.components.pageHeader({
+            eyebrow: 'EXPLORE',
+            title: 'Music Map',
+            right: right,
+        }));
+
+        const body = document.createElement('div');
+        body.className = 'mm-body';
+        root.appendChild(body);
+
+        const isMobile = window.innerWidth < 700;
+        if (isMobile) {
+            const notice = document.createElement('div');
+            notice.className = 'mm-mobile-notice';
+            notice.textContent = 'Music Map is best viewed on desktop. '
+                + 'Pinch-zoom and tap-to-select are supported but limited.';
+            body.appendChild(notice);
+        }
+
+        const stage = document.createElement('div');
+        stage.className = 'mm-stage';
+        body.appendChild(stage);
+
+        const canvas = document.createElement('canvas');
+        canvas.className = 'mm-canvas';
+        canvas.width = 1200;
+        canvas.height = 720;
+        stage.appendChild(canvas);
+
+        const tooltip = document.createElement('div');
+        tooltip.className = 'mm-tooltip';
+        tooltip.style.display = 'none';
+        stage.appendChild(tooltip);
+
+        const selBar = document.createElement('div');
+        selBar.className = 'mm-selection';
+        body.appendChild(selBar);
+
+        const status = document.createElement('div');
+        status.className = 'mm-status mono muted';
+        body.appendChild(status);
+
+        let bounds = null;
+        let cleanedUp = false;
+
+        function fmtSel(t) {
+            const esc = GIQ.fmt.esc;
+            return '<strong>' + esc(t.title || t.track_id || '—') + '</strong>'
+                + (t.artist ? ' <span class="muted">' + esc(t.artist) + '</span>' : '');
+        }
+
+        function renderSelection() {
+            selBar.innerHTML = '';
+            if (!s.selectedA && !s.selectedB) return;
+
+            const tagA = document.createElement('span');
+            tagA.className = 'mm-pin mm-pin-a';
+            tagA.textContent = 'A';
+            selBar.appendChild(tagA);
+            const a = document.createElement('span');
+            a.className = 'mm-sel-name';
+            a.innerHTML = fmtSel(s.selectedA);
+            selBar.appendChild(a);
+
+            if (s.selectedB) {
+                const arrow = document.createElement('span');
+                arrow.className = 'muted'; arrow.textContent = ' → ';
+                selBar.appendChild(arrow);
+                const tagB = document.createElement('span');
+                tagB.className = 'mm-pin mm-pin-b';
+                tagB.textContent = 'B';
+                selBar.appendChild(tagB);
+                const b = document.createElement('span');
+                b.className = 'mm-sel-name';
+                b.innerHTML = fmtSel(s.selectedB);
+                selBar.appendChild(b);
+
+                const buildBtn = document.createElement('button');
+                buildBtn.type = 'button';
+                buildBtn.className = 'vc-btn vc-btn-primary vc-btn-sm mm-build';
+                buildBtn.textContent = 'Build Path';
+                buildBtn.addEventListener('click', () => {
+                    GIQ.components.generatePlaylistModal({
+                        prefill: {
+                            strategy: 'path',
+                            seed_track_id: s.selectedA.track_id,
+                            target_track_id: s.selectedB.track_id,
+                            name: 'Path: ' + ((s.selectedA.title || 'A') + ' → ' + (s.selectedB.title || 'B')).slice(0, 80),
+                        },
+                        onCreated(detail) {
+                            if (detail && detail.id != null) {
+                                GIQ.router.navigate('explore', 'playlists/' + detail.id);
+                            }
+                        },
+                    });
+                });
+                selBar.appendChild(buildBtn);
+            } else {
+                const hint = document.createElement('span');
+                hint.className = 'muted';
+                hint.textContent = ' — click another track for B';
+                selBar.appendChild(hint);
+            }
+
+            const clearBtn = document.createElement('button');
+            clearBtn.type = 'button';
+            clearBtn.className = 'vc-btn vc-btn-sm mm-clear';
+            clearBtn.textContent = 'Clear';
+            clearBtn.addEventListener('click', () => {
+                s.selectedA = null; s.selectedB = null;
+                renderSelection(); paint();
+            });
+            selBar.appendChild(clearBtn);
+        }
+
+        function computeBounds(tracks) {
+            if (!tracks.length) return { xmin: 0, xmax: 1, ymin: 0, ymax: 1 };
+            let xmin = Infinity, xmax = -Infinity, ymin = Infinity, ymax = -Infinity;
+            for (let i = 0; i < tracks.length; i++) {
+                const t = tracks[i];
+                if (t.x < xmin) xmin = t.x;
+                if (t.x > xmax) xmax = t.x;
+                if (t.y < ymin) ymin = t.y;
+                if (t.y > ymax) ymax = t.y;
+            }
+            if (xmax === xmin) xmax = xmin + 1;
+            if (ymax === ymin) ymax = ymin + 1;
+            return { xmin, xmax, ymin, ymax };
+        }
+
+        function project(t) {
+            const pad = 22;
+            const w = canvas.width, h = canvas.height;
+            const fx = (t.x - bounds.xmin) / (bounds.xmax - bounds.xmin);
+            const fy = (t.y - bounds.ymin) / (bounds.ymax - bounds.ymin);
+            return [pad + fx * (w - 2 * pad), h - pad - fy * (h - 2 * pad)];
+        }
+
+        function colorFor(t) {
+            const mode = s.colorBy;
+            if (mode === 'by_mood') return MOOD_COLOR[t.mood] || '#7b6e7f';
+            if (mode === 'by_key') return KEY_COLOR[t.key] || '#7b6e7f';
+            let v = null;
+            if (mode === 'by_energy') v = t.energy;
+            else if (mode === 'by_danceability') v = t.danceability;
+            else if (mode === 'by_valence') v = t.valence;
+            else if (mode === 'by_acousticness') v = t.acousticness;
+            if (v == null) return '#4d3e50';
+            return rampColor(Math.max(0, Math.min(1, v)));
+        }
+
+        function paint() {
+            if (cleanedUp) return;
+            const ctx = canvas.getContext('2d');
+            const w = canvas.width, h = canvas.height;
+            ctx.clearRect(0, 0, w, h);
+            ctx.fillStyle = 'rgba(15, 14, 22, 0.6)';
+            ctx.fillRect(0, 0, w, h);
+            if (!s.tracks || !s.tracks.length) return;
+
+            ctx.globalAlpha = 0.78;
+            for (let i = 0; i < s.tracks.length; i++) {
+                const t = s.tracks[i];
+                const xy = project(t);
+                ctx.fillStyle = colorFor(t);
+                ctx.beginPath();
+                ctx.arc(xy[0], xy[1], 2.4, 0, Math.PI * 2);
+                ctx.fill();
+            }
+            ctx.globalAlpha = 1;
+
+            const pins = [['#a887ce', s.selectedA], ['#9c526d', s.selectedB]];
+            for (let i = 0; i < pins.length; i++) {
+                const [color, p] = pins[i];
+                if (!p) continue;
+                const xy = project(p);
+                ctx.strokeStyle = color;
+                ctx.lineWidth = 2.5;
+                ctx.beginPath();
+                ctx.arc(xy[0], xy[1], 9, 0, Math.PI * 2);
+                ctx.stroke();
+            }
+            if (s.selectedA && s.selectedB) {
+                const a = project(s.selectedA), b = project(s.selectedB);
+                ctx.strokeStyle = 'rgba(168, 135, 206, 0.65)';
+                ctx.setLineDash([5, 4]);
+                ctx.lineWidth = 1.6;
+                ctx.beginPath();
+                ctx.moveTo(a[0], a[1]); ctx.lineTo(b[0], b[1]);
+                ctx.stroke();
+                ctx.setLineDash([]);
+            }
+        }
+
+        function nearest(ev) {
+            if (!s.tracks || !s.tracks.length) return null;
+            const rect = canvas.getBoundingClientRect();
+            const sx = canvas.width / rect.width;
+            const sy = canvas.height / rect.height;
+            const mx = (ev.clientX - rect.left) * sx;
+            const my = (ev.clientY - rect.top) * sy;
+            let best = null, bestD = 400;
+            for (let i = 0; i < s.tracks.length; i++) {
+                const t = s.tracks[i];
+                const xy = project(t);
+                const dx = xy[0] - mx, dy = xy[1] - my, d = dx * dx + dy * dy;
+                if (d < bestD) { bestD = d; best = { track: t, x: xy[0], y: xy[1], rx: rect, sx, sy }; }
+            }
+            return best;
+        }
+
+        function onMove(ev) {
+            const hit = nearest(ev);
+            if (!hit) { tooltip.style.display = 'none'; return; }
+            const t = hit.track;
+            tooltip.style.display = 'block';
+            tooltip.style.left = ((hit.x / hit.sx) + 12) + 'px';
+            tooltip.style.top = ((hit.y / hit.sy) + 12) + 'px';
+            const esc = GIQ.fmt.esc;
+            const metricVal = (s.colorBy === 'by_mood') ? (t.mood || '—')
+                : (s.colorBy === 'by_key') ? (t.key || '—')
+                : (s.colorBy === 'by_energy' && t.energy != null) ? ('E ' + t.energy.toFixed(2))
+                : (s.colorBy === 'by_danceability' && t.danceability != null) ? ('D ' + t.danceability.toFixed(2))
+                : (s.colorBy === 'by_valence' && t.valence != null) ? ('V ' + t.valence.toFixed(2))
+                : (s.colorBy === 'by_acousticness' && t.acousticness != null) ? ('A ' + t.acousticness.toFixed(2))
+                : '—';
+            tooltip.innerHTML = '<div class="mm-tt-title">' + esc(t.title || t.track_id || '—') + '</div>'
+                + '<div class="mm-tt-artist muted">' + esc(t.artist || '') + '</div>'
+                + '<div class="mm-tt-meta mono muted">' + (t.bpm ? Math.round(t.bpm) + ' BPM · ' : '') + esc(metricVal) + '</div>';
+        }
+
+        function onClick(ev) {
+            const hit = nearest(ev);
+            if (!hit) return;
+            const t = hit.track;
+            const isShift = !!ev.shiftKey;
+            if (!s.selectedA) {
+                s.selectedA = t;
+            } else if (!s.selectedB && t.track_id !== s.selectedA.track_id && (isShift || true)) {
+                /* Either shift+click for explicit B, or any second click — match old dashboard. */
+                s.selectedB = t;
+            } else {
+                s.selectedA = t;
+                s.selectedB = null;
+            }
+            renderSelection();
+            paint();
+        }
+
+        canvas.addEventListener('mousemove', onMove);
+        canvas.addEventListener('mouseleave', () => { tooltip.style.display = 'none'; });
+        canvas.addEventListener('click', onClick);
+        colorSel.addEventListener('change', () => {
+            s.colorBy = colorSel.value;
+            paint();
+        });
+        reloadBtn.addEventListener('click', () => {
+            s.tracks = null;
+            load();
+        });
+
+        async function load() {
+            s.loading = true;
+            s.error = null;
+            status.textContent = 'Loading map…';
+            try {
+                const data = await GIQ.api.get('/v1/tracks/map?limit=10000');
+                const list = (data && data.tracks) || [];
+                s.tracks = list;
+                if (list.length < 50) {
+                    status.innerHTML = '';
+                    body.innerHTML = '';
+                    if (isMobile) {
+                        const notice = document.createElement('div');
+                        notice.className = 'mm-mobile-notice';
+                        notice.textContent = 'Music Map is best viewed on desktop.';
+                        body.appendChild(notice);
+                    }
+                    const empty = document.createElement('div');
+                    empty.className = 'mm-empty';
+                    empty.innerHTML = 'Music Map needs at least 50 analysed tracks (got '
+                        + list.length + '). '
+                        + '<a href="#/actions/library" class="jump-link"><span class="jump-link-label">Run a library scan</span><span class="jump-link-arrow">→</span></a>';
+                    body.appendChild(empty);
+                    return;
+                }
+                bounds = computeBounds(list);
+                status.textContent = list.length.toLocaleString() + ' tracks plotted · click two for Build Path';
+                paint();
+            } catch (e) {
+                s.error = e.message;
+                status.innerHTML = '<span style="color:var(--wine)">Failed to load map: '
+                    + GIQ.fmt.esc(e.message) + '</span>';
+            } finally {
+                s.loading = false;
+            }
+        }
+
+        if (s.tracks && s.tracks.length >= 50) {
+            bounds = computeBounds(s.tracks);
+            status.textContent = s.tracks.length.toLocaleString() + ' tracks plotted · click two for Build Path';
+            paint();
+            renderSelection();
+        } else {
+            load();
+        }
+
+        return function cleanup() {
+            cleanedUp = true;
+        };
     };
 })();

@@ -2387,3 +2387,244 @@ function _ttBasename(p) {
     const i = p.lastIndexOf('/');
     return i >= 0 ? p.slice(i + 1) : p;
 }
+
+/* ── Generate Playlist modal (session 10; reused 09, 11) ──────────── */
+
+/* opts.prefill: { strategy?, seed_track_id?, target_track_id?, prompt?,
+ *                 mood?, curve?, name? }
+ * opts.onCreated: optional fn(playlistDetail) called after a successful POST.
+ *                 Default: navigate to #/explore/playlists/{id} on toast click.
+ *
+ * The modal owns its own state. Uses GIQ.components.modal for the shell.
+ */
+GIQ.components.generatePlaylistModal = function generatePlaylistModal(opts) {
+    const prefill = (opts && opts.prefill) || {};
+    const onCreated = (opts && opts.onCreated) || null;
+
+    const STRATEGIES = [
+        ['flow', 'Flow (smooth transitions)'],
+        ['mood', 'Mood (by feeling)'],
+        ['energy_curve', 'Energy Curve (shape)'],
+        ['key_compatible', 'Key Compatible (harmonic)'],
+        ['path', 'Song Path (A → B sonic bridge)'],
+        ['text', 'Text Prompt (CLAP)'],
+    ];
+    const MOODS = [
+        ['happy', 'Happy'], ['sad', 'Sad'], ['aggressive', 'Aggressive'],
+        ['relaxed', 'Relaxed'], ['party', 'Party'],
+    ];
+    const CURVES = [
+        ['ramp_up_cool_down', 'Ramp Up + Cool Down'],
+        ['ramp_up', 'Ramp Up'],
+        ['cool_down', 'Cool Down'],
+        ['steady_high', 'Steady High'],
+        ['steady_low', 'Steady Low'],
+    ];
+
+    const previousFocus = document.activeElement;
+    const body = document.createElement('div');
+    body.className = 'gp-form';
+
+    function field(label, control, helperText) {
+        const wrap = document.createElement('div');
+        wrap.className = 'form-field gp-field';
+        const lbl = document.createElement('label');
+        lbl.textContent = label;
+        wrap.appendChild(lbl);
+        wrap.appendChild(control);
+        if (helperText) {
+            const help = document.createElement('div');
+            help.className = 'gp-help';
+            help.textContent = helperText;
+            wrap.appendChild(help);
+        }
+        return wrap;
+    }
+
+    const nameInput = document.createElement('input');
+    nameInput.type = 'text';
+    nameInput.className = 'gp-input';
+    nameInput.value = prefill.name || 'My Playlist';
+    nameInput.maxLength = 255;
+
+    const stratSel = document.createElement('select');
+    stratSel.className = 'gp-input';
+    STRATEGIES.forEach(([v, lbl]) => {
+        const o = document.createElement('option');
+        o.value = v; o.textContent = lbl;
+        if (prefill.strategy === v) o.selected = true;
+        stratSel.appendChild(o);
+    });
+
+    const seedInput = document.createElement('input');
+    seedInput.type = 'text';
+    seedInput.className = 'gp-input mono';
+    seedInput.placeholder = 'paste a track_id';
+    seedInput.value = prefill.seed_track_id || '';
+
+    const targetInput = document.createElement('input');
+    targetInput.type = 'text';
+    targetInput.className = 'gp-input mono';
+    targetInput.placeholder = 'paste a different track_id';
+    targetInput.value = prefill.target_track_id || '';
+
+    const promptInput = document.createElement('input');
+    promptInput.type = 'text';
+    promptInput.className = 'gp-input';
+    promptInput.placeholder = 'e.g. upbeat summer night driving';
+    promptInput.value = prefill.prompt || '';
+
+    const moodSel = document.createElement('select');
+    moodSel.className = 'gp-input';
+    MOODS.forEach(([v, lbl]) => {
+        const o = document.createElement('option');
+        o.value = v; o.textContent = lbl;
+        if (prefill.mood === v) o.selected = true;
+        moodSel.appendChild(o);
+    });
+
+    const curveSel = document.createElement('select');
+    curveSel.className = 'gp-input';
+    CURVES.forEach(([v, lbl]) => {
+        const o = document.createElement('option');
+        o.value = v; o.textContent = lbl;
+        if (prefill.curve === v) o.selected = true;
+        curveSel.appendChild(o);
+    });
+
+    const maxInput = document.createElement('input');
+    maxInput.type = 'number';
+    maxInput.className = 'gp-input';
+    maxInput.min = '5';
+    maxInput.max = '100';
+    maxInput.value = '25';
+
+    body.appendChild(field('Name', nameInput));
+    body.appendChild(field('Strategy', stratSel));
+    const seedField = field('Seed Track ID', seedInput);
+    const targetField = field('Target Track ID (destination)', targetInput);
+    const promptField = field('Text Prompt', promptInput, 'Requires CLAP enabled and backfilled.');
+    const moodField = field('Mood', moodSel);
+    const curveField = field('Curve', curveSel);
+    const maxField = field('Max Tracks (5–100)', maxInput);
+    body.appendChild(seedField);
+    body.appendChild(targetField);
+    body.appendChild(promptField);
+    body.appendChild(moodField);
+    body.appendChild(curveField);
+    body.appendChild(maxField);
+
+    const cancelBtn = document.createElement('button');
+    cancelBtn.type = 'button';
+    cancelBtn.className = 'vc-btn';
+    cancelBtn.textContent = 'Cancel';
+
+    const generateBtn = document.createElement('button');
+    generateBtn.type = 'button';
+    generateBtn.className = 'vc-btn vc-btn-primary';
+    generateBtn.textContent = 'Generate';
+
+    const handle = GIQ.components.modal({
+        title: 'Generate Playlist',
+        width: 'sm',
+        body: body,
+        footer: [cancelBtn, generateBtn],
+        onClose() {
+            if (previousFocus && typeof previousFocus.focus === 'function') {
+                try { previousFocus.focus(); } catch (_) { /* ignore */ }
+            }
+        },
+    });
+
+    /* Show/hide conditional fields based on selected strategy. */
+    function applyStrategy() {
+        const s = stratSel.value;
+        seedField.style.display = (s === 'flow' || s === 'key_compatible' || s === 'path') ? '' : 'none';
+        targetField.style.display = (s === 'path') ? '' : 'none';
+        promptField.style.display = (s === 'text') ? '' : 'none';
+        moodField.style.display = (s === 'mood') ? '' : 'none';
+        curveField.style.display = (s === 'energy_curve') ? '' : 'none';
+        validate();
+    }
+
+    function validate() {
+        const s = stratSel.value;
+        const name = (nameInput.value || '').trim();
+        const max = parseInt(maxInput.value, 10);
+        let ok = name.length > 0 && !isNaN(max) && max >= 5 && max <= 100;
+        if (s === 'flow' || s === 'key_compatible') ok = ok && seedInput.value.trim().length > 0;
+        if (s === 'path') {
+            const a = seedInput.value.trim(), b = targetInput.value.trim();
+            ok = ok && a.length > 0 && b.length > 0 && a !== b && max >= 3;
+        }
+        if (s === 'text') ok = ok && promptInput.value.trim().length > 0;
+        if (s === 'mood') ok = ok && !!moodSel.value;
+        if (s === 'energy_curve') ok = ok && !!curveSel.value;
+        generateBtn.disabled = !ok;
+    }
+
+    stratSel.addEventListener('change', applyStrategy);
+    [nameInput, seedInput, targetInput, promptInput, moodSel, curveSel, maxInput].forEach(el =>
+        el.addEventListener('input', validate));
+
+    cancelBtn.addEventListener('click', () => handle.close());
+
+    generateBtn.addEventListener('click', async () => {
+        const s = stratSel.value;
+        const max = parseInt(maxInput.value, 10) || 25;
+        const payload = {
+            name: (nameInput.value || '').trim() || 'My Playlist',
+            strategy: s,
+            max_tracks: Math.max(5, Math.min(100, max)),
+        };
+        if (s === 'flow' || s === 'key_compatible' || s === 'path') {
+            payload.seed_track_id = seedInput.value.trim();
+        }
+        if (s === 'path') payload.params = { target_track_id: targetInput.value.trim() };
+        if (s === 'text') payload.params = { prompt: promptInput.value.trim() };
+        if (s === 'mood') payload.params = { mood: moodSel.value };
+        if (s === 'energy_curve') payload.params = { curve: curveSel.value };
+
+        generateBtn.disabled = true;
+        const oldLabel = generateBtn.textContent;
+        generateBtn.textContent = 'Generating…';
+
+        try {
+            const detail = await GIQ.api.post('/v1/playlists', payload);
+            handle.close();
+            const tn = (detail && detail.track_count != null) ? detail.track_count : (detail.tracks ? detail.tracks.length : 0);
+            const pid = detail && detail.id;
+            const t = GIQ.toast('Playlist generated · ' + tn + ' tracks', 'success', 6000);
+            if (typeof onCreated === 'function') {
+                try { onCreated(detail); } catch (e) { console.error(e); }
+            } else if (pid != null) {
+                /* Click the toast (or its body) to jump to the new playlist. */
+                if (t) {
+                    t.style.cursor = 'pointer';
+                    t.title = 'Open playlist';
+                    t.addEventListener('click', (ev) => {
+                        if (ev.target && ev.target.classList && ev.target.classList.contains('toast-close')) return;
+                        GIQ._dismissToast(t);
+                        GIQ.router.navigate('explore', 'playlists/' + pid);
+                    });
+                }
+            }
+        } catch (e) {
+            generateBtn.disabled = false;
+            generateBtn.textContent = oldLabel;
+            GIQ.toast('Failed to generate playlist: ' + e.message, 'error');
+        }
+    });
+
+    /* Initial state: apply strategy gating, validate, focus first input. */
+    applyStrategy();
+    validate();
+    setTimeout(() => {
+        try {
+            const first = body.querySelector('input, select');
+            if (first) first.focus();
+        } catch (_) { /* ignore */ }
+    }, 30);
+
+    return handle;
+};

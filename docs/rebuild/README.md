@@ -39,7 +39,7 @@ Each session is a self-contained prompt for a fresh Claude window. Status update
 | 07 | [Monitor: System Health + User Diagnostics + Integrations](07-monitor-health.md) | pending | 02 | Independent of 06; can run in parallel |
 | 08 | [Monitor: Downloads + Backfill + Discovery + Charts stats](08-monitor-ops.md) | pending | 02 | Independent of 06, 07; can run in parallel |
 | 09 | [Explore: track table + Recommendations + Tracks](09-explore-recs-tracks.md) | pending | 02 | Extracts reusable track-table component |
-| 10 | [Explore: Playlists + modal + Text Search + Music Map](10-explore-playlists-search-map.md) | pending | 09 | Reuses track-table from 09 |
+| 10 | [Explore: Playlists + modal + Text Search + Music Map](10-explore-playlists-search-map.md) | done | 09 | Reuses track-table from 09 |
 | 11 | [Explore: Radio + Charts + Artists + News](11-explore-radio-charts.md) | pending | 09 | Radio is the most stateful surface |
 | 12 | [Cross-cutting + mobile + cutover](12-cutover.md) | pending | all above | Wires deep links; flips `/dashboard` to new HTML |
 
