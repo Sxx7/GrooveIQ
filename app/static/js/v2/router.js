@@ -89,6 +89,7 @@
         const parts = pathPart.split('/').filter(Boolean);
         const bucket = parts[0];
         const subpage = parts[1];
+        const tail = parts.slice(2);
         const params = {};
         if (queryPart) {
             queryPart.split('&').forEach(pair => {
@@ -96,6 +97,7 @@
                 if (k) params[decodeURIComponent(k)] = v == null ? '' : decodeURIComponent(v.replace(/\+/g, ' '));
             });
         }
+        if (tail.length) params._tail = tail.map(s => decodeURIComponent(s));
         return { bucket, subpage, params };
     }
 
@@ -148,10 +150,13 @@
 
     function navigate(bucket, subpage, params) {
         const sp = subpage || DEFAULTS[bucket] || '';
+        /* `subpage` may include trailing path segments — e.g. "playlists/123" — passed
+         * verbatim. We do not validate them against SUBPAGES; resolve() trims to the
+         * first segment. */
         let next = '#/' + bucket + (sp ? '/' + sp : '');
         if (params && typeof params === 'object') {
             const qs = Object.keys(params)
-                .filter(k => params[k] != null && params[k] !== '')
+                .filter(k => k !== '_tail' && params[k] != null && params[k] !== '')
                 .map(k => encodeURIComponent(k) + '=' + encodeURIComponent(params[k]))
                 .join('&');
             if (qs) next += '?' + qs;
