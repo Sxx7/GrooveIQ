@@ -6,6 +6,86 @@
 
 GIQ.components = GIQ.components || {};
 
+/* ── Number field with stylized +/- spinner ───────────────────────────
+ * Wraps a number input in a .vc-num-wrap container with custom −/+ buttons
+ * matching the rest of the dashboard. Replaces the platform-native spin
+ * buttons (which clash with the design system) without losing the click-
+ * to-step affordance.
+ *
+ * Returns { wrap, input } so callers can position the wrap anywhere and
+ * still attach their own listeners to the input.
+ *
+ * opts: {
+ *   value, min, max, step?     — same semantics as <input type="number">
+ *   integer? = true            — round step to integer; false for decimals
+ *   ariaLabel?                 — applied to the input (recommend setting)
+ *   wrapClass?                 — extra class on the wrap (e.g. for sizing)
+ *   inputClass?                — extra class on the input itself
+ * }
+ */
+GIQ.components.numberField = function numberField(opts) {
+    const o = opts || {};
+    const integer = o.integer !== false;
+    const step = o.step != null ? o.step : (integer ? 1 : 0.1);
+    const min = o.min != null ? o.min : (integer ? 0 : 0.0);
+    const max = o.max != null ? o.max : (integer ? 999999 : 1.0);
+    const initial = o.value != null ? o.value : min;
+
+    const wrap = document.createElement('div');
+    wrap.className = 'vc-num-wrap' + (o.wrapClass ? ' ' + o.wrapClass : '');
+
+    const minus = document.createElement('button');
+    minus.type = 'button';
+    minus.className = 'vc-spin vc-spin-down';
+    minus.textContent = '−';
+    minus.tabIndex = -1;
+    minus.setAttribute('aria-label', 'decrease');
+
+    const input = document.createElement('input');
+    input.type = 'number';
+    input.className = 'vc-num' + (o.inputClass ? ' ' + o.inputClass : '');
+    input.min = String(min);
+    input.max = String(max);
+    input.step = String(step);
+    input.value = String(initial);
+    if (o.ariaLabel) input.setAttribute('aria-label', o.ariaLabel);
+    if (o.title) input.title = o.title;
+
+    const plus = document.createElement('button');
+    plus.type = 'button';
+    plus.className = 'vc-spin vc-spin-up';
+    plus.textContent = '+';
+    plus.tabIndex = -1;
+    plus.setAttribute('aria-label', 'increase');
+
+    function clamp(v) {
+        if (Number.isNaN(v)) return min;
+        if (v < min) return min;
+        if (v > max) return max;
+        return integer ? Math.round(v) : v;
+    }
+    function step_(direction) {
+        const cur = integer ? parseInt(input.value, 10) : parseFloat(input.value);
+        const v = clamp((Number.isNaN(cur) ? min : cur) + direction * step);
+        input.value = integer ? String(v) : String(Number(v.toFixed(6)));
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+        input.dispatchEvent(new Event('change', { bubbles: true }));
+    }
+    minus.addEventListener('click', () => step_(-1));
+    plus.addEventListener('click', () => step_(+1));
+    input.addEventListener('change', () => {
+        const cur = integer ? parseInt(input.value, 10) : parseFloat(input.value);
+        const v = clamp(cur);
+        input.value = integer ? String(v) : String(Number(v.toFixed(6)));
+    });
+
+    wrap.appendChild(minus);
+    wrap.appendChild(input);
+    wrap.appendChild(plus);
+
+    return { wrap, input };
+};
+
 /* ── Stat tile ────────────────────────────────────────────────────── */
 
 GIQ.components.statTile = function statTile(opts) {
@@ -2502,12 +2582,12 @@ GIQ.components.generatePlaylistModal = function generatePlaylistModal(opts) {
         curveSel.appendChild(o);
     });
 
-    const maxInput = document.createElement('input');
-    maxInput.type = 'number';
-    maxInput.className = 'gp-input';
-    maxInput.min = '5';
-    maxInput.max = '100';
-    maxInput.value = '25';
+    const maxNum = GIQ.components.numberField({
+        value: 25, min: 5, max: 100, step: 5, integer: true,
+        ariaLabel: 'Max tracks',
+        wrapClass: 'gp-num-wrap',
+    });
+    const maxInput = maxNum.input;
 
     body.appendChild(field('Name', nameInput));
     body.appendChild(field('Strategy', stratSel));
@@ -2516,7 +2596,7 @@ GIQ.components.generatePlaylistModal = function generatePlaylistModal(opts) {
     const promptField = field('Text Prompt', promptInput, 'Requires CLAP enabled and backfilled.');
     const moodField = field('Mood', moodSel);
     const curveField = field('Curve', curveSel);
-    const maxField = field('Max Tracks (5–100)', maxInput);
+    const maxField = field('Max Tracks (5–100)', maxNum.wrap);
     body.appendChild(seedField);
     body.appendChild(targetField);
     body.appendChild(promptField);

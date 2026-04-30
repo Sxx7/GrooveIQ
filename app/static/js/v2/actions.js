@@ -537,24 +537,21 @@
         queryInput.placeholder = 'e.g. Radiohead Creep';
         form.appendChild(queryInput);
 
-        const limitInput = document.createElement('input');
-        limitInput.type = 'number';
-        limitInput.className = 'actions-search-num';
-        limitInput.value = '25';
-        limitInput.min = '1';
-        limitInput.max = '100';
-        limitInput.title = 'Result limit per backend';
-        form.appendChild(limitInput);
+        const limitField = GIQ.components.numberField({
+            value: 25, min: 1, max: 100, step: 1, integer: true,
+            ariaLabel: 'Result limit', title: 'Result limit per backend',
+            wrapClass: 'actions-search-num-wrap',
+        });
+        const limitInput = limitField.input;
+        form.appendChild(limitField.wrap);
 
-        const timeoutInput = document.createElement('input');
-        timeoutInput.type = 'number';
-        timeoutInput.className = 'actions-search-num';
-        timeoutInput.value = '5000';
-        timeoutInput.min = '500';
-        timeoutInput.max = '30000';
-        timeoutInput.step = '500';
-        timeoutInput.title = 'Per-backend timeout (ms)';
-        form.appendChild(timeoutInput);
+        const timeoutField = GIQ.components.numberField({
+            value: 5000, min: 500, max: 30000, step: 500, integer: true,
+            ariaLabel: 'Per-backend timeout', title: 'Per-backend timeout (ms)',
+            wrapClass: 'actions-search-num-wrap actions-search-num-wrap-wide',
+        });
+        const timeoutInput = timeoutField.input;
+        form.appendChild(timeoutField.wrap);
 
         const submitBtn = document.createElement('button');
         submitBtn.type = 'submit';
@@ -742,14 +739,14 @@
         const lbl = document.createElement('span');
         lbl.className = 'actions-num-label';
         lbl.textContent = label;
-        const input = document.createElement('input');
-        input.type = 'number';
-        input.value = String(defaultVal);
-        input.min = String(min);
-        input.max = String(max);
+        const num = GIQ.components.numberField({
+            value: defaultVal, min, max, step: 1, integer: true,
+            ariaLabel: label,
+            wrapClass: 'actions-num-wrap',
+        });
         field.appendChild(lbl);
-        field.appendChild(input);
-        return { field, input };
+        field.appendChild(num.wrap);
+        return { field, input: num.input };
     }
 
     function _iconBtn(label, onClick) {
@@ -817,11 +814,12 @@
                         '#/monitor/downloads',
                         'View in Monitor →'
                     );
-                    setTimeout(() => {
-                        if (window.location.hash !== '#/monitor/downloads') {
-                            window.location.hash = '#/monitor/downloads';
-                        }
-                    }, 800);
+                    /* Stay on the search page so users can queue more tracks. The
+                     * toast above carries a "View in Monitor →" jump if they want
+                     * to follow progress, and the sidebar already shows active
+                     * tasks live. */
+                    btn.disabled = false;
+                    btn.textContent = 'Re-download via ' + backend;
                 }
                 if (typeof onAfterDownload === 'function') onAfterDownload();
             }).catch(e => {
