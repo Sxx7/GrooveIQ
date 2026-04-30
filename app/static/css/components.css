@@ -1470,3 +1470,115 @@
 @media (max-width: 700px) {
     .onboarding-section { grid-template-columns: 1fr; }
 }
+
+/* ── Integration card · live-mode (Monitor → Integrations) ────────── */
+
+.conn-card-live {
+    border-width: 1px;
+    transition: border-color 200ms ease;
+}
+.conn-card-live.status-healthy {
+    border-color: rgba(168, 135, 206, 0.36);
+    box-shadow: 0 0 0 1px rgba(168, 135, 206, 0.10) inset;
+}
+.conn-card-live.status-error {
+    border-color: rgba(156, 82, 109, 0.50);
+    box-shadow: 0 0 0 1px rgba(156, 82, 109, 0.10) inset;
+}
+.conn-card-live.status-probing {
+    border-style: dashed;
+    border-color: var(--line-soft);
+}
+.conn-card-live.status-not_configured {
+    border-style: dashed;
+    border-color: var(--line-soft);
+    background: transparent;
+}
+.conn-status-badge {
+    font-size: 10px;
+    font-family: var(--mono);
+    text-transform: uppercase;
+    letter-spacing: 0.10em;
+    padding: 4px 10px;
+    border-radius: 999px;
+    line-height: 1;
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    font-weight: 600;
+}
+.conn-status-badge.status-healthy {
+    color: var(--accent);
+    background: rgba(168, 135, 206, 0.16);
+}
+.conn-status-badge.status-healthy::before {
+    content: '';
+    display: inline-block;
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--accent);
+    box-shadow: 0 0 6px rgba(168, 135, 206, 0.6);
+}
+.conn-status-badge.status-error {
+    color: var(--wine);
+    background: rgba(156, 82, 109, 0.18);
+}
+.conn-status-badge.status-error::before {
+    content: '';
+    display: inline-block;
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--wine);
+}
+.conn-status-badge.status-probing {
+    color: var(--ink-3);
+    background: var(--paper-2);
+    animation: connProbingPulse 1.6s ease-in-out infinite;
+}
+.conn-status-badge.status-probing::before {
+    content: '';
+    display: inline-block;
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--ink-3);
+}
+.conn-status-badge.status-not_configured {
+    color: var(--ink-3);
+    background: transparent;
+    border: 1px solid var(--line-soft);
+}
+@keyframes connProbingPulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.45; }
+}
+
+.conn-live-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+    border-top: 1px solid var(--line-faint);
+    padding-top: 10px;
+    font-size: 11px;
+}
+.conn-live-stat {
+    display: inline-flex;
+    flex-direction: column;
+    gap: 2px;
+}
+.conn-live-stat-label {
+    font-size: 9px;
+    font-family: var(--mono);
+    text-transform: uppercase;
+    letter-spacing: 0.10em;
+}
+.conn-live-stat-value {
+    font-size: 12px;
+    color: var(--ink);
+}
+.conn-live-not-cfg {
+    font-size: 11px;
+    font-style: italic;
+}

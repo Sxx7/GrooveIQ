@@ -1843,3 +1843,153 @@ function buildFeatureInspector(fv) {
     wrap.appendChild(grid);
     return wrap;
 }
+
+/* ── Integration card ────────────────────────────────────────────────
+ * Used by both Settings → Connections (mode='configured', snapshot)
+ * and Monitor → Integrations (mode='live', live probe data).
+ *
+ * Props:
+ *   name, icon, description: presentation
+ *   mode: 'configured' | 'live' (default 'configured')
+ *
+ *   When mode='configured':
+ *     configured (bool), type, version, details (label/value rows),
+ *     snapshot (bool, shows footer note), configurePath (optional)
+ *
+ *   When mode='live':
+ *     status: 'healthy' | 'probing' | 'error' | 'not_configured'
+ *     type, version, error (string),
+ *     latencyMs (number), checkedAt (unix epoch)
+ */
+GIQ.components.integrationCard = function integrationCard(opts) {
+    const o = opts || {};
+    const mode = o.mode === 'live' ? 'live' : 'configured';
+    const card = document.createElement('section');
+    card.className = 'conn-card conn-card-' + mode;
+
+    if (mode === 'live') {
+        card.classList.add('status-' + (o.status || 'probing'));
+    } else if (o.configured) {
+        card.classList.add('configured');
+    } else {
+        card.classList.add('unconfigured');
+    }
+
+    const head = document.createElement('div');
+    head.className = 'conn-card-head';
+    const iconEl = document.createElement('span');
+    iconEl.className = 'conn-card-icon';
+    iconEl.textContent = o.icon || '◇';
+    head.appendChild(iconEl);
+
+    const titleGroup = document.createElement('div');
+    titleGroup.className = 'conn-card-title-group';
+    const tName = document.createElement('div');
+    tName.className = 'conn-card-name';
+    tName.textContent = o.name || '';
+    titleGroup.appendChild(tName);
+    const subBits = [];
+    if (o.type) subBits.push(o.type);
+    if (o.version) subBits.push('v' + o.version);
+    if (subBits.length) {
+        const tSub = document.createElement('div');
+        tSub.className = 'conn-card-meta muted mono';
+        tSub.textContent = subBits.join(' · ');
+        titleGroup.appendChild(tSub);
+    }
+    head.appendChild(titleGroup);
+
+    const badge = document.createElement('span');
+    if (mode === 'live') {
+        badge.className = 'conn-status-badge status-' + (o.status || 'probing');
+        const statusLabels = {
+            healthy: 'Healthy',
+            probing: 'Probing…',
+            error: 'Error',
+            not_configured: 'Not configured',
+        };
+        badge.textContent = statusLabels[o.status] || 'Unknown';
+    } else {
+        badge.className = 'vc-badge ' + (o.configured ? 'vc-badge-active' : 'vc-badge-modified');
+        badge.textContent = o.configured ? 'configured' : 'not configured';
+    }
+    head.appendChild(badge);
+    card.appendChild(head);
+
+    if (o.description) {
+        const desc = document.createElement('div');
+        desc.className = 'conn-card-desc muted';
+        desc.textContent = o.description;
+        card.appendChild(desc);
+    }
+
+    if (mode === 'configured' && o.configured && o.details && o.details.length) {
+        const dl = document.createElement('div');
+        dl.className = 'conn-card-details';
+        o.details.forEach(d => {
+            if (!d) return;
+            const row = document.createElement('div');
+            row.className = 'conn-card-detail-row';
+            const lbl = document.createElement('span');
+            lbl.className = 'conn-card-detail-label muted';
+            lbl.textContent = d.label;
+            const val = document.createElement('span');
+            val.className = 'conn-card-detail-value' + (d.mono ? ' mono' : '');
+            val.textContent = d.value == null ? '—' : String(d.value);
+            row.appendChild(lbl);
+            row.appendChild(val);
+            dl.appendChild(row);
+        });
+        card.appendChild(dl);
+    }
+
+    if (mode === 'live') {
+        const meta = document.createElement('div');
+        meta.className = 'conn-live-meta';
+        const bits = [];
+        if (o.latencyMs != null) {
+            bits.push('<span class="conn-live-stat"><span class="conn-live-stat-label muted">latency</span>'
+                + '<span class="conn-live-stat-value mono">' + Math.round(o.latencyMs) + 'ms</span></span>');
+        }
+        if (o.checkedAt) {
+            bits.push('<span class="conn-live-stat"><span class="conn-live-stat-label muted">checked</span>'
+                + '<span class="conn-live-stat-value mono">' + GIQ.fmt.esc(GIQ.fmt.timeAgo(o.checkedAt)) + '</span></span>');
+        }
+        if (o.status === 'not_configured') {
+            bits.push('<span class="conn-live-stat conn-live-not-cfg muted">Not configured. See Settings → Connections.</span>');
+        }
+        if (bits.length) {
+            meta.innerHTML = bits.join('');
+            card.appendChild(meta);
+        }
+    }
+
+    if (mode === 'configured' && !o.configured) {
+        const hint = document.createElement('div');
+        hint.className = 'conn-card-hint';
+        hint.innerHTML = 'Set the required env vars in your <code>.env</code> file to enable this integration.';
+        card.appendChild(hint);
+    } else if (mode === 'configured' && o.snapshot) {
+        const note = document.createElement('div');
+        note.className = 'conn-card-snapshot-note muted';
+        note.textContent = 'Live health probe lives on Monitor → Integrations.';
+        card.appendChild(note);
+    }
+
+    if (o.error) {
+        const errEl = document.createElement('div');
+        errEl.className = 'conn-card-error';
+        errEl.textContent = o.error;
+        card.appendChild(errEl);
+    }
+
+    if (o.configurePath) {
+        const link = GIQ.components.jumpLink({
+            label: 'Configure',
+            href: o.configurePath,
+        });
+        card.appendChild(link);
+    }
+
+    return card;
+};
