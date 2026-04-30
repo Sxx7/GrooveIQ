@@ -1,15 +1,14 @@
 /* monitor.js — Monitor bucket pages.
- * Overview (session 02), Pipeline / Models / Recs Debug (session 06).
- * Other sub-pages (system-health, user-diagnostics, integrations,
- * downloads, lidarr-backfill, discovery, charts) remain stubs and are
- * filled in by sessions 07–08.
+ * Overview (session 02), Pipeline / Models / Recs Debug (session 06),
+ * System Health / User Diagnostics / Integrations (session 07).
+ * Other sub-pages (downloads, lidarr-backfill, discovery, charts)
+ * remain stubs and are filled in by session 08.
  */
 
 (function () {
     GIQ.pages.monitor = GIQ.pages.monitor || {};
 
     const STUBS = [
-        'system-health', 'user-diagnostics', 'integrations',
         'downloads', 'lidarr-backfill', 'discovery', 'charts',
     ];
     for (const sp of STUBS) {
@@ -27,6 +26,9 @@
     GIQ.pages.monitor.pipeline = renderPipeline;
     GIQ.pages.monitor.models = renderModels;
     GIQ.pages.monitor['recs-debug'] = renderRecsDebug;
+    GIQ.pages.monitor['system-health'] = renderSystemHealth;
+    GIQ.pages.monitor['user-diagnostics'] = renderUserDiagnostics;
+    GIQ.pages.monitor.integrations = renderIntegrations;
 
     /* ---- Step metadata (used across Pipeline + Models pages) --------- */
 
@@ -2241,6 +2243,1336 @@
             limitRequested: tracks.length,
             candidatesTotal: debug.total_candidates,
         }));
+    }
+
+    /* =====================================================================
+     * Monitor → System Health (session 07)
+     * ===================================================================== */
+
+    function renderSystemHealth(root) {
+        const state = {
+            range: '24h',
+            stats: null,
+            events: null,
+            activity: null,
+            engagement: null,
+            scan: null,
+        };
+
+        const onRangeChange = v => {
+            state.range = v;
+            renderAll();
+            refreshAll();
+        };
+        const header = GIQ.components.pageHeader({
+            eyebrow: 'MONITOR',
+            title: 'System Health',
+            right: GIQ.components.rangeToggle({
+                values: ['24h', '7d', '30d'],
+                current: state.range,
+                onChange: onRangeChange,
+            }),
+        });
+        root.appendChild(header);
+
+        const body = document.createElement('div');
+        body.className = 'sh-body';
+        root.appendChild(body);
+
+        renderAll();
+        refreshAll();
+
+        const fullTimer = setInterval(refreshAll, 30000);
+        let scanTimer = null;
+
+        function rangeDays() {
+            switch (state.range) {
+                case '1h': return 1;
+                case '24h': return 1;
+                case '7d': return 7;
+                case '30d': return 30;
+                default: return 1;
+            }
+        }
+
+        function refreshAll() {
+            const days = rangeDays();
+            Promise.all([
+                GIQ.api.get('/v1/stats').catch(() => null),
+                GIQ.api.get('/v1/pipeline/stats/events').catch(() => null),
+                GIQ.api.get('/v1/pipeline/stats/activity?days=' + days).catch(() => null),
+                GIQ.api.get('/v1/pipeline/stats/engagement').catch(() => null),
+            ]).then(([stats, events, activity, engagement]) => {
+                state.stats = stats;
+                state.events = events;
+                state.activity = activity;
+                state.engagement = engagement;
+                state.scan = stats?.latest_scan || null;
+                renderAll();
+                if (state.scan && state.scan.status === 'running') startScanPoll();
+                else stopScanPoll();
+            });
+        }
+
+        function startScanPoll() {
+            if (scanTimer) return;
+            scanTimer = setInterval(() => {
+                if (!state.scan) return;
+                Promise.all([
+                    GIQ.api.get('/v1/stats').catch(() => null),
+                    GIQ.api.get('/v1/library/scan/' + state.scan.scan_id + '/logs?limit=50').catch(() => null),
+                ]).then(([stats, logs]) => {
+                    state.stats = stats || state.stats;
+                    state.scan = stats?.latest_scan || null;
+                    state.scanLogs = logs || state.scanLogs;
+                    renderScanPanel(scanHostEl(), state);
+                    if (!state.scan || state.scan.status !== 'running') stopScanPoll();
+                });
+            }, 3000);
+        }
+
+        function stopScanPoll() { if (scanTimer) { clearInterval(scanTimer); scanTimer = null; } }
+
+        function renderAll() {
+            body.innerHTML = '';
+
+            const ingestHost = document.createElement('div');
+            renderIngestPanel(ingestHost, state);
+            body.appendChild(ingestHost);
+
+            const coverageHost = document.createElement('div');
+            renderCoverageOverview(coverageHost, state);
+            body.appendChild(coverageHost);
+
+            const activityHost = document.createElement('div');
+            renderActivityTimelinePanel(activityHost, state);
+            body.appendChild(activityHost);
+
+            const engagementHost = document.createElement('div');
+            renderEngagementPanel(engagementHost, state);
+            body.appendChild(engagementHost);
+
+            const scanWrap = document.createElement('div');
+            scanWrap.className = 'sh-scan-wrap';
+            renderScanPanel(scanWrap, state);
+            scanWrap.dataset.role = 'scan';
+            body.appendChild(scanWrap);
+        }
+
+        function scanHostEl() {
+            return body.querySelector('[data-role="scan"]') || body;
+        }
+
+        return () => {
+            clearInterval(fullTimer);
+            stopScanPoll();
+        };
+    }
+
+    function renderIngestPanel(host, state) {
+        host.innerHTML = '';
+        const buckets = state.events?.buckets || [];
+        let total = 0;
+        for (const b of buckets) total += b.count || 0;
+        const sub = total ? Number(total).toLocaleString() + ' events · 15-min buckets · 24h' : 'no recent activity';
+
+        let series = [];
+        let labels = [];
+        if (buckets.length) {
+            series = [{
+                name: 'Events',
+                color: '#a887ce',
+                values: buckets.map(b => b.count || 0),
+                strokeWidth: 2,
+                fillOpacity: 0.45,
+            }];
+            const n = buckets.length;
+            const fmtHM = ts => {
+                const d = new Date(ts * 1000);
+                return String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
+            };
+            for (let i = 0; i < 7; i++) {
+                const idx = Math.round(i * (n - 1) / 6);
+                labels.push(fmtHM(buckets[idx].timestamp));
+            }
+        }
+        const chart = GIQ.components.areaChart({
+            series, labels, height: 180,
+            emptyText: state.events ? 'No events in window' : 'Loading…',
+        });
+
+        host.appendChild(GIQ.components.panel({
+            title: 'Event ingest',
+            sub: sub,
+            children: chart,
+        }));
+    }
+
+    function renderCoverageOverview(host, state) {
+        host.innerHTML = '';
+        const cov = state.stats?.library_coverage;
+        if (!cov) {
+            host.appendChild(GIQ.components.panel({
+                title: 'Library coverage',
+                sub: '—',
+                children: '<div class="empty-row">No library data yet.</div>',
+            }));
+            return;
+        }
+        const total = cov.total_files || 0;
+        const analyzed = cov.total_analyzed || 0;
+        const pct = total > 0 ? (analyzed / total * 100) : 0;
+        const failed = cov.failed_files || [];
+        const vd = cov.version_distribution || {};
+        const vKeys = Object.keys(vd);
+
+        const inner = document.createElement('div');
+        inner.className = 'sh-coverage';
+
+        const top = document.createElement('div');
+        top.className = 'sh-coverage-top';
+        top.innerHTML = '<div class="sh-coverage-numbers">'
+            + '<span class="sh-coverage-pct">' + pct.toFixed(1) + '%</span>'
+            + '<span class="sh-coverage-meta mono muted">'
+            + Number(analyzed).toLocaleString() + ' / ' + Number(total).toLocaleString() + ' files'
+            + '</span></div>'
+            + '<div class="sh-coverage-progress"><div class="sh-coverage-fill" style="width:'
+            + pct.toFixed(1) + '%"></div></div>';
+        inner.appendChild(top);
+
+        if (vKeys.length) {
+            let maxVer = 1;
+            for (const k of vKeys) if (vd[k] > maxVer) maxVer = vd[k];
+            const rows = vKeys
+                .sort((a, b) => vd[b] - vd[a])
+                .map(k => ({ label: 'v' + k, value: vd[k] }));
+            const verPanel = document.createElement('div');
+            verPanel.className = 'sh-coverage-versions';
+            verPanel.innerHTML = '<div class="eyebrow muted">VERSION DISTRIBUTION</div>';
+            verPanel.appendChild(barList(rows, maxVer, 'accent'));
+            inner.appendChild(verPanel);
+        }
+
+        if (failed.length) {
+            const failPanel = document.createElement('div');
+            failPanel.className = 'sh-coverage-failed';
+            const failHead = document.createElement('div');
+            failHead.className = 'eyebrow muted';
+            failHead.textContent = 'FAILED FILES (' + failed.length + ')';
+            failPanel.appendChild(failHead);
+            const list = document.createElement('div');
+            list.className = 'sh-failed-list';
+            failed.slice(0, 20).forEach(f => {
+                const row = document.createElement('div');
+                row.className = 'sh-failed-row mono';
+                row.innerHTML = '<span class="sh-failed-name">' + GIQ.fmt.esc(f.filename || '') + '</span>'
+                    + (f.message ? '<span class="sh-failed-msg muted">' + GIQ.fmt.esc(f.message) + '</span>' : '');
+                list.appendChild(row);
+            });
+            failPanel.appendChild(list);
+            inner.appendChild(failPanel);
+        }
+
+        host.appendChild(GIQ.components.panel({
+            title: 'Library coverage',
+            sub: total ? Number(total).toLocaleString() + ' indexed files' : 'no scan yet',
+            children: inner,
+        }));
+    }
+
+    function renderActivityTimelinePanel(host, state) {
+        host.innerHTML = '';
+        const activity = state.activity;
+        const buckets = activity?.buckets || [];
+        if (buckets.length < 2) {
+            host.appendChild(GIQ.components.panel({
+                title: 'Listening activity',
+                sub: 'event types over time',
+                children: '<div class="empty-row">Need at least 2 buckets of activity.</div>',
+            }));
+            return;
+        }
+
+        // Determine top-N most-frequent event types; aggregate the rest into "other".
+        const totals = {};
+        buckets.forEach(b => {
+            Object.keys(b).forEach(k => {
+                if (k === 'timestamp') return;
+                totals[k] = (totals[k] || 0) + (b[k] || 0);
+            });
+        });
+        const sorted = Object.keys(totals).sort((a, b) => totals[b] - totals[a]);
+        const TOP_N = 5;
+        const topTypes = sorted.slice(0, TOP_N);
+        const otherTypes = sorted.slice(TOP_N);
+        const series = otherTypes.length ? topTypes.concat(['other']) : topTypes;
+
+        const w = 800, h = 200, pad = { top: 20, right: 20, bottom: 30, left: 40 };
+        const n = buckets.length;
+        const innerW = w - pad.left - pad.right;
+        const innerH = h - pad.top - pad.bottom;
+        const dx = innerW / (n - 1);
+        const stackVals = buckets.map(b => {
+            const out = {};
+            topTypes.forEach(t => { out[t] = b[t] || 0; });
+            if (otherTypes.length) {
+                let other = 0;
+                otherTypes.forEach(t => { other += b[t] || 0; });
+                out.other = other;
+            }
+            return out;
+        });
+        let maxStack = 1;
+        for (const sv of stackVals) {
+            let sum = 0;
+            for (const k of series) sum += sv[k] || 0;
+            if (sum > maxStack) maxStack = sum;
+        }
+
+        // Monochrome lavender saturation ladder: hottest = full --accent, coolest = faint.
+        const SAT = ['rgba(168,135,206,0.85)', 'rgba(168,135,206,0.62)',
+                     'rgba(168,135,206,0.42)', 'rgba(168,135,206,0.28)',
+                     'rgba(168,135,206,0.18)', 'rgba(168,135,206,0.10)'];
+
+        const svgNS = 'http://www.w3.org/2000/svg';
+        const svg = document.createElementNS(svgNS, 'svg');
+        svg.setAttribute('viewBox', '0 0 ' + w + ' ' + h);
+        svg.classList.add('sh-activity-svg');
+
+        // Gridlines + y-axis labels.
+        for (let g = 0; g <= 3; g++) {
+            const y = pad.top + innerH * g / 3;
+            const line = document.createElementNS(svgNS, 'line');
+            line.setAttribute('x1', pad.left); line.setAttribute('y1', y.toFixed(1));
+            line.setAttribute('x2', pad.left + innerW); line.setAttribute('y2', y.toFixed(1));
+            line.setAttribute('stroke', 'rgba(236,232,242,0.06)');
+            line.setAttribute('stroke-dasharray', g === 3 ? '0' : '2,3');
+            svg.appendChild(line);
+            const lbl = document.createElementNS(svgNS, 'text');
+            lbl.setAttribute('x', (pad.left - 6).toFixed(1));
+            lbl.setAttribute('y', (y + 3).toFixed(1));
+            lbl.setAttribute('class', 'sh-activity-tick mono');
+            lbl.setAttribute('text-anchor', 'end');
+            const v = Math.round(maxStack * (3 - g) / 3);
+            lbl.textContent = String(v);
+            svg.appendChild(lbl);
+        }
+
+        // Stacked area: paint deepest type first (background), highest on top.
+        for (let s = series.length - 1; s >= 0; s--) {
+            const t = series[s];
+            const points = [];
+            // Lower edge (sum of types ABOVE t in stack order).
+            const lower = i => {
+                let sum = 0;
+                for (let k = 0; k < s; k++) sum += stackVals[i][series[k]] || 0;
+                return sum;
+            };
+            const upper = i => lower(i) + (stackVals[i][t] || 0);
+            for (let i = 0; i < n; i++) {
+                const x = pad.left + i * dx;
+                const y = pad.top + innerH - (upper(i) / maxStack) * innerH;
+                points.push(x.toFixed(1) + ',' + y.toFixed(1));
+            }
+            for (let i = n - 1; i >= 0; i--) {
+                const x = pad.left + i * dx;
+                const y = pad.top + innerH - (lower(i) / maxStack) * innerH;
+                points.push(x.toFixed(1) + ',' + y.toFixed(1));
+            }
+            const poly = document.createElementNS(svgNS, 'polygon');
+            poly.setAttribute('points', points.join(' '));
+            poly.setAttribute('fill', SAT[s] || SAT[SAT.length - 1]);
+            poly.setAttribute('stroke', 'none');
+            svg.appendChild(poly);
+        }
+
+        // X-axis ticks: first / mid / last.
+        const xTickIdxs = [0, Math.floor(n / 2), n - 1];
+        xTickIdxs.forEach(i => {
+            const x = pad.left + i * dx;
+            const t = buckets[i].timestamp;
+            const lbl = document.createElementNS(svgNS, 'text');
+            lbl.setAttribute('x', x.toFixed(1));
+            lbl.setAttribute('y', (pad.top + innerH + 16).toFixed(1));
+            lbl.setAttribute('class', 'sh-activity-tick mono');
+            lbl.setAttribute('text-anchor', 'middle');
+            const d = new Date(t * 1000);
+            const days = state.range === '30d' ? 30 : state.range === '7d' ? 7 : 1;
+            lbl.textContent = days > 1
+                ? d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
+                : d.getHours().toString().padStart(2, '0') + ':' + d.getMinutes().toString().padStart(2, '0');
+            svg.appendChild(lbl);
+        });
+
+        const wrap = document.createElement('div');
+        wrap.className = 'sh-activity';
+        wrap.appendChild(svg);
+
+        const legend = document.createElement('div');
+        legend.className = 'sh-activity-legend';
+        series.forEach((t, i) => {
+            const item = document.createElement('span');
+            item.className = 'sh-activity-legend-item';
+            item.innerHTML = '<span class="sh-activity-swatch" style="background:'
+                + (SAT[i] || SAT[SAT.length - 1]) + '"></span>'
+                + '<span class="mono">' + GIQ.fmt.esc(t) + '</span>'
+                + '<span class="muted mono">· ' + Number(totals[t] || 0).toLocaleString() + '</span>';
+            legend.appendChild(item);
+        });
+        if (otherTypes.length) {
+            const note = document.createElement('div');
+            note.className = 'sh-activity-other muted mono';
+            note.textContent = 'other = ' + otherTypes.join(', ');
+            legend.appendChild(note);
+        }
+        wrap.appendChild(legend);
+
+        host.appendChild(GIQ.components.panel({
+            title: 'Listening activity',
+            sub: (activity?.days || 7) + ' days · stacked top ' + topTypes.length,
+            children: wrap,
+        }));
+    }
+
+    function renderEngagementPanel(host, state) {
+        host.innerHTML = '';
+        const data = state.engagement;
+        const users = data?.users || [];
+        if (!users.length) {
+            host.appendChild(GIQ.components.panel({
+                title: 'User engagement',
+                sub: 'last 30 days',
+                children: '<div class="empty-row">No engagement data yet.</div>',
+            }));
+            return;
+        }
+        const sortState = state._engSort = state._engSort || { col: 'plays', dir: 'desc' };
+
+        function sortRows() {
+            const rows = users.slice();
+            const k = sortState.col;
+            rows.sort((a, b) => {
+                let av = a[k]; let bv = b[k];
+                if (k === 'user_id') {
+                    av = String(av || '').toLowerCase();
+                    bv = String(bv || '').toLowerCase();
+                    return sortState.dir === 'asc' ? av.localeCompare(bv) : bv.localeCompare(av);
+                }
+                av = av == null ? -Infinity : av;
+                bv = bv == null ? -Infinity : bv;
+                return sortState.dir === 'asc' ? av - bv : bv - av;
+            });
+            return rows;
+        }
+
+        const wrap = document.createElement('div');
+        wrap.className = 'sh-engagement';
+        const tbl = document.createElement('table');
+        tbl.className = 'sh-engagement-table';
+
+        function headerCell(label, col) {
+            const arrow = sortState.col === col ? (sortState.dir === 'asc' ? ' ▲' : ' ▼') : '';
+            return '<th class="sortable" data-col="' + col + '">' + GIQ.fmt.esc(label) + arrow + '</th>';
+        }
+
+        function renderTable() {
+            const rows = sortRows();
+            tbl.innerHTML = '<thead><tr>'
+                + headerCell('User', 'user_id')
+                + headerCell('Plays', 'plays')
+                + headerCell('Skip rate', 'skip_rate')
+                + headerCell('Unique tracks', 'unique_tracks')
+                + headerCell('Diversity', 'diversity')
+                + headerCell('Last active', 'last_active')
+                + '</tr></thead>';
+            const tbody = document.createElement('tbody');
+            rows.forEach(u => {
+                const tr = document.createElement('tr');
+                tr.className = 'sh-engagement-row';
+                tr.innerHTML = '<td><a class="sh-user-link" href="#/monitor/user-diagnostics?user='
+                    + encodeURIComponent(u.user_id) + '"><strong>' + GIQ.fmt.esc(u.user_id) + '</strong></a></td>'
+                    + '<td class="mono">' + Number(u.plays || 0).toLocaleString() + '</td>'
+                    + '<td class="mono' + (u.skip_rate > 0.5 ? ' sh-bad' : '') + '">'
+                        + (u.skip_rate != null ? (u.skip_rate * 100).toFixed(1) + '%' : '—') + '</td>'
+                    + '<td class="mono">' + Number(u.unique_tracks || 0).toLocaleString() + '</td>'
+                    + '<td class="mono">' + (u.diversity != null ? (u.diversity * 100).toFixed(0) + '%' : '—') + '</td>'
+                    + '<td class="mono muted">' + GIQ.fmt.esc(GIQ.fmt.timeAgo(u.last_active)) + '</td>';
+                tbody.appendChild(tr);
+            });
+            tbl.appendChild(tbody);
+        }
+
+        renderTable();
+        wrap.appendChild(tbl);
+        tbl.addEventListener('click', e => {
+            const th = e.target.closest('th.sortable');
+            if (!th) return;
+            const col = th.dataset.col;
+            if (sortState.col === col) sortState.dir = sortState.dir === 'asc' ? 'desc' : 'asc';
+            else { sortState.col = col; sortState.dir = col === 'user_id' ? 'asc' : 'desc'; }
+            renderTable();
+        });
+
+        host.appendChild(GIQ.components.panel({
+            title: 'User engagement',
+            sub: users.length + ' users · last 30 days',
+            children: wrap,
+        }));
+    }
+
+    function renderScanPanel(host, state) {
+        host.innerHTML = '';
+        host.dataset.role = 'scan';
+        host.className = 'sh-scan-wrap';
+        const scan = state.scan;
+        if (!scan) {
+            const empty = document.createElement('div');
+            empty.className = 'sh-scan-empty';
+            empty.innerHTML = '<span class="muted">No scans yet.</span>'
+                + ' <a class="sh-scan-link" href="#/actions/library">Start scan →</a>';
+            host.appendChild(GIQ.components.panel({
+                title: 'Library scan',
+                sub: 'idle',
+                children: empty,
+            }));
+            return;
+        }
+
+        const wrap = document.createElement('div');
+        wrap.className = 'sh-scan';
+
+        const phase = scanPhase(scan);
+        const head = document.createElement('div');
+        head.className = 'sh-scan-head';
+        const phaseChip = document.createElement('span');
+        phaseChip.className = 'sh-scan-phase status-' + (scan.status || 'idle');
+        phaseChip.innerHTML = (scan.status === 'running'
+            ? '<span class="sh-scan-pulse"></span> ' : '')
+            + GIQ.fmt.esc(phase);
+        head.appendChild(phaseChip);
+
+        const timeBits = [];
+        if (scan.elapsed_seconds != null) timeBits.push('elapsed · ' + GIQ.fmt.fmtDuration(scan.elapsed_seconds));
+        if (scan.eta_seconds != null && scan.status === 'running') timeBits.push('ETA · ' + GIQ.fmt.fmtDuration(scan.eta_seconds));
+        if (scan.rate_per_sec != null) timeBits.push('analyze · ' + scan.rate_per_sec + '/s');
+        const timeRow = document.createElement('div');
+        timeRow.className = 'sh-scan-times mono muted';
+        timeRow.textContent = timeBits.join('  ·  ');
+        head.appendChild(timeRow);
+        wrap.appendChild(head);
+
+        if (scan.files_found > 0) {
+            const proc = (scan.files_analyzed || 0) + (scan.files_skipped || 0) + (scan.files_failed || 0);
+            const pct = scan.percent_complete || 0;
+            const bar = document.createElement('div');
+            bar.className = 'sh-scan-progress';
+            bar.innerHTML = '<div class="sh-scan-progress-fill" style="width:' + pct + '%"></div>'
+                + '<div class="sh-scan-progress-text mono">' + pct + '%  ·  '
+                + Number(proc).toLocaleString() + ' / ' + Number(scan.files_found).toLocaleString()
+                + '</div>';
+            wrap.appendChild(bar);
+        }
+
+        const grid = document.createElement('div');
+        grid.className = 'sh-scan-grid';
+        grid.appendChild(scanCell('FOUND', scan.files_found, 'muted'));
+        grid.appendChild(scanCell('ANALYZED', scan.files_analyzed, 'accent'));
+        grid.appendChild(scanCell('SKIPPED', scan.files_skipped || 0, 'muted'));
+        grid.appendChild(scanCell('FAILED', scan.files_failed, 'wine'));
+        wrap.appendChild(grid);
+
+        if (scan.current_file) {
+            const cur = document.createElement('div');
+            cur.className = 'sh-scan-current mono';
+            cur.innerHTML = '<span class="muted">processing · </span>' + GIQ.fmt.esc(scan.current_file);
+            wrap.appendChild(cur);
+        }
+
+        const stamps = document.createElement('div');
+        stamps.className = 'sh-scan-stamps mono muted';
+        const stampBits = [];
+        if (scan.started_at) stampBits.push('started · ' + GIQ.fmt.fmtTime(scan.started_at));
+        if (scan.ended_at) stampBits.push('ended · ' + GIQ.fmt.fmtTime(scan.ended_at));
+        stamps.textContent = stampBits.join('  ·  ');
+        wrap.appendChild(stamps);
+
+        // Activity log (live-pollable).
+        const logHead = document.createElement('div');
+        logHead.className = 'sh-scan-log-head';
+        logHead.innerHTML = '<span class="eyebrow muted">ACTIVITY LOG</span>';
+        if (scan.status === 'running') {
+            const live = GIQ.components.liveBadge();
+            logHead.appendChild(live);
+        }
+        wrap.appendChild(logHead);
+
+        const log = document.createElement('div');
+        log.className = 'sh-scan-log';
+        const logs = state.scanLogs || [];
+        if (!logs.length) {
+            log.innerHTML = '<div class="sh-scan-log-line muted">Waiting for scan activity…</div>';
+        } else {
+            logs.slice(-100).forEach(l => {
+                const line = document.createElement('div');
+                const cls = l.level === 'ok' ? 'log-ok' : l.level === 'fail' ? 'log-fail' : 'log-info';
+                line.className = 'sh-scan-log-line mono ' + cls;
+                const icon = l.level === 'ok' ? '✓' : l.level === 'fail' ? '✗' : '·';
+                line.textContent = icon + ' ' + (l.filename || '') + (l.message ? '  ' + l.message : '');
+                log.appendChild(line);
+            });
+            // Auto-scroll on render.
+            requestAnimationFrame(() => { log.scrollTop = log.scrollHeight; });
+        }
+        wrap.appendChild(log);
+
+        host.appendChild(GIQ.components.panel({
+            title: 'Library scan',
+            sub: scan.status,
+            children: wrap,
+        }));
+
+        // Lazy-load logs on first render if absent.
+        if (!state.scanLogs && scan.scan_id) {
+            GIQ.api.get('/v1/library/scan/' + scan.scan_id + '/logs?limit=50').then(logs => {
+                state.scanLogs = logs || [];
+                if (state.scan && state.scan.scan_id === scan.scan_id) renderScanPanel(host, state);
+            }).catch(() => {});
+        }
+    }
+
+    function scanCell(label, value, kind) {
+        const cell = document.createElement('div');
+        cell.className = 'sh-scan-cell sh-scan-cell-' + (kind || 'muted');
+        cell.innerHTML = '<div class="eyebrow muted">' + GIQ.fmt.esc(label) + '</div>'
+            + '<div class="sh-scan-cell-value">' + Number(value || 0).toLocaleString() + '</div>';
+        return cell;
+    }
+
+    function scanPhase(scan) {
+        const status = scan.status;
+        if (status === 'running') {
+            if ((scan.files_analyzed || 0) > 0) return 'analyzing new/changed files';
+            if ((scan.files_found || 0) > 0) return 'checking existing files';
+            return 'preparing';
+        }
+        if (status === 'completed') return 'completed';
+        if (status === 'failed') return 'failed';
+        if (status === 'interrupted') return 'interrupted';
+        return status || 'unknown';
+    }
+
+    /* =====================================================================
+     * Monitor → User Diagnostics (session 07)
+     * ===================================================================== */
+
+    function renderUserDiagnostics(root, params) {
+        const state = {
+            userId: (params && params.user) ? params.user : null,
+            users: [],
+            profile: null,
+            interactions: null,
+            history: null,
+            sessions: null,
+            lastfmProfile: null,
+            historyOffset: 0,
+            historyLimit: 25,
+            loading: false,
+        };
+
+        const dropdown = document.createElement('select');
+        dropdown.className = 'sh-user-select';
+        dropdown.innerHTML = '<option value="">Select user…</option>';
+
+        const recsBtn = document.createElement('a');
+        recsBtn.className = 'vc-btn vc-btn-primary sh-jump-btn';
+        recsBtn.textContent = 'Get Recs →';
+        recsBtn.href = '#';
+        recsBtn.style.pointerEvents = 'none';
+        recsBtn.style.opacity = '0.5';
+
+        const editBtn = document.createElement('a');
+        editBtn.className = 'vc-btn sh-jump-btn';
+        editBtn.textContent = 'Edit user →';
+        editBtn.href = '#';
+        editBtn.style.pointerEvents = 'none';
+        editBtn.style.opacity = '0.5';
+
+        const right = document.createElement('div');
+        right.className = 'sh-ud-actions';
+        right.appendChild(dropdown);
+        right.appendChild(recsBtn);
+        right.appendChild(editBtn);
+
+        const header = GIQ.components.pageHeader({
+            eyebrow: 'MONITOR',
+            title: 'User Diagnostics',
+            right: right,
+        });
+        root.appendChild(header);
+
+        const body = document.createElement('div');
+        body.className = 'ud-body';
+        root.appendChild(body);
+
+        // Use cached users if available, else fetch.
+        const usersPromise = (window.cachedUsers && Array.isArray(window.cachedUsers) && window.cachedUsers.length)
+            ? Promise.resolve(window.cachedUsers)
+            : GIQ.api.get('/v1/users').then(r => {
+                const list = Array.isArray(r) ? r : (r?.users || []);
+                window.cachedUsers = list;
+                return list;
+            }).catch(() => []);
+
+        usersPromise.then(users => {
+            state.users = users;
+            users.forEach(u => {
+                const o = document.createElement('option');
+                o.value = u.user_id;
+                o.textContent = u.user_id + (u.display_name ? ' (' + u.display_name + ')' : '');
+                dropdown.appendChild(o);
+            });
+            // Resolve user: explicit ?user, else first user.
+            if (!state.userId && users.length) state.userId = users[0].user_id;
+            if (state.userId) {
+                dropdown.value = state.userId;
+                updateJumpButtons();
+                loadUser();
+            } else {
+                body.innerHTML = '<div class="empty-row">No users available.</div>';
+            }
+        });
+
+        dropdown.addEventListener('change', () => {
+            const uid = dropdown.value;
+            if (!uid || uid === state.userId) return;
+            state.userId = uid;
+            state.historyOffset = 0;
+            updateJumpButtons();
+            // URL stays in sync — navigate updates the hash.
+            GIQ.router.navigate('monitor', 'user-diagnostics', { user: uid });
+        });
+
+        function updateJumpButtons() {
+            if (!state.userId) return;
+            recsBtn.href = '#/explore/recommendations?user=' + encodeURIComponent(state.userId);
+            recsBtn.style.pointerEvents = '';
+            recsBtn.style.opacity = '';
+            editBtn.href = '#/settings/users?user=' + encodeURIComponent(state.userId);
+            editBtn.style.pointerEvents = '';
+            editBtn.style.opacity = '';
+        }
+
+        function loadUser() {
+            if (!state.userId) return;
+            state.loading = true;
+            body.innerHTML = '<div class="vc-loading">Loading user diagnostics…</div>';
+            const enc = encodeURIComponent(state.userId);
+            const hl = state.historyLimit;
+            const ho = state.historyOffset;
+
+            Promise.all([
+                GIQ.api.get('/v1/users/' + enc + '/profile'),
+                GIQ.api.get('/v1/users/' + enc + '/interactions?limit=20&sort_by=satisfaction_score&sort_dir=desc').catch(() => null),
+                GIQ.api.get('/v1/users/' + enc + '/sessions?limit=20').catch(() => null),
+                GIQ.api.get('/v1/users/' + enc + '/lastfm/profile').catch(() => null),
+                GIQ.api.get('/v1/users/' + enc + '/history?limit=' + hl + '&offset=' + ho).catch(() => null),
+            ]).then(([profile, interactions, sessions, lastfm, history]) => {
+                state.profile = profile;
+                state.interactions = interactions;
+                state.sessions = sessions;
+                state.lastfmProfile = lastfm;
+                state.history = history;
+                const refreshHistory = () => {
+                    GIQ.api.get('/v1/users/' + enc + '/history?limit=' + state.historyLimit
+                        + '&offset=' + state.historyOffset).then(h => {
+                        state.history = h;
+                        renderUDBody(body, state, refreshHistory);
+                    });
+                };
+                renderUDBody(body, state, refreshHistory);
+            }).catch(e => {
+                body.innerHTML = '<div class="empty-row" style="color:var(--wine)">'
+                    + GIQ.fmt.esc(e.message) + '</div>';
+            });
+        }
+
+        return () => { /* nothing to clean up */ };
+    }
+
+    function renderUDBody(host, state, refreshHistory) {
+        host.innerHTML = '';
+        const profile = state.profile;
+        if (!profile) {
+            host.innerHTML = '<div class="empty-row">No profile data.</div>';
+            return;
+        }
+
+        const idHeader = document.createElement('div');
+        idHeader.className = 'ud-id-header';
+        const updated = profile.profile_updated_at
+            ? '<span class="ud-id-meta mono muted">profile updated · ' + GIQ.fmt.esc(GIQ.fmt.timeAgo(profile.profile_updated_at)) + '</span>'
+            : '';
+        idHeader.innerHTML = '<span class="ud-id-userid">' + GIQ.fmt.esc(profile.user_id) + '</span>'
+            + (profile.display_name ? '<span class="ud-id-display muted">· ' + GIQ.fmt.esc(profile.display_name) + '</span>' : '')
+            + '<span class="ud-id-uid mono">UID ' + GIQ.fmt.esc(String(profile.uid)) + '</span>'
+            + updated;
+        host.appendChild(idHeader);
+
+        const tp = profile.taste_profile;
+        if (!tp) {
+            host.appendChild(GIQ.components.panel({
+                title: 'Taste profile',
+                sub: 'no data',
+                children: '<div class="empty-row">No taste profile computed yet for this user. Run the pipeline.</div>',
+            }));
+        } else {
+            renderUDTasteProfile(host, profile);
+            renderUDTimescale(host, tp);
+        }
+
+        renderUDLastfm(host, profile, state.lastfmProfile);
+        renderUDInteractions(host, state.interactions);
+        renderUDHistory(host, state, refreshHistory);
+        renderUDSessions(host, state.sessions);
+    }
+
+    function renderUDTasteProfile(host, profile) {
+        const tp = profile.taste_profile;
+
+        const wrap = document.createElement('div');
+        wrap.className = 'ud-taste-grid';
+
+        const ap = tp.audio_preferences || {};
+        const audioWrap = document.createElement('div');
+        audioWrap.className = 'ud-stat-grid';
+        const audioFields = [
+            ['BPM', ap.bpm?.mean, 1],
+            ['Energy', ap.energy?.mean, 2],
+            ['Dance', ap.danceability?.mean, 2],
+            ['Valence', ap.valence?.mean, 2],
+            ['Acoustic', ap.acousticness?.mean, 2],
+            ['Instrum.', ap.instrumentalness?.mean, 2],
+            ['Loudness', ap.loudness?.mean, 1],
+        ];
+        audioFields.forEach(([label, val, dp]) => {
+            audioWrap.appendChild(GIQ.components.statTile({
+                label,
+                value: val != null ? Number(val).toFixed(dp) : '—',
+            }));
+        });
+        wrap.appendChild(GIQ.components.panel({
+            title: 'Audio preferences',
+            sub: 'mean values',
+            children: audioWrap,
+        }));
+
+        const b = tp.behaviour || {};
+        const behaveWrap = document.createElement('div');
+        behaveWrap.className = 'ud-stat-grid';
+        const behavefields = [
+            ['Total plays', b.total_plays != null ? Number(b.total_plays).toLocaleString() : '—'],
+            ['Active days', b.active_days != null ? String(b.active_days) : '—'],
+            ['Avg session', b.avg_session_tracks != null ? Number(b.avg_session_tracks).toFixed(1) : '—'],
+            ['Skip rate', b.skip_rate != null ? (b.skip_rate * 100).toFixed(1) + '%' : '—'],
+            ['Completion', b.avg_completion != null ? (b.avg_completion * 100).toFixed(1) + '%' : '—'],
+        ];
+        behavefields.forEach(([label, value]) => {
+            behaveWrap.appendChild(GIQ.components.statTile({ label, value }));
+        });
+        wrap.appendChild(GIQ.components.panel({
+            title: 'Behaviour',
+            sub: 'aggregates',
+            children: behaveWrap,
+        }));
+
+        const mp = tp.mood_preferences || {};
+        const moodKeys = Object.keys(mp).sort((a, b) => mp[b] - mp[a]).slice(0, 8);
+        if (moodKeys.length) {
+            const max = mp[moodKeys[0]] || 1;
+            const rows = moodKeys.map(k => ({ label: k, value: mp[k] }));
+            wrap.appendChild(GIQ.components.panel({
+                title: 'Mood preferences',
+                sub: 'top ' + moodKeys.length,
+                children: barList(rows, max, 'accent', { fmtVal: v => Number(v).toFixed(2) }),
+            }));
+        }
+
+        const kp = tp.key_preferences || {};
+        const keyKeys = Object.keys(kp).sort((a, b) => kp[b] - kp[a]).slice(0, 12);
+        if (keyKeys.length) {
+            const max = kp[keyKeys[0]] || 1;
+            const rows = keyKeys.map(k => ({ label: k, value: kp[k] }));
+            wrap.appendChild(GIQ.components.panel({
+                title: 'Key preferences',
+                sub: 'top ' + keyKeys.length,
+                children: barList(rows, max, 'accent', { fmtVal: v => Number(v).toFixed(2) }),
+            }));
+        }
+
+        host.appendChild(wrap);
+    }
+
+    function renderUDTimescale(host, tp) {
+        const ts = tp.timescale_audio || {};
+        const ap = tp.audio_preferences || {};
+        const shortP = ts.short || {};
+        const longP = ts.long || {};
+        const allTime = {
+            energy: ap.energy?.mean,
+            valence: ap.valence?.mean,
+            danceability: ap.danceability?.mean,
+            acousticness: ap.acousticness?.mean,
+            instrumentalness: ap.instrumentalness?.mean,
+        };
+        // Skip if everything is null.
+        const hasAny = Object.values(allTime).some(v => v != null) || Object.keys(shortP).length || Object.keys(longP).length;
+        if (!hasAny) return;
+        const axes = ['energy', 'valence', 'danceability', 'acousticness', 'instrumentalness'];
+        const labels = ['Energy', 'Valence', 'Dance', 'Acoustic', 'Instrum.'];
+        const series = [
+            { values: axes.map(a => allTime[a] != null ? allTime[a] : 0.5), color: '#a887ce', label: 'All-time' },
+            { values: axes.map(a => shortP[a] != null ? shortP[a] : 0.5), color: '#9c526d', label: '7-day' },
+            { values: axes.map(a => longP[a] != null ? longP[a] : 0.5), color: '#b8b0c4', label: '30-day' },
+        ];
+        host.appendChild(GIQ.components.panel({
+            title: 'Multi-timescale audio preferences',
+            sub: 'all-time · 7-day · 30-day overlay',
+            children: buildRadarChart(axes, labels, series),
+        }));
+    }
+
+    function renderUDLastfm(host, profile, lastfmProfile) {
+        const lfm = profile.lastfm;
+        if (!lfm) {
+            host.appendChild(GIQ.components.panel({
+                title: 'Last.fm enrichment',
+                sub: 'not connected',
+                children: '<div class="empty-row">User has not connected a Last.fm account.</div>',
+            }));
+            return;
+        }
+        const lfData = (lastfmProfile && lastfmProfile.profile) || lfm.profile || null;
+
+        const wrap = document.createElement('div');
+        wrap.className = 'ud-lastfm';
+
+        const head = document.createElement('div');
+        head.className = 'ud-lastfm-head';
+        head.innerHTML = '<div class="ud-lastfm-id"><span class="ud-lastfm-username">' + GIQ.fmt.esc(lfm.username) + '</span>'
+            + '<span class="ud-lastfm-state ' + (lfm.scrobbling_enabled ? 'state-active' : 'state-readonly') + '">'
+            + (lfm.scrobbling_enabled ? 'scrobbling active' : 'read-only') + '</span></div>'
+            + '<div class="ud-lastfm-meta mono muted">last synced · ' + GIQ.fmt.esc(GIQ.fmt.timeAgo(lfm.synced_at)) + '</div>';
+        wrap.appendChild(head);
+
+        if (lfData?.user_info) {
+            const ui = lfData.user_info;
+            const stats = document.createElement('div');
+            stats.className = 'ud-stat-grid';
+            if (ui.playcount) stats.appendChild(GIQ.components.statTile({ label: 'Total scrobbles', value: Number(ui.playcount).toLocaleString() }));
+            if (ui.country) stats.appendChild(GIQ.components.statTile({ label: 'Country', value: ui.country }));
+            if (ui.registered) {
+                const ts = ui.registered.unixtime || ui.registered['#text'];
+                const yr = ts ? new Date(Number(ts) * 1000).getFullYear() : '—';
+                stats.appendChild(GIQ.components.statTile({ label: 'Member since', value: String(yr) }));
+            }
+            wrap.appendChild(stats);
+        }
+
+        if (lfData?.top_artists) {
+            const periods = [['7day', '7 days'], ['1month', '1 month'], ['overall', 'all time']];
+            const tabsWrap = document.createElement('div');
+            tabsWrap.className = 'ud-lastfm-tabs';
+            const head = document.createElement('div');
+            head.className = 'ud-lastfm-tabs-head';
+            const body = document.createElement('div');
+            body.className = 'ud-lastfm-tabs-body';
+
+            let active = '7day';
+            function renderTabs() {
+                head.innerHTML = '';
+                periods.forEach(([k, l]) => {
+                    const btn = document.createElement('button');
+                    btn.type = 'button';
+                    btn.className = 'ud-lastfm-tab' + (k === active ? ' is-active' : '');
+                    btn.textContent = l;
+                    btn.addEventListener('click', () => { active = k; renderTabs(); });
+                    head.appendChild(btn);
+                });
+                renderTabBody();
+            }
+            function renderTabBody() {
+                body.innerHTML = '';
+                const list = (lfData.top_artists[active] || []);
+                if (!list.length) {
+                    body.innerHTML = '<div class="empty-row">No data for this period.</div>';
+                    return;
+                }
+                list.slice(0, 10).forEach((a, i) => {
+                    const row = document.createElement('div');
+                    row.className = 'ud-lastfm-artist-row';
+                    row.innerHTML = '<span class="ud-lastfm-rank mono muted">' + (i + 1) + '</span>'
+                        + '<span class="ud-lastfm-artist">' + GIQ.fmt.esc(a.name) + '</span>'
+                        + '<span class="ud-lastfm-count mono">' + GIQ.fmt.esc(a.playcount || '') + '</span>';
+                    body.appendChild(row);
+                });
+            }
+            renderTabs();
+            tabsWrap.appendChild(head);
+            tabsWrap.appendChild(body);
+            wrap.appendChild(GIQ.components.panel({
+                title: 'Top artists',
+                sub: 'Last.fm',
+                children: tabsWrap,
+            }));
+        }
+
+        if (lfData?.loved_tracks?.length) {
+            const list = document.createElement('div');
+            list.className = 'ud-lastfm-loved';
+            lfData.loved_tracks.slice(0, 10).forEach(t => {
+                const ar = t.artist ? (t.artist.name || t.artist) : '';
+                const row = document.createElement('div');
+                row.className = 'ud-lastfm-loved-row';
+                row.innerHTML = '<span class="ud-lastfm-heart">♥</span>'
+                    + '<span class="ud-lastfm-loved-artist">' + GIQ.fmt.esc(ar) + '</span>'
+                    + '<span class="muted">·</span>'
+                    + '<span>' + GIQ.fmt.esc(t.name) + '</span>';
+                list.appendChild(row);
+            });
+            wrap.appendChild(GIQ.components.panel({
+                title: 'Loved tracks',
+                sub: lfData.loved_tracks.length + ' total',
+                children: list,
+            }));
+        }
+
+        if (lfData?.genres) {
+            const genres = Object.keys(lfData.genres);
+            if (genres.length) {
+                const cloud = document.createElement('div');
+                cloud.className = 'ud-lastfm-genres';
+                genres.slice(0, 30).forEach(g => {
+                    const chip = document.createElement('span');
+                    chip.className = 'ud-genre-chip mono';
+                    chip.textContent = g;
+                    cloud.appendChild(chip);
+                });
+                wrap.appendChild(GIQ.components.panel({
+                    title: 'Genres',
+                    sub: genres.length + ' tags',
+                    children: cloud,
+                }));
+            }
+        }
+
+        host.appendChild(wrap);
+    }
+
+    function renderUDInteractions(host, interactions) {
+        const ints = interactions?.interactions || [];
+        const total = interactions?.total || ints.length;
+        const wrap = document.createElement('div');
+        wrap.className = 'ud-table-wrap';
+        if (!ints.length) {
+            wrap.innerHTML = '<div class="empty-row">No interactions yet for this user.</div>';
+        } else {
+            let maxSat = 0;
+            ints.forEach(t => { if (t.satisfaction_score > maxSat) maxSat = t.satisfaction_score; });
+            const tbl = document.createElement('table');
+            tbl.className = 'ud-table';
+            tbl.innerHTML = '<thead><tr>'
+                + '<th>Track</th><th>Score</th><th>Plays</th><th>Skips</th>'
+                + '<th>Likes</th><th>Completion</th><th>Last played</th>'
+                + '</tr></thead>';
+            const tbody = document.createElement('tbody');
+            ints.forEach(t => {
+                const trackLabel = t.title
+                    ? (t.artist ? GIQ.fmt.esc(t.artist) + ' — ' + GIQ.fmt.esc(t.title) : GIQ.fmt.esc(t.title))
+                    : '<span class="mono muted">' + GIQ.fmt.esc(t.track_id || '') + '</span>';
+                const pct = maxSat > 0 ? (t.satisfaction_score / maxSat * 100) : 0;
+                const tr = document.createElement('tr');
+                tr.innerHTML = '<td class="ud-truncate" title="' + GIQ.fmt.esc(t.track_id || '') + '">' + trackLabel + '</td>'
+                    + '<td><span class="ud-score-cell">'
+                        + '<span class="ud-score-num mono">' + Number(t.satisfaction_score || 0).toFixed(2) + '</span>'
+                        + '<span class="ud-score-bar"><span class="ud-score-fill" style="width:' + Math.max(2, pct).toFixed(1) + '%"></span></span>'
+                        + '</span></td>'
+                    + '<td class="mono">' + Number(t.play_count || 0) + '</td>'
+                    + '<td class="mono">' + Number(t.skip_count || 0) + '</td>'
+                    + '<td class="mono">' + Number(t.like_count || 0) + '</td>'
+                    + '<td class="mono">' + (t.avg_completion != null ? (t.avg_completion * 100).toFixed(0) + '%' : '—') + '</td>'
+                    + '<td class="mono muted">' + GIQ.fmt.esc(GIQ.fmt.timeAgo(t.last_played_at)) + '</td>';
+                tbody.appendChild(tr);
+            });
+            tbl.appendChild(tbody);
+            wrap.appendChild(tbl);
+        }
+        host.appendChild(GIQ.components.panel({
+            title: 'Top tracks (interactions)',
+            sub: ints.length + ' shown · ' + Number(total).toLocaleString() + ' total',
+            children: wrap,
+        }));
+    }
+
+    function renderUDHistory(host, state, refreshHistory) {
+        const history = state.history;
+        const hist = history?.history || [];
+        const total = history?.total || hist.length;
+        const wrap = document.createElement('div');
+        wrap.className = 'ud-table-wrap';
+        if (!hist.length) {
+            wrap.innerHTML = '<div class="empty-row">No listening history.</div>';
+        } else {
+            const tbl = document.createElement('table');
+            tbl.className = 'ud-table';
+            tbl.innerHTML = '<thead><tr>'
+                + '<th>Time</th><th>Artist</th><th>Title</th><th>Album</th>'
+                + '<th>Duration</th><th>Listened</th><th>Completion</th>'
+                + '<th>Result</th><th>Device</th>'
+                + '</tr></thead>';
+            const tbody = document.createElement('tbody');
+            hist.forEach(e => {
+                const tr = document.createElement('tr');
+                const compClass = e.completion != null && e.completion < 0.5 ? ' sh-bad' : '';
+                const resClass = e.reason_end === 'user_skip' ? ' sh-bad' : '';
+                tr.innerHTML = '<td class="mono">' + GIQ.fmt.esc(GIQ.fmt.fmtTime(e.timestamp)) + '</td>'
+                    + '<td class="ud-truncate">' + GIQ.fmt.esc(e.artist || '—') + '</td>'
+                    + '<td class="ud-truncate">' + GIQ.fmt.esc(e.title || '—') + '</td>'
+                    + '<td class="ud-truncate muted">' + GIQ.fmt.esc(e.album || '—') + '</td>'
+                    + '<td class="mono">' + (e.duration != null ? GIQ.fmt.fmtDuration(Math.round(e.duration)) : '—') + '</td>'
+                    + '<td class="mono">' + (e.dwell_ms != null ? GIQ.fmt.fmtDuration(Math.round(e.dwell_ms / 1000)) : '—') + '</td>'
+                    + '<td class="mono' + compClass + '">' + (e.completion != null ? (e.completion * 100).toFixed(0) + '%' : '—') + '</td>'
+                    + '<td class="mono' + resClass + '">' + GIQ.fmt.esc(e.reason_end || '—') + '</td>'
+                    + '<td class="mono muted">' + GIQ.fmt.esc(e.device_type || '—') + '</td>';
+                tbody.appendChild(tr);
+            });
+            tbl.appendChild(tbody);
+            wrap.appendChild(tbl);
+
+            // Pagination footer.
+            const showStart = state.historyOffset + 1;
+            const showEnd = state.historyOffset + hist.length;
+            const pag = document.createElement('div');
+            pag.className = 'ud-pagination';
+            pag.innerHTML = '<span class="muted mono">showing ' + showStart + '–' + showEnd
+                + ' of ' + Number(total).toLocaleString() + '</span>';
+            const btnGroup = document.createElement('div');
+            btnGroup.className = 'ud-pag-btns';
+            const prev = document.createElement('button');
+            prev.type = 'button';
+            prev.className = 'vc-btn vc-btn-sm';
+            prev.textContent = '← Prev';
+            prev.disabled = state.historyOffset === 0;
+            prev.addEventListener('click', () => {
+                state.historyOffset = Math.max(0, state.historyOffset - state.historyLimit);
+                if (refreshHistory) refreshHistory();
+            });
+            const next = document.createElement('button');
+            next.type = 'button';
+            next.className = 'vc-btn vc-btn-sm';
+            next.textContent = 'Next →';
+            next.disabled = state.historyOffset + state.historyLimit >= total;
+            next.addEventListener('click', () => {
+                state.historyOffset = state.historyOffset + state.historyLimit;
+                if (refreshHistory) refreshHistory();
+            });
+            btnGroup.appendChild(prev);
+            btnGroup.appendChild(next);
+            pag.appendChild(btnGroup);
+            wrap.appendChild(pag);
+        }
+        host.appendChild(GIQ.components.panel({
+            title: 'Listening history',
+            sub: Number(total).toLocaleString() + ' events',
+            children: wrap,
+        }));
+    }
+
+    function renderUDSessions(host, sessions) {
+        const sess = sessions?.sessions || [];
+        const total = sessions?.total || sess.length;
+        const wrap = document.createElement('div');
+        wrap.className = 'ud-table-wrap';
+        if (!sess.length) {
+            wrap.innerHTML = '<div class="empty-row">No sessions yet.</div>';
+        } else {
+            const tbl = document.createElement('table');
+            tbl.className = 'ud-table';
+            tbl.innerHTML = '<thead><tr>'
+                + '<th>Started</th><th>Duration</th><th>Tracks</th><th>Plays</th>'
+                + '<th>Skips</th><th>Skip rate</th><th>Completion</th>'
+                + '<th>Context</th><th>Device</th>'
+                + '</tr></thead>';
+            const tbody = document.createElement('tbody');
+            sess.forEach(s => {
+                const tr = document.createElement('tr');
+                const skipClass = s.skip_rate != null && s.skip_rate > 0.5 ? ' sh-bad' : '';
+                tr.innerHTML = '<td class="mono">' + GIQ.fmt.esc(GIQ.fmt.fmtTime(s.started_at)) + '</td>'
+                    + '<td class="mono">' + GIQ.fmt.esc(GIQ.fmt.fmtDuration(s.duration_s)) + '</td>'
+                    + '<td class="mono">' + Number(s.track_count || 0) + '</td>'
+                    + '<td class="mono">' + Number(s.play_count || 0) + '</td>'
+                    + '<td class="mono">' + Number(s.skip_count || 0) + '</td>'
+                    + '<td class="mono' + skipClass + '">' + (s.skip_rate != null ? (s.skip_rate * 100).toFixed(0) + '%' : '—') + '</td>'
+                    + '<td class="mono">' + (s.avg_completion != null ? (s.avg_completion * 100).toFixed(0) + '%' : '—') + '</td>'
+                    + '<td class="mono muted">' + GIQ.fmt.esc(s.dominant_context_type || '—') + '</td>'
+                    + '<td class="mono muted">' + GIQ.fmt.esc(s.dominant_device_type || '—') + '</td>';
+                tbody.appendChild(tr);
+            });
+            tbl.appendChild(tbody);
+            wrap.appendChild(tbl);
+        }
+        host.appendChild(GIQ.components.panel({
+            title: 'Recent sessions',
+            sub: sess.length + ' shown · ' + Number(total).toLocaleString() + ' total',
+            children: wrap,
+        }));
+    }
+
+    /* =====================================================================
+     * Monitor → Integrations (session 07)
+     * ===================================================================== */
+
+    const INTEGRATIONS_ORDER = [
+        { key: 'media_server', label: 'Media Server', icon: '♪', desc: 'Navidrome or Plex — source of track IDs and library metadata.' },
+        { key: 'lidarr', label: 'Lidarr', icon: '⤓', desc: 'Automatic music discovery and download management.' },
+        { key: 'spotdl_api', label: 'spotdl-api', icon: '◇', desc: 'YouTube Music downloads matched via Spotify metadata.' },
+        { key: 'streamrip_api', label: 'streamrip-api', icon: '◆', desc: 'Qobuz / Tidal / Deezer / SoundCloud lossless downloads.' },
+        { key: 'slskd', label: 'Soulseek (slskd)', icon: '∴', desc: 'Peer-to-peer music downloads via the Soulseek network.' },
+        { key: 'lastfm', label: 'Last.fm', icon: '♫', desc: 'Scrobbling, taste enrichment, similar tracks, and charts.' },
+        { key: 'acousticbrainz_lookup', label: 'AcousticBrainz Lookup', icon: '∇', desc: 'Audio-feature similarity search across 29.5M tracks.' },
+    ];
+
+    function renderIntegrations(root) {
+        const state = {
+            data: null,
+            checkedAt: null,
+            latencyMs: null,
+            probing: true,
+            error: null,
+        };
+
+        const reprobeBtn = document.createElement('button');
+        reprobeBtn.type = 'button';
+        reprobeBtn.className = 'vc-btn vc-btn-primary';
+        reprobeBtn.textContent = 'Re-probe all';
+
+        const lastChecked = document.createElement('span');
+        lastChecked.className = 'mono muted';
+        lastChecked.textContent = '—';
+
+        const right = document.createElement('div');
+        right.className = 'integrations-actions';
+        right.appendChild(lastChecked);
+        right.appendChild(reprobeBtn);
+
+        root.appendChild(GIQ.components.pageHeader({
+            eyebrow: 'MONITOR',
+            title: 'Integrations',
+            right,
+        }));
+
+        const grid = document.createElement('div');
+        grid.className = 'integrations-grid';
+        root.appendChild(grid);
+
+        renderProbingState();
+        probe();
+        const pollTimer = setInterval(probe, 30000);
+        reprobeBtn.addEventListener('click', () => {
+            renderProbingState();
+            probe();
+        });
+
+        function renderProbingState() {
+            if (state.data) {
+                renderGrid();
+                return;
+            }
+            grid.innerHTML = '';
+            INTEGRATIONS_ORDER.forEach(o => {
+                grid.appendChild(GIQ.components.integrationCard({
+                    name: o.label,
+                    icon: o.icon,
+                    description: o.desc,
+                    mode: 'live',
+                    status: 'probing',
+                }));
+            });
+        }
+
+        function probe() {
+            const started = performance.now();
+            reprobeBtn.disabled = true;
+            reprobeBtn.textContent = 'Probing…';
+            state.probing = true;
+            GIQ.api.get('/v1/integrations/status').then(data => {
+                state.latencyMs = performance.now() - started;
+                state.data = data;
+                state.checkedAt = data.checked_at || Math.floor(Date.now() / 1000);
+                state.error = null;
+                state.probing = false;
+                lastChecked.textContent = 'last checked · ' + GIQ.fmt.timeAgo(state.checkedAt);
+                renderGrid();
+            }).catch(e => {
+                state.error = e.message || 'Probe failed';
+                state.probing = false;
+                state.checkedAt = Math.floor(Date.now() / 1000);
+                lastChecked.textContent = 'probe failed · ' + GIQ.fmt.timeAgo(state.checkedAt);
+                renderGridError();
+            }).finally(() => {
+                reprobeBtn.disabled = false;
+                reprobeBtn.textContent = 'Re-probe all';
+            });
+        }
+
+        function renderGrid() {
+            const integrations = state.data?.integrations || {};
+            grid.innerHTML = '';
+            const total = INTEGRATIONS_ORDER.length;
+            // Approximate per-card latency: divide total round-trip by count.
+            const perLatency = state.latencyMs != null
+                ? Math.max(1, Math.round(state.latencyMs / Math.max(1, total)))
+                : null;
+
+            INTEGRATIONS_ORDER.forEach(o => {
+                const s = integrations[o.key] || {};
+                let status, error, type, version;
+                if (!s.configured) {
+                    status = 'not_configured';
+                } else if (s.connected === true) {
+                    status = 'healthy';
+                } else if (s.connected === false) {
+                    status = 'error';
+                    error = s.error || 'Probe returned not connected.';
+                } else {
+                    status = 'probing';
+                }
+                if (s.type) type = s.type;
+                if (s.version) version = s.version;
+
+                grid.appendChild(GIQ.components.integrationCard({
+                    name: o.label,
+                    icon: o.icon,
+                    description: o.desc,
+                    mode: 'live',
+                    status,
+                    type,
+                    version,
+                    error,
+                    latencyMs: status === 'healthy' || status === 'error' ? perLatency : null,
+                    checkedAt: state.checkedAt,
+                }));
+            });
+        }
+
+        function renderGridError() {
+            grid.innerHTML = '';
+            const errPanel = document.createElement('div');
+            errPanel.className = 'integrations-error';
+            errPanel.textContent = 'Failed to probe integrations: ' + (state.error || 'unknown');
+            grid.appendChild(errPanel);
+        }
+
+        return () => clearInterval(pollTimer);
     }
 
 })();
