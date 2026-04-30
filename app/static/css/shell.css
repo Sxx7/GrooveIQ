@@ -506,9 +506,14 @@
 
 .page-scroll {
     flex: 1;
-    overflow: auto;
+    overflow-x: hidden;
+    overflow-y: auto;
     padding: 0;
+    /* Pages must never produce a horizontal scrollbar at the page level.
+       Wide content (tables, charts) opts in to its own internal scroll. */
+    min-width: 0;
 }
+#page-root { min-width: 0; }
 
 /* ── Bottom tab bar (mobile only — < 700px) ──────────────────────── */
 

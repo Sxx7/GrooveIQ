@@ -1076,21 +1076,48 @@
     pointer-events: none;
 }
 
-.lbf-fields { display: block; }
-.lbf-subgroup {
-    border: 1px solid var(--line-faint);
-    border-radius: 8px;
-    padding: 10px 12px 4px;
-    margin-bottom: 10px;
-    background: rgba(236, 232, 242, 0.02);
+/* Lidarr Backfill: subgroups stack vertically (each one wraps a related
+   bundle of fields), but the fields *inside* a subgroup use the same
+   2-column grid as Algorithm / Download Routing so the visual rhythm
+   matches across all versioned-config pages. */
+.lbf-fields {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    padding-top: 14px;
 }
+.lbf-subgroup {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 0;
+    margin: 0;
+    background: transparent;
+    border: none;
+    border-top: 1px solid var(--line-faint);
+    padding-top: 14px;
+}
+.lbf-subgroup:first-child { border-top: none; padding-top: 0; }
 .lbf-subgroup-head {
     font-family: var(--mono);
     font-size: 10px;
     text-transform: uppercase;
     letter-spacing: 0.1em;
     color: var(--ink-3);
-    margin-bottom: 6px;
+}
+/* Children of a subgroup that are .vc-field rows align to the same
+   2-column grid used elsewhere. */
+.lbf-subgroup > .vc-field { width: auto; }
+.lbf-subgroup {
+    --lbf-fields-cols: 1fr 1fr;
+}
+@media (min-width: 880px) {
+    .lbf-subgroup {
+        display: grid;
+        grid-template-columns: var(--lbf-fields-cols);
+        gap: 14px 22px;
+    }
+    .lbf-subgroup-head { grid-column: 1 / -1; }
 }
 .lbf-toggle-inline {
     display: inline-flex;

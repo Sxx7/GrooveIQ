@@ -42,6 +42,14 @@
     ];
     const RICH_DETAIL_STEPS = new Set(['sessionizer', 'track_scoring', 'taste_profiles', 'ranker']);
 
+    function ingestEmptyText(state) {
+        if (!state.eventsLoaded) return 'Loading…';
+        if (state.eventsErr || state.events == null) return 'Failed to load · retry';
+        const buckets = (state.events && state.events.buckets) || [];
+        if (buckets.length === 0) return 'No events in window';
+        return 'No events in window';
+    }
+
     const MODEL_ROWS = [
         { key: 'ranker', label: 'Ranker', sub: 'LightGBM' },
         { key: 'collab_filter', label: 'Collaborative', sub: 'user/item CF' },
@@ -172,6 +180,8 @@
             state.stats = stats && !stats._err ? stats : null;
             state.models = models && !models._err ? models : null;
             state.events = events && !events._err ? events : null;
+            state.eventsErr = !!(events && events._err);
+            state.eventsLoaded = true;
             state.recentEvents = Array.isArray(recent) ? recent : null;
             state.pipeline = pipeline && !pipeline._err ? pipeline : null;
             state.lastUpdate = Date.now();
@@ -327,7 +337,7 @@
 
         const chart = GIQ.components.areaChart({
             series, labels, height: 180,
-            emptyText: state.events ? 'No events in window' : 'Loading…',
+            emptyText: ingestEmptyText(state),
         });
 
         const action = document.createElement('a');
@@ -1123,7 +1133,7 @@
         select.addEventListener('change', async () => {
             const uid = select.value;
             if (!uid) { body.innerHTML = '<div class="empty-row">Pick a user to view their taste profile.</div>'; return; }
-            body.innerHTML = '<div class="empty-row">Loading…</div>';
+            body.innerHTML = '<div class="vc-loading">Loading taste profile…</div>';
             try {
                 const profile = await GIQ.api.get('/v1/users/' + encodeURIComponent(uid) + '/profile');
                 renderTasteForUser(body, profile);
@@ -2109,8 +2119,8 @@
             let rowCls = 'rd-row';
             let deltaCell = '<span class="mono muted">—</span>';
             if (d.delta != null) {
-                if (d.delta > 0) { deltaCell = '<span class="rd-up">↑' + d.delta + '</span>'; rowCls += ' delta-up'; }
-                else if (d.delta < 0) { deltaCell = '<span class="rd-down">↓' + Math.abs(d.delta) + '</span>'; rowCls += ' delta-down'; }
+                if (d.delta > 0) { deltaCell = '<span class="rd-up">▲︎' + d.delta + '</span>'; rowCls += ' delta-up'; }
+                else if (d.delta < 0) { deltaCell = '<span class="rd-down">▼︎' + Math.abs(d.delta) + '</span>'; rowCls += ' delta-down'; }
                 else { deltaCell = '<span class="mono muted">0</span>'; }
             } else if (d.original_position == null && d.new_position != null) {
                 deltaCell = '<span class="rd-new-badge">NEW</span>'; rowCls += ' delta-new';
@@ -2297,6 +2307,7 @@
                 state.events = events;
                 state.activity = activity;
                 state.engagement = engagement;
+                state.eventsLoaded = true;
                 state.scan = stats?.latest_scan || null;
                 renderAll();
                 if (state.scan && state.scan.status === 'running') startScanPoll();
@@ -2388,7 +2399,7 @@
         }
         const chart = GIQ.components.areaChart({
             series, labels, height: 180,
-            emptyText: state.events ? 'No events in window' : 'Loading…',
+            emptyText: ingestEmptyText(state),
         });
 
         host.appendChild(GIQ.components.panel({
@@ -2411,7 +2422,9 @@
         }
         const total = cov.total_files || 0;
         const analyzed = cov.total_analyzed || 0;
-        const pct = total > 0 ? (analyzed / total * 100) : 0;
+        const stale = cov.stale_rows || 0;
+        const rawPct = total > 0 ? (analyzed / total * 100) : 0;
+        const pct = Math.min(100, Math.max(0, rawPct));
         const failed = cov.failed_files || [];
         const vd = cov.version_distribution || {};
         const vKeys = Object.keys(vd);
@@ -2425,6 +2438,7 @@
             + '<span class="sh-coverage-pct">' + pct.toFixed(1) + '%</span>'
             + '<span class="sh-coverage-meta mono muted">'
             + Number(analyzed).toLocaleString() + ' / ' + Number(total).toLocaleString() + ' files'
+            + (stale > 0 ? ' · ' + Number(stale).toLocaleString() + ' stale rows' : '')
             + '</span></div>'
             + '<div class="sh-coverage-progress"><div class="sh-coverage-fill" style="width:'
             + pct.toFixed(1) + '%"></div></div>';

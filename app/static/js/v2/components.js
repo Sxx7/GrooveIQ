@@ -13,8 +13,8 @@ GIQ.components.statTile = function statTile(opts) {
     const el = document.createElement('div');
     el.className = 'stat-tile';
     let arrow = '';
-    if (deltaKind === 'good') arrow = '↑';
-    else if (deltaKind === 'bad') arrow = '↓';
+    if (deltaKind === 'good') arrow = '▲︎';
+    else if (deltaKind === 'bad') arrow = '▼︎';
     const deltaCls = deltaKind === 'good' ? 'good'
         : deltaKind === 'bad' ? 'bad'
         : 'flat';
@@ -1770,8 +1770,8 @@ GIQ.components.candidatePanel = function candidatePanel(opts) {
         let rankCell;
         if (c.shown && c.final_position != null) {
             const delta = (c.pre_rerank_position != null) ? (c.pre_rerank_position - c.final_position) : 0;
-            const arrow = delta > 0 ? '<span class="rd-up">↑' + delta + '</span>'
-                : delta < 0 ? '<span class="rd-down">↓' + Math.abs(delta) + '</span>'
+            const arrow = delta > 0 ? '<span class="rd-up">▲︎' + delta + '</span>'
+                : delta < 0 ? '<span class="rd-down">▼︎' + Math.abs(delta) + '</span>'
                 : '';
             rankCell = '<strong class="mono">' + (c.final_position + 1) + '</strong> ' + arrow;
         } else {
@@ -2075,7 +2075,7 @@ GIQ.components.trackTable = function trackTable(opts) {
             btn.type = 'button';
             btn.className = 'tt-sort-btn';
             const arrow = (sort && sort.field === col)
-                ? (sort.dir === 'asc' ? ' ↑' : ' ↓')
+                ? (sort.dir === 'asc' ? ' ▲︎' : ' ▼︎')
                 : '';
             btn.textContent = label + arrow;
             btn.addEventListener('click', () => onSort(col));

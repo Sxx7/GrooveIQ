@@ -73,9 +73,11 @@
         settings: 'Settings',
     };
 
+    // U+FE0E forces text presentation so glyphs with emoji defaults
+    // (notably ⚡) render in the inherited text colour, not as colour emoji.
     const BUCKET_ICONS = {
         explore: '♪',
-        actions: '⚡',
+        actions: '⚡︎',
         monitor: '◉',
         settings: '⚙',
     };
