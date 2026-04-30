@@ -225,7 +225,12 @@ async def get_chart(
     #       non-null match id with ``in_library=False``. Re-derive both at
     #       serve time. Mutations persist via the session's auto-commit so
     #       the row is self-healing on next read.
-    from app.services.charts import _build_artist_lookup, _build_library_lookup, _normalize as _chart_norm
+    from app.services.charts import (
+        _build_artist_lookup,
+        _build_library_lookup,
+        _normalize as _chart_norm,
+        _strip_features as _chart_strip_features,
+    )
 
     if chart_type == "top_tracks":
         live_lookup = await _build_library_lookup(session)
@@ -233,8 +238,14 @@ async def get_chart(
             if not e.artist_name or not e.track_title:
                 continue
             if not e.matched_track_id:
-                key = (_chart_norm(e.artist_name), _chart_norm(e.track_title))
-                tid = live_lookup.get(key)
+                a = _chart_norm(e.artist_name)
+                t = _chart_norm(e.track_title)
+                tid = live_lookup.get((a, t))
+                if not tid:
+                    # "Stateside + Zara Larsson" / "(feat. X)" -> bare title.
+                    t_stripped = _chart_norm(_chart_strip_features(e.track_title))
+                    if t_stripped and t_stripped != t:
+                        tid = live_lookup.get((a, t_stripped))
                 if tid:
                     e.matched_track_id = tid
             # in_library follows matched_track_id; covers both fresh promotions

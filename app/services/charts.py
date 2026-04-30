@@ -59,6 +59,40 @@ def _normalize(s: str) -> str:
     return " ".join(n.split())
 
 
+# Last.fm chart titles routinely append a featured artist after a literal "+"
+# ("Stateside + Zara Larsson") and library tags often use "(feat./ft./featuring X)"
+# parentheticals — both refer to the same recording. Strip these suffixes
+# before matching so the cross-reference doesn't false-negative.
+#
+# Patterns we strip (case-insensitive, anchored to a separator on the left):
+#   "<title> + <name>"
+#   "<title> (feat. <name>)" / "(ft. <name>)" / "(featuring <name>)"
+#   "<title> (with <name>)"
+#   "<title> [feat. <name>]" / "[ft. ...]" / "[featuring ...]"
+_FEATURE_RE = re.compile(
+    r"\s*(?:"
+    # "+ Zara Larsson" / "+ Foo & Bar" — require ≥2 tokens after "+" so we
+    # don't strip legitimate single-word suffixes ("Up + Down").
+    r"\+\s+\S+\s+\S+.*"
+    r"|\((?:feat|ft|featuring|with)\.?\s+[^)]+\)"       # "(feat. X)" / "(ft. X)" / "(with X)"
+    r"|\[(?:feat|ft|featuring|with)\.?\s+[^\]]+\]"      # "[feat. X]"
+    r")\s*$",
+    re.IGNORECASE,
+)
+
+
+def _strip_features(title: str) -> str:
+    """Remove a trailing featured-artist clause from a track title.
+
+    Returns the input unchanged when no feature suffix is present, so callers
+    can safely use both the original and stripped forms as alternate lookup
+    keys.
+    """
+    if not title:
+        return title
+    return _FEATURE_RE.sub("", title).rstrip()
+
+
 # ---------------------------------------------------------------------------
 # Last.fm chart API
 # ---------------------------------------------------------------------------
@@ -182,7 +216,12 @@ class _ChartClient:
 
 
 async def _build_library_lookup(session: AsyncSession) -> dict[tuple[str, str], str]:
-    """Build (normalized_artist, normalized_title) -> track_id lookup."""
+    """Build (normalized_artist, normalized_title) -> track_id lookup.
+
+    Registers both the canonical title and the feature-stripped title when
+    they differ, so chart rows with "+ <featured>" or "(feat. …)" suffixes
+    match library tracks that lack them — and vice versa.
+    """
     rows = (
         await session.execute(
             select(TrackFeatures.track_id, TrackFeatures.artist, TrackFeatures.title).where(
@@ -192,8 +231,15 @@ async def _build_library_lookup(session: AsyncSession) -> dict[tuple[str, str], 
     ).all()
     lookup: dict[tuple[str, str], str] = {}
     for track_id, artist, title in rows:
-        key = (_normalize(artist), _normalize(title))
-        lookup[key] = track_id
+        artist_norm = _normalize(artist)
+        title_norm = _normalize(title)
+        lookup[(artist_norm, title_norm)] = track_id
+        stripped = _normalize(_strip_features(title))
+        if stripped and stripped != title_norm:
+            # ``setdefault`` so the canonical key wins when two library rows
+            # collapse to the same stripped form (e.g. a track and its
+            # "feat. …" remix variant).
+            lookup.setdefault((artist_norm, stripped), track_id)
     return lookup
 
 
@@ -637,11 +683,18 @@ async def _build_track_chart(
         listeners = int(track.get("listeners", 0))
         image_url = _pick_image_url(track.get("image", []))
 
-        # Match to library.
+        # Match to library. Try the canonical title first; fall back to the
+        # feature-stripped variant so "Stateside + Zara Larsson" matches
+        # the library's "Stateside".
         matched_track_id = None
-        key = (_normalize(artist_name), _normalize(title))
-        if key[0] and key[1]:
-            matched_track_id = track_lookup.get(key)
+        artist_norm = _normalize(artist_name)
+        title_norm = _normalize(title)
+        if artist_norm and title_norm:
+            matched_track_id = track_lookup.get((artist_norm, title_norm))
+            if not matched_track_id:
+                stripped = _normalize(_strip_features(title))
+                if stripped and stripped != title_norm:
+                    matched_track_id = track_lookup.get((artist_norm, stripped))
 
         # Fallback cover art: Last.fm dropped the placeholder filter above and
         # we have no URL. Resolve via spotdl-api for *every* such entry — even
