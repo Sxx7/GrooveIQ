@@ -41,3 +41,7 @@ LLM_CONTEXT.md
 acousticbrainz-lookup/HANDOFF.md
 docs/auth-provider-plan.md
 handoff.md
+
+# GUI rebuild planning + handoffs — kept on disk but not in repo.
+gui-rework-plan.md
+docs/rebuild/
