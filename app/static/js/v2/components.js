@@ -1993,3 +1993,397 @@ GIQ.components.integrationCard = function integrationCard(opts) {
 
     return card;
 };
+
+/* ── Track table ────────────────────────────────────────────────────
+ *
+ * Reusable across Recommendations, Tracks, Playlists, Charts, Audit.
+ * Below 700px, renders a card list (same data, different layout).
+ *
+ * opts:
+ *   columns: array of column ids — pick from
+ *     'rank' | 'title' | 'artist' | 'album' | 'genre' | 'source' | 'score'
+ *     | 'bpm' | 'key' | 'energy' | 'dance' | 'valence' | 'mood'
+ *     | 'duration' | 'version' | 'id'
+ *   rows:    array of track objects from the API. Common fields:
+ *     position, track_id, title, artist, album, genre, source, score,
+ *     bpm, key, mode, energy, danceability, valence, mood_tags,
+ *     duration, analysis_version
+ *   sort:        { field, dir } — current sort state, may be null
+ *   sortable:    array of column ids that respond to header clicks
+ *                (default: nothing — pages opt in)
+ *   onSort:      (field) => void — called when user clicks sortable header
+ *   pagination:  { offset, limit, total, onPage } | null
+ *   rowAction:   (row, idx) => HTMLElement | null — extra cell at the end
+ *                (e.g. debug→ link in Recommendations)
+ *   maxScore:    optional number; if absent and 'score' column is present,
+ *                computed from rows
+ *   empty:       text to show when rows is empty (default 'No tracks.')
+ */
+GIQ.components.trackTable = function trackTable(opts) {
+    const cfg = opts || {};
+    const columns = cfg.columns || ['title', 'artist', 'bpm', 'key', 'energy', 'duration'];
+    const rows = cfg.rows || [];
+    const sort = cfg.sort || null;
+    const sortable = cfg.sortable || [];
+    const onSort = cfg.onSort || null;
+    const pagination = cfg.pagination || null;
+    const rowAction = cfg.rowAction || null;
+    const empty = cfg.empty || 'No tracks.';
+
+    let maxScore = cfg.maxScore;
+    if (maxScore == null && columns.indexOf('score') >= 0) {
+        maxScore = 0;
+        rows.forEach(r => { if (typeof r.score === 'number' && r.score > maxScore) maxScore = r.score; });
+        if (maxScore <= 0) maxScore = 1;
+    }
+
+    const wrap = document.createElement('div');
+    wrap.className = 'track-table-wrap';
+
+    if (!rows.length) {
+        const e = document.createElement('div');
+        e.className = 'track-table-empty';
+        e.textContent = empty;
+        wrap.appendChild(e);
+        return wrap;
+    }
+
+    /* Table view (default; CSS collapses to cards <700px). */
+    const table = document.createElement('div');
+    table.className = 'track-table';
+    table.style.gridTemplateColumns = _ttGridTemplate(columns, !!rowAction);
+
+    const head = document.createElement('div');
+    head.className = 'track-table-row track-table-head';
+    columns.forEach(col => {
+        const cell = document.createElement('div');
+        cell.className = 'tt-h tt-h-' + col;
+        const label = _ttHeader(col);
+        const isSortable = sortable.indexOf(col) >= 0;
+        if (isSortable && onSort) {
+            const btn = document.createElement('button');
+            btn.type = 'button';
+            btn.className = 'tt-sort-btn';
+            const arrow = (sort && sort.field === col)
+                ? (sort.dir === 'asc' ? ' ↑' : ' ↓')
+                : '';
+            btn.textContent = label + arrow;
+            btn.addEventListener('click', () => onSort(col));
+            cell.appendChild(btn);
+        } else {
+            cell.textContent = label;
+        }
+        head.appendChild(cell);
+    });
+    if (rowAction) {
+        const cell = document.createElement('div');
+        cell.className = 'tt-h tt-h-action';
+        head.appendChild(cell);
+    }
+    table.appendChild(head);
+
+    rows.forEach((r, idx) => {
+        const row = document.createElement('div');
+        row.className = 'track-table-row';
+        columns.forEach(col => row.appendChild(_ttCell(col, r, idx, maxScore)));
+        if (rowAction) {
+            const cell = document.createElement('div');
+            cell.className = 'tt-c tt-c-action';
+            try {
+                const el = rowAction(r, idx);
+                if (el instanceof Element) cell.appendChild(el);
+            } catch (e) { /* ignore action errors */ }
+            row.appendChild(cell);
+        }
+
+        /* Card-mode layout (rendered below 700px via CSS — this just
+         * builds the additional card content into a hidden element). */
+        const card = document.createElement('div');
+        card.className = 'tt-card';
+        card.appendChild(_ttCardLayout(columns, r, idx, maxScore, rowAction));
+        row.appendChild(card);
+
+        table.appendChild(row);
+    });
+
+    wrap.appendChild(table);
+
+    if (pagination) {
+        const offset = pagination.offset || 0;
+        const limit = pagination.limit || rows.length;
+        const total = pagination.total || rows.length;
+        const from = total > 0 ? offset + 1 : 0;
+        const to = Math.min(offset + rows.length, total);
+        const foot = document.createElement('div');
+        foot.className = 'track-table-pagination';
+        foot.innerHTML = '<span class="mono muted">Showing ' + from + '–' + to + ' of '
+            + total.toLocaleString() + '</span>';
+
+        const right = document.createElement('div');
+        right.style.display = 'flex';
+        right.style.gap = '6px';
+
+        const prev = document.createElement('button');
+        prev.type = 'button';
+        prev.className = 'vc-btn vc-btn-sm';
+        prev.textContent = '← Prev';
+        prev.disabled = offset <= 0;
+        prev.addEventListener('click', () => {
+            if (typeof pagination.onPage === 'function') pagination.onPage(-1);
+        });
+
+        const next = document.createElement('button');
+        next.type = 'button';
+        next.className = 'vc-btn vc-btn-sm';
+        next.textContent = 'Next →';
+        next.disabled = offset + rows.length >= total;
+        next.addEventListener('click', () => {
+            if (typeof pagination.onPage === 'function') pagination.onPage(+1);
+        });
+
+        right.appendChild(prev);
+        right.appendChild(next);
+        foot.appendChild(right);
+        wrap.appendChild(foot);
+    }
+
+    return wrap;
+};
+
+function _ttGridTemplate(columns, hasAction) {
+    /* Per-column widths matched to _ttHeader / _ttCell. Use auto for the
+     * elastic title column; everything else fixed. */
+    const widths = {
+        rank: '36px',
+        title: 'minmax(180px, 2fr)',
+        artist: 'minmax(120px, 1fr)',
+        album: 'minmax(120px, 1fr)',
+        genre: 'minmax(100px, 0.8fr)',
+        source: '90px',
+        score: '90px',
+        bpm: '52px',
+        key: '54px',
+        energy: '90px',
+        dance: '60px',
+        valence: '60px',
+        mood: '90px',
+        duration: '60px',
+        version: '64px',
+        id: '120px',
+    };
+    const parts = columns.map(c => widths[c] || '1fr');
+    if (hasAction) parts.push('66px');
+    return parts.join(' ');
+}
+
+function _ttHeader(col) {
+    return ({
+        rank: '#',
+        title: 'Title',
+        artist: 'Artist',
+        album: 'Album',
+        genre: 'Genre',
+        source: 'Source',
+        score: 'Score',
+        bpm: 'BPM',
+        key: 'Key',
+        energy: 'Energy',
+        dance: 'Dance',
+        valence: 'Valence',
+        mood: 'Mood',
+        duration: 'Dur',
+        version: 'Version',
+        id: 'Track ID',
+    })[col] || col;
+}
+
+function _ttCell(col, r, idx, maxScore) {
+    const cell = document.createElement('div');
+    cell.className = 'tt-c tt-c-' + col;
+    const esc = GIQ.fmt.esc;
+
+    if (col === 'rank') {
+        const n = (typeof r.position === 'number' ? r.position + 1 : idx + 1);
+        cell.innerHTML = '<span class="tt-rank mono">' + n + '</span>';
+        return cell;
+    }
+    if (col === 'title') {
+        const title = r.title || _ttBasename(r.file_path) || r.track_id || '—';
+        const sub = r.album || '';
+        cell.innerHTML = '<span class="tt-title" title="' + esc(r.track_id || title) + '">'
+            + esc(title) + '</span>'
+            + (sub ? '<span class="tt-title-sub">' + esc(sub) + '</span>' : '');
+        return cell;
+    }
+    if (col === 'artist') {
+        cell.innerHTML = '<span class="tt-artist" title="' + esc(r.artist || '') + '">'
+            + esc(r.artist || '—') + '</span>';
+        return cell;
+    }
+    if (col === 'album') {
+        cell.innerHTML = '<span class="tt-truncate" title="' + esc(r.album || '') + '">'
+            + esc(r.album || '—') + '</span>';
+        return cell;
+    }
+    if (col === 'genre') {
+        cell.innerHTML = '<span class="tt-truncate" title="' + esc(r.genre || '') + '">'
+            + esc(r.genre || '—') + '</span>';
+        return cell;
+    }
+    if (col === 'source') {
+        cell.innerHTML = r.source
+            ? '<span class="rd-source-chip">' + esc(r.source) + '</span>'
+            : '<span class="mono muted">—</span>';
+        return cell;
+    }
+    if (col === 'score') {
+        if (typeof r.score === 'number') {
+            const pct = Math.max(2, Math.min(100, (r.score / (maxScore || 1)) * 100));
+            cell.innerHTML = '<div class="tt-score">'
+                + '<div class="tt-score-track"><div class="tt-score-fill" style="width:' + pct.toFixed(1) + '%"></div></div>'
+                + '<span class="mono">' + r.score.toFixed(3) + '</span>'
+                + '</div>';
+        } else cell.innerHTML = '<span class="mono muted">—</span>';
+        return cell;
+    }
+    if (col === 'bpm') {
+        cell.innerHTML = (typeof r.bpm === 'number')
+            ? '<span class="mono">' + r.bpm.toFixed(1) + '</span>'
+            : '<span class="mono muted">—</span>';
+        return cell;
+    }
+    if (col === 'key') {
+        const key = r.key || '—';
+        const mode = r.mode ? ' ' + r.mode.charAt(0) : '';
+        cell.innerHTML = (key === '—')
+            ? '<span class="mono muted">—</span>'
+            : '<span class="mono">' + esc(key + mode) + '</span>';
+        return cell;
+    }
+    if (col === 'energy') {
+        if (typeof r.energy === 'number') {
+            const pct = Math.max(2, Math.min(100, r.energy * 100));
+            cell.innerHTML = '<div class="tt-energy">'
+                + '<div class="tt-energy-track"><div class="tt-energy-fill" style="width:' + pct.toFixed(1) + '%"></div></div>'
+                + '<span class="mono tt-energy-num">' + r.energy.toFixed(2) + '</span>'
+                + '</div>';
+        } else cell.innerHTML = '<span class="mono muted">—</span>';
+        return cell;
+    }
+    if (col === 'dance') {
+        cell.innerHTML = (typeof r.danceability === 'number')
+            ? '<span class="mono">' + r.danceability.toFixed(2) + '</span>'
+            : '<span class="mono muted">—</span>';
+        return cell;
+    }
+    if (col === 'valence') {
+        cell.innerHTML = (typeof r.valence === 'number')
+            ? '<span class="mono">' + r.valence.toFixed(2) + '</span>'
+            : '<span class="mono muted">—</span>';
+        return cell;
+    }
+    if (col === 'mood') {
+        cell.innerHTML = '<span class="tt-truncate">' + esc(_ttTopMood(r.mood_tags)) + '</span>';
+        return cell;
+    }
+    if (col === 'duration') {
+        cell.innerHTML = (typeof r.duration === 'number')
+            ? '<span class="mono">' + _ttFmtDur(r.duration) + '</span>'
+            : '<span class="mono muted">—</span>';
+        return cell;
+    }
+    if (col === 'version') {
+        cell.innerHTML = r.analysis_version
+            ? '<span class="mono muted tt-version">' + esc(r.analysis_version) + '</span>'
+            : '<span class="mono muted">—</span>';
+        return cell;
+    }
+    if (col === 'id') {
+        cell.innerHTML = '<span class="mono muted tt-id" title="' + esc(r.track_id || '') + '">'
+            + esc(r.track_id || '—').slice(0, 12) + '</span>';
+        return cell;
+    }
+    cell.textContent = '';
+    return cell;
+}
+
+function _ttCardLayout(columns, r, idx, maxScore, rowAction) {
+    /* Used in <700px card mode. Top line: title + artist. Sub-line:
+     * BPM · key · mood · duration. Optional source chip + score bar +
+     * trailing rowAction. */
+    const wrap = document.createElement('div');
+    wrap.className = 'tt-card-inner';
+    const esc = GIQ.fmt.esc;
+
+    const top = document.createElement('div');
+    top.className = 'tt-card-top';
+    const rank = (columns.indexOf('rank') >= 0)
+        ? '<span class="tt-rank mono">' + (typeof r.position === 'number' ? r.position + 1 : idx + 1) + '</span>'
+        : '';
+    const title = r.title || _ttBasename(r.file_path) || r.track_id || '—';
+    top.innerHTML = rank
+        + '<div class="tt-card-title">'
+        + '<div class="tt-card-name">' + esc(title) + '</div>'
+        + '<div class="tt-card-artist">' + esc(r.artist || '') + '</div>'
+        + '</div>';
+
+    if (columns.indexOf('source') >= 0 && r.source) {
+        top.innerHTML += '<span class="rd-source-chip">' + esc(r.source) + '</span>';
+    }
+
+    if (columns.indexOf('score') >= 0 && typeof r.score === 'number') {
+        const pct = Math.max(2, Math.min(100, (r.score / (maxScore || 1)) * 100));
+        top.innerHTML += '<div class="tt-score">'
+            + '<div class="tt-score-track"><div class="tt-score-fill" style="width:' + pct.toFixed(1) + '%"></div></div>'
+            + '<span class="mono">' + r.score.toFixed(3) + '</span>'
+            + '</div>';
+    }
+    wrap.appendChild(top);
+
+    const sub = document.createElement('div');
+    sub.className = 'tt-card-sub mono muted';
+    const subParts = [];
+    if (typeof r.bpm === 'number') subParts.push(r.bpm.toFixed(0) + ' BPM');
+    if (r.key) subParts.push(r.key + (r.mode ? ' ' + r.mode.charAt(0) : ''));
+    if (typeof r.energy === 'number') subParts.push('E ' + r.energy.toFixed(2));
+    const mood = _ttTopMood(r.mood_tags);
+    if (mood && mood !== '—') subParts.push(mood);
+    if (typeof r.duration === 'number') subParts.push(_ttFmtDur(r.duration));
+    sub.textContent = subParts.join(' · ') || '—';
+    wrap.appendChild(sub);
+
+    if (rowAction) {
+        const cell = document.createElement('div');
+        cell.className = 'tt-card-action';
+        try {
+            const el = rowAction(r, idx);
+            if (el instanceof Element) cell.appendChild(el);
+        } catch (_) { /* ignore */ }
+        wrap.appendChild(cell);
+    }
+
+    return wrap;
+}
+
+function _ttTopMood(moodTags) {
+    if (!moodTags) return '—';
+    if (typeof moodTags === 'string') return moodTags;
+    if (!Array.isArray(moodTags) || !moodTags.length) return '—';
+    const top = moodTags[0];
+    if (top && typeof top === 'object') return top.label || '—';
+    return String(top);
+}
+
+function _ttFmtDur(sec) {
+    if (sec == null) return '—';
+    const s = Math.max(0, Math.round(sec));
+    const m = Math.floor(s / 60);
+    const r = s % 60;
+    return m + ':' + (r < 10 ? '0' + r : r);
+}
+
+function _ttBasename(p) {
+    if (!p) return '';
+    const i = p.lastIndexOf('/');
+    return i >= 0 ? p.slice(i + 1) : p;
+}

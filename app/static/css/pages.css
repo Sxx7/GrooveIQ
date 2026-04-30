@@ -3025,3 +3025,384 @@
     .op-charts-row { grid-template-columns: 1fr 90px; }
     .op-charts-row > :nth-child(n+3) { display: none; }
 }
+
+/* ── Shared track table ───────────────────────────────────────────── */
+
+.track-table-wrap {
+    display: flex;
+    flex-direction: column;
+}
+.track-table-empty {
+    padding: 30px 0;
+    text-align: center;
+    color: var(--ink-3);
+    font-size: 12px;
+}
+
+.track-table {
+    display: grid;
+    width: 100%;
+    border-top: 1px solid var(--line-faint);
+}
+.track-table-row {
+    display: grid;
+    grid-template-columns: subgrid;
+    grid-column: 1 / -1;
+    align-items: center;
+    column-gap: 10px;
+    padding: 9px 14px;
+    border-bottom: 1px solid var(--line-faint);
+    font-size: 12px;
+    min-width: 0;
+}
+.track-table-row:last-child { border-bottom: none; }
+.track-table-head {
+    background: rgba(236, 232, 242, 0.02);
+    border-bottom: 1px solid var(--line-soft);
+    padding: 8px 14px;
+}
+.track-table-head .tt-h {
+    font-family: var(--mono);
+    font-size: 9px;
+    text-transform: uppercase;
+    letter-spacing: 0.10em;
+    color: var(--ink-3);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.tt-sort-btn {
+    background: none;
+    border: none;
+    color: inherit;
+    font: inherit;
+    padding: 0;
+    cursor: pointer;
+    text-transform: inherit;
+    letter-spacing: inherit;
+}
+.tt-sort-btn:hover {
+    color: var(--ink-2);
+}
+
+.tt-c {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    min-width: 0;
+}
+.tt-rank {
+    color: var(--ink-3);
+    font-size: 11px;
+}
+.tt-c-title {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    min-width: 0;
+}
+.tt-title {
+    color: var(--ink);
+    font-weight: 600;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.tt-title-sub {
+    color: var(--ink-3);
+    font-size: 11px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.tt-artist, .tt-truncate {
+    color: var(--ink-2);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.tt-id {
+    font-size: 10px;
+}
+.tt-version {
+    font-size: 10px;
+}
+
+.tt-score {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+.tt-score-track {
+    width: 100%;
+    max-width: 60px;
+    height: 4px;
+    background: var(--line-faint);
+    border-radius: 2px;
+    overflow: hidden;
+}
+.tt-score-fill {
+    height: 100%;
+    background: var(--ink);
+}
+.tt-score .mono {
+    font-size: 10px;
+    color: var(--ink-3);
+}
+
+.tt-energy {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+.tt-energy-track {
+    width: 50px;
+    height: 4px;
+    background: var(--line-faint);
+    border-radius: 2px;
+    overflow: hidden;
+    flex-shrink: 0;
+}
+.tt-energy-fill {
+    height: 100%;
+    background: var(--accent);
+}
+.tt-energy-num {
+    color: var(--ink-2);
+    font-size: 11px;
+}
+
+/* Card mode is hidden by default; CSS swaps below 700px */
+.tt-card { display: none; }
+
+.track-table-pagination {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 10px 14px;
+    border-top: 1px solid var(--line-faint);
+    font-size: 12px;
+}
+
+/* ── Explore → Recommendations ────────────────────────────────────── */
+
+.reco-body {
+    padding: 0 var(--page-pad-x) 32px;
+    display: flex;
+    flex-direction: column;
+    gap: var(--grid-gap);
+}
+.reco-header-controls {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    flex-wrap: wrap;
+}
+.reco-select {
+    background: var(--bg);
+    border: 1px solid var(--line-soft);
+    color: var(--ink);
+    border-radius: 6px;
+    padding: 6px 8px;
+    font-family: inherit;
+    font-size: 12px;
+    min-width: 140px;
+}
+.reco-input {
+    background: var(--bg);
+    border: 1px solid var(--line-soft);
+    color: var(--ink);
+    border-radius: 6px;
+    padding: 6px 8px;
+    font-family: inherit;
+    font-size: 12px;
+}
+.reco-input:focus, .reco-select:focus {
+    outline: none;
+    border-color: var(--accent);
+}
+
+.reco-context-row {
+    background: var(--paper);
+    border: 1px solid var(--line-faint);
+    border-radius: var(--r-panel);
+    padding: 12px 14px;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+}
+.reco-ctx-field {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    min-width: 130px;
+}
+.reco-ctx-field .eyebrow {
+    font-size: 9px;
+    letter-spacing: 0.10em;
+}
+.reco-ctx-field .reco-select {
+    min-width: 130px;
+}
+
+.reco-banner {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 8px 12px;
+    background: var(--paper);
+    border: 1.25px dashed var(--line-soft);
+    border-radius: 8px;
+    font-size: 11px;
+}
+.reco-banner .eyebrow {
+    font-size: 9px;
+    letter-spacing: 0.10em;
+}
+.reco-banner .mono {
+    color: var(--ink-2);
+    font-size: 11px;
+}
+
+.reco-results {
+    display: flex;
+    flex-direction: column;
+    gap: var(--grid-gap);
+}
+.reco-meta {
+    font-size: 11px;
+    color: var(--ink-3);
+}
+.reco-empty {
+    padding: 30px 14px;
+    text-align: center;
+    color: var(--ink-3);
+    font-size: 12px;
+    border: 1px solid var(--line-faint);
+    border-radius: var(--r-panel);
+    background: var(--paper);
+}
+.reco-error {
+    padding: 14px;
+    border: 1px solid rgba(156, 82, 109, 0.30);
+    background: var(--wine-soft);
+    color: var(--ink);
+    border-radius: var(--r-panel);
+    font-size: 12px;
+}
+.reco-table-panel .panel-body {
+    padding: 0;
+}
+.reco-debug-link {
+    color: var(--accent);
+    font-family: var(--mono);
+    font-size: 10px;
+    text-decoration: none;
+    font-weight: 500;
+}
+.reco-debug-link:hover { text-decoration: underline; }
+
+/* ── Explore → Tracks ─────────────────────────────────────────────── */
+
+.tracks-body {
+    padding: 0 var(--page-pad-x) 32px;
+    display: flex;
+    flex-direction: column;
+    gap: var(--grid-gap);
+}
+.tracks-header-controls {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    flex-wrap: wrap;
+}
+.tracks-search-wrap {
+    position: relative;
+    display: inline-block;
+}
+.tracks-search {
+    width: 220px;
+    padding-right: 28px;
+}
+.tracks-search-clear {
+    position: absolute;
+    right: 6px;
+    top: 50%;
+    transform: translateY(-50%);
+    background: none;
+    border: none;
+    color: var(--ink-3);
+    cursor: pointer;
+    font-size: 14px;
+    padding: 0 4px;
+    line-height: 1;
+}
+.tracks-search-clear:hover { color: var(--ink); }
+.tracks-panel .panel-body { padding: 0; }
+.vc-btn-sm {
+    padding: 4px 10px;
+    font-size: 11px;
+    line-height: 1.2;
+}
+
+/* ── Track table responsive: card mode below 700px ────────────────── */
+
+@media (max-width: 700px) {
+    .track-table { display: flex; flex-direction: column; }
+    .track-table-row {
+        display: block;
+        padding: 12px 14px;
+        grid-template-columns: none;
+    }
+    .track-table-row.track-table-head { display: none; }
+    .track-table-row > .tt-c { display: none; }
+    .track-table-row > .tt-card { display: block; }
+    .tt-card-inner {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+    }
+    .tt-card-top {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        flex-wrap: wrap;
+    }
+    .tt-card-top .tt-rank {
+        flex-shrink: 0;
+        min-width: 18px;
+    }
+    .tt-card-title {
+        flex-grow: 1;
+        min-width: 0;
+        display: flex;
+        flex-direction: column;
+        gap: 1px;
+    }
+    .tt-card-name {
+        font-weight: 600;
+        color: var(--ink);
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+    .tt-card-artist {
+        font-size: 11px;
+        color: var(--ink-3);
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+    .tt-card-sub {
+        font-size: 11px;
+        color: var(--ink-3);
+    }
+    .tt-card-action {
+        margin-top: 4px;
+    }
+    .reco-body, .tracks-body { padding-left: 16px; padding-right: 16px; }
+    .reco-header-controls, .tracks-header-controls {
+        margin-top: 8px;
+        width: 100%;
+    }
+}
