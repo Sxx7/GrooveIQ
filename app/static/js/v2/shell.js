@@ -29,8 +29,13 @@
             + '</button>';
     }
 
+    function effectiveCollapsed() {
+        if (typeof window !== 'undefined' && window.innerWidth < 1100) return true;
+        return !!GIQ.state.sidebarCollapsed;
+    }
+
     function renderSidebar() {
-        const collapsed = GIQ.state.sidebarCollapsed;
+        const collapsed = effectiveCollapsed();
         const aside = document.querySelector('.sidebar');
         if (!aside) return;
         aside.classList.toggle('collapsed', collapsed);
@@ -193,6 +198,57 @@
         });
     }
 
+    function renderBottomTabbar() {
+        let bar = document.querySelector('.bottom-tabbar');
+        if (!bar) {
+            bar = document.createElement('nav');
+            bar.className = 'bottom-tabbar';
+            document.body.appendChild(bar);
+        }
+        const current = GIQ.state.currentBucket || 'monitor';
+        let html = '';
+        for (const b of GIQ.router.BUCKETS) {
+            const cls = 'bottom-tabbar-item' + (b === current ? ' active' : '');
+            html += '<button class="' + cls + '" data-bucket="' + b + '">'
+                + '<span class="bottom-tabbar-icon">' + GIQ.fmt.esc(GIQ.router.BUCKET_ICONS[b]) + '</span>'
+                + '<span class="bottom-tabbar-label">' + GIQ.fmt.esc(GIQ.router.BUCKET_LABELS[b]) + '</span>'
+                + '</button>';
+        }
+        bar.innerHTML = html;
+        bar.querySelectorAll('[data-bucket]').forEach(btn => {
+            btn.addEventListener('click', () => {
+                GIQ.router.navigate(btn.dataset.bucket);
+            });
+        });
+    }
+
+    function renderActivityFab() {
+        let fab = document.querySelector('.mobile-activity-fab');
+        if (!fab) {
+            fab = document.createElement('button');
+            fab.className = 'mobile-activity-fab idle';
+            fab.setAttribute('aria-label', 'Activity');
+            fab.setAttribute('data-count', '0');
+            fab.innerHTML = '<span class="idle-dot"></span>'
+                + '<span class="pulse-dot"></span>'
+                + '<span class="mobile-activity-fab-icon">⚡</span>'
+                + '<span class="mobile-activity-fab-count">0</span>';
+            document.body.appendChild(fab);
+        }
+        if (GIQ.activity?.rebind) GIQ.activity.rebind();
+    }
+
+    function applyResponsive() {
+        const aside = document.querySelector('.sidebar');
+        if (!aside) return;
+        const wantsCollapsed = effectiveCollapsed();
+        const showsExpandedLogo = !!aside.querySelector('.logo > .logo-accent');
+        // Re-render only when the rendered state mismatches the desired state.
+        if (wantsCollapsed && showsExpandedLogo) renderSidebar();
+        else if (!wantsCollapsed && !showsExpandedLogo) renderSidebar();
+        else aside.classList.toggle('collapsed', wantsCollapsed);
+    }
+
     function renderShell() {
         const app = document.getElementById('app');
         if (!app) return;
@@ -205,15 +261,35 @@
         }
         renderSidebar();
         renderTopbar();
+        renderBottomTabbar();
+        renderActivityFab();
+        applyResponsive();
+    }
+
+    let _resizeBound = false;
+    function bindResize() {
+        if (_resizeBound) return;
+        _resizeBound = true;
+        let raf = 0;
+        window.addEventListener('resize', () => {
+            if (raf) cancelAnimationFrame(raf);
+            raf = requestAnimationFrame(() => {
+                applyResponsive();
+                raf = 0;
+            });
+        });
     }
 
     GIQ.shell = {
         init() {
             GIQ.state.sidebarCollapsed = loadCollapsed();
             renderShell();
+            bindResize();
         },
         render: renderShell,
         renderTopbar,
         renderSidebar,
+        renderBottomTabbar,
+        applyResponsive,
     };
 })();

@@ -118,46 +118,64 @@
 
     function renderPill() {
         const pill = document.querySelector('.activity-pill');
-        if (!pill) return;
+        const fab = document.querySelector('.mobile-activity-fab');
 
         const { jobs } = lastSnap;
         const collapsed = GIQ.state.sidebarCollapsed;
         const count = jobs.length;
         const sum = summarizeJobs(jobs);
 
-        const dot = pill.querySelector('.pulse-dot, .idle-dot');
-        if (count > 0) {
-            if (dot) {
-                dot.classList.remove('idle-dot');
-                dot.classList.add('pulse-dot');
+        if (pill) {
+            const dot = pill.querySelector('.pulse-dot, .idle-dot');
+            if (count > 0) {
+                if (dot) {
+                    dot.classList.remove('idle-dot');
+                    dot.classList.add('pulse-dot');
+                }
+                pill.classList.remove('idle');
+            } else {
+                if (dot) {
+                    dot.classList.remove('pulse-dot');
+                    dot.classList.add('idle-dot');
+                }
+                pill.classList.add('idle');
             }
-            pill.classList.remove('idle');
-        } else {
-            if (dot) {
-                dot.classList.remove('pulse-dot');
-                dot.classList.add('idle-dot');
+
+            pill.setAttribute('data-count', String(count));
+
+            if (!collapsed) {
+                const titleEl = pill.querySelector('.activity-pill-title');
+                const subEl = pill.querySelector('.activity-pill-sub');
+                if (titleEl) titleEl.textContent = sum.title;
+                if (subEl) subEl.textContent = sum.sub;
             }
-            pill.classList.add('idle');
         }
 
-        pill.setAttribute('data-count', String(count));
-
-        if (!collapsed) {
-            const titleEl = pill.querySelector('.activity-pill-title');
-            const subEl = pill.querySelector('.activity-pill-sub');
-            if (titleEl) titleEl.textContent = sum.title;
-            if (subEl) subEl.textContent = sum.sub;
+        if (fab) {
+            fab.classList.toggle('idle', count === 0);
+            fab.setAttribute('data-count', String(count));
+            const countEl = fab.querySelector('.mobile-activity-fab-count');
+            if (countEl) countEl.textContent = String(count);
         }
     }
 
     function bind() {
         const pill = document.querySelector('.activity-pill');
-        if (!pill || pill.dataset.bound === '1') return;
-        pill.dataset.bound = '1';
-        pill.addEventListener('click', (e) => {
-            e.stopPropagation();
-            togglePopover();
-        });
+        if (pill && pill.dataset.bound !== '1') {
+            pill.dataset.bound = '1';
+            pill.addEventListener('click', (e) => {
+                e.stopPropagation();
+                togglePopover();
+            });
+        }
+        const fab = document.querySelector('.mobile-activity-fab');
+        if (fab && fab.dataset.bound !== '1') {
+            fab.dataset.bound = '1';
+            fab.addEventListener('click', (e) => {
+                e.stopPropagation();
+                togglePopover();
+            });
+        }
     }
 
     function togglePopover() {
@@ -165,20 +183,30 @@
         else openPopoverEl();
     }
 
-    function openPopoverEl() {
+    function getAnchor() {
+        // Prefer the visible FAB on mobile, fallback to the sidebar pill.
+        const fab = document.querySelector('.mobile-activity-fab');
+        if (fab && fab.offsetParent !== null) return { el: fab, mobile: true };
         const pill = document.querySelector('.activity-pill');
-        if (!pill) return;
+        if (pill && pill.offsetParent !== null) return { el: pill, mobile: false };
+        return null;
+    }
+
+    function openPopoverEl() {
+        const anchor = getAnchor();
+        if (!anchor) return;
         const pop = document.createElement('div');
         pop.className = 'activity-popover';
+        if (anchor.mobile) pop.classList.add('mobile-popover');
         document.body.appendChild(pop);
         openPopover = pop;
-        positionPopover(pop, pill);
+        positionPopover(pop, anchor);
         renderPopover();
 
         outsideHandler = (e) => {
             if (!openPopover) return;
             if (openPopover.contains(e.target)) return;
-            if (pill.contains(e.target)) return;
+            if (anchor.el.contains(e.target)) return;
             closePopover();
         };
         escHandler = (e) => {
@@ -194,13 +222,22 @@
     }
 
     function repositionPopover() {
-        const pill = document.querySelector('.activity-pill');
-        if (!pill || !openPopover) return;
-        positionPopover(openPopover, pill);
+        const anchor = getAnchor();
+        if (!anchor || !openPopover) return;
+        positionPopover(openPopover, anchor);
     }
 
-    function positionPopover(pop, pill) {
-        const r = pill.getBoundingClientRect();
+    function positionPopover(pop, anchor) {
+        if (anchor.mobile) {
+            // CSS handles positioning via .mobile-popover.
+            pop.style.position = '';
+            pop.style.width = '';
+            pop.style.top = '';
+            pop.style.left = '';
+            pop.style.transform = '';
+            return;
+        }
+        const r = anchor.el.getBoundingClientRect();
         pop.style.position = 'fixed';
         pop.style.width = '320px';
         const top = r.top - 8;

@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>GrooveIQ</title>
+<link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+
+<!-- ─── Top Navigation Bar ─── -->
+<nav class="navbar" id="navbar">
+  <div class="navbar-brand">
+    <span class="brand-accent">GrooveIQ</span>
+  </div>
+  <button class="navbar-toggle" id="nav-toggle" aria-label="Toggle navigation">&#9776;</button>
+  <div class="navbar-nav" id="nav-links">
+    <button class="nav-link active" data-tab="dashboard">Dashboard</button>
+    <button class="nav-link" data-tab="pipeline">Pipeline</button>
+    <button class="nav-link" data-tab="content">Content</button>
+    <button class="nav-link" data-tab="users">Users</button>
+    <button class="nav-link" data-tab="connections">Connections</button>
+    <button class="nav-link" data-tab="algorithm">Algorithm</button>
+    <button class="nav-link" data-tab="downloads">Downloads</button>
+  </div>
+  <div class="navbar-end">
+    <div id="refresh-info" class="status-indicator" style="display:none">
+      <span class="dot success" style="animation:pulse 2s infinite"></span>
+      <span class="text-xs text-muted">Auto-refresh</span>
+    </div>
+    <input type="password" id="api-key" class="auth-input" placeholder="API Key" autocomplete="off">
+    <button class="btn btn-primary btn-sm" id="connect-btn">Connect</button>
+  </div>
+</nav>
+
+<!-- ─── Status Banner (shown during active scans / pipeline runs) ─── -->
+<div class="status-banner hidden" id="status-banner">
+  <span class="status-dot"></span>
+  <span id="status-banner-text">Processing...</span>
+</div>
+
+<!-- ─── Auth Warning Banner ─── -->
+<div id="auth-banner" style="display:none;background:#451a03;border:1px solid #b45309;border-radius:8px;margin:12px 24px;padding:10px 16px;color:#fbbf24;font-size:13px;font-weight:600">&#9888; Authentication is DISABLED — all API endpoints are open. Do not expose this instance to a network.</div>
+
+<!-- ─── JS Error Display ─── -->
+<div id="js-errors"></div>
+
+<!-- ─── Main Content ─── -->
+<main class="main-content" id="app">
+  <div class="empty">Enter your API key above to connect.</div>
+</main>
+
+<script src="/static/js/app.js"></script>
+</body>
+</html>

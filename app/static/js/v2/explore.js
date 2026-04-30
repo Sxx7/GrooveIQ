@@ -1014,14 +1014,12 @@
         body.className = 'mm-body';
         root.appendChild(body);
 
-        const isMobile = window.innerWidth < 700;
-        if (isMobile) {
-            const notice = document.createElement('div');
-            notice.className = 'mm-mobile-notice';
-            notice.textContent = 'Music Map is best viewed on desktop. '
-                + 'Pinch-zoom and tap-to-select are supported but limited.';
-            body.appendChild(notice);
-        }
+        // CSS handles the visibility toggle at <700px. Always insert.
+        const notice = document.createElement('div');
+        notice.className = 'mm-mobile-notice';
+        notice.textContent = 'Music Map is best viewed on desktop. '
+            + 'Tracks are densely packed; tap two to build a path.';
+        body.appendChild(notice);
 
         const stage = document.createElement('div');
         stage.className = 'mm-stage';
@@ -2381,6 +2379,11 @@
         }).then(data => {
             if (data && (data.status === 'downloading' || data.status === 'duplicate')) {
                 btn.outerHTML = '<span class="charts-status-chip charts-status-dl">⬇ queued</span>';
+                GIQ.toast({
+                    message: 'Queued — track sent to download cascade',
+                    kind: 'success',
+                    jump: { hash: '#/monitor/downloads', label: 'View queue →' },
+                });
             } else {
                 btn.textContent = (data && data.status) || 'sent';
                 btn.disabled = false;
@@ -2388,6 +2391,7 @@
         }).catch(e => {
             btn.outerHTML = '<span class="charts-status-chip charts-status-failed" title="'
                 + GIQ.fmt.esc(e.message || 'failed') + '">✗ failed</span>';
+            GIQ.toast('Download failed: ' + (e.message || 'unknown'), 'error');
         });
     }
 
