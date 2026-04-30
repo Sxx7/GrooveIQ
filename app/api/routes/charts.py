@@ -217,6 +217,34 @@ async def get_chart(
     )
     entries = (await session.execute(q)).scalars().all()
 
+    # Live library re-match (#55). The persisted in_library / matched_track_id
+    # values were set at chart-build time; if a user added tracks since the last
+    # build, those entries would still claim "not in library". Rebuild the same
+    # (artist, title) -> track_id lookup the chart builder uses, then promote
+    # any entry that now has a hit.
+    from app.services.charts import _build_artist_lookup, _build_library_lookup, _normalize as _chart_norm
+
+    if chart_type == "top_tracks":
+        live_lookup = await _build_library_lookup(session)
+        for e in entries:
+            if e.matched_track_id or not e.artist_name or not e.track_title:
+                continue
+            key = (_chart_norm(e.artist_name), _chart_norm(e.track_title))
+            tid = live_lookup.get(key)
+            if tid:
+                e.matched_track_id = tid
+                e.in_library = True
+    else:  # top_artists
+        live_artist_lookup = await _build_artist_lookup(session)
+        for e in entries:
+            if e.in_library or not e.artist_name:
+                continue
+            tracks = live_artist_lookup.get(_chart_norm(e.artist_name), [])
+            if tracks:
+                e.matched_track_id = tracks[0]
+                e.in_library = True
+                e.library_track_count = len(tracks)
+
     # Enrich matched tracks with metadata.
     matched_ids = [e.matched_track_id for e in entries if e.matched_track_id]
     feat_map = {}

@@ -31,7 +31,7 @@
         session_embeddings: { icon: '⌬',  label: 'Embeddings',     desc: 'Word2Vec skip-gram on sessions' },
         lastfm_candidates:  { icon: '⌖',  label: 'Last.fm',        desc: 'External CF via Last.fm similar tracks' },
         lastfm_cache:       { icon: '⌖',  label: 'Last.fm',        desc: 'External CF via Last.fm similar tracks' },
-        sasrec:             { icon: '⚡', label: 'SASRec',         desc: 'Transformer sequential model' },
+        sasrec:             { icon: '⚡︎', label: 'SASRec',         desc: 'Transformer sequential model' },
         session_gru:        { icon: '∿',  label: 'Session GRU',    desc: 'Taste drift via GRU over sessions' },
         music_map:          { icon: '◈',  label: 'Music Map',      desc: 'UMAP projection of audio embeddings to 2D' },
     };
@@ -553,10 +553,10 @@
                 + '<div class="scan-bar"><div class="scan-bar-fill" style="width:'
                     + pct + '%"></div></div>'
                 + '<div class="scan-mini-grid">'
-                + scanCell('Found', Number(found).toLocaleString())
-                + scanCell('Analyzed', Number(scan.files_analyzed || 0).toLocaleString())
-                + scanCell('Skipped', Number(scan.files_skipped || 0).toLocaleString())
-                + scanCell('Failed', Number(scan.files_failed || 0).toLocaleString())
+                + overviewScanCell('Found', Number(found).toLocaleString())
+                + overviewScanCell('Analyzed', Number(scan.files_analyzed || 0).toLocaleString())
+                + overviewScanCell('Skipped', Number(scan.files_skipped || 0).toLocaleString())
+                + overviewScanCell('Failed', Number(scan.files_failed || 0).toLocaleString())
                 + '</div>';
         }
 
@@ -577,7 +577,7 @@
         }));
     }
 
-    function scanCell(label, value) {
+    function overviewScanCell(label, value) {
         return '<div class="scan-cell">'
             + '<div class="eyebrow">' + GIQ.fmt.esc(label) + '</div>'
             + '<div class="scan-cell-value">' + GIQ.fmt.esc(value) + '</div>'
@@ -4733,9 +4733,40 @@
         };
         let pollTimer = null;
 
+        const headerRight = document.createElement('div');
+        headerRight.className = 'op-head-right';
+        const rebuildBtn = document.createElement('button');
+        rebuildBtn.type = 'button';
+        rebuildBtn.className = 'vc-btn vc-btn-primary';
+        rebuildBtn.textContent = 'Rebuild now';
+        rebuildBtn.addEventListener('click', () => {
+            rebuildBtn.disabled = true;
+            rebuildBtn.textContent = 'Rebuilding…';
+            GIQ.api.post('/v1/charts/build', {})
+                .then(() => {
+                    GIQ.toast({
+                        message: 'Chart rebuild started — refreshing stats.',
+                        kind: 'success',
+                    });
+                    return load();
+                })
+                .catch(e => GIQ.toast({ message: 'Rebuild failed: ' + e.message, kind: 'error' }))
+                .finally(() => {
+                    rebuildBtn.disabled = false;
+                    rebuildBtn.textContent = 'Rebuild now';
+                });
+        });
+        const actionsLink = document.createElement('a');
+        actionsLink.href = '#/actions/charts';
+        actionsLink.className = 'vc-btn vc-btn-ghost';
+        actionsLink.textContent = 'Open in Actions →';
+        headerRight.appendChild(rebuildBtn);
+        headerRight.appendChild(actionsLink);
+
         root.appendChild(GIQ.components.pageHeader({
             eyebrow: 'MONITOR',
             title: 'Charts Stats',
+            right: headerRight,
         }));
 
         const banner = document.createElement('div');

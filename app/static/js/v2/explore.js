@@ -2746,9 +2746,30 @@
                 const chip = document.createElement('a');
                 chip.className = 'artist-detail-sim-chip';
                 chip.href = '#';
-                chip.innerHTML = esc(sim.name)
+                const avatar = document.createElement('span');
+                avatar.className = 'artist-detail-sim-avatar';
+                if (sim.image_url) {
+                    const img = document.createElement('img');
+                    img.src = sim.image_url;
+                    img.alt = '';
+                    img.loading = 'lazy';
+                    img.addEventListener('error', () => {
+                        img.remove();
+                        avatar.classList.add('artist-detail-sim-avatar-empty');
+                        avatar.textContent = (sim.name || '').charAt(0).toUpperCase() || '?';
+                    });
+                    avatar.appendChild(img);
+                } else {
+                    avatar.classList.add('artist-detail-sim-avatar-empty');
+                    avatar.textContent = (sim.name || '').charAt(0).toUpperCase() || '?';
+                }
+                chip.appendChild(avatar);
+                const text = document.createElement('span');
+                text.className = 'artist-detail-sim-text';
+                text.innerHTML = esc(sim.name)
                     + (sim.match != null ? ' <span class="mono muted">' + sim.match.toFixed(2) + '</span>' : '')
                     + (sim.in_library ? ' <span class="artist-detail-tt-chip in-lib">in library</span>' : '');
+                chip.appendChild(text);
                 chip.addEventListener('click', e => {
                     e.preventDefault();
                     handle.close();

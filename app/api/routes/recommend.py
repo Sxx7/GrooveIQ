@@ -683,6 +683,7 @@ async def get_recommended_artists(
         return " ".join(n.split())
 
     artist_norms = {_cover_norm(a["name"]): a["name"] for a in ranked}
+    img_map: dict[str, str] = {}
     if artist_norms:
         img_q = await session.execute(
             select(CoverArtCache.artist_norm, CoverArtCache.url).where(
@@ -691,8 +692,42 @@ async def get_recommended_artists(
             )
         )
         img_map = {r.artist_norm: r.url for r in img_q.all() if r.url}
-        for a in ranked:
-            a["image_url"] = img_map.get(_cover_norm(a["name"]))
+
+    # Resolve any artists still without an image by hitting the download backend
+    # (#56). resolve_artist_image reads the same cover_art_cache table first, so
+    # any negative-cached entries inside the TTL skip the upstream call. We
+    # parallelise across fresh sessions because AsyncSession is single-threaded;
+    # cap the fan-out so a cold-cache page load doesn't fire dozens of upstream
+    # calls at once.
+    _ARTIST_IMG_RESOLVE_CAP = 12
+    missing_artist_names = [
+        artist_norms[n] for n in artist_norms.keys() if n not in img_map
+    ][:_ARTIST_IMG_RESOLVE_CAP]
+    if missing_artist_names:
+        import asyncio
+
+        from app.db.session import AsyncSessionLocal
+        from app.services.cover_art import resolve_artist_image
+
+        async def _resolve_one(name: str) -> tuple[str, str | None]:
+            try:
+                async with AsyncSessionLocal() as own_session:
+                    url = await resolve_artist_image(own_session, name)
+                    await own_session.commit()
+            except Exception:
+                url = None
+            return _cover_norm(name), url
+
+        results = await asyncio.gather(
+            *[_resolve_one(n) for n in missing_artist_names],
+            return_exceptions=False,
+        )
+        for norm, url in results:
+            if url:
+                img_map[norm] = url
+
+    for a in ranked:
+        a["image_url"] = img_map.get(_cover_norm(a["name"]))
 
     # --- Fetch per-user top tracks for each artist ---
     artist_names = [a["name"] for a in ranked]

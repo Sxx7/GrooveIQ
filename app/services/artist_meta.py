@@ -218,6 +218,25 @@ async def get_artist_meta(name: str) -> dict[str, Any] | None:
             }
         )
 
+    # Batch-look up cached images for similar artists (#57). Cache hits only —
+    # we don't fire upstream resolves here because the modal can render up to
+    # 12 chips, and a fresh upstream fetch per chip would dominate page-open
+    # time. The /v1/recommend/{user}/artists endpoint primes the cache.
+    if similar:
+        from app.models.db import CoverArtCache
+
+        sa_norms = {_normalize(s["name"]): s["name"] for s in similar}
+        async with AsyncSessionLocal() as img_session:
+            img_q = await img_session.execute(
+                select(CoverArtCache.artist_norm, CoverArtCache.url).where(
+                    CoverArtCache.artist_norm.in_(list(sa_norms.keys())),
+                    CoverArtCache.title_norm == "",
+                )
+            )
+            sa_img_map = {r.artist_norm: r.url for r in img_q.all() if r.url}
+        for s in similar:
+            s["image_url"] = sa_img_map.get(_normalize(s["name"]))
+
     # Parse top tracks with library matching.
     top_tracks_out = []
     for t in top_tracks:
