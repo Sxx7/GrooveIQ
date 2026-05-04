@@ -20,7 +20,7 @@ pydantic==2.13.*
 pydantic-settings==2.14.*
 
 # Scheduling
-apscheduler==3.10.*
+apscheduler==3.11.*
 
 # Security
 cryptography>=42.0
