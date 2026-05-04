@@ -24,7 +24,7 @@ apscheduler==3.10.*
 
 # Security
 cryptography>=42.0
-redis>=5.0                        # optional: cross-process rate limiting (set REDIS_URL)
+redis>=7.4.0                        # optional: cross-process rate limiting (set REDIS_URL)
 
 # Logging
 structlog==24.*
