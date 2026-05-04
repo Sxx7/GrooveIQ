@@ -3,4 +3,4 @@
 #   pip install -r requirements.txt -r requirements-gpu.txt
 
 # ONNX Runtime with CUDA provider for batched EffNet inference
-onnxruntime-gpu>=1.18,<1.20
+onnxruntime-gpu>=1.25.1,<1.26
