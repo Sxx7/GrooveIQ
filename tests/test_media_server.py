@@ -395,6 +395,147 @@ class TestSyncTrackIds:
             assert t.title == "Updated Title"
             assert t.artist == "Updated Artist"
 
+    @patch("app.services.media_server.settings")
+    async def test_two_local_rows_match_one_server_track(self, mock_settings):
+        """Duplicate local files (same song under two folders) both match the
+        same Navidrome track. Without dedup this would trip
+        UNIQUE(media_server_id) and roll the whole sync back. With dedup,
+        exactly one row wins and the other is reported under
+        tracks_duplicate_local."""
+        mock_settings.MEDIA_SERVER_TYPE = "navidrome"
+        mock_settings.MEDIA_SERVER_URL = "http://localhost:4533"
+        mock_settings.MEDIA_SERVER_USER = "admin"
+        mock_settings.MEDIA_SERVER_PASSWORD = "pass"
+        mock_settings.MEDIA_SERVER_TOKEN = ""
+        mock_settings.MEDIA_SERVER_LIBRARY_ID = "1"
+        mock_settings.MEDIA_SERVER_MUSIC_PATH = "/music"
+        mock_settings.MUSIC_LIBRARY_PATH = "/music"
+
+        # Two local rows with the same artist/album/title — same song stored
+        # under two paths (a "Singles/" copy and a compilation copy).
+        async with _TestSession() as session:
+            session.add(
+                TrackFeatures(
+                    track_id="hash_local_a",
+                    file_path="/music/Singles/Artist/Song.flac",
+                    title="Song",
+                    artist="Artist",
+                    album="Album",
+                    duration=180.0,
+                )
+            )
+            session.add(
+                TrackFeatures(
+                    track_id="hash_local_b",
+                    file_path="/music/Compilations/Best/Song.flac",
+                    title="Song",
+                    artist="Artist",
+                    album="Album",
+                    duration=180.0,
+                )
+            )
+            await session.commit()
+
+        server_tracks = [
+            MediaServerTrack(
+                server_id="nav-shared-001",
+                title="Song",
+                artist="Artist",
+                album="Album",
+                file_path="/music/Singles/Artist/Song.flac",
+                duration=180.0,
+            ),
+        ]
+
+        with patch("app.services.media_server.fetch_tracks", new_callable=AsyncMock, return_value=server_tracks):
+            async with _TestSession() as session:
+                result = await sync_track_ids(session)
+
+        # Both rows matched, but only one claimed the unique server_id.
+        assert result.tracks_matched == 2
+        assert result.media_server_id_updated == 1
+        assert result.tracks_duplicate_local == 1
+
+        from sqlalchemy import select
+
+        async with _TestSession() as session:
+            holders = (
+                (await session.execute(select(TrackFeatures).where(TrackFeatures.media_server_id == "nav-shared-001")))
+                .scalars()
+                .all()
+            )
+            assert len(holders) == 1, "exactly one local row should hold the server_id"
+
+    @patch("app.services.media_server.settings")
+    async def test_reassignment_clears_previous_holder(self, mock_settings):
+        """Row A starts with media_server_id='X'. The matcher resolves 'X' to
+        row B this sync (file moved, MBID just appeared, etc.). Without the
+        clear-stale-holders pass this would trip UNIQUE; with it, A is
+        cleared and B claims 'X'."""
+        mock_settings.MEDIA_SERVER_TYPE = "navidrome"
+        mock_settings.MEDIA_SERVER_URL = "http://localhost:4533"
+        mock_settings.MEDIA_SERVER_USER = "admin"
+        mock_settings.MEDIA_SERVER_PASSWORD = "pass"
+        mock_settings.MEDIA_SERVER_TOKEN = ""
+        mock_settings.MEDIA_SERVER_LIBRARY_ID = "1"
+        mock_settings.MEDIA_SERVER_MUSIC_PATH = "/music"
+        mock_settings.MUSIC_LIBRARY_PATH = "/music"
+
+        # Row A: stale holder of "nav-X" — its file path no longer matches
+        # any server track, so the matcher won't keep it.
+        # Row B: matches "nav-X" via path this sync.
+        async with _TestSession() as session:
+            session.add(
+                TrackFeatures(
+                    track_id="hash_a",
+                    file_path="/music/Stale/Path/Song.flac",
+                    media_server_id="nav-X",
+                    title="Old",
+                    artist="Old",
+                    album="Old",
+                )
+            )
+            session.add(
+                TrackFeatures(
+                    track_id="hash_b",
+                    file_path="/music/New/Path/Song.flac",
+                    title="Song",
+                    artist="Artist",
+                    album="Album",
+                )
+            )
+            await session.commit()
+
+        server_tracks = [
+            MediaServerTrack(
+                server_id="nav-X",
+                title="Song",
+                artist="Artist",
+                album="Album",
+                file_path="/music/New/Path/Song.flac",
+            ),
+        ]
+
+        with patch("app.services.media_server.fetch_tracks", new_callable=AsyncMock, return_value=server_tracks):
+            async with _TestSession() as session:
+                result = await sync_track_ids(session)
+
+        # No exception, B claims the slot, A is cleared.
+        assert result.media_server_id_updated == 1
+        assert result.tracks_duplicate_local == 0
+
+        from sqlalchemy import select
+
+        async with _TestSession() as session:
+            a = (
+                await session.execute(select(TrackFeatures).where(TrackFeatures.track_id == "hash_a"))
+            ).scalar_one()
+            b = (
+                await session.execute(select(TrackFeatures).where(TrackFeatures.track_id == "hash_b"))
+            ).scalar_one()
+            assert a.media_server_id is None
+            assert b.media_server_id == "nav-X"
+
 
 # ---------------------------------------------------------------------------
 # Sync API endpoint
