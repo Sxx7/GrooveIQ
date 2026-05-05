@@ -789,23 +789,26 @@ async def sync_track_ids(session: AsyncSession) -> SyncResult:
         await session.flush()
         await asyncio.sleep(0)  # yield to event loop
 
-    # 6. Clear stale holders before reassigning media_server_ids.
+    # 6. Clear every current holder of a target media_server_id before the
+    # per-row UPDATE loop runs.
     #
-    # If row B currently has media_server_id='X' but the matcher now wants
-    # to put 'X' on row A (file moved, MBID just appeared, etc.), B's
-    # row would still hold 'X' when A's UPDATE runs and the UNIQUE
-    # constraint would fire. One bulk statement nulls every current holder
-    # of a target server_id that isn't the winning row, so the per-row
-    # assignments below can no longer collide.
+    # Two collision modes are in play and a single bulk-NULL handles both:
+    #   - Stale holder: row B has media_server_id='X' from a previous sync
+    #     and the matcher now wants 'X' on row A. Without clearing B, A's
+    #     UPDATE trips UNIQUE.
+    #   - Swap among targets: row A is queued to receive 'X' but currently
+    #     holds 'Y'; row B is queued to receive 'Y'. If B's UPDATE happens
+    #     to fire before A's, B trips UNIQUE because A still holds 'Y'.
+    #
+    # NULLing every row that holds any target server_id — including the
+    # winning rows themselves when they happen to hold one — removes the
+    # ordering dependency entirely. The per-row UPDATE loop below then
+    # restores each winning row to its newly resolved server_id.
     target_server_ids = {u["media_server_id"] for u in media_server_id_updates}
-    target_tf_ids = {u["tf_id"] for u in media_server_id_updates}
     if target_server_ids:
         await session.execute(
             update(TrackFeatures)
-            .where(
-                TrackFeatures.media_server_id.in_(target_server_ids),
-                TrackFeatures.id.notin_(target_tf_ids),
-            )
+            .where(TrackFeatures.media_server_id.in_(target_server_ids))
             .values(media_server_id=None)
         )
         await session.flush()

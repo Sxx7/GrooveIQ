@@ -536,6 +536,87 @@ class TestSyncTrackIds:
             assert a.media_server_id is None
             assert b.media_server_id == "nav-X"
 
+    @patch("app.services.media_server.settings")
+    async def test_swap_among_targets(self, mock_settings):
+        """Both rows are matched targets *and* their current media_server_ids
+        appear in the same target set — i.e. a swap. Row A holds 'Y' and is
+        being reassigned to 'X'; row B holds nothing yet and is being
+        assigned to 'Y'. Without clearing target rows that themselves hold
+        a target server_id, the per-row UPDATE for B would trip UNIQUE if
+        it happens to run before A's UPDATE."""
+        mock_settings.MEDIA_SERVER_TYPE = "navidrome"
+        mock_settings.MEDIA_SERVER_URL = "http://localhost:4533"
+        mock_settings.MEDIA_SERVER_USER = "admin"
+        mock_settings.MEDIA_SERVER_PASSWORD = "pass"
+        mock_settings.MEDIA_SERVER_TOKEN = ""
+        mock_settings.MEDIA_SERVER_LIBRARY_ID = "1"
+        mock_settings.MEDIA_SERVER_MUSIC_PATH = "/music"
+        mock_settings.MUSIC_LIBRARY_PATH = "/music"
+
+        # Row A: currently holds 'nav-Y' (from a prior sync), about to be
+        # reassigned to 'nav-X' because its file path now matches the X
+        # server track.
+        # Row B: holds nothing, about to be assigned 'nav-Y' because its
+        # file path now matches the Y server track.
+        async with _TestSession() as session:
+            session.add(
+                TrackFeatures(
+                    track_id="hash_swap_a",
+                    file_path="/music/Album1/SongX.flac",
+                    media_server_id="nav-Y",
+                    title="Song X",
+                    artist="Artist",
+                    album="Album1",
+                )
+            )
+            session.add(
+                TrackFeatures(
+                    track_id="hash_swap_b",
+                    file_path="/music/Album2/SongY.flac",
+                    title="Song Y",
+                    artist="Artist",
+                    album="Album2",
+                )
+            )
+            await session.commit()
+
+        server_tracks = [
+            MediaServerTrack(
+                server_id="nav-X",
+                title="Song X",
+                artist="Artist",
+                album="Album1",
+                file_path="/music/Album1/SongX.flac",
+            ),
+            MediaServerTrack(
+                server_id="nav-Y",
+                title="Song Y",
+                artist="Artist",
+                album="Album2",
+                file_path="/music/Album2/SongY.flac",
+            ),
+        ]
+
+        with patch("app.services.media_server.fetch_tracks", new_callable=AsyncMock, return_value=server_tracks):
+            async with _TestSession() as session:
+                result = await sync_track_ids(session)
+
+        # Both rows reassigned, no exception, no duplicates dropped.
+        assert result.media_server_id_updated == 2
+        assert result.tracks_duplicate_local == 0
+
+        from sqlalchemy import select
+
+        async with _TestSession() as session:
+            a = (
+                await session.execute(select(TrackFeatures).where(TrackFeatures.track_id == "hash_swap_a"))
+            ).scalar_one()
+            b = (
+                await session.execute(select(TrackFeatures).where(TrackFeatures.track_id == "hash_swap_b"))
+            ).scalar_one()
+            assert a.media_server_id == "nav-X"
+            assert b.media_server_id == "nav-Y"
+
 
 # ---------------------------------------------------------------------------
 # Sync API endpoint
