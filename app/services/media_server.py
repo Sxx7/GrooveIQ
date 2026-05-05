@@ -77,6 +77,7 @@ class SyncResult:
     tracks_matched_by_aatd: int = 0  # (artist, album, title, duration±1s)
     tracks_matched_by_path: int = 0
     tracks_aatd_ambiguous: int = 0  # AATD key had >1 candidate after duration filter
+    tracks_duplicate_local: int = 0  # >1 local row resolved to the same server track; only one wins
     errors: list[str] = field(default_factory=list)
     elapsed_s: float = 0.0
 
@@ -714,15 +715,64 @@ async def sync_track_ids(session: AsyncSession) -> SyncResult:
             result.metadata_updated += 1
 
         # Record / refresh the media server's ID for this row. No rename, no
-        # cascade — the internal `track_id` is immutable.
+        # cascade — the internal `track_id` is immutable. `match_via` rides
+        # along so the dedup pass below can pick the strongest match when
+        # multiple local rows resolve to the same server track.
         if r.media_server_id != st.server_id:
-            media_server_id_updates.append({"tf_id": r.id, "media_server_id": st.server_id})
+            media_server_id_updates.append(
+                {"tf_id": r.id, "media_server_id": st.server_id, "match_via": match_via or ""}
+            )
             result.media_server_id_updated += 1
+
+    # 4b. Resolve intra-sync collisions on media_server_id.
+    #
+    # `track_features.media_server_id` is UNIQUE. Multiple local rows can
+    # resolve to the same server track when the library has duplicate files
+    # (same song under "Singles/" and a compilation "Album/", or a re-tagged
+    # copy). Without this pass, two UPDATEs in the same transaction would
+    # try to write the same media_server_id and trip the constraint.
+    #
+    # Pick one winner per server_id; drop the rest. Tiebreak: stronger match
+    # strategy first (mbid > aatd > path), then lowest tf_id for determinism.
+    # Losers still count under tracks_matched (they did match) and still get
+    # their metadata refreshed — they just can't claim the unique slot.
+    if media_server_id_updates:
+        match_priority = {"mbid": 0, "aatd": 1, "path": 2}
+
+        def _winner_key(upd: dict) -> tuple[int, int]:
+            return (match_priority.get(upd.get("match_via", ""), 99), upd["tf_id"])
+
+        groups: dict[str, list[dict]] = {}
+        for upd in media_server_id_updates:
+            groups.setdefault(upd["media_server_id"], []).append(upd)
+
+        deduped: list[dict] = []
+        for sid, group in groups.items():
+            if len(group) == 1:
+                deduped.append(group[0])
+                continue
+            group.sort(key=_winner_key)
+            winner = group[0]
+            deduped.append(winner)
+            losers = group[1:]
+            result.tracks_duplicate_local += len(losers)
+            result.media_server_id_updated -= len(losers)
+            logger.info(
+                "Media server sync: %d local rows matched server_id=%s; "
+                "tf_id=%d wins via %s, %d duplicate(s) dropped",
+                len(group),
+                sid,
+                winner["tf_id"],
+                winner.get("match_via") or "?",
+                len(losers),
+            )
+        media_server_id_updates = deduped
 
     logger.info(
         f"Media server sync: matched={result.tracks_matched}, "
         f"metadata_updates={len(metadata_updates)}, "
         f"media_server_id_updates={len(media_server_id_updates)}, "
+        f"duplicate_local={result.tracks_duplicate_local}, "
         f"match_phase={time.time() - t0:.1f}s"
     )
 
@@ -739,7 +789,28 @@ async def sync_track_ids(session: AsyncSession) -> SyncResult:
         await session.flush()
         await asyncio.sleep(0)  # yield to event loop
 
-    # 6. Apply media_server_id updates in batches.
+    # 6. Clear stale holders before reassigning media_server_ids.
+    #
+    # If row B currently has media_server_id='X' but the matcher now wants
+    # to put 'X' on row A (file moved, MBID just appeared, etc.), B's
+    # row would still hold 'X' when A's UPDATE runs and the UNIQUE
+    # constraint would fire. One bulk statement nulls every current holder
+    # of a target server_id that isn't the winning row, so the per-row
+    # assignments below can no longer collide.
+    target_server_ids = {u["media_server_id"] for u in media_server_id_updates}
+    target_tf_ids = {u["tf_id"] for u in media_server_id_updates}
+    if target_server_ids:
+        await session.execute(
+            update(TrackFeatures)
+            .where(
+                TrackFeatures.media_server_id.in_(target_server_ids),
+                TrackFeatures.id.notin_(target_tf_ids),
+            )
+            .values(media_server_id=None)
+        )
+        await session.flush()
+
+    # 7. Apply media_server_id updates in batches.
     for i in range(0, len(media_server_id_updates), batch_size):
         batch = media_server_id_updates[i : i + batch_size]
         for upd in batch:
@@ -764,6 +835,7 @@ async def sync_track_ids(session: AsyncSession) -> SyncResult:
             "matched_aatd": result.tracks_matched_by_aatd,
             "matched_path": result.tracks_matched_by_path,
             "aatd_ambiguous": result.tracks_aatd_ambiguous,
+            "duplicate_local": result.tracks_duplicate_local,
             "media_server_id_updated": result.media_server_id_updated,
             "metadata_updated": result.metadata_updated,
             "unmatched": result.tracks_unmatched,

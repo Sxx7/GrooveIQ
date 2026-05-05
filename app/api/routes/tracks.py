@@ -107,6 +107,7 @@ async def trigger_sync(
         "tracks_matched_by_aatd": result.tracks_matched_by_aatd,
         "tracks_matched_by_path": result.tracks_matched_by_path,
         "tracks_aatd_ambiguous": result.tracks_aatd_ambiguous,
+        "tracks_duplicate_local": result.tracks_duplicate_local,
         "media_server_id_updated": result.media_server_id_updated,
         "metadata_updated": result.metadata_updated,
         "tracks_unmatched": result.tracks_unmatched,
