@@ -28,6 +28,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.security import check_user_access, require_admin, require_api_key
+from app.core.user_id import validate_user_id
 from app.db.session import get_session
 from app.models.db import ListenEvent, Playlist, TrackFeatures, User
 from app.models.schemas import (
@@ -67,6 +68,7 @@ async def start_radio(
     db: AsyncSession = Depends(get_session),
     _key: str = Depends(require_api_key),
 ):
+    validate_user_id(body.user_id)
     check_user_access(_key, body.user_id)
 
     # Verify user exists.
@@ -360,6 +362,7 @@ async def list_radio_sessions(
     _key: str = Depends(require_api_key),
 ):
     if user_id:
+        validate_user_id(user_id)
         check_user_access(_key, user_id)
     else:
         # Listing all sessions across users requires admin privileges.
