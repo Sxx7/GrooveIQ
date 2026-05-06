@@ -355,6 +355,30 @@ Materialised sessions grouped by inactivity gaps (default 30 min).
 
 ---
 
+### `GET /v1/users/{user_id}/stats` — Engagement summary
+
+Single-user engagement numbers for stats cards / dashboards. Mirrors one row of `/v1/pipeline/stats/engagement` so values stay consistent between the leaderboard and per-user views.
+
+`total_events`, `unique_tracks`, `diversity`, and `last_active` are computed over the **last 30 days** of events. `plays`, `skips`, and `skip_rate` come from the all-time `track_interactions` rollup.
+
+```json
+{
+  "user_id": "simon",
+  "window_days": 30,
+  "total_events": 1234,
+  "plays": 890,
+  "skips": 145,
+  "skip_rate": 0.163,
+  "unique_tracks": 412,
+  "diversity": 0.334,
+  "last_active": 1712000000
+}
+```
+
+`last_active` may be `null` if the user has no events in the 30-day window.
+
+---
+
 ## Tracks & Library
 
 ### `GET /v1/tracks` — List/search analyzed tracks

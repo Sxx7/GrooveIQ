@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import time
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import func, select, update
@@ -460,6 +461,68 @@ async def get_user_sessions(
             }
             for s in rows
         ],
+    }
+
+
+# ---------------------------------------------------------------------------
+# Engagement stats
+# ---------------------------------------------------------------------------
+
+
+@router.get("/users/{user_id}/stats", summary="Per-user engagement stats")
+async def get_user_stats(
+    user_id: str,
+    session: AsyncSession = Depends(get_session),
+    _key: str = Depends(require_api_key),
+):
+    """Single-user engagement summary mirroring one row of /v1/pipeline/stats/engagement.
+
+    `total_events`, `unique_tracks`, and `last_active` are computed over the last
+    30 days of events. `plays` and `skips` come from the all-time
+    `track_interactions` rollup.
+    """
+    await _resolve_user(session, user_id, _key)
+
+    window_days = 30
+    cutoff = int(time.time()) - window_days * 86400
+
+    event_row = (
+        await session.execute(
+            select(
+                func.count(ListenEvent.id).label("total_events"),
+                func.count(func.distinct(ListenEvent.track_id)).label("unique_tracks"),
+                func.max(ListenEvent.timestamp).label("last_active"),
+            ).where(
+                ListenEvent.user_id == user_id,
+                ListenEvent.timestamp >= cutoff,
+            )
+        )
+    ).first()
+
+    inter_row = (
+        await session.execute(
+            select(
+                func.sum(TrackInteraction.play_count).label("plays"),
+                func.sum(TrackInteraction.skip_count).label("skips"),
+            ).where(TrackInteraction.user_id == user_id)
+        )
+    ).first()
+
+    total_events = event_row.total_events or 0
+    unique_tracks = event_row.unique_tracks or 0
+    plays = int(inter_row.plays or 0)
+    skips = int(inter_row.skips or 0)
+
+    return {
+        "user_id": user_id,
+        "window_days": window_days,
+        "total_events": total_events,
+        "plays": plays,
+        "skips": skips,
+        "skip_rate": round(skips / max(plays, 1), 3),
+        "unique_tracks": unique_tracks,
+        "diversity": round(unique_tracks / max(total_events, 1), 3),
+        "last_active": event_row.last_active,
     }
 
 
