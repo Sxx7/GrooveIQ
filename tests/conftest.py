@@ -36,6 +36,11 @@ _TEST_ENV = {
     "SPOTIZERR_PASSWORD": "",
     "LASTFM_API_KEY": "",
     "LASTFM_API_SECRET": "",
+    # Issue #86: relax user_id format enforcement for the existing test
+    # suite which seeds users with names like "alice" / "testuser".  The
+    # dedicated test_user_id.py module monkeypatches USER_ID_PATTERN to
+    # the production default to verify enforcement under real config.
+    "USER_ID_PATTERN": r"^[A-Za-z0-9_]+$",
 }
 
 for _k, _v in _TEST_ENV.items():

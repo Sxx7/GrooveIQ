@@ -17,6 +17,7 @@ from sqlalchemy import or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
+from app.core.user_id import validate_user_id
 from app.models.db import ListenEvent, TrackFeatures, User
 from app.models.schemas import EventCreate, EventResponse
 
@@ -212,7 +213,12 @@ async def process_event(
 
 
 async def _upsert_user(session: AsyncSession, user_id: str, now: int) -> None:
-    """Create user record on first event, update last_seen otherwise."""
+    """Create user record on first event, update last_seen otherwise.
+
+    Issue #86: reject malformed user_ids before any DB hit so typos and
+    dashboard test names can't auto-create User rows.
+    """
+    validate_user_id(user_id)
     result = await session.execute(select(User).where(User.user_id == user_id).limit(1))
     user = result.scalar_one_or_none()
     if user is None:

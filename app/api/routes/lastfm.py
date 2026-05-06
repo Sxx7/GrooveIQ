@@ -23,6 +23,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.security import check_user_access, require_api_key
+from app.core.user_id import validate_user_id
 from app.db.session import get_session
 from app.models.db import ScrobbleQueue, User
 from app.models.schemas import (
@@ -45,6 +46,7 @@ def _require_lastfm_enabled() -> None:
 
 
 async def _resolve_user(session: AsyncSession, user_id: str, api_key: str = "anonymous") -> User:
+    validate_user_id(user_id)
     check_user_access(api_key, user_id)
     result = await session.execute(select(User).where(User.user_id == user_id))
     user = result.scalar_one_or_none()
