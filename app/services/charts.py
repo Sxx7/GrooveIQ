@@ -74,8 +74,8 @@ _FEATURE_RE = re.compile(
     # "+ Zara Larsson" / "+ Foo & Bar" — require ≥2 tokens after "+" so we
     # don't strip legitimate single-word suffixes ("Up + Down").
     r"\+\s+\S+\s+\S+.*"
-    r"|\((?:feat|ft|featuring|with)\.?\s+[^)]+\)"       # "(feat. X)" / "(ft. X)" / "(with X)"
-    r"|\[(?:feat|ft|featuring|with)\.?\s+[^\]]+\]"      # "[feat. X]"
+    r"|\((?:feat|ft|featuring|with)\.?\s+[^)]+\)"  # "(feat. X)" / "(ft. X)" / "(with X)"
+    r"|\[(?:feat|ft|featuring|with)\.?\s+[^\]]+\]"  # "[feat. X]"
     r")\s*$",
     re.IGNORECASE,
 )
