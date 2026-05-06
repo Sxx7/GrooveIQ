@@ -94,7 +94,12 @@ _PATCH_HOP = 96  # non-overlapping patches
 # ---------------------------------------------------------------------------
 
 _EMBEDDING_DIM = 64
-_EFFNET_DIM = 400
+# Discogs-EffNet exposes two outputs: a 400-dim style classifier head
+# (`activations`) and a 1280-dim trunk feature vector (`embeddings`). We
+# project the trunk — the classifier head is sparse for tracks that don't
+# match any of the 400 styles, which left ~37% of the library with NULL
+# embeddings post-#42 (issue #83).
+_EFFNET_DIM = 1280
 _RNG = np.random.RandomState(seed=20240101)
 _PROJ_MATRIX = (_RNG.randn(_EFFNET_DIM, _EMBEDDING_DIM) / np.sqrt(_EMBEDDING_DIM)).astype(np.float32)
 
@@ -1079,16 +1084,21 @@ def _extract_ml(
         for name, arr in zip(output_names, all_outputs):
             logger.warning("EffNet output '%s': shape=%s", name, arr.shape)
 
-    # Find the 1280-dim embedding that classifier heads expect.
-    # Fall back to the first output for the embedding projection.
-    embeddings = all_outputs[0]
+    # Find the 1280-dim trunk output. Used both for the external classifier
+    # heads below and as the source of the FAISS embedding projection (issue
+    # #83 — `all_outputs[0]` is the 400-dim style classifier head and is
+    # sparse for off-genre tracks, producing degenerate zero-norm projections).
     head_embeddings = None
     for name, arr in zip(output_names, all_outputs):
         if arr.ndim == 2 and arr.shape[1] == 1280:
             head_embeddings = arr
             break
 
-    mean_embedding = np.mean(embeddings, axis=0)
+    # Defensive fallback: if the model variant doesn't expose a 1280-dim
+    # output, project from `all_outputs[0]` instead so we still produce
+    # *something*. Should never trigger with the current Discogs-EffNet ONNX.
+    embedding_source = head_embeddings if head_embeddings is not None else all_outputs[0]
+    mean_embedding = np.mean(embedding_source, axis=0)
 
     # --- Classifier heads (need 1280-dim embeddings) ---
     if head_embeddings is None:
