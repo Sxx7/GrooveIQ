@@ -913,3 +913,40 @@ class RecommendationCandidateAudit(Base):
     request = relationship("RecommendationRequestAudit", back_populates="candidates")
 
     __table_args__ = (Index("idx_reco_audit_candidate_track", "request_id", "track_id"),)
+
+
+# ---------------------------------------------------------------------------
+# API call log  (issue #79)
+# ---------------------------------------------------------------------------
+
+
+class ApiCallLog(Base):
+    """
+    One row per HTTP request to /v1/* — captures method, path, body, status,
+    duration, and a truncated response summary so the frontend's API traffic
+    is browsable per-user from the dashboard.
+
+    Append-only.  Pruned by a daily cleanup job (API_LOG_RETENTION_DAYS).
+    """
+
+    __tablename__ = "api_call_logs"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    created_at = Column(BigInteger, nullable=False, index=True)
+    user_id = Column(String(128), nullable=True, index=True)  # extracted from path/body/query
+    request_id = Column(String(64), nullable=True, index=True)  # for correlation with reco_audit
+    method = Column(String(8), nullable=False)
+    path = Column(String(512), nullable=False, index=True)
+    route_template = Column(String(512), nullable=True)  # "/v1/users/{user_id}/profile"
+    query_string = Column(Text, nullable=True)
+    request_body = Column(JSON, nullable=True)  # truncated, redacted
+    status_code = Column(Integer, nullable=False, index=True)
+    duration_ms = Column(Integer, nullable=False, default=0)
+    response_summary = Column(JSON, nullable=True)  # truncated body
+    response_size_bytes = Column(Integer, nullable=True)
+    error = Column(Text, nullable=True)
+
+    __table_args__ = (
+        Index("idx_api_call_user_time", "user_id", "created_at"),
+        Index("idx_api_call_path_time", "path", "created_at"),
+    )
