@@ -257,6 +257,7 @@ async def get_user_interactions(
         "interactions": [
             {
                 "track_id": ti.track_id,
+                "media_server_id": tf.media_server_id if tf else None,
                 "satisfaction_score": round(ti.satisfaction_score, 4) if ti.satisfaction_score is not None else None,
                 "play_count": ti.play_count,
                 "skip_count": ti.skip_count,
@@ -388,6 +389,7 @@ async def get_user_history(
 
         entry = {
             "track_id": s.track_id,
+            "media_server_id": tf.media_server_id if tf else None,
             "timestamp": s.timestamp,
             "artist": tf.artist if tf else None,
             "title": tf.title if tf else None,

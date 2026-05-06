@@ -223,6 +223,7 @@ async def list_requests(
             tf = feat_map.get(top_id)
             top_track = {
                 "track_id": top_id,
+                "media_server_id": tf.media_server_id if tf else None,
                 "title": tf.title if tf else None,
                 "artist": tf.artist if tf else None,
             }
@@ -280,6 +281,7 @@ async def get_request(
         candidates_out.append(
             {
                 "track_id": c.track_id,
+                "media_server_id": tf.media_server_id if tf else None,
                 "sources": c.sources or [],
                 "raw_score": float(c.raw_score or 0.0),
                 "pre_rerank_position": c.pre_rerank_position,
@@ -330,6 +332,7 @@ async def get_candidate(
 
     return {
         "track_id": c.track_id,
+        "media_server_id": tf.media_server_id if tf else None,
         "sources": c.sources or [],
         "raw_score": float(c.raw_score or 0.0),
         "pre_rerank_position": c.pre_rerank_position,
@@ -430,6 +433,7 @@ async def replay_request(
     original_scores: dict[str, float | None] = {c["track_id"]: c["final_score"] for c in original_candidates}
     titles: dict[str, str | None] = {c["track_id"]: c.get("title") for c in original_candidates}
     artists: dict[str, str | None] = {c["track_id"]: c.get("artist") for c in original_candidates}
+    media_server_ids: dict[str, str | None] = {c["track_id"]: c.get("media_server_id") for c in original_candidates}
 
     if mode == "rerank_only":
         # Re-score using persisted feature vectors with the current model.
@@ -532,6 +536,7 @@ async def replay_request(
         deltas.append(
             {
                 "track_id": tid,
+                "media_server_id": media_server_ids.get(tid),
                 "title": titles.get(tid),
                 "artist": artists.get(tid),
                 "original_position": op,

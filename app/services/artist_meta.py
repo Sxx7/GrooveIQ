@@ -71,20 +71,23 @@ def _cache_set(key: str, value: dict[str, Any]) -> None:
 
 async def _build_track_lookup(
     session: AsyncSession,
-) -> dict[tuple[str, str], str]:
-    """Build (normalized_artist, normalized_title) -> track_id lookup."""
+) -> dict[tuple[str, str], tuple[str, str | None]]:
+    """Build (normalized_artist, normalized_title) -> (track_id, media_server_id) lookup."""
     rows = (
         await session.execute(
-            select(TrackFeatures.track_id, TrackFeatures.artist, TrackFeatures.title).where(
-                TrackFeatures.artist.isnot(None), TrackFeatures.title.isnot(None)
-            )
+            select(
+                TrackFeatures.track_id,
+                TrackFeatures.media_server_id,
+                TrackFeatures.artist,
+                TrackFeatures.title,
+            ).where(TrackFeatures.artist.isnot(None), TrackFeatures.title.isnot(None))
         )
     ).all()
-    lookup: dict[tuple[str, str], str] = {}
-    for track_id, artist, title in rows:
+    lookup: dict[tuple[str, str], tuple[str, str | None]] = {}
+    for track_id, media_server_id, artist, title in rows:
         key = (_normalize(artist), _normalize(title))
         if key not in lookup:
-            lookup[key] = track_id
+            lookup[key] = (track_id, media_server_id)
     return lookup
 
 
@@ -244,13 +247,16 @@ async def get_artist_meta(name: str) -> dict[str, Any] | None:
         if not title:
             continue
         playcount = int(t.get("playcount", 0))
-        matched_id = track_lookup.get((_normalize(info.get("name", name)), _normalize(title)))
+        matched = track_lookup.get((_normalize(info.get("name", name)), _normalize(title)))
+        matched_id = matched[0] if matched else None
+        matched_media_server_id = matched[1] if matched else None
         top_tracks_out.append(
             {
                 "title": title,
                 "playcount": playcount,
                 "in_library": matched_id is not None,
                 "matched_track_id": matched_id,
+                "media_server_id": matched_media_server_id,
             }
         )
 

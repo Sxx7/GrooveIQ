@@ -649,6 +649,7 @@ async def get_similar_tracks(
             return [
                 {
                     "track_id": c.track_id,
+                    "media_server_id": c.media_server_id,
                     "title": c.title,
                     "artist": c.artist,
                     "album": c.album,
@@ -717,6 +718,7 @@ async def get_similar_tracks(
     return [
         {
             "track_id": c.track_id,
+            "media_server_id": c.media_server_id,
             "title": c.title,
             "artist": c.artist,
             "album": c.album,
@@ -759,6 +761,7 @@ async def get_music_map(
     q = (
         select(
             TrackFeatures.track_id,
+            TrackFeatures.media_server_id,
             TrackFeatures.title,
             TrackFeatures.artist,
             TrackFeatures.genre,
@@ -792,6 +795,7 @@ async def get_music_map(
         "tracks": [
             {
                 "track_id": r.track_id,
+                "media_server_id": r.media_server_id,
                 "title": r.title,
                 "artist": r.artist,
                 "genre": r.genre,
@@ -950,6 +954,7 @@ async def text_search_tracks(
         "tracks": [
             {
                 "track_id": c.track_id,
+                "media_server_id": c.media_server_id,
                 "title": c.title,
                 "artist": c.artist,
                 "album": c.album,
