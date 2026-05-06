@@ -1,4 +1,4 @@
-"""GrooveIQ – API call log routes (issue #79)."""
+"""GrooveIQ – API call log routes (issues #79, #81)."""
 
 from __future__ import annotations
 
@@ -16,13 +16,24 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
+_VALID_SOURCES = {"browser", "mobile", "cli", "other"}
+
+
+def _validate_source(source: str | None) -> None:
+    if source and source not in _VALID_SOURCES:
+        raise HTTPException(
+            status_code=422,
+            detail=f"source must be one of {sorted(_VALID_SOURCES)}",
+        )
+
+
 @router.get(
     "/users/{user_id}/api-calls",
     summary="List recent HTTP requests for one user",
     description=(
         "Paginated list of HTTP requests captured by the API logging middleware "
-        "for the given user. Use `path_contains` and `include_events=false` to "
-        "keep the table readable."
+        "for the given user. Use `path_contains`, `source`, and `include_events=false` "
+        "to keep the table readable."
     ),
 )
 async def list_user_api_calls(
@@ -34,10 +45,16 @@ async def list_user_api_calls(
     status: int | None = Query(None, ge=100, le=599, description="Exact status code"),
     include_events: bool = Query(True, description="Set false to hide POST /v1/events rows"),
     since_minutes: int | None = Query(None, ge=1, description="Only rows newer than this many minutes"),
+    source: str | None = Query(
+        None,
+        description="Filter by caller class derived from User-Agent: browser | mobile | cli | other",
+    ),
+    client_ip_contains: str | None = Query(None, description="Substring match on client IP"),
     session: AsyncSession = Depends(get_session),
     _key: str = Depends(require_api_key),
 ):
     check_user_access(_key, user_id)
+    _validate_source(source)
     since = int(time.time()) - since_minutes * 60 if since_minutes else None
     rows, total = await list_calls(
         session,
@@ -47,6 +64,8 @@ async def list_user_api_calls(
         status=status,
         include_events=include_events,
         since=since,
+        source=source,
+        client_ip_contains=client_ip_contains,
         limit=limit,
         offset=offset,
     )
@@ -90,10 +109,13 @@ async def list_all_api_calls(
     user_id: str | None = None,
     include_events: bool = True,
     since_minutes: int | None = Query(None, ge=1),
+    source: str | None = None,
+    client_ip_contains: str | None = None,
     session: AsyncSession = Depends(get_session),
     _key: str = Depends(require_api_key),
 ):
     require_admin(_key)
+    _validate_source(source)
     since = int(time.time()) - since_minutes * 60 if since_minutes else None
     rows, total = await list_calls(
         session,
@@ -103,6 +125,8 @@ async def list_all_api_calls(
         status=status,
         include_events=include_events,
         since=since,
+        source=source,
+        client_ip_contains=client_ip_contains,
         limit=limit,
         offset=offset,
     )

@@ -146,6 +146,81 @@ def _summarize_response(data: Any) -> Any:
 
 
 # ---------------------------------------------------------------------------
+# Caller identity (issue #81)
+# ---------------------------------------------------------------------------
+
+
+# Order matters: CLI patterns before browser, since some libraries (e.g.
+# python-requests) include "Mozilla" in their UA. Mobile is checked before
+# browser too because some mobile webviews still send a Mozilla UA.
+_CLI_PATTERNS = (
+    "curl/",
+    "wget/",
+    "httpie/",
+    "postmanruntime",
+    "go-http",
+    "python-requests",
+    "python-urllib",
+    "okhttp/",
+    "java/",
+    "axios/",
+    "node-fetch",
+    "got (https",
+    "insomnia",
+    "thunderclient",
+    "rest-client",
+)
+
+_MOBILE_PATTERNS = (
+    "iphone",
+    "ipad",
+    "ipod",
+    "android",
+    "darwin/",
+    "mobile",
+    "okhttp",  # also a mobile signal — already caught above as cli though
+    "cfnetwork",
+)
+
+_BROWSER_PATTERNS = (
+    "mozilla/",
+    "chrome/",
+    "safari/",
+    "firefox/",
+    "edge/",
+    "edg/",
+    "webkit/",
+    "trident/",
+)
+
+
+def classify_user_agent(ua: str | None) -> str:
+    """Classify a User-Agent string into browser / mobile / cli / other."""
+    if not ua or not ua.strip():
+        return "other"
+    ua_lower = ua.lower()
+    if any(p in ua_lower for p in _CLI_PATTERNS):
+        return "cli"
+    if any(p in ua_lower for p in _MOBILE_PATTERNS):
+        return "mobile"
+    if any(p in ua_lower for p in _BROWSER_PATTERNS):
+        return "browser"
+    return "other"
+
+
+def parse_client_ip(forwarded_for: str | None, fallback: str | None) -> str | None:
+    """Pick the client IP. ``X-Forwarded-For`` is a comma-separated chain
+    where the leftmost entry is the original client; trust it when set,
+    fall back to the direct peer address otherwise.
+    """
+    if forwarded_for:
+        first = forwarded_for.split(",", 1)[0].strip()
+        if first:
+            return first[:64]
+    return (fallback or "")[:64] or None
+
+
+# ---------------------------------------------------------------------------
 # Write
 # ---------------------------------------------------------------------------
 
@@ -164,6 +239,8 @@ async def write_log(
     response_summary: Any,
     response_size_bytes: int | None,
     error: str | None = None,
+    client_ip: str | None = None,
+    user_agent: str | None = None,
 ) -> None:
     """Persist one HTTP-call row.  Idempotent-safe: errors are swallowed."""
     if not settings.API_LOG_ENABLED:
@@ -184,6 +261,9 @@ async def write_log(
                 response_summary=response_summary,
                 response_size_bytes=response_size_bytes,
                 error=(error or "")[:4096] or None,
+                client_ip=client_ip,
+                user_agent=(user_agent or "")[:512] or None,
+                source_class=classify_user_agent(user_agent),
             )
             session.add(row)
             await session.commit()
@@ -205,6 +285,8 @@ async def list_calls(
     status: int | None = None,
     include_events: bool = True,
     since: int | None = None,
+    source: str | None = None,
+    client_ip_contains: str | None = None,
     limit: int = 50,
     offset: int = 0,
 ) -> tuple[list[dict[str, Any]], int]:
@@ -226,6 +308,10 @@ async def list_calls(
     if not include_events:
         conds.append(ApiCallLog.path != "/v1/events")
         conds.append(ApiCallLog.path != "/v1/events/batch")
+    if source:
+        conds.append(ApiCallLog.source_class == source)
+    if client_ip_contains:
+        conds.append(ApiCallLog.client_ip.contains(client_ip_contains))
 
     for c in conds:
         q = q.where(c)
@@ -281,6 +367,8 @@ def _row_to_summary(r: ApiCallLog) -> dict[str, Any]:
         "duration_ms": r.duration_ms,
         "is_error": r.status_code >= 400,
         "request_id": r.request_id,
+        "client_ip": r.client_ip,
+        "source_class": r.source_class,
     }
 
 
@@ -300,4 +388,7 @@ def _row_to_detail(r: ApiCallLog) -> dict[str, Any]:
         "response_size_bytes": r.response_size_bytes,
         "error": r.error,
         "request_id": r.request_id,
+        "client_ip": r.client_ip,
+        "user_agent": r.user_agent,
+        "source_class": r.source_class,
     }
