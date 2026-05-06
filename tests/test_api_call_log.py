@@ -432,6 +432,48 @@ class TestListCalls:
         assert rows[0]["client_ip"] == "203.0.113.5"
         assert rows[0]["source_class"] == "browser"
 
+    async def test_uid_path_rows_surface_under_user_filter(self):
+        """PATCH /v1/users/{uid} rows have empty user_id but still belong to
+        the user — list_calls(user_id="alice") must include them by resolving
+        alice's uid and OR-matching the numeric path."""
+        async with _TestSession() as s:
+            user = User(user_id="alice", display_name="Alice")
+            s.add(user)
+            await s.commit()
+            await s.refresh(user)
+            alice_uid = user.uid
+
+        # PATCH row written by middleware: user_id is empty because the route
+        # param was {uid} not {user_id}.
+        await _insert_log_row(
+            user_id=None,
+            method="PATCH",
+            path=f"/v1/users/{alice_uid}",
+            status_code=200,
+        )
+        # Plus a normal user_id-shaped row, for sanity.
+        await _insert_log_row(user_id="alice", path="/v1/users/alice/profile")
+        # And an unrelated user.
+        await _insert_log_row(user_id="bob", path="/v1/users/bob/profile")
+
+        async with _TestSession() as s:
+            rows, total = await list_calls(s, user_id="alice")
+        assert total == 2
+        paths = {r["path"] for r in rows}
+        assert f"/v1/users/{alice_uid}" in paths
+        assert "/v1/users/alice/profile" in paths
+
+    async def test_unknown_user_filter_falls_back_to_exact_match(self):
+        """When user_id doesn't resolve, behave like the old exact-match filter
+        (don't blow up, don't return everything)."""
+        await _insert_log_row(user_id="known", path="/v1/users/known/profile")
+        await _insert_log_row(user_id=None, path="/v1/users/99/profile")
+
+        async with _TestSession() as s:
+            rows, total = await list_calls(s, user_id="ghost")
+        assert total == 0
+        assert rows == []
+
 
 class TestPurgeOld:
     async def test_purges_old_rows(self):
