@@ -467,6 +467,7 @@ async def get_recommendation_history(
             {
                 "timestamp": imp.timestamp,
                 "track_id": imp.track_id,
+                "media_server_id": feat_map[imp.track_id].media_server_id if imp.track_id in feat_map else None,
                 "position": imp.position,
                 "request_id": imp.request_id,
                 "model_version": imp.model_version,
@@ -736,6 +737,7 @@ async def get_recommended_artists(
         select(
             TrackFeatures.artist,
             TrackFeatures.track_id,
+            TrackFeatures.media_server_id,
             TrackFeatures.title,
             TrackFeatures.album,
             TrackFeatures.duration,
@@ -760,6 +762,7 @@ async def get_recommended_artists(
             tracks_by_artist[r.artist].append(
                 {
                     "track_id": r.track_id,
+                    "media_server_id": r.media_server_id,
                     "title": r.title,
                     "album": r.album,
                     "duration": r.duration,

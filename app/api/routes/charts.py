@@ -364,6 +364,7 @@ async def get_chart(
         if tf:
             item["library"] = {
                 "track_id": tf.track_id,
+                "media_server_id": tf.media_server_id,
                 "title": tf.title,
                 "artist": tf.artist,
                 "album": tf.album,

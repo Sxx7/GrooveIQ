@@ -433,6 +433,7 @@ class PlaylistCreate(BaseModel):
 class PlaylistTrackItem(BaseModel):
     position: int
     track_id: str
+    media_server_id: str | None = None
     title: str | None = None
     artist: str | None = None
     album: str | None = None
@@ -653,6 +654,7 @@ class RadioFeedbackRequest(BaseModel):
 class RadioTrackItem(BaseModel):
     position: int
     track_id: str
+    media_server_id: str | None = None
     source: str
     score: float
     title: str | None = None

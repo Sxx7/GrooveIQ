@@ -593,6 +593,7 @@ async def get_playlist_with_tracks(session: AsyncSession, playlist_id: int) -> d
         track = {
             "position": pt.position,
             "track_id": pt.track_id,
+            "media_server_id": tf.media_server_id if tf else None,
             "title": tf.title if tf else None,
             "artist": tf.artist if tf else None,
             "album": tf.album if tf else None,
