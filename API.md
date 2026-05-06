@@ -5,6 +5,8 @@
 **Content-Type:** `application/json`
 
 > **Track-ID schema notice (target state — tracking [#37](https://github.com/Sxx7/GrooveIQ/issues/37)).** The Events, Tracks & Library, and Library/sync sections describe the **post-refactor** schema in which `track_id` is a stable internal GrooveIQ identifier (16-char hex) and per-backend IDs (`media_server_id`, `spotify_id`, `qobuz_id`, `tidal_id`, `deezer_id`, `soundcloud_id`, `mb_track_id`) live in their own columns. The new `GET /v1/tracks/lookup` endpoint and the per-backend ID columns will land together with the migration. Build the iOS app against this contract; `track_id` will not be a Navidrome ID.
+>
+> **`track_id` vs `media_server_id` in responses.** Every endpoint that returns one or more tracks ships **both** identifiers in each item. Use `media_server_id` to play the track on Navidrome / Plex (Subsonic API call). Use `track_id` for everything sent back to GrooveIQ — events (`POST /v1/events`), feature/lookup endpoints, audit, etc. `media_server_id` is `null` for the ~tracks that exist locally but the media server hasn't matched yet (run `POST /v1/library/sync` to populate); `track_id` is always present.
 
 ---
 
@@ -325,7 +327,7 @@ Updated hourly by the pipeline. Returns `null` for `taste_profile` if the pipeli
 
 ### `GET /v1/users/{user_id}/interactions` — Track interactions
 
-Per-track aggregated engagement scores.
+Per-track aggregated engagement scores. Each row carries both `track_id` and `media_server_id` alongside satisfaction/play/skip/like/dislike/repeat counts and track metadata.
 
 | Parameter | Default | Options |
 |-----------|---------|---------|
@@ -338,7 +340,7 @@ Per-track aggregated engagement scores.
 
 ### `GET /v1/users/{user_id}/history` — Listening history
 
-Paginated raw listening history.
+Paginated raw listening history. Each entry carries both `track_id` and `media_server_id` plus timestamp, title/artist/album, device/output context, and completion info from the matching `play_end`.
 
 ---
 
@@ -533,7 +535,7 @@ The per-backend ID columns (`media_server_id` etc.) are populated as the track i
 | `limit` | 10 | 1-50 |
 | `include_features` | false | Include full audio features |
 
-Uses FAISS embedding similarity + SQL pre-filter (BPM/energy/mode).
+Uses FAISS embedding similarity + SQL pre-filter (BPM/energy/mode). Each item carries both `track_id` and `media_server_id` plus title/artist/album/bpm/key/mode/energy/danceability/mood_tags/similarity.
 
 ---
 
@@ -553,6 +555,7 @@ Returns every track that has UMAP-projected `(x, y)` coordinates from the `music
   "tracks": [
     {
       "track_id": "9f3a1b2c4d5e6f70",
+      "media_server_id": "iDkrnC4UrRVJ6HHEa83nc9",
       "title": "Strobe",
       "artist": "deadmau5",
       "genre": "electronic",
@@ -588,6 +591,7 @@ Encodes a text prompt via the LAION-CLAP text tower and returns the `k` closest 
   "tracks": [
     {
       "track_id": "2c4d5e6f70819234",
+      "media_server_id": "qLG2oW0OArpUv3xPAMT4hq",
       "title": "Blue in Green",
       "artist": "Miles Davis",
       "album": "Kind of Blue",
@@ -805,8 +809,10 @@ curl "http://localhost:8000/v1/recommend/simon?debug=true" \
   "context": {"hour_of_day": 8, "device_type": "mobile", "...": "..."},
   "tracks": [
     {
-      "position": 0, "track_id": "2c4d5e6f70819234", "source": "content",
-      "score": 0.87, "title": "Da Funk", "artist": "Daft Punk",
+      "position": 0, "track_id": "2c4d5e6f70819234",
+      "media_server_id": "iDkrnC4UrRVJ6HHEa83nc9",
+      "source": "content", "score": 0.87,
+      "title": "Da Funk", "artist": "Daft Punk",
       "bpm": 118.7, "energy": 0.79, "duration": 329.0
     }
   ]
@@ -838,7 +844,7 @@ curl -X POST http://localhost:8000/v1/events \
 
 ### `GET /v1/recommend/{user_id}/history` — Recommendation history
 
-Past recommendations with impression-to-stream attribution.
+Past recommendations with impression-to-stream attribution. Each entry carries `track_id`, `media_server_id`, `position`, `request_id`, `model_version`, `streamed`, plus title/artist/bpm/energy.
 
 | Parameter | Default |
 |-----------|---------|
@@ -882,6 +888,7 @@ Returns a ranked list of recommended artists derived from listening behavior, La
       "top_tracks": [
         {
           "track_id": "abc123",
+          "media_server_id": "Z5ddd8hdVzaAQJ7UgXUCsI",
           "title": "Everything In Its Right Place",
           "album": "Kid A",
           "duration": 250,
@@ -890,6 +897,7 @@ Returns a ranked list of recommended artists derived from listening behavior, La
         },
         {
           "track_id": "def456",
+          "media_server_id": "qNbJqxVM6wBff0yKLGdAqx",
           "title": "Idioteque",
           "album": "Kid A",
           "duration": 309,
@@ -1080,7 +1088,7 @@ curl -X POST http://localhost:8000/v1/playlists \
   }'
 ```
 
-**Response** `201 Created` — includes `tracks` array with position, audio features, and metadata.
+**Response** `201 Created` — includes `tracks` array with `position`, `track_id`, `media_server_id`, audio features, and metadata.
 
 ---
 
@@ -1246,7 +1254,7 @@ Returns all chart type + scope combinations with entry counts and fetch timestam
 | `limit` | int | 100 | 1-200 |
 | `offset` | int | 0 | - |
 
-Each entry includes `in_library` status, `matched_track_id`, `image_url`, and a `library` object with `cover_url` when matched.
+Each entry includes `in_library` status, `matched_track_id`, `image_url`, and a `library` object with `track_id`, `media_server_id`, `cover_url`, title/artist/album/genre/bpm/energy/duration when matched.
 
 **Image priority for frontends:** use `library.cover_url` when available (local, fast), fall back to `image_url` (Last.fm CDN).
 
@@ -1572,7 +1580,7 @@ Validates against the schema; missing keys get defaults; out-of-range values ret
 
 ### `GET /v1/artists/{name}/meta` — Artist metadata
 
-Returns Last.fm metadata (bio, tags, similar artists, top tracks, images) with local library cross-referencing.
+Returns Last.fm metadata (bio, tags, similar artists, top tracks, images) with local library cross-referencing. Each entry in `top_tracks` carries `title`, `playcount`, `in_library`, `matched_track_id` (the GrooveIQ internal id, when found locally), and `media_server_id` (so a client can play the matched track on Navidrome / Plex without an extra lookup).
 
 ```bash
 curl "http://localhost:8000/v1/artists/Radiohead/meta" \
