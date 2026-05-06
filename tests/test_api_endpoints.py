@@ -210,6 +210,24 @@ class TestUserSessions:
         assert resp.status_code == 404
 
 
+class TestUserStats:
+    async def test_get_stats(self, client: AsyncClient):
+        await seed_user_with_data()
+        resp = await client.get("/v1/users/testuser/stats")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["user_id"] == "testuser"
+        assert data["window_days"] == 30
+        # plays/skips come from track_interactions (all-time)
+        assert data["plays"] == 5
+        assert data["skips"] == 1
+        assert data["skip_rate"] == 0.2
+
+    async def test_get_stats_not_found(self, client: AsyncClient):
+        resp = await client.get("/v1/users/nonexistent/stats")
+        assert resp.status_code == 404
+
+
 class TestRecommendationHistory:
     async def test_history_empty(self, client: AsyncClient):
         await seed_user_with_data()
