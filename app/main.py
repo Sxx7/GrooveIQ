@@ -16,6 +16,7 @@ from fastapi.staticfiles import StaticFiles
 
 from app.api.routes import (
     algorithm_config,
+    api_calls,
     artists,
     charts,
     discovery,
@@ -187,6 +188,14 @@ async def log_slow_requests(request: Request, call_next):
     return response
 
 
+# Per-request log of every /v1/* call (issue #79).  Buffers request and
+# response, persists a redacted/truncated row to api_call_logs.  Innermost
+# middleware so it sees what the route actually returned.
+from app.core.api_logging import api_call_logging_middleware  # noqa: E402
+
+app.middleware("http")(api_call_logging_middleware)
+
+
 # ---------------------------------------------------------------------------
 # Routers
 # ---------------------------------------------------------------------------
@@ -211,6 +220,7 @@ app.include_router(soulseek.router, prefix="/v1", tags=["soulseek"])
 app.include_router(integrations.router, prefix="/v1", tags=["integrations"])
 app.include_router(news.router, prefix="/v1", tags=["news"])
 app.include_router(lidarr_backfill.router, prefix="/v1", tags=["lidarr-backfill"])
+app.include_router(api_calls.router, prefix="/v1", tags=["api-calls"])
 
 # ---------------------------------------------------------------------------
 # Dashboard (static)

@@ -128,6 +128,15 @@ async def start_scheduler() -> None:
             replace_existing=True,
         )
 
+    # API call log cleanup (daily, 02:35 UTC) — issue #79
+    if settings.API_LOG_ENABLED:
+        _scheduler.add_job(
+            _purge_old_api_call_logs,
+            trigger=CronTrigger(hour=2, minute=35, timezone="UTC"),
+            id="api_call_log_cleanup",
+            replace_existing=True,
+        )
+
     # Lidarr backfill engine — drains /wanted/missing through streamrip-api.
     # Both jobs are gated on the persisted config's `enabled` flag; the API
     # route calls `apply_lidarr_backfill_config()` to register / remove /
@@ -451,6 +460,24 @@ async def _purge_old_reco_audits() -> None:
             )
     except Exception:
         logger.error(f"Reco audit cleanup failed: {traceback.format_exc()}")
+
+
+async def _purge_old_api_call_logs() -> None:
+    """Purge api_call_logs rows older than API_LOG_RETENTION_DAYS."""
+    try:
+        from app.services.api_call_log import purge_old
+
+        async with AsyncSessionLocal() as session:
+            deleted = await purge_old(session, settings.API_LOG_RETENTION_DAYS)
+            await session.commit()
+        if deleted:
+            logger.info(
+                "API call log cleanup: purged %d rows older than %d days",
+                deleted,
+                settings.API_LOG_RETENTION_DAYS,
+            )
+    except Exception:
+        logger.error(f"API call log cleanup failed: {traceback.format_exc()}")
 
 
 # ---------------------------------------------------------------------------
