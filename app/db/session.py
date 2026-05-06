@@ -115,6 +115,10 @@ async def _apply_column_migrations(conn) -> None:
         ("track_features", "soundcloud_id", "VARCHAR(64)"),
         # Bitstream pre-flight validation marker (issue #32)
         ("track_features", "bitstream_validated_at", "INTEGER"),
+        # API call log: caller identity (issue #81)
+        ("api_call_logs", "client_ip", "VARCHAR(64)"),
+        ("api_call_logs", "user_agent", "VARCHAR(512)"),
+        ("api_call_logs", "source_class", "VARCHAR(16)"),
     ]
     for table, column, col_type in migrations:
         # Validate identifiers to prevent SQL injection via migration list.

@@ -2490,6 +2490,38 @@
 .method-patch { color: #6B6B30; }
 .method-delete { color: var(--wine); border-color: rgba(156, 82, 109, 0.40); }
 
+.ud-apicalls-sourcecell {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    line-height: 1.2;
+}
+.ud-apicalls-source {
+    display: inline-block;
+    padding: 1px 6px;
+    border-radius: 3px;
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.05em;
+    border: 1px solid var(--line);
+    width: fit-content;
+}
+.source-browser { color: #5b6e8a; border-color: rgba(91, 110, 138, 0.40); }
+.source-mobile { color: #6f5d8a; border-color: rgba(111, 93, 138, 0.40); }
+.source-cli { color: #6b6b30; border-color: rgba(107, 107, 48, 0.40); }
+.source-other { color: var(--ink-3); }
+.ud-apicalls-ip {
+    font-size: 10px;
+    line-height: 1.2;
+    word-break: break-all;
+}
+.ud-apicalls-ua-line {
+    flex-basis: 100%;
+    white-space: normal;
+    word-break: break-all;
+    line-height: 1.4;
+}
+
 .ud-apicalls-detail-row td {
     padding: 0 !important;
     background: var(--paper-2, rgba(0,0,0,0.02));

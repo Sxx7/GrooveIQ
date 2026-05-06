@@ -3407,6 +3407,8 @@
             method: '',
             pathContains: '',
             status: '',
+            source: '',
+            clientIpContains: '',
             includeEvents: true,
             sinceMinutes: '',
             data: null,
@@ -3523,6 +3525,20 @@
                 ],
             }));
 
+            filterRow.appendChild(mkInput('Source', 'select', state.source, v => { state.source = v; state.offset = 0; load(); }, {
+                options: [
+                    { v: '', l: 'Any' },
+                    { v: 'browser', l: 'Browser' },
+                    { v: 'mobile', l: 'Mobile' },
+                    { v: 'cli', l: 'CLI / SDK' },
+                    { v: 'other', l: 'Other' },
+                ],
+            }));
+
+            filterRow.appendChild(mkInput('Client IP', 'text', state.clientIpContains, v => {
+                state.clientIpContains = v; state.offset = 0; load();
+            }, { placeholder: '192.168., 10.0., …' }));
+
             const evtWrap = document.createElement('label');
             evtWrap.className = 'ud-apicalls-filter ud-apicalls-checkbox';
             const cb = document.createElement('input');
@@ -3557,7 +3573,7 @@
             tbl.className = 'ud-table ud-apicalls-table';
             tbl.innerHTML = '<thead><tr>'
                 + '<th></th>'
-                + '<th>Time</th><th>Method</th><th>Path</th><th>Status</th><th>Duration</th>'
+                + '<th>Time</th><th>Method</th><th>Path</th><th>Status</th><th>Duration</th><th>Source</th>'
                 + '</tr></thead>';
             const tbody = document.createElement('tbody');
             items.forEach(it => {
@@ -3568,13 +3584,20 @@
                 const statusCls = it.status_code >= 500 ? 'sh-bad'
                     : it.status_code >= 400 ? 'sh-warn'
                         : it.status_code >= 300 ? '' : '';
+                const sourceCls = it.source_class || 'other';
+                const sourceLabel = sourceCls === 'cli' ? 'CLI' : sourceCls.charAt(0).toUpperCase() + sourceCls.slice(1);
+                const ip = it.client_ip || '—';
                 tr.innerHTML = '<td class="ud-apicalls-toggle mono">' + (state.expandedRowId === it.id ? '▾' : '▸') + '</td>'
                     + '<td class="mono">' + GIQ.fmt.esc(GIQ.fmt.timeAgo(it.created_at)) + '</td>'
                     + '<td class="mono"><span class="ud-apicalls-method method-' + it.method.toLowerCase() + '">'
                     + GIQ.fmt.esc(it.method) + '</span></td>'
-                    + '<td class="mono ud-truncate" style="max-width:380px">' + GIQ.fmt.esc(it.path) + '</td>'
+                    + '<td class="mono ud-truncate" style="max-width:340px">' + GIQ.fmt.esc(it.path) + '</td>'
                     + '<td class="mono ' + statusCls + '">' + Number(it.status_code) + '</td>'
-                    + '<td class="mono">' + Number(it.duration_ms) + 'ms</td>';
+                    + '<td class="mono">' + Number(it.duration_ms) + 'ms</td>'
+                    + '<td class="mono ud-apicalls-sourcecell">'
+                    + '<span class="ud-apicalls-source source-' + sourceCls + '">' + GIQ.fmt.esc(sourceLabel) + '</span>'
+                    + '<span class="ud-apicalls-ip muted">' + GIQ.fmt.esc(ip) + '</span>'
+                    + '</td>';
                 tr.addEventListener('click', (e) => {
                     e.stopPropagation();
                     toggleRow(it.id);
@@ -3585,7 +3608,7 @@
                     const detailTr = document.createElement('tr');
                     detailTr.className = 'ud-apicalls-detail-row';
                     const td = document.createElement('td');
-                    td.colSpan = 6;
+                    td.colSpan = 7;
                     td.appendChild(buildDetailPanel(it.id));
                     detailTr.appendChild(td);
                     tbody.appendChild(detailTr);
@@ -3653,6 +3676,9 @@
                 + '<div><span class="muted">Status:</span> ' + Number(detail.status_code) + '</div>'
                 + '<div><span class="muted">Duration:</span> ' + Number(detail.duration_ms) + 'ms</div>'
                 + '<div><span class="muted">Response size:</span> ' + (detail.response_size_bytes != null ? Number(detail.response_size_bytes).toLocaleString() + ' B' : '—') + '</div>'
+                + (detail.client_ip ? '<div><span class="muted">Client IP:</span> ' + GIQ.fmt.esc(detail.client_ip) + '</div>' : '')
+                + (detail.source_class ? '<div><span class="muted">Source:</span> ' + GIQ.fmt.esc(detail.source_class) + '</div>' : '')
+                + (detail.user_agent ? '<div class="ud-apicalls-ua-line"><span class="muted">User-Agent:</span> ' + GIQ.fmt.esc(detail.user_agent) + '</div>' : '')
                 + (detail.error ? '<div class="sh-bad"><span class="muted">Error:</span> ' + GIQ.fmt.esc(detail.error) + '</div>' : '');
             grid.appendChild(meta);
 
@@ -3694,6 +3720,8 @@
             if (state.status) params.set('status', state.status);
             if (!state.includeEvents) params.set('include_events', 'false');
             if (state.sinceMinutes) params.set('since_minutes', state.sinceMinutes);
+            if (state.source) params.set('source', state.source);
+            if (state.clientIpContains) params.set('client_ip_contains', state.clientIpContains);
             const url = '/v1/users/' + encodeURIComponent(userId) + '/api-calls?' + params.toString();
             GIQ.api.get(url).then(data => {
                 state.data = data;
