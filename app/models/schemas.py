@@ -827,6 +827,7 @@ class CandidateAuditDetail(BaseModel):
     """One candidate from a persisted recommendation request."""
 
     track_id: str
+    media_server_id: str | None = None
     sources: list[str] = []
     raw_score: float = 0.0
     pre_rerank_position: int = -1
@@ -878,6 +879,7 @@ class RequestAuditDetail(BaseModel):
 
 class RankDelta(BaseModel):
     track_id: str
+    media_server_id: str | None = None
     title: str | None = None
     artist: str | None = None
     original_position: int | None = None
