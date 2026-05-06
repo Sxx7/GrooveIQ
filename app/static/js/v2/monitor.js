@@ -3038,6 +3038,7 @@
         renderUDInteractions(host, state.interactions);
         renderUDHistory(host, state, refreshHistory);
         renderUDSessions(host, state.sessions);
+        renderUDApiCalls(host, state.userId);
     }
 
     function renderUDTasteProfile(host, profile) {
@@ -3389,6 +3390,327 @@
             sub: Number(total).toLocaleString() + ' events',
             children: wrap,
         }));
+    }
+
+    /**
+     * API Calls panel — collapsed by default. Lazy-loads /v1/users/{id}/api-calls
+     * on first expand so users who don't need it don't pay the fetch cost.
+     */
+    function renderUDApiCalls(host, userId) {
+        if (!userId) return;
+
+        const state = {
+            expanded: false,
+            loaded: false,
+            limit: 50,
+            offset: 0,
+            method: '',
+            pathContains: '',
+            status: '',
+            includeEvents: true,
+            sinceMinutes: '',
+            data: null,
+            expandedRowId: null,
+            rowDetails: {},
+        };
+
+        const panel = document.createElement('section');
+        panel.className = 'panel ud-apicalls-panel';
+
+        const head = document.createElement('div');
+        head.className = 'panel-head ud-apicalls-head';
+        head.style.cursor = 'pointer';
+        const left = document.createElement('div');
+        left.className = 'panel-head-left';
+        const titleRow = document.createElement('div');
+        titleRow.className = 'panel-title-row';
+        const titleEl = document.createElement('div');
+        titleEl.className = 'panel-title';
+        titleEl.textContent = 'API calls';
+        titleRow.appendChild(titleEl);
+        left.appendChild(titleRow);
+        const subEl = document.createElement('div');
+        subEl.className = 'panel-sub';
+        subEl.textContent = 'HTTP request/response log · click to expand';
+        left.appendChild(subEl);
+        head.appendChild(left);
+
+        const chevron = document.createElement('div');
+        chevron.className = 'panel-action ud-apicalls-chevron';
+        chevron.textContent = '▾';
+        head.appendChild(chevron);
+        panel.appendChild(head);
+
+        const body = document.createElement('div');
+        body.className = 'panel-body ud-apicalls-body';
+        body.style.display = 'none';
+        panel.appendChild(body);
+
+        head.addEventListener('click', () => {
+            state.expanded = !state.expanded;
+            body.style.display = state.expanded ? '' : 'none';
+            chevron.textContent = state.expanded ? '▴' : '▾';
+            if (state.expanded && !state.loaded) load();
+        });
+
+        // Filter row + table container, rendered once on first expand.
+        const filterRow = document.createElement('div');
+        filterRow.className = 'ud-apicalls-filters';
+        const tableHost = document.createElement('div');
+        tableHost.className = 'ud-table-wrap ud-apicalls-tablehost';
+
+        function buildFilters() {
+            filterRow.innerHTML = '';
+
+            const mkInput = (label, type, value, onChange, attrs = {}) => {
+                const wrap = document.createElement('label');
+                wrap.className = 'ud-apicalls-filter';
+                wrap.textContent = label;
+                const inp = document.createElement(type === 'select' ? 'select' : 'input');
+                if (type !== 'select') inp.type = type;
+                if (attrs.placeholder) inp.placeholder = attrs.placeholder;
+                if (attrs.options) {
+                    attrs.options.forEach(o => {
+                        const opt = document.createElement('option');
+                        opt.value = o.v; opt.textContent = o.l;
+                        if (o.v === value) opt.selected = true;
+                        inp.appendChild(opt);
+                    });
+                } else {
+                    inp.value = value || '';
+                }
+                inp.addEventListener('change', () => onChange(inp.value));
+                wrap.appendChild(inp);
+                return wrap;
+            };
+
+            filterRow.appendChild(mkInput('Method', 'select', state.method, v => { state.method = v; state.offset = 0; load(); }, {
+                options: [
+                    { v: '', l: 'Any' },
+                    { v: 'GET', l: 'GET' },
+                    { v: 'POST', l: 'POST' },
+                    { v: 'PUT', l: 'PUT' },
+                    { v: 'PATCH', l: 'PATCH' },
+                    { v: 'DELETE', l: 'DELETE' },
+                ],
+            }));
+
+            filterRow.appendChild(mkInput('Path contains', 'text', state.pathContains, v => {
+                state.pathContains = v; state.offset = 0; load();
+            }, { placeholder: 'radio, recommend, …' }));
+
+            filterRow.appendChild(mkInput('Status', 'select', state.status, v => { state.status = v; state.offset = 0; load(); }, {
+                options: [
+                    { v: '', l: 'Any' },
+                    { v: '200', l: '2xx (200)' },
+                    { v: '202', l: '202 accepted' },
+                    { v: '400', l: '400 bad request' },
+                    { v: '401', l: '401 unauthorized' },
+                    { v: '403', l: '403 forbidden' },
+                    { v: '404', l: '404 not found' },
+                    { v: '422', l: '422 validation' },
+                    { v: '500', l: '500 error' },
+                ],
+            }));
+
+            filterRow.appendChild(mkInput('Time window', 'select', state.sinceMinutes, v => { state.sinceMinutes = v; state.offset = 0; load(); }, {
+                options: [
+                    { v: '', l: 'All' },
+                    { v: '5', l: 'Last 5 min' },
+                    { v: '60', l: 'Last hour' },
+                    { v: '1440', l: 'Last 24h' },
+                    { v: '10080', l: 'Last 7 days' },
+                ],
+            }));
+
+            const evtWrap = document.createElement('label');
+            evtWrap.className = 'ud-apicalls-filter ud-apicalls-checkbox';
+            const cb = document.createElement('input');
+            cb.type = 'checkbox';
+            cb.checked = state.includeEvents;
+            cb.addEventListener('change', () => { state.includeEvents = cb.checked; state.offset = 0; load(); });
+            evtWrap.appendChild(cb);
+            const txt = document.createElement('span');
+            txt.textContent = 'Include /v1/events';
+            evtWrap.appendChild(txt);
+            filterRow.appendChild(evtWrap);
+
+            const refresh = document.createElement('button');
+            refresh.type = 'button';
+            refresh.className = 'vc-btn vc-btn-sm ud-apicalls-refresh';
+            refresh.textContent = '↻ Refresh';
+            refresh.addEventListener('click', () => load());
+            filterRow.appendChild(refresh);
+        }
+
+        function buildTable(data) {
+            tableHost.innerHTML = '';
+            const items = (data && data.items) || [];
+            const total = (data && data.total) || 0;
+
+            if (!items.length) {
+                tableHost.innerHTML = '<div class="empty-row">No API calls captured yet for this user.</div>';
+                return;
+            }
+
+            const tbl = document.createElement('table');
+            tbl.className = 'ud-table ud-apicalls-table';
+            tbl.innerHTML = '<thead><tr>'
+                + '<th></th>'
+                + '<th>Time</th><th>Method</th><th>Path</th><th>Status</th><th>Duration</th>'
+                + '</tr></thead>';
+            const tbody = document.createElement('tbody');
+            items.forEach(it => {
+                const tr = document.createElement('tr');
+                tr.className = 'ud-apicalls-row';
+                tr.dataset.id = String(it.id);
+                if (it.is_error) tr.classList.add('sh-bad');
+                const statusCls = it.status_code >= 500 ? 'sh-bad'
+                    : it.status_code >= 400 ? 'sh-warn'
+                        : it.status_code >= 300 ? '' : '';
+                tr.innerHTML = '<td class="ud-apicalls-toggle mono">' + (state.expandedRowId === it.id ? '▾' : '▸') + '</td>'
+                    + '<td class="mono">' + GIQ.fmt.esc(GIQ.fmt.timeAgo(it.created_at)) + '</td>'
+                    + '<td class="mono"><span class="ud-apicalls-method method-' + it.method.toLowerCase() + '">'
+                    + GIQ.fmt.esc(it.method) + '</span></td>'
+                    + '<td class="mono ud-truncate" style="max-width:380px">' + GIQ.fmt.esc(it.path) + '</td>'
+                    + '<td class="mono ' + statusCls + '">' + Number(it.status_code) + '</td>'
+                    + '<td class="mono">' + Number(it.duration_ms) + 'ms</td>';
+                tr.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    toggleRow(it.id);
+                });
+                tbody.appendChild(tr);
+
+                if (state.expandedRowId === it.id) {
+                    const detailTr = document.createElement('tr');
+                    detailTr.className = 'ud-apicalls-detail-row';
+                    const td = document.createElement('td');
+                    td.colSpan = 6;
+                    td.appendChild(buildDetailPanel(it.id));
+                    detailTr.appendChild(td);
+                    tbody.appendChild(detailTr);
+                }
+            });
+            tbl.appendChild(tbody);
+            tableHost.appendChild(tbl);
+
+            // Pagination
+            const showStart = state.offset + 1;
+            const showEnd = state.offset + items.length;
+            const pag = document.createElement('div');
+            pag.className = 'ud-pagination';
+            pag.innerHTML = '<span class="muted mono">showing ' + showStart + '–' + showEnd
+                + ' of ' + Number(total).toLocaleString() + '</span>';
+            const btnGroup = document.createElement('div');
+            btnGroup.className = 'ud-pag-btns';
+            const prev = document.createElement('button');
+            prev.type = 'button'; prev.className = 'vc-btn vc-btn-sm';
+            prev.textContent = '← Prev';
+            prev.disabled = state.offset === 0;
+            prev.addEventListener('click', () => {
+                state.offset = Math.max(0, state.offset - state.limit);
+                load();
+            });
+            const next = document.createElement('button');
+            next.type = 'button'; next.className = 'vc-btn vc-btn-sm';
+            next.textContent = 'Next →';
+            next.disabled = state.offset + state.limit >= total;
+            next.addEventListener('click', () => {
+                state.offset = state.offset + state.limit;
+                load();
+            });
+            btnGroup.appendChild(prev);
+            btnGroup.appendChild(next);
+            pag.appendChild(btnGroup);
+            tableHost.appendChild(pag);
+        }
+
+        function buildDetailPanel(id) {
+            const wrap = document.createElement('div');
+            wrap.className = 'ud-apicalls-detail';
+            const detail = state.rowDetails[id];
+            if (!detail) {
+                wrap.innerHTML = '<div class="vc-loading">Loading detail…</div>';
+                GIQ.api.get('/v1/api-calls/' + id).then(d => {
+                    state.rowDetails[id] = d;
+                    if (state.expandedRowId === id) buildTable(state.data);
+                }).catch(e => {
+                    wrap.innerHTML = '<div class="empty-row" style="color:var(--wine)">'
+                        + GIQ.fmt.esc(e.message || 'Failed to load detail') + '</div>';
+                });
+                return wrap;
+            }
+
+            const grid = document.createElement('div');
+            grid.className = 'ud-apicalls-detail-grid';
+
+            const meta = document.createElement('div');
+            meta.className = 'ud-apicalls-detail-meta mono';
+            meta.innerHTML = ''
+                + '<div><span class="muted">Time:</span> ' + GIQ.fmt.esc(GIQ.fmt.fmtTime(detail.created_at)) + '</div>'
+                + '<div><span class="muted">Route:</span> ' + GIQ.fmt.esc(detail.route_template || detail.path) + '</div>'
+                + (detail.query_string ? '<div><span class="muted">Query:</span> ' + GIQ.fmt.esc(detail.query_string) + '</div>' : '')
+                + '<div><span class="muted">Status:</span> ' + Number(detail.status_code) + '</div>'
+                + '<div><span class="muted">Duration:</span> ' + Number(detail.duration_ms) + 'ms</div>'
+                + '<div><span class="muted">Response size:</span> ' + (detail.response_size_bytes != null ? Number(detail.response_size_bytes).toLocaleString() + ' B' : '—') + '</div>'
+                + (detail.error ? '<div class="sh-bad"><span class="muted">Error:</span> ' + GIQ.fmt.esc(detail.error) + '</div>' : '');
+            grid.appendChild(meta);
+
+            const reqBlock = document.createElement('div');
+            reqBlock.className = 'ud-apicalls-codeblock';
+            reqBlock.innerHTML = '<div class="ud-apicalls-codelabel">Request body</div>'
+                + '<pre class="mono ud-apicalls-code">' + GIQ.fmt.esc(formatJson(detail.request_body)) + '</pre>';
+            grid.appendChild(reqBlock);
+
+            const resBlock = document.createElement('div');
+            resBlock.className = 'ud-apicalls-codeblock';
+            resBlock.innerHTML = '<div class="ud-apicalls-codelabel">Response summary</div>'
+                + '<pre class="mono ud-apicalls-code">' + GIQ.fmt.esc(formatJson(detail.response_summary)) + '</pre>';
+            grid.appendChild(resBlock);
+
+            wrap.appendChild(grid);
+            return wrap;
+        }
+
+        function formatJson(v) {
+            if (v == null) return '(empty)';
+            if (typeof v === 'string') return v;
+            try { return JSON.stringify(v, null, 2); } catch (_) { return String(v); }
+        }
+
+        function toggleRow(id) {
+            state.expandedRowId = state.expandedRowId === id ? null : id;
+            buildTable(state.data);
+        }
+
+        function load() {
+            state.loaded = true;
+            tableHost.innerHTML = '<div class="vc-loading">Loading API calls…</div>';
+            const params = new URLSearchParams();
+            params.set('limit', state.limit);
+            params.set('offset', state.offset);
+            if (state.method) params.set('method', state.method);
+            if (state.pathContains) params.set('path_contains', state.pathContains);
+            if (state.status) params.set('status', state.status);
+            if (!state.includeEvents) params.set('include_events', 'false');
+            if (state.sinceMinutes) params.set('since_minutes', state.sinceMinutes);
+            const url = '/v1/users/' + encodeURIComponent(userId) + '/api-calls?' + params.toString();
+            GIQ.api.get(url).then(data => {
+                state.data = data;
+                state.rowDetails = {};
+                state.expandedRowId = null;
+                buildFilters();
+                body.innerHTML = '';
+                body.appendChild(filterRow);
+                body.appendChild(tableHost);
+                buildTable(data);
+            }).catch(e => {
+                body.innerHTML = '<div class="empty-row" style="color:var(--wine)">'
+                    + GIQ.fmt.esc(e.message || 'Failed to load API calls') + '</div>';
+            });
+        }
+
+        host.appendChild(panel);
     }
 
     function renderUDSessions(host, sessions) {

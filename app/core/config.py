@@ -283,6 +283,15 @@ class Settings(BaseSettings):
     RECO_AUDIT_MAX_CANDIDATES: int = 200  # cap candidates persisted per request (top-N by raw_score)
 
     # ------------------------------------------------------------------
+    # API call logging (per-user HTTP request/response history for the dashboard)
+    # ------------------------------------------------------------------
+    API_LOG_ENABLED: bool = True  # master switch — disable to skip middleware writes entirely
+    API_LOG_RETENTION_DAYS: int = 7  # auto-purge log rows older than this
+    API_LOG_INCLUDE_EVENTS: bool = True  # log POST /v1/events (high volume — turn off to save space)
+    API_LOG_MAX_BODY_BYTES: int = 4096  # cap captured request/response body size
+    API_LOG_MAX_LIST_ITEMS: int = 20  # for list-shaped responses, keep first N entries
+
+    # ------------------------------------------------------------------
     # Personalized news feed (Reddit-sourced)
     # ------------------------------------------------------------------
     NEWS_ENABLED: bool = False
