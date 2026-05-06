@@ -292,6 +292,15 @@ class Settings(BaseSettings):
     API_LOG_MAX_LIST_ITEMS: int = 20  # for list-shaped responses, keep first N entries
 
     # ------------------------------------------------------------------
+    # user_id format enforcement (issue #86)
+    # ------------------------------------------------------------------
+    # Plex media-server backend is no longer supported. Navidrome is the
+    # canonical source of identity. The default regex covers Navidrome's
+    # xid (20 chars) and nanoid (21–22 chars) output across versions.
+    # Override for non-Navidrome backends or stricter setups.
+    USER_ID_PATTERN: str = r"^[A-Za-z0-9]{20,22}$"
+
+    # ------------------------------------------------------------------
     # Personalized news feed (Reddit-sourced)
     # ------------------------------------------------------------------
     NEWS_ENABLED: bool = False

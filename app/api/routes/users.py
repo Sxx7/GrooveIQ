@@ -10,6 +10,7 @@ from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.security import check_user_access, require_api_key
+from app.core.user_id import validate_user_id
 from app.db.session import get_session
 from app.models.db import ListenEvent, ListenSession, TrackFeatures, TrackInteraction, User
 from app.models.schemas import OnboardingRequest, OnboardingResponse, UserCreate, UserResponse, UserUpdate
@@ -30,9 +31,13 @@ async def _resolve_user(
 ) -> User:
     """Look up a user by user_id string.  Raises 404 if not found.
 
+    Issue #86: malformed user_ids (anything not matching ``USER_ID_PATTERN``)
+    raise 400 before any auth or DB work.
+
     When ``API_KEY_USERS`` is configured, also verifies that the
     requesting API key is authorised to access this user (raises 403).
     """
+    validate_user_id(user_id)
     check_user_access(api_key, user_id)
     result = await session.execute(select(User).where(User.user_id == user_id))
     user = result.scalar_one_or_none()
@@ -573,6 +578,7 @@ async def create_user(
     session: AsyncSession = Depends(get_session),
     _key: str = Depends(require_api_key),
 ):
+    validate_user_id(body.user_id)
     result = await session.execute(select(User).where(User.user_id == body.user_id))
     existing = result.scalar_one_or_none()
     if existing:
@@ -626,6 +632,8 @@ async def update_user(
 
     # Rename user_id with cascade.
     if body.user_id is not None and body.user_id != old_user_id:
+        # Issue #86: refuse to rename to a non-conforming user_id.
+        validate_user_id(body.user_id)
         # Check uniqueness of the new user_id.
         conflict = await session.execute(select(User.id).where(User.user_id == body.user_id))
         if conflict.scalar_one_or_none() is not None:

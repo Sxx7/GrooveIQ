@@ -15,6 +15,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.security import check_user_access, check_user_event_rate, require_admin, require_api_key
+from app.core.user_id import validate_user_id
 from app.db.session import get_session
 from app.models.db import ListenEvent
 from app.models.schemas import EventBatch, EventCreate, EventResponse, ListenEventRead
@@ -69,6 +70,7 @@ async def ingest_event(
     session: AsyncSession = Depends(get_session),
     _key: str = Depends(require_api_key),
 ):
+    validate_user_id(event.user_id)
     check_user_access(_key, event.user_id)
     check_user_event_rate(event.user_id)
     result = await process_event(session, event)
@@ -104,6 +106,11 @@ async def ingest_event_batch(
     user_event_counts: dict[str, int] = {}
     for event in batch.events:
         user_event_counts[event.user_id] = user_event_counts.get(event.user_id, 0) + 1
+
+    # Issue #86: reject the whole batch if any event carries a malformed
+    # user_id, so partial inserts don't leak duplicate user rows.
+    for uid in user_event_counts:
+        validate_user_id(uid)
 
     # Check authorization and rate limit for each user with their full
     # batch count (not just 1 hit per unique user).

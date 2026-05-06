@@ -4,6 +4,25 @@ All endpoints require `Authorization: Bearer <api_key>` unless noted otherwise.
 
 Interactive docs available at `/docs` when `ENABLE_DOCS=true` (development only).
 
+## `user_id` format (issue #86)
+
+Every endpoint that accepts a `user_id` — whether as a path param, query
+string, or request body field — enforces a regex on the value. Requests
+with a non-conforming `user_id` are rejected with **400 Bad Request**:
+
+```json
+{"detail": "Invalid user_id 'Simon': must match ^[A-Za-z0-9]{20,22}$. GrooveIQ requires the Navidrome user identifier."}
+```
+
+The default pattern (`^[A-Za-z0-9]{20,22}$`) covers Navidrome's identifier
+output across versions: `xid` (20 chars, pre-0.50) and `nanoid` (21–22
+chars, 0.50+). Override via the `USER_ID_PATTERN` env var if you target a
+different backend. Plex usernames (which were emails) are no longer
+supported — Navidrome is the canonical identity source.
+
+Clients should send the Navidrome user ID exactly as Navidrome surfaces
+it on `getUser.view`.
+
 ---
 
 ## Health & Dashboard
@@ -36,7 +55,7 @@ Ingest a single listen event.
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `user_id` | string | Yes | Media server's user identifier |
+| `user_id` | string | Yes | Navidrome user identifier (must match `USER_ID_PATTERN`, see top of this doc) |
 | `track_id` | string | Yes | Media server's track identifier |
 | `event_type` | string | Yes | One of: `play_start`, `play_end`, `skip`, `pause`, `resume`, `like`, `dislike`, `rating`, `playlist_add`, `playlist_remove`, `queue_add`, `seek_back`, `seek_forward`, `repeat`, `volume_up`, `volume_down`, `reco_impression` |
 | `timestamp` | int | No | Unix epoch UTC (default: server time). Rejected if >24h old or >5min future |
