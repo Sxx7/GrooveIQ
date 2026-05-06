@@ -527,12 +527,8 @@ class TestSyncTrackIds:
         from sqlalchemy import select
 
         async with _TestSession() as session:
-            a = (
-                await session.execute(select(TrackFeatures).where(TrackFeatures.track_id == "hash_a"))
-            ).scalar_one()
-            b = (
-                await session.execute(select(TrackFeatures).where(TrackFeatures.track_id == "hash_b"))
-            ).scalar_one()
+            a = (await session.execute(select(TrackFeatures).where(TrackFeatures.track_id == "hash_a"))).scalar_one()
+            b = (await session.execute(select(TrackFeatures).where(TrackFeatures.track_id == "hash_b"))).scalar_one()
             assert a.media_server_id is None
             assert b.media_server_id == "nav-X"
 

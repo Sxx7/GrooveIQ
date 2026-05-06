@@ -702,9 +702,7 @@ async def get_recommended_artists(
     # cap the fan-out so a cold-cache page load doesn't fire dozens of upstream
     # calls at once.
     _ARTIST_IMG_RESOLVE_CAP = 12
-    missing_artist_names = [
-        artist_norms[n] for n in artist_norms.keys() if n not in img_map
-    ][:_ARTIST_IMG_RESOLVE_CAP]
+    missing_artist_names = [artist_norms[n] for n in artist_norms if n not in img_map][:_ARTIST_IMG_RESOLVE_CAP]
     if missing_artist_names:
         import asyncio
 

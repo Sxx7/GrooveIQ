@@ -758,8 +758,7 @@ async def sync_track_ids(session: AsyncSession) -> SyncResult:
             result.tracks_duplicate_local += len(losers)
             result.media_server_id_updated -= len(losers)
             logger.info(
-                "Media server sync: %d local rows matched server_id=%s; "
-                "tf_id=%d wins via %s, %d duplicate(s) dropped",
+                "Media server sync: %d local rows matched server_id=%s; tf_id=%d wins via %s, %d duplicate(s) dropped",
                 len(group),
                 sid,
                 winner["tf_id"],

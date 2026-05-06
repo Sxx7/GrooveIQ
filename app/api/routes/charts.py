@@ -228,7 +228,11 @@ async def get_chart(
     from app.services.charts import (
         _build_artist_lookup,
         _build_library_lookup,
+    )
+    from app.services.charts import (
         _normalize as _chart_norm,
+    )
+    from app.services.charts import (
         _strip_features as _chart_strip_features,
     )
 
