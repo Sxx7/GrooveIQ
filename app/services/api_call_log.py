@@ -16,12 +16,12 @@ import logging
 import time
 from typing import Any
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.db.session import AsyncSessionLocal
-from app.models.db import ApiCallLog
+from app.models.db import ApiCallLog, User
 
 logger = logging.getLogger(__name__)
 
@@ -296,7 +296,24 @@ async def list_calls(
 
     conds = []
     if user_id:
-        conds.append(ApiCallLog.user_id == user_id)
+        # PATCH /v1/users/{uid} captures user_id=NULL because the route's path
+        # param is the numeric uid, not the user_id string. Resolve uid via a
+        # User lookup and OR-match path so those rows surface under the
+        # per-user view too. Issue #81 follow-up.
+        # The User model exposes `uid` as a property over the `id` column;
+        # the SQL column is `User.id`.
+        uid = (await session.execute(select(User.id).where(User.user_id == user_id))).scalar_one_or_none()
+        if uid is not None:
+            uid_path = f"/v1/users/{uid}"
+            conds.append(
+                or_(
+                    ApiCallLog.user_id == user_id,
+                    ApiCallLog.path == uid_path,
+                    ApiCallLog.path.like(f"{uid_path}/%"),
+                )
+            )
+        else:
+            conds.append(ApiCallLog.user_id == user_id)
     if method:
         conds.append(ApiCallLog.method == method.upper())
     if path_contains:
