@@ -18,6 +18,7 @@ from fastapi import Request, Response
 
 from app.core.config import settings
 from app.services.api_call_log import (
+    parse_client_ip,
     should_log_path,
     truncate_body,
     write_log,
@@ -81,6 +82,14 @@ async def api_call_logging_middleware(request: Request, call_next):
 
     t0 = time.monotonic()
 
+    # Caller identity (issue #81) — captured up-front so all three log paths
+    # below carry it: success, streaming, and exception.
+    client_ip = parse_client_ip(
+        request.headers.get("x-forwarded-for"),
+        request.client.host if request.client else None,
+    )
+    user_agent = request.headers.get("user-agent")
+
     # Buffer request body so downstream Pydantic parsing can re-read it.
     # Starlette caches on Request._body after first call to body() — FastAPI
     # uses the same accessor under the hood, so this is transparent.
@@ -120,6 +129,8 @@ async def api_call_logging_middleware(request: Request, call_next):
                 response_summary=None,
                 response_size_bytes=None,
                 error=error_msg,
+                client_ip=client_ip,
+                user_agent=user_agent,
             )
         )
         raise
@@ -146,6 +157,8 @@ async def api_call_logging_middleware(request: Request, call_next):
                 response_summary={"_skipped": "streaming response"},
                 response_size_bytes=None,
                 error=None,
+                client_ip=client_ip,
+                user_agent=user_agent,
             )
         )
         return response
@@ -196,6 +209,8 @@ async def api_call_logging_middleware(request: Request, call_next):
             response_summary=response_summary,
             response_size_bytes=len(response_bytes),
             error=None,
+            client_ip=client_ip,
+            user_agent=user_agent,
         )
     )
 

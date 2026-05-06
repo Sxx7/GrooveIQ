@@ -27,7 +27,9 @@ from app.db.session import get_session
 from app.main import app
 from app.models.db import ApiCallLog, Base, User
 from app.services.api_call_log import (
+    classify_user_agent,
     list_calls,
+    parse_client_ip,
     purge_old,
     redact,
     should_log_path,
@@ -172,6 +174,62 @@ class TestShouldLogPath:
         assert should_log_path("/v1/events")
 
 
+class TestClassifyUserAgent:
+    def test_chrome_browser(self):
+        ua = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36"
+        assert classify_user_agent(ua) == "browser"
+
+    def test_firefox_browser(self):
+        assert classify_user_agent("Mozilla/5.0 (X11; Linux x86_64) Gecko/20100101 Firefox/130.0") == "browser"
+
+    def test_curl_cli(self):
+        assert classify_user_agent("curl/8.4.0") == "cli"
+
+    def test_python_requests_cli(self):
+        assert classify_user_agent("python-requests/2.31.0") == "cli"
+
+    def test_postman_cli(self):
+        assert classify_user_agent("PostmanRuntime/7.32.3") == "cli"
+
+    def test_iphone_mobile(self):
+        ua = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15"
+        # iPhone wins over generic Mozilla — mobile patterns checked first.
+        assert classify_user_agent(ua) == "mobile"
+
+    def test_android_mobile(self):
+        ua = "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 Mobile Safari/537.36"
+        assert classify_user_agent(ua) == "mobile"
+
+    def test_empty_or_none(self):
+        assert classify_user_agent(None) == "other"
+        assert classify_user_agent("") == "other"
+        assert classify_user_agent("   ") == "other"
+
+    def test_unknown_falls_through(self):
+        assert classify_user_agent("CustomScraperBot/0.1") == "other"
+
+
+class TestParseClientIp:
+    def test_uses_xff_when_set(self):
+        assert parse_client_ip("203.0.113.5", "172.21.0.1") == "203.0.113.5"
+
+    def test_xff_takes_leftmost(self):
+        # Trusted proxy chain: original client comes first per RFC 7239 conventions.
+        assert parse_client_ip("203.0.113.5, 198.51.100.1", "172.21.0.1") == "203.0.113.5"
+
+    def test_falls_back_to_peer(self):
+        assert parse_client_ip(None, "172.21.0.1") == "172.21.0.1"
+        assert parse_client_ip("", "172.21.0.1") == "172.21.0.1"
+
+    def test_returns_none_when_both_missing(self):
+        assert parse_client_ip(None, None) is None
+        assert parse_client_ip("", "") is None
+
+    def test_caps_length(self):
+        # Pathological XFF (huge string) shouldn't blow past the column.
+        assert len(parse_client_ip("X" * 200, None)) <= 64
+
+
 # ---------------------------------------------------------------------------
 # Middleware integration tests
 # ---------------------------------------------------------------------------
@@ -256,6 +314,30 @@ class TestMiddlewarePersists:
         match = next(r for r in rows if r.path == "/v1/users/simon/profile")
         assert match.user_id == "simon"
 
+    async def test_captures_user_agent_and_classifies_source(self, client, monkeypatch):
+        monkeypatch.setattr(settings, "API_LOG_ENABLED", True)
+        await _seed_user("alice")
+        await client.get(
+            "/v1/users/alice/profile",
+            headers={"User-Agent": "curl/8.4.0", "X-Forwarded-For": "203.0.113.42"},
+        )
+        rows = await _wait_for_log_rows(min_count=1)
+        match = next(r for r in rows if r.path == "/v1/users/alice/profile")
+        assert match.user_agent == "curl/8.4.0"
+        assert match.source_class == "cli"
+        assert match.client_ip == "203.0.113.42"
+
+    async def test_browser_classification(self, client, monkeypatch):
+        monkeypatch.setattr(settings, "API_LOG_ENABLED", True)
+        await _seed_user("alice")
+        await client.get(
+            "/v1/users/alice/profile",
+            headers={"User-Agent": "Mozilla/5.0 Chrome/130.0.0.0 Safari/537.36"},
+        )
+        rows = await _wait_for_log_rows(min_count=1)
+        match = next(r for r in rows if r.path == "/v1/users/alice/profile")
+        assert match.source_class == "browser"
+
 
 # ---------------------------------------------------------------------------
 # Service-level: list_calls + purge_old
@@ -325,6 +407,30 @@ class TestListCalls:
             rows, total = await list_calls(s, limit=2, offset=0)
         assert total == 5
         assert len(rows) == 2
+
+    async def test_filter_by_source(self):
+        await _insert_log_row(source_class="browser", user_agent="Mozilla/5.0 Chrome/130.0")
+        await _insert_log_row(source_class="cli", user_agent="curl/8.4.0")
+        await _insert_log_row(source_class="cli", user_agent="python-requests/2.31.0")
+        async with _TestSession() as s:
+            rows, total = await list_calls(s, source="cli")
+        assert total == 2
+        assert all(r["source_class"] == "cli" for r in rows)
+
+    async def test_filter_by_client_ip_contains(self):
+        await _insert_log_row(client_ip="192.168.1.42", source_class="browser")
+        await _insert_log_row(client_ip="10.0.0.5", source_class="mobile")
+        async with _TestSession() as s:
+            rows, total = await list_calls(s, client_ip_contains="192.168.")
+        assert total == 1
+        assert rows[0]["client_ip"] == "192.168.1.42"
+
+    async def test_summary_includes_source_and_ip(self):
+        await _insert_log_row(client_ip="203.0.113.5", source_class="browser")
+        async with _TestSession() as s:
+            rows, _ = await list_calls(s)
+        assert rows[0]["client_ip"] == "203.0.113.5"
+        assert rows[0]["source_class"] == "browser"
 
 
 class TestPurgeOld:

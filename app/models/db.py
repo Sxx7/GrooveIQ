@@ -946,6 +946,13 @@ class ApiCallLog(Base):
     response_size_bytes = Column(Integer, nullable=True)
     error = Column(Text, nullable=True)
 
+    # Caller identity (issue #81) — UA-derived `source_class` distinguishes
+    # dashboard / mobile / CLI traffic; client_ip uses X-Forwarded-For when set
+    # (else request.client.host). Both nullable so existing rows remain valid.
+    client_ip = Column(String(64), nullable=True, index=True)
+    user_agent = Column(String(512), nullable=True)
+    source_class = Column(String(16), nullable=True, index=True)
+
     __table_args__ = (
         Index("idx_api_call_user_time", "user_id", "created_at"),
         Index("idx_api_call_path_time", "path", "created_at"),
