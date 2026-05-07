@@ -25,7 +25,12 @@ import os
 # Bump this whenever the analysis pipeline changes in a way that would
 # produce different feature values.  The scanner compares stored versions
 # against this constant to decide whether a track needs re-analysis.
-ANALYSIS_VERSION = "2.3"
+#
+# 2.4: fixed loudness (EBU R128 LUFS instead of un-normalised Stevens-law
+# power-sum), valence (mood_happy proxy instead of unbounded approach-
+# ability regression), and BPM clamping (drop RhythmExtractor2013's 738.28
+# degenerate output rather than store it).
+ANALYSIS_VERSION = "2.4"
 
 # Must match FAISS index dimension (faiss_index._EMBEDDING_DIM).
 EMBEDDING_DIM = 64
