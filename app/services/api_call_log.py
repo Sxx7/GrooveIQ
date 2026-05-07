@@ -262,11 +262,15 @@ async def stop_log_writer() -> None:
 
 
 async def _flush_loop() -> None:
-    """Drain the queue every _FLUSH_INTERVAL_SECONDS until cancelled."""
+    """Drain the queue every _FLUSH_INTERVAL_SECONDS until cancelled.
+
+    Drains *before* sleeping so a row enqueued immediately after the
+    writer starts doesn't have to wait a full interval to be persisted.
+    """
     while True:
         try:
-            await asyncio.sleep(_FLUSH_INTERVAL_SECONDS)
             await _flush_batch()
+            await asyncio.sleep(_FLUSH_INTERVAL_SECONDS)
         except asyncio.CancelledError:
             raise
         except Exception:  # pragma: no cover — loop must keep running

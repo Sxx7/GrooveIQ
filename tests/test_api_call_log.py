@@ -244,8 +244,13 @@ class TestParseClientIp:
 # ---------------------------------------------------------------------------
 
 
-async def _wait_for_log_rows(min_count: int = 1, timeout_s: float = 2.0) -> list[ApiCallLog]:
-    """Spin until the fire-and-forget background write task has committed."""
+async def _wait_for_log_rows(min_count: int = 1, timeout_s: float = 5.0) -> list[ApiCallLog]:
+    """Spin until the background batch flusher has committed enough rows.
+
+    Default timeout is generous (5 s) because the flusher commits on a
+    1 s cadence and a slow CI runner can push a single tick past the
+    naive `flush_interval + poll_step` floor.
+    """
     deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline:
         async with _TestSession() as s:
