@@ -200,8 +200,12 @@ async def _run_scan(scan_id: int) -> None:
         # Phase: discovering files on disk
         _scan_meta.update({"phase": "discovering", "processing_started_at": None})
 
-        # Collect all audio files first so we know total count
-        audio_files = list(_iter_audio_files(library_path))
+        # Collect all audio files first so we know total count.
+        # The walk does ~90k Path.resolve() + os.walk syscalls; running it
+        # inline blocks the asyncio loop for tens of seconds on big libraries
+        # (and our event-loop watchdog flags it). Push it to a worker thread
+        # so health checks, scheduler ticks, and HTTP handlers stay responsive.
+        audio_files = await asyncio.to_thread(lambda: list(_iter_audio_files(library_path)))
         counters["found"] = len(audio_files)
         logger.info(f"[Scan {scan_id}] Found {counters['found']} audio files")
 
