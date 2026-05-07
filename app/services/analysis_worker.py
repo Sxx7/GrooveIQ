@@ -1149,15 +1149,22 @@ def _extract_ml(
             result["speechiness"] = round(1.0 - result["instrumentalness"], 3)
 
     # --- Mood tags (also need 1280-dim embeddings) ---
+    # Column ordering for these binary softmax heads is alphabetical on the
+    # class name. Models named with a positive-first class (happy < non_happy,
+    # aggressive < non_aggressive) put the named class at col=0; models whose
+    # negative class sorts first (non_sad < sad, non_relaxed < relaxed,
+    # non_party < party) put the named class at col=1. Reading col=0 for all
+    # of them — as the previous version did — meant `sad`, `relaxed`, and
+    # `party` were stored as the *negation* of what the field name promised.
     mood_models = {
-        "happy": "mood_happy-discogs-effnet-1.onnx",
-        "sad": "mood_sad-discogs-effnet-1.onnx",
-        "aggressive": "mood_aggressive-discogs-effnet-1.onnx",
-        "relaxed": "mood_relaxed-discogs-effnet-1.onnx",
-        "party": "mood_party-discogs-effnet-1.onnx",
+        "happy": ("mood_happy-discogs-effnet-1.onnx", 0),
+        "sad": ("mood_sad-discogs-effnet-1.onnx", 1),
+        "aggressive": ("mood_aggressive-discogs-effnet-1.onnx", 0),
+        "relaxed": ("mood_relaxed-discogs-effnet-1.onnx", 1),
+        "party": ("mood_party-discogs-effnet-1.onnx", 1),
     }
     mood_tags = []
-    for label, model_file in mood_models.items():
+    for label, (model_file, col) in mood_models.items():
         session = onnx_sessions.get(model_file)
         if session is None:
             continue
@@ -1166,7 +1173,7 @@ def _extract_ml(
         try:
             inp = session.get_inputs()[0].name
             preds = session.run(None, {inp: head_embeddings})[0]
-            conf = round(float(np.mean(preds[:, 0])), 3)
+            conf = round(float(np.mean(preds[:, col])), 3)
             mood_tags.append({"label": label, "confidence": conf})
         except Exception as e:
             logger.warning("ONNX mood head %s failed: %s", model_file, e)

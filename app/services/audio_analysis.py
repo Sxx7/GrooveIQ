@@ -30,7 +30,10 @@ import os
 # power-sum), valence (mood_happy proxy instead of unbounded approach-
 # ability regression), and BPM clamping (drop RhythmExtractor2013's 738.28
 # degenerate output rather than store it).
-ANALYSIS_VERSION = "2.4"
+# 2.5: corrected mood_sad/relaxed/party column indices — those binary heads
+# put the named class at col=1, not col=0, so the previous values were the
+# *negation* of what the field name suggested.
+ANALYSIS_VERSION = "2.5"
 
 # Must match FAISS index dimension (faiss_index._EMBEDDING_DIM).
 EMBEDDING_DIM = 64
