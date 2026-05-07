@@ -11,6 +11,7 @@ Body redaction and size caps live here so middleware stays small.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import time
@@ -24,6 +25,17 @@ from app.db.session import AsyncSessionLocal
 from app.models.db import ApiCallLog, User
 
 logger = logging.getLogger(__name__)
+
+# Background batch-writer state. Each /v1/* request writes one row to
+# api_call_logs; under dashboard polling that's ~1.5 commits/sec, all
+# fighting the same SQLite write lock as the library scanner. We collect
+# rows in an in-process queue and flush in batches to keep the writer
+# count down to one and the commit count down by ~50–100×.
+_log_queue: asyncio.Queue[ApiCallLog] | None = None
+_writer_task: asyncio.Task | None = None
+_FLUSH_INTERVAL_SECONDS = 1.0
+_MAX_QUEUE_SIZE = 5000   # If the flusher falls this far behind, drop new rows.
+_MAX_BATCH_SIZE = 500    # Bound the per-flush transaction.
 
 
 # Substrings (case-insensitive) of JSON keys whose values must never be persisted.
@@ -225,6 +237,64 @@ def parse_client_ip(forwarded_for: str | None, fallback: str | None) -> str | No
 # ---------------------------------------------------------------------------
 
 
+def start_log_writer() -> None:
+    """Launch the background flusher. Call from app startup (lifespan)."""
+    global _log_queue, _writer_task
+    if _writer_task is not None and not _writer_task.done():
+        return
+    _log_queue = asyncio.Queue(maxsize=_MAX_QUEUE_SIZE)
+    _writer_task = asyncio.create_task(_flush_loop(), name="api_call_log_flusher")
+
+
+async def stop_log_writer() -> None:
+    """Cancel the flusher and drain remaining rows. Call from shutdown."""
+    global _writer_task
+    if _writer_task is None:
+        return
+    _writer_task.cancel()
+    try:
+        await _writer_task
+    except (asyncio.CancelledError, Exception):
+        pass
+    # Final drain after cancellation so in-flight rows aren't silently lost.
+    await _flush_batch()
+    _writer_task = None
+
+
+async def _flush_loop() -> None:
+    """Drain the queue every _FLUSH_INTERVAL_SECONDS until cancelled."""
+    while True:
+        try:
+            await asyncio.sleep(_FLUSH_INTERVAL_SECONDS)
+            await _flush_batch()
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # pragma: no cover — loop must keep running
+            logger.exception("api_call_log flush loop error (continuing)")
+
+
+async def _flush_batch() -> None:
+    """Drain up to _MAX_BATCH_SIZE rows and commit them in one transaction."""
+    if _log_queue is None or _log_queue.empty():
+        return
+    rows: list[ApiCallLog] = []
+    while len(rows) < _MAX_BATCH_SIZE:
+        try:
+            rows.append(_log_queue.get_nowait())
+        except asyncio.QueueEmpty:
+            break
+    if not rows:
+        return
+    try:
+        async with AsyncSessionLocal() as session:
+            session.add_all(rows)
+            await session.commit()
+    except Exception as e:
+        logger.warning(
+            "api_call_log batch flush failed (%d rows dropped): %s", len(rows), e
+        )
+
+
 async def write_log(
     *,
     method: str,
@@ -242,31 +312,40 @@ async def write_log(
     client_ip: str | None = None,
     user_agent: str | None = None,
 ) -> None:
-    """Persist one HTTP-call row.  Idempotent-safe: errors are swallowed."""
+    """Enqueue one HTTP-call row for the background batch writer.
+
+    Returns immediately. Errors (queue full, model construction failure)
+    are swallowed — these are debug logs and must never affect request
+    handling. The actual SQLite commit happens in `_flush_batch`.
+    """
     if not settings.API_LOG_ENABLED:
         return
+    if _log_queue is None:
+        # Writer not started — silently drop. Happens in tests that don't
+        # call start_log_writer(); production startup always calls it.
+        return
     try:
-        async with AsyncSessionLocal() as session:
-            row = ApiCallLog(
-                created_at=int(time.time()),
-                user_id=user_id,
-                request_id=request_id,
-                method=method,
-                path=path[:512],
-                route_template=(route_template or "")[:512] or None,
-                query_string=(query_string or "")[:4096] or None,
-                request_body=request_body,
-                status_code=status_code,
-                duration_ms=duration_ms,
-                response_summary=response_summary,
-                response_size_bytes=response_size_bytes,
-                error=(error or "")[:4096] or None,
-                client_ip=client_ip,
-                user_agent=(user_agent or "")[:512] or None,
-                source_class=classify_user_agent(user_agent),
-            )
-            session.add(row)
-            await session.commit()
+        row = ApiCallLog(
+            created_at=int(time.time()),
+            user_id=user_id,
+            request_id=request_id,
+            method=method,
+            path=path[:512],
+            route_template=(route_template or "")[:512] or None,
+            query_string=(query_string or "")[:4096] or None,
+            request_body=request_body,
+            status_code=status_code,
+            duration_ms=duration_ms,
+            response_summary=response_summary,
+            response_size_bytes=response_size_bytes,
+            error=(error or "")[:4096] or None,
+            client_ip=client_ip,
+            user_agent=(user_agent or "")[:512] or None,
+            source_class=classify_user_agent(user_agent),
+        )
+        _log_queue.put_nowait(row)
+    except asyncio.QueueFull:
+        logger.debug("api_call_log queue full; dropping row")
     except Exception as e:  # pragma: no cover — logging shouldn't crash anything
         logger.warning("api_call_log write failed: %s", e)
 

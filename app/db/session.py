@@ -28,8 +28,14 @@ _connect_args = _SQLITE_CONNECT_ARGS if "sqlite" in settings.DATABASE_URL else {
 engine = create_async_engine(
     settings.DATABASE_URL,
     echo=settings.DB_ECHO,
-    pool_size=settings.DB_POOL_SIZE if "sqlite" not in settings.DATABASE_URL else 5,
-    max_overflow=settings.DB_MAX_OVERFLOW if "sqlite" not in settings.DATABASE_URL else 10,
+    # SQLite pool sized for the worst-case overlap of: library-scanner
+    # batch commit, lidarr_backfill tick + poll, scrobble queue, periodic
+    # recommendation pipeline, and api_call_log batch flushes. With
+    # api_call_log writes now batched (one writer instead of per-request),
+    # 20 + 30 = 50 is enough headroom that connection-pool exhaustion
+    # stops being a failure mode under realistic dashboard polling.
+    pool_size=settings.DB_POOL_SIZE if "sqlite" not in settings.DATABASE_URL else 20,
+    max_overflow=settings.DB_MAX_OVERFLOW if "sqlite" not in settings.DATABASE_URL else 30,
     pool_pre_ping=True,
     connect_args=_connect_args,
 )

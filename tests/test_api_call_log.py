@@ -33,7 +33,10 @@ from app.services.api_call_log import (
     purge_old,
     redact,
     should_log_path,
+    start_log_writer,
+    stop_log_writer,
     truncate_body,
+    write_log,
 )
 
 TEST_DB_URL = "sqlite+aiosqlite:///:memory:"
@@ -61,8 +64,14 @@ async def setup_db(monkeypatch):
     async with _test_engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
 
+    # The httpx ASGITransport doesn't fire FastAPI's lifespan, so the
+    # background batch-writer that production startup launches isn't
+    # running by default. Start it here so middleware writes get flushed.
+    start_log_writer()
+
     app.dependency_overrides[get_session] = override_get_session
     yield
+    await stop_log_writer()
     async with _test_engine.begin() as conn:
         await conn.run_sync(Base.metadata.drop_all)
     app.dependency_overrides.clear()
@@ -337,6 +346,70 @@ class TestMiddlewarePersists:
         rows = await _wait_for_log_rows(min_count=1)
         match = next(r for r in rows if r.path == "/v1/users/alice/profile")
         assert match.source_class == "browser"
+
+
+# ---------------------------------------------------------------------------
+# Background batch writer (in-process buffer + ~1s flusher)
+# ---------------------------------------------------------------------------
+
+
+def _write_kwargs(**overrides):
+    """Build a minimal valid write_log() kwargs dict for the buffer tests."""
+    base = dict(
+        method="GET",
+        path="/v1/test",
+        route_template="/v1/test",
+        query_string=None,
+        request_body=None,
+        status_code=200,
+        duration_ms=5,
+        user_id=None,
+        request_id=None,
+        response_summary=None,
+        response_size_bytes=None,
+    )
+    base.update(overrides)
+    return base
+
+
+class TestBatchWriter:
+    async def test_write_log_returns_immediately_and_batches(self, monkeypatch):
+        """write_log should enqueue without blocking on a DB commit; the
+        flusher commits the whole batch in one transaction ~1 s later."""
+        monkeypatch.setattr(settings, "API_LOG_ENABLED", True)
+
+        # Push 25 rows back-to-back. With per-request commits this would be
+        # 25 separate transactions; with the batch writer it's at most one.
+        for i in range(25):
+            await write_log(**_write_kwargs(path=f"/v1/test/{i}"))
+
+        rows = await _wait_for_log_rows(min_count=25, timeout_s=3.0)
+        assert len(rows) == 25
+        assert {r.path for r in rows} == {f"/v1/test/{i}" for i in range(25)}
+
+    async def test_write_log_disabled_is_noop(self, monkeypatch):
+        monkeypatch.setattr(settings, "API_LOG_ENABLED", False)
+        await write_log(**_write_kwargs(path="/v1/dropped"))
+        await asyncio.sleep(1.2)  # past one flush interval
+        async with _TestSession() as s:
+            rows = (await s.execute(select(ApiCallLog))).scalars().all()
+        assert rows == []
+
+    async def test_queue_full_drops_silently(self, monkeypatch):
+        """When the buffer is at capacity, write_log must not raise — debug
+        rows are expendable, request handling must never break."""
+        monkeypatch.setattr(settings, "API_LOG_ENABLED", True)
+        # Shrink the queue so we can trip the limit deterministically.
+        monkeypatch.setattr("app.services.api_call_log._MAX_QUEUE_SIZE", 4)
+        # Stop the running writer (started by the autouse fixture) and
+        # restart it with the patched size so the asyncio.Queue is bounded.
+        await stop_log_writer()
+        start_log_writer()
+
+        # Fire more than the cap quickly. The flusher might drain some
+        # mid-loop, but at least one must get dropped without raising.
+        for i in range(50):
+            await write_log(**_write_kwargs(path=f"/v1/q{i}"))
 
 
 # ---------------------------------------------------------------------------

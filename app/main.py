@@ -98,10 +98,23 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             logger.warning(f"{mod.__name__} load_latest failed on startup: {e}")
 
+    # Start the api_call_log batch writer so per-request logs are
+    # buffered in-process and flushed every ~1 s, rather than each
+    # request grabbing its own SQLite write lock.
+    from app.services.api_call_log import start_log_writer, stop_log_writer
+
+    start_log_writer()
+
     await start_scheduler()
     yield
     logger.info("GrooveIQ shutting down...")
     await stop_scheduler()
+
+    # Drain pending api_call_log rows before the worker pool dies.
+    try:
+        await stop_log_writer()
+    except Exception as e:
+        logger.warning(f"api_call_log writer shutdown error: {e}")
 
     # Shut down analysis worker pool (long-lived subprocesses)
     try:
