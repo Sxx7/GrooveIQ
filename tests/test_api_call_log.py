@@ -27,6 +27,7 @@ from app.db.session import get_session
 from app.main import app
 from app.models.db import ApiCallLog, Base, User
 from app.services.api_call_log import (
+    _flush_batch,
     classify_user_agent,
     list_calls,
     parse_client_ip,
@@ -379,16 +380,20 @@ def _write_kwargs(**overrides):
 
 class TestBatchWriter:
     async def test_write_log_returns_immediately_and_batches(self, monkeypatch):
-        """write_log should enqueue without blocking on a DB commit; the
-        flusher commits the whole batch in one transaction ~1 s later."""
+        """write_log should enqueue without blocking on a DB commit, and
+        a single _flush_batch must commit the entire batch in one
+        transaction. Drives the flush directly rather than waiting on the
+        1-second timer so the assertion isn't racy against test ordering."""
         monkeypatch.setattr(settings, "API_LOG_ENABLED", True)
 
         # Push 25 rows back-to-back. With per-request commits this would be
-        # 25 separate transactions; with the batch writer it's at most one.
+        # 25 separate transactions; with the batch writer it's exactly one.
         for i in range(25):
             await write_log(**_write_kwargs(path=f"/v1/test/{i}"))
 
-        rows = await _wait_for_log_rows(min_count=25, timeout_s=3.0)
+        await _flush_batch()
+        async with _TestSession() as s:
+            rows = (await s.execute(select(ApiCallLog).order_by(ApiCallLog.id))).scalars().all()
         assert len(rows) == 25
         assert {r.path for r in rows} == {f"/v1/test/{i}" for i in range(25)}
 
