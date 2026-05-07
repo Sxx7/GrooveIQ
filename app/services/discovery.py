@@ -273,6 +273,39 @@ class LidarrClient:
         """Return all rows from /api/v1/wanted/cutoff (quality-upgrade queue)."""
         return await self._fetch_wanted_pages("/api/v1/wanted/cutoff", page_size, monitored, sort_key, sort_direction)
 
+    async def fetch_wanted_page(
+        self,
+        path: str,
+        *,
+        page: int,
+        page_size: int,
+        monitored: bool,
+        sort_key: str,
+        sort_direction: str,
+    ) -> list[dict[str, Any]]:
+        """Fetch a single page of /api/v1/wanted/{missing,cutoff}.
+
+        Used by the streaming candidate-fetcher in the backfill engine so
+        each scheduler tick can stop pagination as soon as it has enough
+        fresh candidates, rather than draining the entire (potentially
+        tens-of-thousands-deep) queue every tick.
+        """
+        resp = await self._client.get(
+            f"{self._base_url}{path}",
+            params={
+                "page": page,
+                "pageSize": page_size,
+                "sortKey": sort_key,
+                "sortDirection": sort_direction,
+                "monitored": "true" if monitored else "false",
+                "includeArtist": "true",
+            },
+        )
+        resp.raise_for_status()
+        body = resp.json()
+        records = body.get("records") if isinstance(body, dict) else None
+        return list(records or [])
+
     async def _fetch_wanted_pages(
         self,
         path: str,
@@ -281,29 +314,22 @@ class LidarrClient:
         sort_key: str,
         sort_direction: str,
     ) -> list[dict[str, Any]]:
-        """Walk Lidarr pagination until totalRecords is exhausted."""
+        """Walk Lidarr pagination until exhausted."""
         records: list[dict[str, Any]] = []
         page = 1
         while True:
-            resp = await self._client.get(
-                f"{self._base_url}{path}",
-                params={
-                    "page": page,
-                    "pageSize": page_size,
-                    "sortKey": sort_key,
-                    "sortDirection": sort_direction,
-                    "monitored": "true" if monitored else "false",
-                    "includeArtist": "true",
-                },
+            page_records = await self.fetch_wanted_page(
+                path,
+                page=page,
+                page_size=page_size,
+                monitored=monitored,
+                sort_key=sort_key,
+                sort_direction=sort_direction,
             )
-            resp.raise_for_status()
-            body = resp.json()
-            page_records = body.get("records") if isinstance(body, dict) else None
             if not page_records:
                 break
             records.extend(page_records)
-            total = body.get("totalRecords") or len(records)
-            if len(records) >= total or len(page_records) < page_size:
+            if len(page_records) < page_size:
                 break
             page += 1
         return records
