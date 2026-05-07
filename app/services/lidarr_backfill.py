@@ -1276,6 +1276,54 @@ async def delete_request(session: AsyncSession, request_id: int) -> bool:
 # Stats (for the dashboard top panel)
 # ---------------------------------------------------------------------------
 
+# Module-level cache for the live Lidarr totals (missing / cutoff). The
+# dashboard polls /v1/lidarr-backfill/stats every ~3 s; without a cache
+# each poll fires two synchronous HTTP calls to Lidarr (4–9 s each on a
+# busy host) while still holding a SQLAlchemy session, which exhausted
+# the connection pool and starved the library scanner. 30 s is short
+# enough to feel "live" in the UI and long enough to coalesce 10× polls.
+_lidarr_totals_cache: tuple[float, int | None, int | None] = (0.0, None, None)
+_LIDARR_TOTALS_TTL = 30.0
+
+
+async def _fetch_lidarr_totals_cached(cfg: LidarrBackfillConfigData) -> tuple[int | None, int | None]:
+    """Return (missing_total, cutoff_total), refreshing at most every 30 s."""
+    global _lidarr_totals_cache
+    import time as _time
+
+    now = _time.monotonic()
+    cached_at, missing, cutoff = _lidarr_totals_cache
+    if now - cached_at < _LIDARR_TOTALS_TTL:
+        return missing, cutoff
+    if not (settings.LIDARR_URL and settings.LIDARR_API_KEY):
+        return None, None
+
+    client = LidarrClient(settings.LIDARR_URL, settings.LIDARR_API_KEY)
+    try:
+        try:
+            resp = await client._client.get(
+                f"{client._base_url}/api/v1/wanted/missing",
+                params={"page": 1, "pageSize": 1, "monitored": "true" if cfg.sources.monitored_only else "false"},
+            )
+            resp.raise_for_status()
+            missing = resp.json().get("totalRecords")
+        except Exception:
+            missing = None
+        try:
+            resp = await client._client.get(
+                f"{client._base_url}/api/v1/wanted/cutoff",
+                params={"page": 1, "pageSize": 1, "monitored": "true" if cfg.sources.monitored_only else "false"},
+            )
+            resp.raise_for_status()
+            cutoff = resp.json().get("totalRecords")
+        except Exception:
+            cutoff = None
+    finally:
+        await client.close()
+
+    _lidarr_totals_cache = (now, missing, cutoff)
+    return missing, cutoff
+
 
 async def get_stats(session: AsyncSession) -> dict[str, Any]:
     """Counts + ETA for the dashboard ``Backfill Status`` card."""
@@ -1319,32 +1367,8 @@ async def get_stats(session: AsyncSession) -> dict[str, Any]:
 
     capacity_remaining = max(0, cfg.max_downloads_per_hour - in_window)
 
-    # Try to fetch live missing/cutoff totals from Lidarr (best-effort).
-    missing_total = None
-    cutoff_total = None
-    if settings.LIDARR_URL and settings.LIDARR_API_KEY:
-        client = LidarrClient(settings.LIDARR_URL, settings.LIDARR_API_KEY)
-        try:
-            try:
-                resp = await client._client.get(
-                    f"{client._base_url}/api/v1/wanted/missing",
-                    params={"page": 1, "pageSize": 1, "monitored": "true" if cfg.sources.monitored_only else "false"},
-                )
-                resp.raise_for_status()
-                missing_total = resp.json().get("totalRecords")
-            except Exception:
-                missing_total = None
-            try:
-                resp = await client._client.get(
-                    f"{client._base_url}/api/v1/wanted/cutoff",
-                    params={"page": 1, "pageSize": 1, "monitored": "true" if cfg.sources.monitored_only else "false"},
-                )
-                resp.raise_for_status()
-                cutoff_total = resp.json().get("totalRecords")
-            except Exception:
-                cutoff_total = None
-        finally:
-            await client.close()
+    # Live missing/cutoff totals via cached Lidarr fetch (best-effort).
+    missing_total, cutoff_total = await _fetch_lidarr_totals_cached(cfg)
 
     work_remaining = (missing_total or 0) + (cutoff_total or 0 if cfg.sources.cutoff_unmet else 0)
     eta_hours: float | None = None
