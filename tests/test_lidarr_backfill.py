@@ -1090,6 +1090,8 @@ class _FakeLidarrClient:
 
     Returns whatever was preloaded via ``rows`` so the test can verify both the
     Lidarr API parameters and the engine's post-fetch handling (e.g. shuffle).
+    Also implements ``fetch_wanted_page`` for the streaming path used by the
+    runtime tick — pages are sliced from the same preloaded rows.
     """
 
     def __init__(self, missing_rows=None, cutoff_rows=None):
@@ -1097,6 +1099,7 @@ class _FakeLidarrClient:
         self.cutoff_rows = cutoff_rows or []
         self.missing_calls: list[dict[str, Any]] = []
         self.cutoff_calls: list[dict[str, Any]] = []
+        self.page_calls: list[dict[str, Any]] = []
 
     async def get_missing_albums(
         self, page_size=100, monitored=True, sort_key="albums.releaseDate", sort_direction="descending"
@@ -1109,6 +1112,14 @@ class _FakeLidarrClient:
     ):
         self.cutoff_calls.append({"sort_key": sort_key, "sort_direction": sort_direction, "monitored": monitored})
         return list(self.cutoff_rows)
+
+    async def fetch_wanted_page(
+        self, path, *, page, page_size, monitored, sort_key, sort_direction
+    ):
+        self.page_calls.append({"path": path, "page": page, "page_size": page_size})
+        rows = self.missing_rows if path.endswith("/missing") else self.cutoff_rows
+        start = (page - 1) * page_size
+        return list(rows[start : start + page_size])
 
     async def close(self):
         pass
@@ -1174,6 +1185,68 @@ async def test_queue_order_default_is_recent_release(cfg):
     call = fake_lidarr.missing_calls[0]
     assert call["sort_key"] == "albums.releaseDate"
     assert call["sort_direction"] == "descending"
+
+
+# ---------------------------------------------------------------------------
+# Streaming candidate fetcher (used by run_backfill_tick)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_stream_fresh_candidates_stops_once_target_reached(db_session, cfg):
+    """The streaming fetcher must short-circuit once it has enough fresh
+    candidates rather than draining the entire wanted queue every tick."""
+    # 500 albums spread across 5 pages of 100. Target is 8 fresh candidates,
+    # nothing in the local DB blocks them, so the fetcher should only need
+    # the first page (which already yields 100 fresh).
+    fake = _FakeLidarrClient(missing_rows=_make_albums(500))
+
+    fresh, stats = await lbf._stream_fresh_candidates(
+        db_session, cfg, fake, target=8, page_size=100
+    )
+
+    assert len(fresh) >= 8
+    assert stats["pages_fetched"] == 1
+    # We should have fetched only the missing source, exactly once.
+    assert [c["page"] for c in fake.page_calls] == [1]
+
+
+@pytest.mark.asyncio
+async def test_stream_fresh_candidates_skips_blocked_rows_and_keeps_paging(db_session, cfg):
+    """When the top of the queue is saturated with already-touched (in-flight /
+    completed / cooldown'd) albums, the streaming fetcher must keep paging
+    until it has accumulated `target` *fresh* rows."""
+    # 400 albums in 4 pages of 100. Mark every album in pages 1-3 as
+    # "queued" (in-flight) so the cooldown filter rejects them. Page 4 has
+    # 100 fresh albums — that's the only place we can find fresh rows.
+    rows = _make_albums(400)
+    now = int(time.time())
+    for r in rows[:300]:
+        db_session.add(
+            LidarrBackfillRequest(
+                lidarr_album_id=r["id"],
+                artist=r["artist"]["artistName"],
+                album_title=r["title"],
+                source="missing",
+                status="queued",  # in-flight
+                attempt_count=0,
+                created_at=now,
+                updated_at=now,
+            )
+        )
+    await db_session.commit()
+
+    fake = _FakeLidarrClient(missing_rows=rows)
+
+    fresh, stats = await lbf._stream_fresh_candidates(
+        db_session, cfg, fake, target=5, page_size=100
+    )
+
+    # All 5 we asked for came from page 4.
+    assert len(fresh) >= 5
+    # We had to walk all 4 pages to find them.
+    assert stats["pages_fetched"] == 4
+    assert [c["page"] for c in fake.page_calls] == [1, 2, 3, 4]
 
 
 @pytest.mark.asyncio

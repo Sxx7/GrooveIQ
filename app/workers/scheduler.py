@@ -525,18 +525,31 @@ async def _lidarr_backfill_poll_status() -> None:
 
 
 def _register_lidarr_backfill_jobs(poll_interval_minutes: int) -> None:
-    """Register or replace the two backfill jobs with the given tick interval."""
+    """Register or replace the two backfill jobs with the given tick interval.
+
+    `coalesce=True` collapses multiple missed firings into one when the
+    scheduler resumes after a pause (e.g. a redeploy). `max_instances=1`
+    is the APScheduler default but we set it explicitly to make the
+    intent obvious. `misfire_grace_time` caps how late a misfire can be
+    before APScheduler drops it instead of running it.
+    """
     _scheduler.add_job(
         _lidarr_backfill_tick,
         trigger=IntervalTrigger(minutes=max(1, int(poll_interval_minutes))),
         id=_LBF_TICK_JOB_ID,
         replace_existing=True,
+        coalesce=True,
+        max_instances=1,
+        misfire_grace_time=300,
     )
     _scheduler.add_job(
         _lidarr_backfill_poll_status,
         trigger=IntervalTrigger(minutes=2),
         id=_LBF_POLL_JOB_ID,
         replace_existing=True,
+        coalesce=True,
+        max_instances=1,
+        misfire_grace_time=120,
     )
 
 

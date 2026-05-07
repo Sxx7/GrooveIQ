@@ -552,6 +552,108 @@ async def _fetch_candidates(
     return filtered[: max(1, limit)]
 
 
+async def _stream_fresh_candidates(
+    session: AsyncSession,
+    cfg: LidarrBackfillConfigData,
+    lidarr_client: LidarrClient,
+    *,
+    target: int,
+    page_size: int = 100,
+    max_pages_per_source: int = 50,
+) -> tuple[list[dict[str, Any]], dict[str, int]]:
+    """Stream Lidarr's wanted queues and return up to ``target`` fresh candidates.
+
+    "Fresh" = passes the artist allow/deny lists and survives
+    ``_filter_by_cooldown_and_state`` (i.e. not in-flight, completed,
+    permanently-skipped, over max_attempts, or still inside its retry
+    cooldown). We fetch one page at a time and stop as soon as we have
+    enough — at saturation that's typically a handful of pages even
+    against tens of thousands of missing albums.
+
+    The caller is expected to take the first ``batch_target`` of what we
+    return; ``target`` should be set to a multiple of that (e.g. 4×) so the
+    later filtering / matching step has headroom.
+    """
+    sort_key, sort_direction = _QUEUE_SORT.get(
+        cfg.sources.queue_order, _QUEUE_SORT[QueueOrder.RECENT_RELEASE]
+    )
+
+    allow = {_normalize_artist_name(a) for a in cfg.filters.artist_allowlist if a.strip()}
+    deny = {_normalize_artist_name(a) for a in cfg.filters.artist_denylist if a.strip()}
+
+    sources: list[tuple[str, str]] = []
+    if cfg.sources.missing:
+        sources.append(("missing", "/api/v1/wanted/missing"))
+    if cfg.sources.cutoff_unmet:
+        sources.append(("cutoff", "/api/v1/wanted/cutoff"))
+
+    fresh: list[dict[str, Any]] = []
+    stats = {"pages_fetched": 0, "lidarr_seen": 0}
+
+    for source_name, path in sources:
+        for page in range(1, max_pages_per_source + 1):
+            try:
+                page_records = await lidarr_client.fetch_wanted_page(
+                    path,
+                    page=page,
+                    page_size=page_size,
+                    monitored=cfg.sources.monitored_only,
+                    sort_key=sort_key,
+                    sort_direction=sort_direction,
+                )
+            except Exception as exc:
+                logger.warning("backfill: fetching %s page %d failed: %s", path, page, exc)
+                break
+
+            stats["pages_fetched"] += 1
+            stats["lidarr_seen"] += len(page_records)
+
+            if not page_records:
+                break
+
+            tagged = [{**r, "_source": source_name} for r in page_records]
+
+            if allow or deny:
+                tagged = [
+                    c
+                    for c in tagged
+                    if (
+                        (
+                            not allow
+                            or _normalize_artist_name(
+                                (c.get("artist") or {}).get("artistName") or ""
+                            )
+                            in allow
+                        )
+                        and (
+                            not deny
+                            or _normalize_artist_name(
+                                (c.get("artist") or {}).get("artistName") or ""
+                            )
+                            not in deny
+                        )
+                    )
+                ]
+
+            page_fresh = await _filter_by_cooldown_and_state(session, tagged, cfg)
+            fresh.extend(page_fresh)
+
+            if len(fresh) >= target:
+                break
+            if len(page_records) < page_size:
+                break  # exhausted source
+
+        if len(fresh) >= target:
+            break
+
+    if cfg.sources.queue_order == QueueOrder.RANDOM and fresh:
+        import random
+
+        random.shuffle(fresh)
+
+    return fresh, stats
+
+
 # ---------------------------------------------------------------------------
 # Per-album processing
 # ---------------------------------------------------------------------------
@@ -819,13 +921,17 @@ async def _run_backfill_tick_inner(session: AsyncSession, lidarr_enabled_in_chai
             # services silently instead of logging a 503 warning per album.
             available_services = await streamrip_client.get_available_services()
 
-            # Fetch the full filtered candidate pool — `_filter_by_cooldown_and_state`
-            # then drops completed / in-cooldown rows, and the post-filter slice
-            # picks the top `batch_target` fresh candidates.  Slicing before the
-            # filter starves it once the top of the sort order is saturated with
-            # already-touched albums (every tick re-pulls the same blocked rows).
-            all_candidates = await _fetch_candidates(cfg, lidarr_client, limit=None)
-            fresh_candidates = await _filter_by_cooldown_and_state(session, all_candidates, cfg)
+            # Stream pages from Lidarr and stop as soon as we have enough
+            # fresh candidates. Draining the entire wanted queue every tick
+            # was costing 200+ HTTP calls / 5+ minutes against a saturated
+            # library; we now typically need <10 pages per tick.
+            #
+            # We over-fetch by 4× batch_target so the matching step has
+            # headroom if some of the top picks fail to match a streamrip
+            # service (e.g. service down, no quality match).
+            fresh_candidates, fetch_stats = await _stream_fresh_candidates(
+                session, cfg, lidarr_client, target=batch_target * 4
+            )
             candidates = fresh_candidates[:batch_target]
 
             if not candidates:
@@ -833,9 +939,9 @@ async def _run_backfill_tick_inner(session: AsyncSession, lidarr_enabled_in_chai
                 # this kind of stall invisible without DEBUG logging.
                 logger.info(
                     "Lidarr backfill tick: 0 fresh candidates "
-                    "(lidarr_pool=%d, after_filter=%d, capacity=%d, available_services=%s)",
-                    len(all_candidates),
-                    len(fresh_candidates),
+                    "(pages_fetched=%d, lidarr_seen=%d, capacity=%d, available_services=%s)",
+                    fetch_stats["pages_fetched"],
+                    fetch_stats["lidarr_seen"],
                     capacity,
                     available_services,
                 )
@@ -844,7 +950,8 @@ async def _run_backfill_tick_inner(session: AsyncSession, lidarr_enabled_in_chai
                     "capacity_remaining": capacity,
                     "available_services": available_services,
                     "results": [],
-                    "lidarr_pool": len(all_candidates),
+                    "pages_fetched": fetch_stats["pages_fetched"],
+                    "lidarr_seen": fetch_stats["lidarr_seen"],
                     "after_filter": len(fresh_candidates),
                 }
 
