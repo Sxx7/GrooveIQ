@@ -888,8 +888,18 @@ def _extract_dsp(
     sample = audio[start : start + dur]
 
     bpm, _, bpm_conf, _, _ = es.RhythmExtractor2013(method="multifeature")(sample)
-    result["bpm"] = round(float(bpm), 2)
-    result["bpm_confidence"] = round(float(bpm_conf), 3)
+    bpm = float(bpm)
+    bpm_conf = float(bpm_conf)
+    # RhythmExtractor2013 has known degenerate outputs (notably an exact
+    # 738.28 BPM for very low-rhythm content) that escape the algorithm's
+    # internal sanity checks. Clamp to a musically plausible range and
+    # null otherwise rather than poisoning downstream features.
+    if 30.0 <= bpm <= 250.0:
+        result["bpm"] = round(bpm, 2)
+        result["bpm_confidence"] = round(bpm_conf, 3)
+    else:
+        result["bpm"] = None
+        result["bpm_confidence"] = None
 
     # --- Tonal (60 s centre sample) ---
     dur = min(len(audio), sr * 60)
@@ -923,23 +933,31 @@ def _extract_dsp(
         result["mode"] = scale
         result["key_confidence"] = round(float(strength), 3)
 
-    # --- Loudness & dynamic range (60 s centre sample) ---
-    loudness_algo = es.Loudness()
+    # --- Loudness & dynamic range (60 s centre sample, EBU R128 LUFS) ---
+    # Previous code called es.Loudness() which is Stevens-law power-sum
+    # (Σ(x²)^0.67) without normalisation by N — output scaled with the
+    # length of the input and was nowhere near LUFS despite the comment
+    # in the schema. LoudnessEBUR128 returns the proper integrated LUFS
+    # value plus the EBU R128 loudness range, both in dB.
     dur = min(len(audio), sr * 60)
     start = max(0, (len(audio) - dur) // 2)
     sample = audio[start : start + dur]
 
-    result["loudness"] = round(float(loudness_algo(sample)), 2)
-
-    frame_loudness = []
-    for frame in es.FrameGenerator(sample, frameSize=4096, hopSize=4096):
-        frame_loudness.append(loudness_algo(frame))
-    if frame_loudness:
-        arr = np.array(frame_loudness)
-        p95 = float(np.percentile(arr, 95))
-        p10 = float(np.percentile(arr, 10))
-        result["dynamic_range"] = round(p95 - p10, 2)
-    else:
+    try:
+        # EBUR128 expects stereo (vector_stereosample); duplicate the mono
+        # channel. Both channels identical → integrated LUFS unchanged vs
+        # true mono, but the algorithm now accepts the input.
+        stereo = np.column_stack((sample, sample)).astype(np.float32)
+        _, _, integrated_lufs, loudness_range = es.LoudnessEBUR128(sampleRate=sr)(stereo)
+        result["loudness"] = round(float(integrated_lufs), 2)
+        result["dynamic_range"] = round(float(loudness_range), 2)
+    except Exception as e:
+        # Fallback to RMS dBFS — also in dB, also bounded, just not
+        # weighted to BS.1770. Keeps `loudness` semantically dB-shaped
+        # if EBUR128 trips on a pathological input.
+        logger.warning("LoudnessEBUR128 failed (%s); falling back to RMS dBFS", e)
+        rms = float(np.sqrt(np.mean(sample.astype(np.float64) ** 2)))
+        result["loudness"] = round(20.0 * np.log10(rms + 1e-10), 2)
         result["dynamic_range"] = 0.0
 
     # --- RMS energy (15 s centre sample) ---
@@ -1107,7 +1125,13 @@ def _extract_ml(
         heads = {
             "danceability": ("danceability-discogs-effnet-1.onnx", 0),
             "instrumentalness": ("voice_instrumental-discogs-effnet-1.onnx", 1),
-            "valence": ("approachability_regression-discogs-effnet-1.onnx", 0),
+            # Valence used to be mapped to approachability_regression here,
+            # but that model (a) measures a different concept (approach-
+            # ability ≠ Russell-circumplex valence) and (b) has an unbounded
+            # regression head that emitted values up to 711. Valence is now
+            # derived from the mood_happy probability after the mood loop
+            # below, since that's the closest sigmoid-bounded match in the
+            # Discogs-EffNet model family.
         }
         for feature, (model_file, col) in heads.items():
             session = onnx_sessions.get(model_file)
@@ -1149,6 +1173,13 @@ def _extract_ml(
     if mood_tags:
         mood_tags.sort(key=lambda m: m["confidence"], reverse=True)
         result["mood_tags"] = mood_tags
+        # Valence proxy: mood_happy probability lands in [0, 1] from the
+        # softmax head and aligns with the schema's "musical positivity"
+        # description. Closest match to Spotify-style valence available in
+        # the Discogs-EffNet model bundle without a dedicated valence head.
+        happy = next((m for m in mood_tags if m["label"] == "happy"), None)
+        if happy is not None:
+            result["valence"] = happy["confidence"]
 
     return mean_embedding
 
@@ -1178,16 +1209,25 @@ def _build_embedding(
             # Random projection: EffNet 200 → 64
             vec = effnet_embedding[:_EFFNET_DIM] @ proj_matrix
         else:
-            # Fallback: DSP-based embedding
+            # Fallback: DSP-based embedding. bpm/loudness can be None now
+            # (clamp-rejected BPM, EBUR128 fallback paths) so coalesce
+            # explicitly — `dict.get(k, default)` only returns the default
+            # when the key is missing, not when the stored value is None.
+            bpm_v = result.get("bpm")
+            if bpm_v is None:
+                bpm_v = 120.0
+            loud_v = result.get("loudness")
+            if loud_v is None:
+                loud_v = -14.0
             vec = np.zeros(_EMBEDDING_DIM, dtype=np.float32)
-            vec[0] = min(1.0, result.get("bpm", 120) / 200.0)
+            vec[0] = min(1.0, bpm_v / 200.0)
             vec[1] = result.get("energy", 0.5)
             vec[2] = result.get("danceability", 0.5)
             vec[3] = result.get("valence", 0.5)
             vec[4] = result.get("acousticness", 0.5)
             vec[5] = result.get("instrumentalness", 0.5)
             vec[6] = result.get("speechiness", 0.1)
-            vec[7] = min(1.0, max(0.0, (result.get("loudness", -14) + 40) / 40))
+            vec[7] = min(1.0, max(0.0, (loud_v + 40) / 40))
             if hpcp_frames:
                 mean_hpcp = np.mean(hpcp_frames, axis=0)[:12]
                 vec[8 : 8 + len(mean_hpcp)] = mean_hpcp
