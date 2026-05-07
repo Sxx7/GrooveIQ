@@ -10,6 +10,7 @@ from __future__ import annotations
 import logging
 import re
 
+from sqlalchemy import event
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.core.config import settings
@@ -17,7 +18,6 @@ from app.models.db import Base
 
 logger = logging.getLogger(__name__)
 
-# SQLite-specific pragma: WAL mode for concurrent reads during writes.
 # timeout=30 sets the busy-wait when another connection holds the write
 # lock — without it aiosqlite defaults to 5 s which is too short during
 # heavy scan-completion operations (log prune, media-server sync, FAISS).
@@ -34,6 +34,25 @@ engine = create_async_engine(
     connect_args=_connect_args,
 )
 
+# Apply SQLite pragmas on every new pool connection. Setting them inside
+# init_db() only affected the first connection; subsequent pool connections
+# would default to synchronous=FULL and the 5 s busy timeout, which caused
+# library scans to die with `database is locked` once writers piled up.
+if "sqlite" in settings.DATABASE_URL:
+
+    @event.listens_for(engine.sync_engine, "connect")
+    def _sqlite_set_pragmas(dbapi_connection, _connection_record):
+        cursor = dbapi_connection.cursor()
+        try:
+            cursor.execute("PRAGMA journal_mode=WAL")
+            cursor.execute("PRAGMA synchronous=NORMAL")
+            cursor.execute("PRAGMA foreign_keys=ON")
+            cursor.execute("PRAGMA busy_timeout=30000")
+            cursor.execute("PRAGMA temp_store=MEMORY")
+        finally:
+            cursor.close()
+
+
 AsyncSessionLocal = async_sessionmaker(
     bind=engine,
     class_=AsyncSession,
@@ -48,15 +67,22 @@ async def init_db() -> None:
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
 
-        # Enable WAL mode for SQLite at runtime
-        if "sqlite" in settings.DATABASE_URL:
-            await conn.exec_driver_sql("PRAGMA journal_mode=WAL;")
-            await conn.exec_driver_sql("PRAGMA synchronous=NORMAL;")
-            await conn.exec_driver_sql("PRAGMA foreign_keys=ON;")
-
         # Lightweight schema migrations for columns added after initial release.
         # SQLAlchemy create_all won't add columns to existing tables.
         await _apply_column_migrations(conn)
+
+    # Truncate the WAL on startup. With many concurrent writers and
+    # long-lived connections the WAL can grow into the hundreds of MB
+    # before autocheckpoint catches up; a one-shot TRUNCATE on boot
+    # bounds the file size and reclaims disk.
+    if "sqlite" in settings.DATABASE_URL:
+        async with engine.connect() as conn:
+            try:
+                result = await conn.exec_driver_sql("PRAGMA wal_checkpoint(TRUNCATE);")
+                row = result.fetchone()
+                logger.info("WAL checkpoint at startup: %s", row)
+            except Exception as e:
+                logger.warning("WAL checkpoint at startup failed: %s", e)
 
     logger.info("Database initialized.")
 
