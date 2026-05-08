@@ -12,7 +12,11 @@ on a canvas.
 Design notes:
   - Inputs are the existing 64-dim `embedding` columns; no new analysis needed.
   - UMAP is CPU-only; runs in a thread executor to avoid blocking the loop.
-  - We bulk-UPDATE in one transaction; SQLite handles this fine up to ~100k rows.
+  - Persist via a single executemany so the SQLite write lock is held for
+    one fast statement instead of N per-row round-trips. Earlier per-row
+    UPDATEs in a single transaction held the write lock for minutes under
+    event-loop pressure and starved every other writer (library scanner,
+    api_call_log, scrobble queue, lidarr backfill).
   - If UMAP isn't installed or fewer than ``MIN_TRACKS`` tracks exist, the step
     returns ``{"tracks_mapped": 0, "skipped": <reason>}`` and is treated as a
     successful no-op by the pipeline.
@@ -23,9 +27,10 @@ from __future__ import annotations
 import asyncio
 import base64
 import logging
+import time
 
 import numpy as np
-from sqlalchemy import select, update
+from sqlalchemy import select, text
 
 from app.db.session import AsyncSessionLocal
 from app.models.db import TrackFeatures
@@ -132,15 +137,18 @@ async def build_map() -> dict:
         return {"tracks_mapped": 0, "skipped": "umap_not_installed"}
     track_ids, coords = result
 
-    # --- Persist (bulk update) ------------------------------------------
+    # --- Persist (single executemany) -----------------------------------
+    params = [{"track_id": tid, "map_x": float(x), "map_y": float(y)} for tid, (x, y) in zip(track_ids, coords)]
+    persist_started = time.monotonic()
     async with AsyncSessionLocal() as session:
-        for tid, (x, y) in zip(track_ids, coords):
-            await session.execute(
-                update(TrackFeatures).where(TrackFeatures.track_id == tid).values(map_x=float(x), map_y=float(y))
-            )
+        await session.execute(
+            text("UPDATE track_features SET map_x = :map_x, map_y = :map_y WHERE track_id = :track_id"),
+            params,
+        )
         await session.commit()
+    persist_ms = int((time.monotonic() - persist_started) * 1000)
 
-    logger.info("Music map rebuilt: %d tracks mapped", len(track_ids))
+    logger.info("Music map rebuilt: %d tracks mapped (persist %dms)", len(track_ids), persist_ms)
     return {
         "tracks_mapped": len(track_ids),
         "n_neighbors": min(_UMAP_N_NEIGHBORS, max(2, len(track_ids) - 1)),
