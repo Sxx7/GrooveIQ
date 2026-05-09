@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -15,9 +15,11 @@ from app.models.schemas import (
     PlaylistResponse,
 )
 from app.services.playlist_service import (
+    compute_cache_key,
     delete_playlist,
     generate_playlist,
     get_playlist_with_tracks,
+    utc_day_bucket,
 )
 
 router = APIRouter()
@@ -27,13 +29,39 @@ router = APIRouter()
     "/playlists",
     response_model=PlaylistDetailResponse,
     status_code=status.HTTP_201_CREATED,
-    summary="Generate a new playlist",
+    summary="Generate a new playlist (idempotent within a UTC day)",
 )
 async def create_playlist(
     body: PlaylistCreate,
+    response: Response,
+    refresh: bool = Query(
+        False,
+        description="Bypass the daily idempotency cache and force a fresh generation.",
+    ),
     session: AsyncSession = Depends(get_session),
     _key: str = Depends(require_api_key),
 ):
+    # Daily idempotency: same caller + same params + same UTC day → return the
+    # already-generated playlist instead of creating a duplicate row. See #89.
+    key_hash = hash_key(_key)
+    cache_key = compute_cache_key(
+        created_by=key_hash,
+        strategy=body.strategy,
+        seed_track_id=body.seed_track_id,
+        params=body.params,
+        max_tracks=body.max_tracks,
+        bucket_date=utc_day_bucket(),
+    )
+
+    if not refresh:
+        hit = await session.execute(
+            select(Playlist.id).where(Playlist.cache_key == cache_key).order_by(Playlist.id.desc()).limit(1)
+        )
+        existing_id = hit.scalar_one_or_none()
+        if existing_id is not None:
+            response.status_code = status.HTTP_200_OK
+            return await get_playlist_with_tracks(session, existing_id)
+
     try:
         playlist = await generate_playlist(
             session=session,
@@ -43,8 +71,9 @@ async def create_playlist(
             params=body.params,
             max_tracks=body.max_tracks,
         )
-        # Record which API key created this playlist.
-        playlist.created_by = hash_key(_key)
+        # Record which API key created this playlist + the daily cache key.
+        playlist.created_by = key_hash
+        playlist.cache_key = cache_key
         await session.flush()
         # Reload with tracks for response
         detail = await get_playlist_with_tracks(session, playlist.id)
