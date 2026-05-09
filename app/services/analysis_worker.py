@@ -1316,6 +1316,11 @@ def _get_clap_feature_extractor():
         torch_stub = types.ModuleType("torch")
         torch_stub.__spec__ = importlib.machinery.ModuleSpec("torch", loader=None)
         torch_stub.__version__ = "0.0.0+grooveiq-stub"
+        # scipy.array_api_compat / sklearn / lightgbm probe ``torch.Tensor``
+        # via ``issubclass`` to detect torch arrays. Provide a sentinel class
+        # so the probe returns False (correct: torch isn't really there)
+        # instead of crashing with AttributeError.
+        torch_stub.Tensor = type("Tensor", (), {})
         sys.modules["torch"] = torch_stub
 
     from transformers.models.clap.feature_extraction_clap import ClapFeatureExtractor
