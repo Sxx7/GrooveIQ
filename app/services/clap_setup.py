@@ -24,9 +24,9 @@ import asyncio
 import logging
 import os
 import tempfile
-import urllib.error
-import urllib.request
 from pathlib import Path
+
+import httpx
 
 from app.core.config import settings
 
@@ -68,21 +68,22 @@ def _download_one(url: str, dest: Path, min_size: int, label: str) -> None:
     tmp = Path(tmp_path)
 
     try:
-        # 30s connect/read timeout; HF is fast but we don't want to hang
-        # startup forever if the network is wedged.
-        req = urllib.request.Request(url, headers={"User-Agent": "grooveiq/clap-setup"})
-        # URL is gated to https:// at the top of this function, so urllib's
-        # file:// scheme can never be reached by a misconfigured setting.
-        with urllib.request.urlopen(req, timeout=30) as resp:  # nosemgrep: python.lang.security.audit.dynamic-urllib-use-detected.dynamic-urllib-use-detected
+        # httpx (already a project dep) only speaks http/https — file:// is
+        # not reachable, which sidesteps the urllib.urlopen surface area.
+        # Long timeout for large model files; HF is fast but a 250 MB read
+        # over a slow link can plausibly take a couple of minutes.
+        timeout = httpx.Timeout(connect=30.0, read=300.0, write=30.0, pool=30.0)
+        headers = {"User-Agent": "grooveiq/clap-setup"}
+        with (
+            httpx.Client(follow_redirects=True, timeout=timeout, headers=headers) as client,
+            client.stream("GET", url) as resp,
+        ):
+            resp.raise_for_status()
             total = int(resp.headers.get("Content-Length", "0"))
             written = 0
-            chunk = 1024 * 256  # 256 KiB
             next_log = 50 * 1024 * 1024  # log every 50 MB
             with tmp.open("wb") as f:
-                while True:
-                    buf = resp.read(chunk)
-                    if not buf:
-                        break
+                for buf in resp.iter_bytes(chunk_size=1024 * 256):
                     f.write(buf)
                     written += len(buf)
                     if written >= next_log:
@@ -143,7 +144,7 @@ def _ensure_clap_models_sync() -> None:
     for label, dest, url, min_size in missing:
         try:
             _download_one(url, dest, min_size, label)
-        except (urllib.error.URLError, OSError, RuntimeError, ValueError) as e:
+        except (httpx.HTTPError, OSError, RuntimeError, ValueError) as e:
             logger.warning(
                 "CLAP setup: failed to download %s from %s: %s — text strategy will return 503 until this resolves",
                 label,

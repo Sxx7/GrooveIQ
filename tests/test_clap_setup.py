@@ -7,29 +7,31 @@ download path with a mocked HTTP fetch — we don't pull 400 MB in CI.
 
 from __future__ import annotations
 
-from io import BytesIO
-from unittest.mock import patch
+from contextlib import contextmanager
+from unittest.mock import MagicMock, patch
 
 import pytest
 
 from app.services import clap_setup
 
 
-class _FakeResponse:
-    """Minimal ``urlopen`` return value: streams a fixed payload then EOFs."""
+@contextmanager
+def _mock_httpx_stream(payload: bytes):
+    """Patch ``httpx.Client`` so the streaming GET returns ``payload`` once."""
+    fake_resp = MagicMock()
+    fake_resp.headers = {"Content-Length": str(len(payload))}
+    fake_resp.raise_for_status = MagicMock()
+    fake_resp.iter_bytes = MagicMock(return_value=iter([payload]))
+    fake_resp.__enter__ = MagicMock(return_value=fake_resp)
+    fake_resp.__exit__ = MagicMock(return_value=False)
 
-    def __init__(self, payload: bytes, content_length: int | None = None):
-        self._buf = BytesIO(payload)
-        self.headers = {"Content-Length": str(content_length if content_length is not None else len(payload))}
+    fake_client = MagicMock()
+    fake_client.stream = MagicMock(return_value=fake_resp)
+    fake_client.__enter__ = MagicMock(return_value=fake_client)
+    fake_client.__exit__ = MagicMock(return_value=False)
 
-    def read(self, n: int = -1) -> bytes:
-        return self._buf.read(n)
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *_):
-        self._buf.close()
+    with patch.object(clap_setup.httpx, "Client", return_value=fake_client):
+        yield fake_client
 
 
 class TestEnsureClapModelsSync:
@@ -116,7 +118,7 @@ class TestDownloadOne:
         dest = tmp_path / "clap_text.onnx"
         payload = b"x" * (clap_setup._MIN_SIZES["text"] + 1024)
 
-        with patch.object(clap_setup.urllib.request, "urlopen", return_value=_FakeResponse(payload)):
+        with _mock_httpx_stream(payload):
             clap_setup._download_one("https://example.invalid/text.onnx", dest, clap_setup._MIN_SIZES["text"], "text")
 
         assert dest.is_file()
@@ -142,10 +144,7 @@ class TestDownloadOne:
         # Payload smaller than min size — likely an HTML error page, not a model.
         payload = b"<html>404</html>"
 
-        with (
-            patch.object(clap_setup.urllib.request, "urlopen", return_value=_FakeResponse(payload)),
-            pytest.raises(RuntimeError, match="too small"),
-        ):
+        with _mock_httpx_stream(payload), pytest.raises(RuntimeError, match="too small"):
             clap_setup._download_one("https://example.invalid/text.onnx", dest, clap_setup._MIN_SIZES["text"], "text")
 
         assert not dest.exists()
