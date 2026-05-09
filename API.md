@@ -1072,6 +1072,35 @@ curl -X POST http://localhost:8000/v1/playlists \
   }'
 ```
 
+#### Daily idempotency (issue #89)
+
+The endpoint is idempotent within a UTC day: same caller + same body parameters
+returns the existing playlist instead of generating a duplicate. The cache key
+is `sha256(api_key_hash | strategy | seed_track_id | params | max_tracks | UTC-day)`.
+`name` is intentionally excluded — clients can vary the title without busting
+the cache.
+
+| Status | Meaning |
+|--------|---------|
+| `201 Created` | Freshly generated playlist (cache miss or first call of the day) |
+| `200 OK` | Cache hit — same `id` and `tracks[]` as the earlier call today |
+
+| Query param | Default | Effect |
+|-------------|---------|--------|
+| `refresh` | `false` | Set to `true` to bypass the cache and force regeneration (always returns `201`) |
+
+```bash
+# Force a fresh generation even if a cached one exists for today
+curl -X POST "http://localhost:8000/v1/playlists?refresh=true" \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{ "name": "Late Night Drive", "strategy": "text",
+        "params": {"prompt": "moody synthwave neon highway"}, "max_tracks": 25 }'
+```
+
+Different `params`, different `max_tracks`, different `seed_track_id`, a new
+UTC day, or a different API key all produce a fresh playlist (`201`).
+
 #### Strategies
 
 | Strategy | Required | Description |
