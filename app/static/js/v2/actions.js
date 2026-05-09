@@ -144,12 +144,12 @@
                     backfillClap.refresh({ lastRun: 'CLAP disabled — set CLAP_ENABLED=true to enable' });
                     return;
                 }
-                const pending = (stats.total || 0) - (stats.with_clap || 0);
+                const pending = (stats.total_tracks || 0) - (stats.with_clap_embedding || 0);
                 const cov = stats.coverage != null ? Math.round(stats.coverage * 100) : null;
                 backfillClap.refresh({
                     lastRun: pending > 0
                         ? pending.toLocaleString() + ' tracks pending · coverage ' + (cov != null ? cov + '%' : '—')
-                        : 'all tracks covered (' + (stats.with_clap || 0).toLocaleString() + ')',
+                        : 'all tracks covered (' + (stats.with_clap_embedding || 0).toLocaleString() + ')',
                 });
             }).catch(() => { /* leave blank */ });
         } else {
