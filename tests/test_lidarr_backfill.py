@@ -1375,7 +1375,7 @@ async def test_fetch_lidarr_totals_cached_single_flights_concurrent_calls(monkey
             return {"totalRecords": self._total}
 
     class _SlowHttpClient:
-        async def get(self, url, params=None):
+        async def get(self, url, params=None, timeout=None):  # noqa: ASYNC109 — mirrors httpx.AsyncClient.get
             nonlocal missing_calls, cutoff_calls
             if "missing" in url:
                 missing_calls += 1
@@ -1397,7 +1397,7 @@ async def test_fetch_lidarr_totals_cached_single_flights_concurrent_calls(monkey
     monkeypatch.setattr(lbf.settings, "LIDARR_URL", "http://lidarr.test")
     monkeypatch.setattr(lbf.settings, "LIDARR_API_KEY", "test-key")
     # Cold the cache so all callers must fetch.
-    lbf._lidarr_totals_cache = (0.0, None, None)
+    lbf._lidarr_totals_cache = (0.0, lbf.LidarrTotals(None, None, True))
 
     cfg = get_defaults()
 
@@ -1413,4 +1413,96 @@ async def test_fetch_lidarr_totals_cached_single_flights_concurrent_calls(monkey
 
     assert missing_calls == 1, f"expected 1 /missing call, got {missing_calls}"
     assert cutoff_calls == 1, f"expected 1 /cutoff call, got {cutoff_calls}"
-    assert all(r == (7, 3) for r in results)
+    assert all(r.missing == 7 and r.cutoff == 3 and r.reachable for r in results)
+
+
+@pytest.mark.asyncio
+async def test_fetch_lidarr_totals_cached_connect_error_marks_unreachable(monkeypatch):
+    """Issue #97: a connect error must mark reachable=False and return fast.
+
+    Previously the dashboard's /v1/lidarr-backfill/stats endpoint hung
+    for ~60 s when Lidarr was unreachable, blanking the Active Jobs tile.
+    Now upstream errors are caught with a per-call timeout and surfaced
+    via `reachable=False`.
+    """
+    import asyncio as _asyncio
+    import time as _time
+
+    import httpx
+
+    class _ErroringHttpClient:
+        async def get(self, url, params=None, timeout=None):  # noqa: ASYNC109 — mirrors httpx.AsyncClient.get
+            raise httpx.ConnectError("connection refused")
+
+    class _FakeLidarrClient:
+        def __init__(self, *a, **kw):
+            self._client = _ErroringHttpClient()
+            self._base_url = "http://lidarr.test"
+
+        async def close(self):
+            pass
+
+    monkeypatch.setattr(lbf, "LidarrClient", _FakeLidarrClient)
+    monkeypatch.setattr(lbf.settings, "LIDARR_URL", "http://lidarr.test")
+    monkeypatch.setattr(lbf.settings, "LIDARR_API_KEY", "test-key")
+    lbf._lidarr_totals_cache = (0.0, lbf.LidarrTotals(None, None, True))
+
+    cfg = get_defaults()
+    started = _time.monotonic()
+    result = await _asyncio.wait_for(lbf._fetch_lidarr_totals_cached(cfg), timeout=5.0)
+    elapsed = _time.monotonic() - started
+
+    assert result.missing is None
+    assert result.cutoff is None
+    assert result.reachable is False
+    # Two connect-errors raised synchronously by the fake; should return
+    # well under the per-call timeout, let alone the 60 s the bug exhibited.
+    assert elapsed < 1.0, f"unexpectedly slow: {elapsed:.2f}s"
+
+
+@pytest.mark.asyncio
+async def test_fetch_lidarr_totals_cached_lock_acquire_timeout(monkeypatch):
+    """A wedged single-flight leader must not block followers indefinitely.
+
+    Followers that can't acquire the lock within
+    `_LIDARR_LOCK_ACQUIRE_TIMEOUT_S` return the last cached values plus
+    `reachable=False` instead of piling up.
+    """
+    import asyncio as _asyncio
+
+    # Pre-populate cache with a "stale" entry that's older than the TTL
+    # so callers attempt a refresh.
+    cached = lbf.LidarrTotals(missing=42, cutoff=7, reachable=True)
+    lbf._lidarr_totals_cache = (-9999.0, cached)
+
+    monkeypatch.setattr(lbf, "_LIDARR_LOCK_ACQUIRE_TIMEOUT_S", 0.1)
+    monkeypatch.setattr(lbf.settings, "LIDARR_URL", "http://lidarr.test")
+    monkeypatch.setattr(lbf.settings, "LIDARR_API_KEY", "test-key")
+    # Re-bind the lock to this test's event loop (pytest-asyncio runs each
+    # test in a fresh loop; the module-level Lock keeps a reference to the
+    # first loop it ever saw).
+    monkeypatch.setattr(lbf, "_lidarr_totals_lock", _asyncio.Lock())
+
+    # Hold the lock from another task so the follower can't acquire it.
+    holder_release = _asyncio.Event()
+
+    async def _hold_lock():
+        async with lbf._lidarr_totals_lock:
+            await holder_release.wait()
+
+    holder = _asyncio.create_task(_hold_lock())
+    # Yield once so the holder starts and acquires the lock.
+    await _asyncio.sleep(0)
+
+    cfg = get_defaults()
+    try:
+        result = await _asyncio.wait_for(lbf._fetch_lidarr_totals_cached(cfg), timeout=2.0)
+    finally:
+        holder_release.set()
+        await holder
+
+    # Returns last cached values but flips reachable to False so the UI
+    # can render a degraded state.
+    assert result.missing == 42
+    assert result.cutoff == 7
+    assert result.reachable is False
