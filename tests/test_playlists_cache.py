@@ -273,15 +273,11 @@ class TestPlaylistDailyCache:
         assert resp.status_code == 503, resp.text
         assert "CLAP_ENABLED" in resp.json()["detail"]
 
-    async def test_text_with_empty_prompt_still_returns_400(self, client: AsyncClient, monkeypatch):
-        """Bad user input (empty prompt) must remain 400 — only operational
-        failures convert to 503."""
+    async def test_text_with_empty_prompt_returns_422_not_503(self, client: AsyncClient):
+        """Bad user input (empty prompt) is caught by Pydantic schema validation
+        and returns 422. The point of this test is to lock in that the new 503
+        mapping does NOT swallow legitimate input errors."""
         await _seed_tracks()
-        from app.core.config import settings as core_settings
-
-        # Pretend CLAP is on so the empty-prompt check is the failing
-        # gate (not the upstream CLAP_ENABLED check).
-        monkeypatch.setattr(core_settings, "CLAP_ENABLED", True)
 
         resp = await client.post(
             "/v1/playlists",
@@ -292,8 +288,9 @@ class TestPlaylistDailyCache:
                 "max_tracks": 5,
             },
         )
-        assert resp.status_code == 400, resp.text
-        assert "prompt" in resp.json()["detail"].lower()
+        assert resp.status_code == 422, resp.text
+        # Pydantic's error envelope contains the message in the nested detail list.
+        assert "prompt" in resp.text.lower()
 
     async def test_pre_migration_rows_are_not_returned(self, client: AsyncClient):
         """A playlist with cache_key NULL (pre-migration) must not be served as a hit
