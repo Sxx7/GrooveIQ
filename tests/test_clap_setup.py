@@ -125,6 +125,18 @@ class TestDownloadOne:
         leftovers = [p for p in tmp_path.iterdir() if p.name.startswith(".clap_text")]
         assert leftovers == []
 
+    def test_non_https_url_refused(self, tmp_path):
+        dest = tmp_path / "clap_text.onnx"
+        # file://, http://, ftp://, etc. must all be refused before we hit urlopen.
+        for bad in (
+            "file:///etc/passwd",
+            "http://example.invalid/text.onnx",
+            "ftp://example.invalid/text.onnx",
+        ):
+            with pytest.raises(ValueError, match="non-https"):
+                clap_setup._download_one(bad, dest, clap_setup._MIN_SIZES["text"], "text")
+        assert not dest.exists()
+
     def test_too_small_response_rejected(self, tmp_path):
         dest = tmp_path / "clap_text.onnx"
         # Payload smaller than min size — likely an HTML error page, not a model.
