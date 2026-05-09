@@ -52,6 +52,17 @@ async def lifespan(app: FastAPI):
     logger.info("GrooveIQ starting up...")
     await init_db()
 
+    # Auto-install CLAP ONNX models if enabled and missing (issue #91).
+    # Non-blocking conceptually: download failures log a warning but don't
+    # crash startup; the text-strategy playlist endpoint will surface a
+    # clean 503 if the files are still absent at request time.
+    try:
+        from app.services.clap_setup import ensure_clap_models
+
+        await ensure_clap_models()
+    except Exception as e:
+        logger.warning(f"CLAP model auto-install failed on startup: {e}")
+
     # Load algorithm config from DB (seeds defaults on first run).
     try:
         from app.services.algorithm_config import load_active_config
