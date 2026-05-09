@@ -1110,7 +1110,7 @@ UTC day, or a different API key all produce a fresh playlist (`201`).
 | `energy_curve` | `params.curve` | Match target energy profile (`ramp_up`, `cool_down`, `ramp_up_cool_down`, `steady_high`, `steady_low`) |
 | `key_compatible` | `seed_track_id` | Camelot wheel harmonic chaining |
 | `path` | `seed_track_id` + `params.target_track_id` | **Song Path** — sonic bridge between two tracks. Slerp-interpolates between their 64-dim audio embeddings and picks the nearest unused library track at each waypoint. Both IDs must exist in `track_features` and have an `embedding`. |
-| `text` | `params.prompt` | **CLAP Text Prompt** — encodes the prompt via the CLAP text tower and ranks tracks by cosine similarity in joint embedding space. Requires `CLAP_ENABLED=true` and at least some tracks with `clap_embedding` populated. Fails with `503` otherwise. |
+| `text` | `params.prompt` | **CLAP Text Prompt** — encodes the prompt via the CLAP text tower and ranks tracks by cosine similarity in joint embedding space. Requires `CLAP_ENABLED=true`; ONNX weights are auto-downloaded on first server start (~395 MB, see [README § Optional integrations](README.md#optional-integrations)). Returns `503` until at least some tracks have `clap_embedding` populated — the audio backfill runs as part of the next analysis tick. |
 
 **Example — Song Path**
 
