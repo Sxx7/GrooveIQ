@@ -9,10 +9,24 @@
     let openPopover = null;
     let outsideHandler = null;
     let escHandler = null;
-    let renderToken = 0;
     let sseUnsubs = [];
 
     const POLL_MS = 5000;
+    // Per-task client timeout: if any one endpoint takes longer than this,
+    // the slot keeps its previous value rather than blocking the whole pill.
+    // Server-side endpoints all aim for sub-200 ms; 4 s leaves headroom for
+    // a degraded backend without flickering during normal hiccups.
+    const TASK_TIMEOUT_MS = 4000;
+
+    // Persistent per-slot state across poll cycles. A new poll's responses
+    // overwrite their slot; if a poll's task times out without responding,
+    // the slot retains its previous value so a single slow endpoint can't
+    // blank the tile (issue #97 dashboard-resilience follow-up).
+    const slotState = { pipeline: null, scan: null, downloads: null, backfill: null };
+    // Per-slot inflight token: if a newer poll has issued a request for the
+    // same slot, drop the older response when it eventually arrives so it
+    // can't overwrite fresher state.
+    const slotInflight = { pipeline: 0, scan: 0, downloads: 0, backfill: 0 };
 
     function summarizeJobs(jobs) {
         if (!jobs.length) return { title: 'idle', sub: 'no active jobs' };
@@ -25,26 +39,61 @@
         };
     }
 
-    async function poll() {
-        const token = ++renderToken;
-        const jobs = [];
+    function commitSnapshot() {
+        const jobs = [
+            slotState.pipeline,
+            slotState.scan,
+            slotState.downloads,
+            slotState.backfill,
+        ].filter(Boolean);
+        lastSnap = { jobs, at: Date.now() };
+        renderPill();
+        if (openPopover) renderPopover();
+    }
+
+    function runTask(key, fn) {
+        const myId = ++slotInflight[key];
+        let settled = false;
+        const timer = setTimeout(() => {
+            // Timeout: leave slotState[key] untouched. The previous value
+            // (last successful response) keeps showing rather than the slot
+            // blinking to empty during a transient stall.
+            if (slotInflight[key] === myId) settled = true;
+        }, TASK_TIMEOUT_MS);
+        Promise.resolve().then(fn).then(
+            (job) => {
+                if (settled) return;
+                if (slotInflight[key] !== myId) return;  // a newer poll won the race
+                settled = true;
+                clearTimeout(timer);
+                slotState[key] = job || null;
+                commitSnapshot();
+            },
+            () => {
+                if (settled) return;
+                if (slotInflight[key] !== myId) return;
+                settled = true;
+                clearTimeout(timer);
+                slotState[key] = null;
+                commitSnapshot();
+            },
+        );
+    }
+
+    function poll() {
         const apiKey = GIQ.state.apiKey;
         if (!apiKey) {
-            lastSnap = { jobs: [], at: Date.now() };
-            renderPill();
+            slotState.pipeline = null;
+            slotState.scan = null;
+            slotState.downloads = null;
+            slotState.backfill = null;
+            commitSnapshot();
             return;
         }
 
-        const tasks = [
-            GIQ.api.get('/v1/pipeline/status?limit=1').catch(() => null),
-            GIQ.api.get('/v1/stats').catch(() => null),
-            GIQ.api.get('/v1/downloads/queue?recent_limit=0&in_flight_limit=50').catch(() => null),
-            GIQ.api.get('/v1/lidarr-backfill/stats').catch(() => null),
-        ];
-        const [pipeline, stats, dlq, lbf] = await Promise.all(tasks);
-        if (token !== renderToken) return;
-
-        if (pipeline && pipeline.current && pipeline.current.status === 'running') {
+        runTask('pipeline', async () => {
+            const pipeline = await GIQ.api.get('/v1/pipeline/status?limit=1');
+            if (!pipeline || !pipeline.current || pipeline.current.status !== 'running') return null;
             const r = pipeline.current;
             const steps = r.steps || [];
             const total = steps.length || 10;
@@ -57,10 +106,8 @@
             const stepIdx = runningStep
                 ? steps.findIndex(s => s.name === runningStep.name) + 1
                 : completed + 1;
-            const stepLabel = runningStep
-                ? (runningStep.name || 'running')
-                : 'preparing';
-            jobs.push({
+            const stepLabel = runningStep ? (runningStep.name || 'running') : 'preparing';
+            return {
                 key: 'pipeline',
                 icon: '◉',
                 label: 'Pipeline run',
@@ -68,14 +115,16 @@
                 shortLabel: 'pipeline',
                 live: true,
                 href: '#/monitor/pipeline',
-            });
-        }
+            };
+        });
 
-        if (stats && stats.latest_scan && stats.latest_scan.status === 'running') {
+        runTask('scan', async () => {
+            const stats = await GIQ.api.get('/v1/stats');
+            if (!stats || !stats.latest_scan || stats.latest_scan.status !== 'running') return null;
             const s = stats.latest_scan;
             const pct = (s.percent_complete || 0).toFixed(0);
             const proc = (s.files_analyzed || 0) + (s.files_skipped || 0) + (s.files_failed || 0);
-            jobs.push({
+            return {
                 key: 'scan',
                 icon: '⌕',
                 label: 'Library scan',
@@ -83,12 +132,14 @@
                 shortLabel: 'scan',
                 live: true,
                 href: '#/monitor/system-health',
-            });
-        }
+            };
+        });
 
-        const inFlight = dlq && Array.isArray(dlq.in_flight) ? dlq.in_flight.length : 0;
-        if (inFlight > 0) {
-            jobs.push({
+        runTask('downloads', async () => {
+            const dlq = await GIQ.api.get('/v1/downloads/queue?recent_limit=0&in_flight_limit=50');
+            const inFlight = dlq && Array.isArray(dlq.in_flight) ? dlq.in_flight.length : 0;
+            if (inFlight === 0) return null;
+            return {
                 key: 'downloads',
                 icon: '↓',
                 label: inFlight + (inFlight === 1 ? ' download' : ' downloads'),
@@ -96,11 +147,13 @@
                 shortLabel: inFlight + ' dl',
                 live: false,
                 href: '#/monitor/downloads',
-            });
-        }
+            };
+        });
 
-        if (lbf && lbf.enabled && lbf.tick_in_progress) {
-            jobs.push({
+        runTask('backfill', async () => {
+            const lbf = await GIQ.api.get('/v1/lidarr-backfill/stats');
+            if (!lbf || !lbf.enabled || !lbf.tick_in_progress) return null;
+            return {
                 key: 'backfill',
                 icon: '⚡',
                 label: 'Lidarr backfill',
@@ -108,12 +161,8 @@
                 shortLabel: 'backfill',
                 live: true,
                 href: '#/monitor/lidarr-backfill',
-            });
-        }
-
-        lastSnap = { jobs, at: Date.now() };
-        renderPill();
-        if (openPopover) renderPopover();
+            };
+        });
     }
 
     function renderPill() {
