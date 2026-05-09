@@ -47,6 +47,22 @@ onnxruntime>=1.25.1
 # CLAP playlists (POST /v1/playlists strategy=text) silently 503 without it.
 tokenizers>=0.15
 
+# HuggingFace transformers — used in numpy mode for the CLAP audio feature
+# extractor (mel-spectrogram + fusion truncation). The Xenova ONNX export
+# expects pre-computed mel features, not raw waveforms.
+#
+# Pinned to >=5.0 to dodge CVE-2026-1839 (`Trainer._load_rng_state` calls
+# `torch.load` without `weights_only=True`). We don't use ``Trainer`` so
+# the vuln doesn't affect our usage, but pip-audit gates CI on it.
+#
+# `feature_extraction_clap.py` does ``import torch`` at module level, but
+# only *uses* torch in ``_random_mel_fusion`` (audio > max_length_s branch).
+# We pre-clip to exactly max_length_s in analysis_worker._compute_clap_embedding,
+# so the numpy-only path is taken. A ~5-line stub of the ``torch`` module is
+# installed before the import (when torch isn't already available) —
+# saves ~700 MB vs. installing real torch.
+transformers>=5.0,<6
+
 # Candidate generation (Phase 4)
 faiss-cpu>=1.13.2
 implicit>=0.7.2

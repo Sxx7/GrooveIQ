@@ -41,6 +41,9 @@ _TEST_ENV = {
     # dedicated test_user_id.py module monkeypatches USER_ID_PATTERN to
     # the production default to verify enforcement under real config.
     "USER_ID_PATTERN": r"^[A-Za-z0-9_]+$",
+    # No API keys / auth in unit tests so importing settings doesn't
+    # hit the SystemExit guard in app/core/config.py.
+    "DISABLE_AUTH": "true",
 }
 
 for _k, _v in _TEST_ENV.items():
