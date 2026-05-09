@@ -171,6 +171,7 @@ All settings via environment variables or `.env` file. See [`.env.example`](.env
 | Charts | `CHARTS_ENABLED=true`, `LASTFM_API_KEY` |
 | News feed | `NEWS_ENABLED=true` (optional: `NEWS_INTERVAL_MINUTES`, `NEWS_DEFAULT_SUBREDDITS`) |
 | AcousticBrainz lookup | `AB_LOOKUP_URL`, `AB_LOOKUP_ENABLED=true` (separate container) |
+| CLAP text-to-music search | `CLAP_ENABLED=true` (~395 MB ONNX models auto-download on first start; persisted in the `grooveiq_data` volume) |
 
 ## Connecting your music app
 

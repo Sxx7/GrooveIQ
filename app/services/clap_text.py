@@ -97,7 +97,6 @@ def _load() -> None:
         raise RuntimeError("CLAP text ONNX model has no inputs")
 
     with _lock:
-        global _session, _tokenizer, _input_name
         _session = session
         _tokenizer = tokenizer
         _input_name = inputs[0].name
