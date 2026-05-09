@@ -30,6 +30,17 @@ from app.models.db import Playlist, PlaylistTrack, TrackFeatures
 logger = logging.getLogger(__name__)
 
 
+class PlaylistServiceUnavailableError(Exception):
+    """A strategy could not run for a transient/operational reason.
+
+    Distinguishes "the request was fine but the service isn't ready" (CLAP
+    disabled, no embeddings backfilled yet, model failed to load) from "the
+    user supplied bad params" (missing prompt, unknown curve, etc.). The
+    route maps this to HTTP 503; plain ``ValueError`` continues to map to
+    HTTP 400. See issue #91 / #89-followup.
+    """
+
+
 def utc_day_bucket(now: datetime | None = None) -> str:
     """Current UTC day as ``YYYY-MM-DD`` — the time bucket for the playlist cache."""
     return (now or datetime.now(UTC)).strftime("%Y-%m-%d")
@@ -322,7 +333,7 @@ def _generate_text(
     from app.core.config import settings
 
     if not settings.CLAP_ENABLED:
-        raise ValueError("'text' strategy requires CLAP_ENABLED=true")
+        raise PlaylistServiceUnavailableError("'text' strategy requires CLAP_ENABLED=true")
     if not prompt or not prompt.strip():
         raise ValueError("params.prompt is required for 'text' strategy")
 
@@ -331,7 +342,7 @@ def _generate_text(
     try:
         query_vec = clap_text.encode_text(prompt)
     except Exception as e:
-        raise ValueError(f"CLAP text encoding failed: {e}") from e
+        raise PlaylistServiceUnavailableError(f"CLAP text encoding failed: {e}") from e
 
     scored: list[tuple[float, str]] = []
     for t in tracks:
@@ -350,9 +361,10 @@ def _generate_text(
             continue
 
     if not scored:
-        raise ValueError(
-            "No tracks have CLAP embeddings yet. Populate them by rescanning "
-            "with CLAP_ENABLED=true, then rebuild the index."
+        raise PlaylistServiceUnavailableError(
+            "No tracks have CLAP embeddings yet. The CLAP audio backfill is still "
+            "running — poll GET /v1/tracks/clap/stats for coverage, or trigger "
+            "POST /v1/tracks/clap/backfill (admin) if it has not started."
         )
 
     scored.sort(key=lambda x: x[0], reverse=True)

@@ -15,6 +15,7 @@ from app.models.schemas import (
     PlaylistResponse,
 )
 from app.services.playlist_service import (
+    PlaylistServiceUnavailableError,
     compute_cache_key,
     delete_playlist,
     generate_playlist,
@@ -78,8 +79,15 @@ async def create_playlist(
         # Reload with tracks for response
         detail = await get_playlist_with_tracks(session, playlist.id)
         return detail
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid playlist parameters.")
+    except PlaylistServiceUnavailableError as e:
+        # Strategy-side reasons that aren't the caller's fault — CLAP not
+        # installed, audio backfill still running, model failed to load, etc.
+        # Use 503 so clients can retry / fall back instead of treating it
+        # like bad input. See issue #91 follow-up.
+        raise HTTPException(status_code=503, detail=str(e))
+    except ValueError as e:
+        # Genuine bad input (missing prompt, unknown energy curve, etc.).
+        raise HTTPException(status_code=400, detail=str(e) or "Invalid playlist parameters.")
 
 
 @router.get(
