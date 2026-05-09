@@ -34,8 +34,8 @@ logger = logging.getLogger(__name__)
 _log_queue: asyncio.Queue[ApiCallLog] | None = None
 _writer_task: asyncio.Task | None = None
 _FLUSH_INTERVAL_SECONDS = 1.0
-_MAX_QUEUE_SIZE = 5000   # If the flusher falls this far behind, drop new rows.
-_MAX_BATCH_SIZE = 500    # Bound the per-flush transaction.
+_MAX_QUEUE_SIZE = 5000  # If the flusher falls this far behind, drop new rows.
+_MAX_BATCH_SIZE = 500  # Bound the per-flush transaction.
 
 
 # Substrings (case-insensitive) of JSON keys whose values must never be persisted.
@@ -294,9 +294,7 @@ async def _flush_batch() -> None:
             session.add_all(rows)
             await session.commit()
     except Exception as e:
-        logger.warning(
-            "api_call_log batch flush failed (%d rows dropped): %s", len(rows), e
-        )
+        logger.warning("api_call_log batch flush failed (%d rows dropped): %s", len(rows), e)
 
 
 async def write_log(

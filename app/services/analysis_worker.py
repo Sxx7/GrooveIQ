@@ -1298,19 +1298,21 @@ def _get_clap_feature_extractor():
 
     HuggingFace's ``feature_extraction_clap`` does ``import torch`` at
     module level (only used by ``_random_mel_fusion`` in fusion mode,
-    which we never trigger). To keep ``transformers`` from pulling in a
-    ~700 MB torch dep, we install a no-op stub for the ``torch`` module
-    before the first import.
+    which we never trigger). If torch is already importable — e.g. on the
+    test runner where ``implicit`` and other ML deps pull it in — we use
+    the real module. In the production image (no torch in requirements)
+    we install a tiny no-op stub so the import succeeds; saves ~700 MB.
     """
     global _clap_feature_extractor
     if _clap_feature_extractor is not None:
         return _clap_feature_extractor
 
     import importlib.machinery
+    import importlib.util
     import sys
     import types
 
-    if "torch" not in sys.modules:
+    if "torch" not in sys.modules and importlib.util.find_spec("torch") is None:
         torch_stub = types.ModuleType("torch")
         torch_stub.__spec__ = importlib.machinery.ModuleSpec("torch", loader=None)
         torch_stub.__version__ = "0.0.0+grooveiq-stub"
