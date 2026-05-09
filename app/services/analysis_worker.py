@@ -587,15 +587,49 @@ def _detect_onnx_backend() -> str:
     return "cpu"
 
 
+def _build_onnx_providers(cache_dir: str) -> list:
+    """Build the ONNX Runtime provider chain (OpenVINO → CUDA → CPU).
+
+    ``cache_dir`` is used as the OpenVINO compile-cache location; pass a
+    per-model directory if you want isolated caches.
+    """
+    backend = _detect_onnx_backend()
+    providers: list = []
+    if backend == "openvino":
+        providers.append(
+            (
+                "OpenVINOExecutionProvider",
+                {
+                    "device_type": "GPU",
+                    "precision": "FP16",
+                    "cache_dir": cache_dir,
+                },
+            )
+        )
+    elif backend == "cuda":
+        providers.append(
+            (
+                "CUDAExecutionProvider",
+                {
+                    "device_id": 0,
+                    "arena_extend_strategy": "kSameAsRequested",
+                    "gpu_mem_limit": 512 * 1024 * 1024,
+                },
+            )
+        )
+    providers.append("CPUExecutionProvider")
+    return providers
+
+
 def _init_clap_audio_session() -> object | None:
     """
     Load the CLAP audio tower ONNX session, if CLAP is enabled and the model
     file exists. Returns an ``onnxruntime.InferenceSession`` or ``None``.
 
-    Unlike the EffNet models, CLAP models are **not auto-downloaded** — they
-    have to be exported by the operator (LAION-CLAP's export_onnx.py) and
-    dropped into ``CLAP_MODEL_DIR``. We fail soft here so workers still boot
-    for non-CLAP deployments.
+    Auto-downloaded by ``app/services/clap_setup.py`` on first start (issue
+    #91). Operators can pre-place the file in ``CLAP_MODEL_DIR`` for
+    air-gapped installs. We fail soft here so workers still boot when CLAP
+    is disabled or download failed.
     """
     from app.core.config import settings
 
@@ -621,13 +655,19 @@ def _init_clap_audio_session() -> object | None:
     opts.intra_op_num_threads = settings.ANALYSIS_ONNX_INTRA_THREADS
     opts.inter_op_num_threads = settings.ANALYSIS_ONNX_INTER_THREADS
 
+    providers = _build_onnx_providers(os.path.join(settings.CLAP_MODEL_DIR, "_ov_cache"))
+
     try:
         session = ort.InferenceSession(
             model_path,
             sess_options=opts,
-            providers=["CPUExecutionProvider"],
+            providers=providers,
         )
-        logger.info("CLAP audio encoder loaded: %s", os.path.basename(model_path))
+        logger.info(
+            "CLAP audio encoder loaded: %s, providers=%s",
+            os.path.basename(model_path),
+            session.get_providers(),
+        )
         return session
     except Exception as e:
         logger.warning("Failed to load CLAP audio model: %s", e)
@@ -646,7 +686,6 @@ def _init_onnx_sessions() -> dict:
         logger.warning("Some ONNX models missing — ML features may be incomplete")
 
     models_dir = _get_models_dir()
-    backend = _detect_onnx_backend()
 
     sess_opts = ort.SessionOptions()
     sess_opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
@@ -655,30 +694,8 @@ def _init_onnx_sessions() -> dict:
     sess_opts.intra_op_num_threads = settings.ANALYSIS_ONNX_INTRA_THREADS
     sess_opts.inter_op_num_threads = settings.ANALYSIS_ONNX_INTER_THREADS
 
-    providers: list = []
-    if backend == "openvino":
-        providers.append(
-            (
-                "OpenVINOExecutionProvider",
-                {
-                    "device_type": "GPU",
-                    "precision": "FP16",
-                    "cache_dir": os.path.join(models_dir, "_ov_cache"),
-                },
-            )
-        )
-    elif backend == "cuda":
-        providers.append(
-            (
-                "CUDAExecutionProvider",
-                {
-                    "device_id": 0,
-                    "arena_extend_strategy": "kSameAsRequested",
-                    "gpu_mem_limit": 512 * 1024 * 1024,
-                },
-            )
-        )
-    providers.append("CPUExecutionProvider")
+    providers = _build_onnx_providers(os.path.join(models_dir, "_ov_cache"))
+    backend = _detect_onnx_backend()
 
     sessions: dict = {}
     for filename in _ONNX_MODELS:
@@ -1262,6 +1279,60 @@ def _build_embedding(
 # ---------------------------------------------------------------------------
 
 
+# Per-process cache of the HF feature extractor. Lazily built on first use
+# inside the worker, then reused for the lifetime of the worker.
+_clap_feature_extractor = None
+
+
+def _get_clap_feature_extractor():
+    """Return a cached ``ClapFeatureExtractor`` configured for Xenova's
+    ``larger_clap_music_and_speech`` export.
+
+    Parameters are pinned to match the upstream ``preprocessor_config.json``
+    (truncation=rand_trunc, frequency_min=50, …) so we don't need network
+    access to ``from_pretrained`` at runtime.
+
+    The Xenova export expects a 4-D ``(batch, 1, 1001, 64)`` mel input —
+    not the 4-channel fusion stack used by ``clap-htsat-fused``. The
+    ``rand_trunc`` truncation produces this shape directly.
+
+    HuggingFace's ``feature_extraction_clap`` does ``import torch`` at
+    module level (only used by ``_random_mel_fusion`` in fusion mode,
+    which we never trigger). To keep ``transformers`` from pulling in a
+    ~700 MB torch dep, we install a no-op stub for the ``torch`` module
+    before the first import.
+    """
+    global _clap_feature_extractor
+    if _clap_feature_extractor is not None:
+        return _clap_feature_extractor
+
+    import importlib.machinery
+    import sys
+    import types
+
+    if "torch" not in sys.modules:
+        torch_stub = types.ModuleType("torch")
+        torch_stub.__spec__ = importlib.machinery.ModuleSpec("torch", loader=None)
+        torch_stub.__version__ = "0.0.0+grooveiq-stub"
+        sys.modules["torch"] = torch_stub
+
+    from transformers.models.clap.feature_extraction_clap import ClapFeatureExtractor
+
+    _clap_feature_extractor = ClapFeatureExtractor(
+        feature_size=64,
+        sampling_rate=48000,
+        hop_length=480,
+        max_length_s=10,
+        fft_window_size=1024,
+        padding_value=0.0,
+        frequency_min=50,
+        frequency_max=14000,
+        padding="repeatpad",
+        truncation="rand_trunc",
+    )
+    return _clap_feature_extractor
+
+
 def _compute_clap_embedding(
     audio: np.ndarray,
     sr: int,
@@ -1269,23 +1340,22 @@ def _compute_clap_embedding(
     es,
 ) -> np.ndarray | None:
     """
-    Encode the central clip of ``audio`` (loaded at 16 kHz for EffNet) into a
-    512-dim CLAP embedding. Returns an L2-normalised float32 vector, or None
-    on failure.
+    Encode ``audio`` into a 512-dim CLAP embedding. Returns an L2-normalised
+    float32 vector, or ``None`` on failure.
 
     Steps:
-      1. Slice the central ``CLAP_AUDIO_CLIP_SECONDS`` of audio.
-      2. Resample from 16 kHz → ``CLAP_AUDIO_SR`` (default 48 kHz) via
-         Essentia's Resample (no new dep).
-      3. Run through the CLAP audio encoder ONNX session.
-      4. L2-normalise.
-
-    The exact input layout (raw waveform vs mel-spectrogram) depends on how
-    the CLAP ONNX was exported. LAION-CLAP's ``export_onnx.py`` produces a
-    model that takes raw ``float32`` audio at 48 kHz, padded to exactly
-    ``CLAP_AUDIO_CLIP_SECONDS`` seconds. If your export differs, adapt the
-    pre-processing here — the model input/output shapes are logged on first
-    call for easy debugging.
+      1. Slice the central ``CLAP_AUDIO_CLIP_SECONDS`` of audio (bounded
+         CPU/memory; also makes the embedding deterministic — without
+         this, ``ClapFeatureExtractor`` random-crops longer audio).
+      2. Resample from the source sample rate (16 kHz upstream from the
+         EffNet pipeline) → ``CLAP_AUDIO_SR`` (default 48 kHz) via
+         Essentia's Resample.
+      3. Build the 4-D mel-spectrogram input ``(1, 1, 1001, 64)`` via
+         HF's ``ClapFeatureExtractor`` — Xenova's ONNX export expects
+         pre-computed log-mel features, not raw waveforms.
+      4. Run through the CLAP audio encoder ONNX session.
+      5. L2-normalise so the vector is comparable via dot-product to the
+         text embeddings stored in ``TrackFeatures.clap_embedding``.
     """
     from app.core.config import settings
 
@@ -1293,7 +1363,7 @@ def _compute_clap_embedding(
     target_sr = int(settings.CLAP_AUDIO_SR)
     target_len = int(clip_seconds * target_sr)
 
-    # 1. Central slice at the current sample rate.
+    # 1. Central slice at the source sample rate (bounds resample cost).
     src_clip_samples = int(clip_seconds * sr)
     if len(audio) > src_clip_samples:
         start = (len(audio) - src_clip_samples) // 2
@@ -1301,7 +1371,7 @@ def _compute_clap_embedding(
     else:
         clip = audio
 
-    # 2. Resample 16k → 48k (if needed).
+    # 2. Resample to the model's expected rate.
     if sr != target_sr:
         try:
             resample = es.Resample(inputSampleRate=sr, outputSampleRate=target_sr, quality=1)
@@ -1309,33 +1379,46 @@ def _compute_clap_embedding(
         except Exception as e:
             logger.debug("Resample to %d Hz failed, using raw: %s", target_sr, e)
 
-    # 3. Pad / truncate to exactly target_len samples (model expects fixed shape).
-    if len(clip) < target_len:
-        padded = np.zeros(target_len, dtype=np.float32)
-        padded[: len(clip)] = clip
-        clip = padded
-    else:
+    clip = np.asarray(clip, dtype=np.float32)
+
+    # Hard-cap to target_len samples so the extractor takes the deterministic
+    # pad path (audio == max_length, no random crop). Resample rounding can
+    # produce ±1 sample of slack so we always truncate.
+    if len(clip) > target_len:
         clip = clip[:target_len]
 
-    # 4. Run model. Handle both (1, N) and (N,) input layouts.
+    # 3. Mel-spectrogram features. The extractor pads (via repeat-pad) to
+    #    max_length_s, computes a log-mel spectrogram, and returns shape
+    #    ``(batch=1, channels=1, height=1001, width=64)``.
+    try:
+        fe = _get_clap_feature_extractor()
+        features = fe(
+            clip,
+            sampling_rate=target_sr,
+            return_tensors="np",
+        )
+    except Exception as e:
+        logger.debug("CLAP feature extraction failed: %s", e)
+        return None
+
+    input_features = np.asarray(features["input_features"], dtype=np.float32)
+
+    # 4. Run model.
     inputs = clap_session.get_inputs()
     if not inputs:
         return None
-    input_meta = inputs[0]
-    input_name = input_meta.name
-
-    batched = clip.astype(np.float32).reshape(1, -1)
+    input_name = inputs[0].name
 
     try:
-        outputs = clap_session.run(None, {input_name: batched})
+        outputs = clap_session.run(None, {input_name: input_features})
     except Exception as e:
         # Log shape on first failure so operators can diagnose export mismatches.
         if not hasattr(_compute_clap_embedding, "_logged_shape"):
             _compute_clap_embedding._logged_shape = True
             logger.warning(
                 "CLAP inference failed: input_shape=%s, model_expects=%s, err=%s",
-                batched.shape,
-                input_meta.shape,
+                input_features.shape,
+                inputs[0].shape,
                 e,
             )
         return None
