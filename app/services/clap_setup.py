@@ -71,9 +71,9 @@ def _download_one(url: str, dest: Path, min_size: int, label: str) -> None:
         # 30s connect/read timeout; HF is fast but we don't want to hang
         # startup forever if the network is wedged.
         req = urllib.request.Request(url, headers={"User-Agent": "grooveiq/clap-setup"})
-        # nosemgrep: python.lang.security.audit.dynamic-urllib-use-detected.dynamic-urllib-use-detected
-        # — URL is restricted to https:// at the top of this function, so file:// reads are not reachable.
-        with urllib.request.urlopen(req, timeout=30) as resp:
+        # URL is gated to https:// at the top of this function, so urllib's
+        # file:// scheme can never be reached by a misconfigured setting.
+        with urllib.request.urlopen(req, timeout=30) as resp:  # nosemgrep: python.lang.security.audit.dynamic-urllib-use-detected.dynamic-urllib-use-detected
             total = int(resp.headers.get("Content-Length", "0"))
             written = 0
             chunk = 1024 * 256  # 256 KiB
