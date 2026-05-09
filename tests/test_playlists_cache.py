@@ -247,6 +247,53 @@ class TestPlaylistDailyCache:
         assert b.status_code == 201
         assert a.json()["id"] != b.json()["id"]
 
+    async def test_clap_unavailable_returns_503_not_400(self, client: AsyncClient, monkeypatch):
+        """A `text` strategy POST when CLAP is disabled must return HTTP 503,
+        not the misleading HTTP 400 'Invalid playlist parameters'. Lets the
+        iOS fallback distinguish 'service warming up' from 'bad input'.
+        See issue #91 follow-up.
+        """
+        await _seed_tracks()
+        from app.services import playlist_service
+
+        # Force the CLAP-disabled path inside _generate_text without needing
+        # the global settings flip — the route should still see 503.
+        monkeypatch.setattr(playlist_service.settings, "CLAP_ENABLED", False)
+
+        resp = await client.post(
+            "/v1/playlists",
+            json={
+                "name": "clap-503-test",
+                "strategy": "text",
+                "params": {"prompt": "moody synthwave neon highway driving"},
+                "max_tracks": 5,
+            },
+        )
+        assert resp.status_code == 503, resp.text
+        assert "CLAP_ENABLED" in resp.json()["detail"]
+
+    async def test_text_with_empty_prompt_still_returns_400(self, client: AsyncClient, monkeypatch):
+        """Bad user input (empty prompt) must remain 400 — only operational
+        failures convert to 503."""
+        await _seed_tracks()
+        from app.services import playlist_service
+
+        # Pretend CLAP is on so the empty-prompt check is the failing
+        # gate (not the upstream CLAP_ENABLED check).
+        monkeypatch.setattr(playlist_service.settings, "CLAP_ENABLED", True)
+
+        resp = await client.post(
+            "/v1/playlists",
+            json={
+                "name": "empty-prompt-test",
+                "strategy": "text",
+                "params": {"prompt": "   "},
+                "max_tracks": 5,
+            },
+        )
+        assert resp.status_code == 400, resp.text
+        assert "prompt" in resp.json()["detail"].lower()
+
     async def test_pre_migration_rows_are_not_returned(self, client: AsyncClient):
         """A playlist with cache_key NULL (pre-migration) must not be served as a hit
         for a fresh request — the lookup filters on cache_key equality, not on
