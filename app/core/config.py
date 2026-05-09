@@ -137,11 +137,13 @@ class Settings(BaseSettings):
     # search ("melancholic rainy-night jazz"), text-seeded playlists/radio,
     # and text filters on recommendations.
     #
-    # Operators must provide two ONNX files: an audio encoder (48 kHz mono
-    # audio → 512-dim vector) and a text encoder (tokenised prompt →
-    # 512-dim vector). The recommended model is LAION-CLAP's music variant
-    # (`music_audioset_epoch_15_esc_90.14`) exported via the
-    # `laion-clap` repo's `export_onnx.py` utility.
+    # Models are auto-downloaded on first start from the `Xenova/larger_clap_
+    # music_and_speech` Hugging Face repo (pre-exported ONNX of LAION-CLAP's
+    # `larger_clap_music_and_speech` variant). Total ~395 MB on first start,
+    # cached in the named `grooveiq_data` volume so subsequent restarts are
+    # instant. To use a different variant, override the three URL settings
+    # below; to skip the download (air-gapped install), pre-place the files
+    # in CLAP_MODEL_DIR before starting.
     # ------------------------------------------------------------------
     CLAP_ENABLED: bool = False
     CLAP_MODEL_DIR: str = "/data/models/clap"  # where clap_audio.onnx, clap_text.onnx, tokenizer.json live
@@ -151,6 +153,17 @@ class Settings(BaseSettings):
     CLAP_EMBEDDING_DIM: int = 512
     CLAP_AUDIO_SR: int = 48000  # LAION-CLAP expects 48 kHz mono
     CLAP_AUDIO_CLIP_SECONDS: float = 10.0  # length of central slice fed to the audio encoder
+
+    # Auto-download URLs (issue #91). fp16 weights — half the size of fp32
+    # with negligible quality loss for retrieval. Each file lands in
+    # CLAP_MODEL_DIR under the corresponding *_FILE name above.
+    CLAP_TEXT_MODEL_URL: str = (
+        "https://huggingface.co/Xenova/larger_clap_music_and_speech/resolve/main/onnx/text_model_fp16.onnx"
+    )
+    CLAP_AUDIO_MODEL_URL: str = (
+        "https://huggingface.co/Xenova/larger_clap_music_and_speech/resolve/main/onnx/audio_model_fp16.onnx"
+    )
+    CLAP_TOKENIZER_URL: str = "https://huggingface.co/Xenova/larger_clap_music_and_speech/resolve/main/tokenizer.json"
 
     # Supported audio extensions (comma-separated)
     AUDIO_EXTENSIONS: str = ".mp3,.flac,.ogg,.m4a,.wav,.aac,.opus,.wv"
