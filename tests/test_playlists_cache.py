@@ -247,6 +247,51 @@ class TestPlaylistDailyCache:
         assert b.status_code == 201
         assert a.json()["id"] != b.json()["id"]
 
+    async def test_clap_unavailable_returns_503_not_400(self, client: AsyncClient, monkeypatch):
+        """A `text` strategy POST when CLAP is disabled must return HTTP 503,
+        not the misleading HTTP 400 'Invalid playlist parameters'. Lets the
+        iOS fallback distinguish 'service warming up' from 'bad input'.
+        See issue #91 follow-up.
+        """
+        await _seed_tracks()
+        # Force the CLAP-disabled path inside _generate_text. settings is
+        # imported lazily inside the function, so we patch the module-level
+        # singleton in app.core.config.
+        from app.core.config import settings as core_settings
+
+        monkeypatch.setattr(core_settings, "CLAP_ENABLED", False)
+
+        resp = await client.post(
+            "/v1/playlists",
+            json={
+                "name": "clap-503-test",
+                "strategy": "text",
+                "params": {"prompt": "moody synthwave neon highway driving"},
+                "max_tracks": 5,
+            },
+        )
+        assert resp.status_code == 503, resp.text
+        assert "CLAP_ENABLED" in resp.json()["detail"]
+
+    async def test_text_with_empty_prompt_returns_422_not_503(self, client: AsyncClient):
+        """Bad user input (empty prompt) is caught by Pydantic schema validation
+        and returns 422. The point of this test is to lock in that the new 503
+        mapping does NOT swallow legitimate input errors."""
+        await _seed_tracks()
+
+        resp = await client.post(
+            "/v1/playlists",
+            json={
+                "name": "empty-prompt-test",
+                "strategy": "text",
+                "params": {"prompt": "   "},
+                "max_tracks": 5,
+            },
+        )
+        assert resp.status_code == 422, resp.text
+        # Pydantic's error envelope contains the message in the nested detail list.
+        assert "prompt" in resp.text.lower()
+
     async def test_pre_migration_rows_are_not_returned(self, client: AsyncClient):
         """A playlist with cache_key NULL (pre-migration) must not be served as a hit
         for a fresh request — the lookup filters on cache_key equality, not on
