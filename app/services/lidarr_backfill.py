@@ -1337,8 +1337,19 @@ async def _fetch_lidarr_totals_cached(cfg: LidarrBackfillConfigData) -> tuple[in
         return missing, cutoff
 
 
-async def get_stats(session: AsyncSession) -> dict[str, Any]:
-    """Counts + ETA for the dashboard ``Backfill Status`` card."""
+async def get_stats(
+    session: AsyncSession,
+    *,
+    lidarr_totals: tuple[int | None, int | None] | None = None,
+) -> dict[str, Any]:
+    """Counts + ETA for the dashboard ``Backfill Status`` card.
+
+    If ``lidarr_totals`` is supplied, it's used directly and no upstream
+    Lidarr HTTP call is made. The /stats endpoint fetches totals BEFORE
+    acquiring its DB session so the upstream call (potentially 60 s on a
+    slow Lidarr) doesn't hold a SQLAlchemy connection — together with the
+    single-flight cache, this keeps pool exhaustion off the table.
+    """
     cfg = get_config()
     cutoff_ts = _now_ts() - 3600
     day_ago = _now_ts() - 86400
@@ -1379,8 +1390,13 @@ async def get_stats(session: AsyncSession) -> dict[str, Any]:
 
     capacity_remaining = max(0, cfg.max_downloads_per_hour - in_window)
 
-    # Live missing/cutoff totals via cached Lidarr fetch (best-effort).
-    missing_total, cutoff_total = await _fetch_lidarr_totals_cached(cfg)
+    # Live missing/cutoff totals — either supplied by the caller (preferred,
+    # so the upstream call happens without a DB session held) or fetched
+    # here as a fallback for non-HTTP callers.
+    if lidarr_totals is not None:
+        missing_total, cutoff_total = lidarr_totals
+    else:
+        missing_total, cutoff_total = await _fetch_lidarr_totals_cached(cfg)
 
     work_remaining = (missing_total or 0) + (cutoff_total or 0 if cfg.sources.cutoff_unmet else 0)
     eta_hours: float | None = None

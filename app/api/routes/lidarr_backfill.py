@@ -18,7 +18,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.security import require_admin, require_api_key
-from app.db.session import get_session
+from app.db.session import AsyncSessionLocal, get_session
 from app.models.db import LidarrBackfillRequest
 from app.models.lidarr_backfill_schema import (
     CONFIG_GROUPS,
@@ -332,20 +332,27 @@ async def preview(
 
 
 @router.get("/lidarr-backfill/stats", summary="Dashboard stats for the Backfill panel")
-async def stats(
-    session: AsyncSession = Depends(get_session),
-    _key: str = Depends(require_api_key),
-):
+async def stats(_key: str = Depends(require_api_key)):
     require_admin(_key)
 
-    base = await lbf_service.get_stats(session)
+    # Fetch live Lidarr totals BEFORE acquiring a DB session: the upstream
+    # call can take up to 60 s when Lidarr is slow, and holding a SQLAlchemy
+    # session for that long under a polling dashboard exhausts the connection
+    # pool and starves the library scanner. The single-flight cache keeps the
+    # upstream-call rate to one-per-30 s; releasing the session decouples the
+    # pool from upstream latency entirely.
+    cfg = lbf_service.get_config()
+    lidarr_totals = await lbf_service._fetch_lidarr_totals_cached(cfg)
 
-    # Most-recent created_at across persisted rows. Useful as a "last
-    # progress" indicator. NOT the same as "last scheduler tick" — see
-    # `last_tick_at` below.
-    last_row_created_at = await session.scalar(
-        select(LidarrBackfillRequest.created_at).order_by(LidarrBackfillRequest.created_at.desc()).limit(1)
-    )
+    async with AsyncSessionLocal() as session:
+        base = await lbf_service.get_stats(session, lidarr_totals=lidarr_totals)
+
+        # Most-recent created_at across persisted rows. Useful as a "last
+        # progress" indicator. NOT the same as "last scheduler tick" — see
+        # `last_tick_at` below.
+        last_row_created_at = await session.scalar(
+            select(LidarrBackfillRequest.created_at).order_by(LidarrBackfillRequest.created_at.desc()).limit(1)
+        )
 
     # Try to surface scheduler timing too (best-effort).
     next_tick_at: int | None = None
