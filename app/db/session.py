@@ -151,6 +151,8 @@ async def _apply_column_migrations(conn) -> None:
         ("api_call_logs", "client_ip", "VARCHAR(64)"),
         ("api_call_logs", "user_agent", "VARCHAR(512)"),
         ("api_call_logs", "source_class", "VARCHAR(16)"),
+        # Playlist daily idempotency cache (issue #89)
+        ("playlists", "cache_key", "VARCHAR(64)"),
     ]
     for table, column, col_type in migrations:
         # Validate identifiers to prevent SQL injection via migration list.
@@ -197,6 +199,12 @@ async def _apply_column_migrations(conn) -> None:
         )
     except Exception as e:
         logger.warning("Migration: could not create musicbrainz_track_id index: %s", e)
+
+    # Plain index on playlists.cache_key for the daily idempotency lookup (issue #89).
+    try:
+        await conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_playlists_cache_key ON playlists (cache_key)")
+    except Exception as e:
+        logger.warning("Migration: could not create playlists.cache_key index: %s", e)
 
     # Backfill: any pre-existing download_requests rows have source IS NULL
     # because the column was added without a default. Treat them as spotdl.

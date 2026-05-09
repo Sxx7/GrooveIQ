@@ -318,6 +318,11 @@ class Playlist(Base):
     track_count = Column(Integer, nullable=False, default=0)
     total_duration = Column(Float, nullable=True)  # seconds
     created_by = Column(String(128), nullable=True)  # API key hash that created this playlist
+    # Daily idempotency key: sha256(owner|strategy|seed|params|max_tracks|UTC-day)[:32].
+    # Lets POST /v1/playlists return an existing row instead of generating a duplicate
+    # when the frontend re-issues the same request (e.g. tapping Play repeatedly).
+    # See issue #89.
+    cache_key = Column(String(64), nullable=True, index=True)
     created_at = Column(Integer, nullable=False, default=lambda: int(time.time()))
 
 

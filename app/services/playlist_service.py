@@ -14,8 +14,11 @@ when breaking ties or filling gaps.
 from __future__ import annotations
 
 import base64
+import hashlib
+import json
 import logging
 import time
+from datetime import UTC, datetime
 from typing import Any
 
 import numpy as np
@@ -25,6 +28,38 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.db import Playlist, PlaylistTrack, TrackFeatures
 
 logger = logging.getLogger(__name__)
+
+
+def utc_day_bucket(now: datetime | None = None) -> str:
+    """Current UTC day as ``YYYY-MM-DD`` — the time bucket for the playlist cache."""
+    return (now or datetime.now(UTC)).strftime("%Y-%m-%d")
+
+
+def compute_cache_key(
+    *,
+    created_by: str | None,
+    strategy: str,
+    seed_track_id: str | None,
+    params: dict[str, Any] | None,
+    max_tracks: int,
+    bucket_date: str,
+) -> str:
+    """Stable per-day idempotency key for a playlist generation request.
+
+    Excludes ``name`` so the frontend can vary the title without busting the
+    cache. ``params`` is canonicalised via ``sort_keys`` so dict ordering can't
+    produce a different hash for the same logical request. See issue #89.
+    """
+    payload = {
+        "owner": created_by or "",
+        "strategy": strategy,
+        "seed": seed_track_id or "",
+        "params": params or {},
+        "max_tracks": max_tracks,
+        "day": bucket_date,
+    }
+    blob = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(blob.encode()).hexdigest()[:32]
 
 
 # ---------------------------------------------------------------------------
