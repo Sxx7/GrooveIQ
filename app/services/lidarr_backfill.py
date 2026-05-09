@@ -508,7 +508,11 @@ async def _fetch_candidates(
                 sort_direction=sort_direction,
             )
         except Exception as exc:
-            logger.warning("backfill: fetching /wanted/missing failed: %s", exc)
+            logger.warning(
+                "backfill: fetching /wanted/missing failed: %s: %s",
+                type(exc).__name__,
+                exc,
+            )
             rows = []
         for r in rows:
             r = dict(r)
@@ -522,7 +526,11 @@ async def _fetch_candidates(
                 sort_direction=sort_direction,
             )
         except Exception as exc:
-            logger.warning("backfill: fetching /wanted/cutoff failed: %s", exc)
+            logger.warning(
+                "backfill: fetching /wanted/cutoff failed: %s: %s",
+                type(exc).__name__,
+                exc,
+            )
             rows = []
         for r in rows:
             r = dict(r)
@@ -600,7 +608,13 @@ async def _stream_fresh_candidates(
                     sort_direction=sort_direction,
                 )
             except Exception as exc:
-                logger.warning("backfill: fetching %s page %d failed: %s", path, page, exc)
+                logger.warning(
+                    "backfill: fetching %s page %d failed: %s: %s",
+                    path,
+                    page,
+                    type(exc).__name__,
+                    exc,
+                )
                 break
 
             stats["pages_fetched"] += 1
@@ -1277,32 +1291,77 @@ async def delete_request(session: AsyncSession, request_id: int) -> bool:
 # 50+ in-flight pollers each held a DB session for the duration, exhausting
 # the pool and crashing the active library scan with "QueuePool limit
 # reached".
-_lidarr_totals_cache: tuple[float, int | None, int | None] = (0.0, None, None)
+#
+# Issue #97: an unreachable Lidarr previously made the /stats endpoint
+# hang for up to 60 s (httpx default timeout × 2 calls). The dashboard's
+# Active Jobs tile awaits this endpoint, so the whole tile blanked. Fix:
+# short per-call timeout + bounded wait on the single-flight lock, with
+# a `reachable` flag in the cached result so the API can render a
+# degraded state.
+@dataclass
+class LidarrTotals:
+    """Cached upstream Lidarr counts for the dashboard.
+
+    `missing` and `cutoff` are None when the corresponding upstream call
+    failed; `reachable` is False if any upstream call timed out or
+    errored on the most recent refresh.
+    """
+
+    missing: int | None
+    cutoff: int | None
+    reachable: bool
+
+
+_LIDARR_STATS_TIMEOUT_S = 2.0  # per upstream HTTP call (issue #97)
+_LIDARR_LOCK_ACQUIRE_TIMEOUT_S = 2.5  # max wait for the single-flight leader
+
+_lidarr_totals_cache: tuple[float, LidarrTotals] = (0.0, LidarrTotals(None, None, True))
 _lidarr_totals_lock = asyncio.Lock()
 _LIDARR_TOTALS_TTL = 30.0
 
 
-async def _fetch_lidarr_totals_cached(cfg: LidarrBackfillConfigData) -> tuple[int | None, int | None]:
-    """Return (missing_total, cutoff_total), refreshing at most every 30 s."""
+async def _fetch_lidarr_totals_cached(cfg: LidarrBackfillConfigData) -> LidarrTotals:
+    """Return cached Lidarr totals, refreshing at most every 30 s.
+
+    Bounded by `_LIDARR_STATS_TIMEOUT_S` per upstream call and
+    `_LIDARR_LOCK_ACQUIRE_TIMEOUT_S` on the single-flight lock so that
+    a stuck Lidarr cannot block dashboard polls (issue #97).
+    """
     global _lidarr_totals_cache
     import time as _time
 
     now = _time.monotonic()
-    cached_at, missing, cutoff = _lidarr_totals_cache
+    cached_at, cached = _lidarr_totals_cache
     if now - cached_at < _LIDARR_TOTALS_TTL:
-        return missing, cutoff
+        return cached
     if not (settings.LIDARR_URL and settings.LIDARR_API_KEY):
-        return None, None
+        return LidarrTotals(None, None, False)
 
-    async with _lidarr_totals_lock:
+    # Single-flight: collapse concurrent cache misses into one upstream
+    # fetch. Bound the wait so that if the leader is stuck on an
+    # unresponsive Lidarr, followers return fast with stale/None data
+    # plus reachable=False instead of piling up.
+    acquired = False
+    try:
+        async with asyncio.timeout(_LIDARR_LOCK_ACQUIRE_TIMEOUT_S):
+            await _lidarr_totals_lock.acquire()
+            acquired = True
+    except TimeoutError:
+        _, cached = _lidarr_totals_cache
+        return LidarrTotals(cached.missing, cached.cutoff, False)
+
+    try:
         # Recheck under the lock: another caller may have refreshed while we
         # waited, in which case we must not fire another upstream request.
         now = _time.monotonic()
-        cached_at, missing, cutoff = _lidarr_totals_cache
+        cached_at, cached = _lidarr_totals_cache
         if now - cached_at < _LIDARR_TOTALS_TTL:
-            return missing, cutoff
+            return cached
 
         client = LidarrClient(settings.LIDARR_URL, settings.LIDARR_API_KEY)
+        missing: int | None = None
+        cutoff: int | None = None
+        reachable = True
         try:
             try:
                 resp = await client._client.get(
@@ -1312,11 +1371,18 @@ async def _fetch_lidarr_totals_cached(cfg: LidarrBackfillConfigData) -> tuple[in
                         "pageSize": 1,
                         "monitored": "true" if cfg.sources.monitored_only else "false",
                     },
+                    timeout=_LIDARR_STATS_TIMEOUT_S,
                 )
                 resp.raise_for_status()
                 missing = resp.json().get("totalRecords")
-            except Exception:
+            except Exception as exc:
+                logger.warning(
+                    "backfill: stats fetch /wanted/missing failed: %s: %s",
+                    type(exc).__name__,
+                    exc,
+                )
                 missing = None
+                reachable = False
             try:
                 resp = await client._client.get(
                     f"{client._base_url}/api/v1/wanted/cutoff",
@@ -1325,22 +1391,36 @@ async def _fetch_lidarr_totals_cached(cfg: LidarrBackfillConfigData) -> tuple[in
                         "pageSize": 1,
                         "monitored": "true" if cfg.sources.monitored_only else "false",
                     },
+                    timeout=_LIDARR_STATS_TIMEOUT_S,
                 )
                 resp.raise_for_status()
                 cutoff = resp.json().get("totalRecords")
-            except Exception:
+            except Exception as exc:
+                logger.warning(
+                    "backfill: stats fetch /wanted/cutoff failed: %s: %s",
+                    type(exc).__name__,
+                    exc,
+                )
                 cutoff = None
+                reachable = False
         finally:
             await client.close()
 
-        _lidarr_totals_cache = (now, missing, cutoff)
-        return missing, cutoff
+        # Cache regardless of reachability so a wedged Lidarr is also
+        # rate-limited by the 30 s TTL — without that, every poll would
+        # re-attempt the upstream call and pay the timeout cost.
+        result = LidarrTotals(missing, cutoff, reachable)
+        _lidarr_totals_cache = (now, result)
+        return result
+    finally:
+        if acquired:
+            _lidarr_totals_lock.release()
 
 
 async def get_stats(
     session: AsyncSession,
     *,
-    lidarr_totals: tuple[int | None, int | None] | None = None,
+    lidarr_totals: LidarrTotals | None = None,
 ) -> dict[str, Any]:
     """Counts + ETA for the dashboard ``Backfill Status`` card.
 
@@ -1393,10 +1473,10 @@ async def get_stats(
     # Live missing/cutoff totals — either supplied by the caller (preferred,
     # so the upstream call happens without a DB session held) or fetched
     # here as a fallback for non-HTTP callers.
-    if lidarr_totals is not None:
-        missing_total, cutoff_total = lidarr_totals
-    else:
-        missing_total, cutoff_total = await _fetch_lidarr_totals_cached(cfg)
+    if lidarr_totals is None:
+        lidarr_totals = await _fetch_lidarr_totals_cached(cfg)
+    missing_total = lidarr_totals.missing
+    cutoff_total = lidarr_totals.cutoff
 
     work_remaining = (missing_total or 0) + (cutoff_total or 0 if cfg.sources.cutoff_unmet else 0)
     eta_hours: float | None = None
@@ -1411,6 +1491,7 @@ async def get_stats(
         "tick_started_at": get_tick_started_at(),
         "missing_total": missing_total,
         "cutoff_total": cutoff_total,
+        "lidarr_reachable": lidarr_totals.reachable,
         "queued": by_status.get(STATUS_QUEUED, 0),
         "downloading": by_status.get(STATUS_DOWNLOADING, 0),
         "complete": by_status.get(STATUS_COMPLETE, 0),
