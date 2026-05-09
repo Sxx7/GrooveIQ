@@ -1113,9 +1113,7 @@ class _FakeLidarrClient:
         self.cutoff_calls.append({"sort_key": sort_key, "sort_direction": sort_direction, "monitored": monitored})
         return list(self.cutoff_rows)
 
-    async def fetch_wanted_page(
-        self, path, *, page, page_size, monitored, sort_key, sort_direction
-    ):
+    async def fetch_wanted_page(self, path, *, page, page_size, monitored, sort_key, sort_direction):
         self.page_calls.append({"path": path, "page": page, "page_size": page_size})
         rows = self.missing_rows if path.endswith("/missing") else self.cutoff_rows
         start = (page - 1) * page_size
@@ -1201,9 +1199,7 @@ async def test_stream_fresh_candidates_stops_once_target_reached(db_session, cfg
     # the first page (which already yields 100 fresh).
     fake = _FakeLidarrClient(missing_rows=_make_albums(500))
 
-    fresh, stats = await lbf._stream_fresh_candidates(
-        db_session, cfg, fake, target=8, page_size=100
-    )
+    fresh, stats = await lbf._stream_fresh_candidates(db_session, cfg, fake, target=8, page_size=100)
 
     assert len(fresh) >= 8
     assert stats["pages_fetched"] == 1
@@ -1238,9 +1234,7 @@ async def test_stream_fresh_candidates_skips_blocked_rows_and_keeps_paging(db_se
 
     fake = _FakeLidarrClient(missing_rows=rows)
 
-    fresh, stats = await lbf._stream_fresh_candidates(
-        db_session, cfg, fake, target=5, page_size=100
-    )
+    fresh, stats = await lbf._stream_fresh_candidates(db_session, cfg, fake, target=5, page_size=100)
 
     # All 5 we asked for came from page 4.
     assert len(fresh) >= 5
@@ -1349,3 +1343,74 @@ async def test_tick_in_progress_flag_lifecycle():
             raise RuntimeError("boom")
     assert lbf.is_tick_in_progress() is False
     assert lbf.get_tick_started_at() is None
+
+
+@pytest.mark.asyncio
+async def test_fetch_lidarr_totals_cached_single_flights_concurrent_calls(monkeypatch):
+    """50 concurrent cache misses must collapse into one upstream Lidarr fetch.
+
+    Regression test: without an asyncio.Lock around the cache check, a
+    thundering herd of dashboard polls each holds a DB connection while
+    waiting on a slow Lidarr, exhausting the SQLAlchemy pool and crashing
+    the active library scan.
+    """
+    import asyncio as _asyncio
+
+    # Function makes one HTTP call per endpoint (missing + cutoff) per cache
+    # refresh, so a single leader produces two upstream calls. Without
+    # single-flight, 50 concurrent leaders would produce 100.
+    missing_calls = 0
+    cutoff_calls = 0
+    started = _asyncio.Event()
+    can_finish = _asyncio.Event()
+
+    class _SlowResp:
+        def __init__(self, total):
+            self._total = total
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"totalRecords": self._total}
+
+    class _SlowHttpClient:
+        async def get(self, url, params=None):
+            nonlocal missing_calls, cutoff_calls
+            if "missing" in url:
+                missing_calls += 1
+            else:
+                cutoff_calls += 1
+            started.set()
+            await can_finish.wait()
+            return _SlowResp(7 if "missing" in url else 3)
+
+    class _FakeLidarrClient:
+        def __init__(self, *a, **kw):
+            self._client = _SlowHttpClient()
+            self._base_url = "http://lidarr.test"
+
+        async def close(self):
+            pass
+
+    monkeypatch.setattr(lbf, "LidarrClient", _FakeLidarrClient)
+    monkeypatch.setattr(lbf.settings, "LIDARR_URL", "http://lidarr.test")
+    monkeypatch.setattr(lbf.settings, "LIDARR_API_KEY", "test-key")
+    # Cold the cache so all callers must fetch.
+    lbf._lidarr_totals_cache = (0.0, None, None)
+
+    cfg = get_defaults()
+
+    # Fire 50 concurrent callers; without single-flight every one would
+    # call the upstream client.
+    tasks = [_asyncio.create_task(lbf._fetch_lidarr_totals_cached(cfg)) for _ in range(50)]
+
+    # Let the leader actually start its upstream fetch, then release it.
+    await started.wait()
+    can_finish.set()
+
+    results = await _asyncio.gather(*tasks)
+
+    assert missing_calls == 1, f"expected 1 /missing call, got {missing_calls}"
+    assert cutoff_calls == 1, f"expected 1 /cutoff call, got {cutoff_calls}"
+    assert all(r == (7, 3) for r in results)

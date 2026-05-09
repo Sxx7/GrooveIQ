@@ -574,9 +574,7 @@ async def _stream_fresh_candidates(
     return; ``target`` should be set to a multiple of that (e.g. 4×) so the
     later filtering / matching step has headroom.
     """
-    sort_key, sort_direction = _QUEUE_SORT.get(
-        cfg.sources.queue_order, _QUEUE_SORT[QueueOrder.RECENT_RELEASE]
-    )
+    sort_key, sort_direction = _QUEUE_SORT.get(cfg.sources.queue_order, _QUEUE_SORT[QueueOrder.RECENT_RELEASE])
 
     allow = {_normalize_artist_name(a) for a in cfg.filters.artist_allowlist if a.strip()}
     deny = {_normalize_artist_name(a) for a in cfg.filters.artist_denylist if a.strip()}
@@ -618,19 +616,10 @@ async def _stream_fresh_candidates(
                     c
                     for c in tagged
                     if (
-                        (
-                            not allow
-                            or _normalize_artist_name(
-                                (c.get("artist") or {}).get("artistName") or ""
-                            )
-                            in allow
-                        )
+                        (not allow or _normalize_artist_name((c.get("artist") or {}).get("artistName") or "") in allow)
                         and (
                             not deny
-                            or _normalize_artist_name(
-                                (c.get("artist") or {}).get("artistName") or ""
-                            )
-                            not in deny
+                            or _normalize_artist_name((c.get("artist") or {}).get("artistName") or "") not in deny
                         )
                     )
                 ]
@@ -1282,7 +1271,14 @@ async def delete_request(session: AsyncSession, request_id: int) -> bool:
 # busy host) while still holding a SQLAlchemy session, which exhausted
 # the connection pool and starved the library scanner. 30 s is short
 # enough to feel "live" in the UI and long enough to coalesce 10× polls.
+#
+# The lock single-flights cache misses: caching alone coalesces sequential
+# polls but not concurrent ones, and on a slow Lidarr (60 s httpx timeout)
+# 50+ in-flight pollers each held a DB session for the duration, exhausting
+# the pool and crashing the active library scan with "QueuePool limit
+# reached".
 _lidarr_totals_cache: tuple[float, int | None, int | None] = (0.0, None, None)
+_lidarr_totals_lock = asyncio.Lock()
 _LIDARR_TOTALS_TTL = 30.0
 
 
@@ -1298,31 +1294,47 @@ async def _fetch_lidarr_totals_cached(cfg: LidarrBackfillConfigData) -> tuple[in
     if not (settings.LIDARR_URL and settings.LIDARR_API_KEY):
         return None, None
 
-    client = LidarrClient(settings.LIDARR_URL, settings.LIDARR_API_KEY)
-    try:
-        try:
-            resp = await client._client.get(
-                f"{client._base_url}/api/v1/wanted/missing",
-                params={"page": 1, "pageSize": 1, "monitored": "true" if cfg.sources.monitored_only else "false"},
-            )
-            resp.raise_for_status()
-            missing = resp.json().get("totalRecords")
-        except Exception:
-            missing = None
-        try:
-            resp = await client._client.get(
-                f"{client._base_url}/api/v1/wanted/cutoff",
-                params={"page": 1, "pageSize": 1, "monitored": "true" if cfg.sources.monitored_only else "false"},
-            )
-            resp.raise_for_status()
-            cutoff = resp.json().get("totalRecords")
-        except Exception:
-            cutoff = None
-    finally:
-        await client.close()
+    async with _lidarr_totals_lock:
+        # Recheck under the lock: another caller may have refreshed while we
+        # waited, in which case we must not fire another upstream request.
+        now = _time.monotonic()
+        cached_at, missing, cutoff = _lidarr_totals_cache
+        if now - cached_at < _LIDARR_TOTALS_TTL:
+            return missing, cutoff
 
-    _lidarr_totals_cache = (now, missing, cutoff)
-    return missing, cutoff
+        client = LidarrClient(settings.LIDARR_URL, settings.LIDARR_API_KEY)
+        try:
+            try:
+                resp = await client._client.get(
+                    f"{client._base_url}/api/v1/wanted/missing",
+                    params={
+                        "page": 1,
+                        "pageSize": 1,
+                        "monitored": "true" if cfg.sources.monitored_only else "false",
+                    },
+                )
+                resp.raise_for_status()
+                missing = resp.json().get("totalRecords")
+            except Exception:
+                missing = None
+            try:
+                resp = await client._client.get(
+                    f"{client._base_url}/api/v1/wanted/cutoff",
+                    params={
+                        "page": 1,
+                        "pageSize": 1,
+                        "monitored": "true" if cfg.sources.monitored_only else "false",
+                    },
+                )
+                resp.raise_for_status()
+                cutoff = resp.json().get("totalRecords")
+            except Exception:
+                cutoff = None
+        finally:
+            await client.close()
+
+        _lidarr_totals_cache = (now, missing, cutoff)
+        return missing, cutoff
 
 
 async def get_stats(session: AsyncSession) -> dict[str, Any]:
