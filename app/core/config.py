@@ -154,14 +154,17 @@ class Settings(BaseSettings):
     CLAP_AUDIO_SR: int = 48000  # LAION-CLAP expects 48 kHz mono
     CLAP_AUDIO_CLIP_SECONDS: float = 10.0  # length of central slice fed to the audio encoder
 
-    # Auto-download URLs (issue #91). fp16 weights — half the size of fp32
-    # with negligible quality loss for retrieval. Each file lands in
-    # CLAP_MODEL_DIR under the corresponding *_FILE name above.
+    # Auto-download URLs (issue #91). fp32 weights — larger than fp16 but
+    # avoid an ONNX Runtime crash on model load: the fp16 text export
+    # interacts badly with the SimplifiedLayerNormFusion graph optimisation
+    # ("InsertedPrecisionFreeCast" node mismatch). Operators wanting
+    # smaller weights can override these to *_fp16.onnx and lower the ORT
+    # optimisation level in clap_text.py.
     CLAP_TEXT_MODEL_URL: str = (
-        "https://huggingface.co/Xenova/larger_clap_music_and_speech/resolve/main/onnx/text_model_fp16.onnx"
+        "https://huggingface.co/Xenova/larger_clap_music_and_speech/resolve/main/onnx/text_model.onnx"
     )
     CLAP_AUDIO_MODEL_URL: str = (
-        "https://huggingface.co/Xenova/larger_clap_music_and_speech/resolve/main/onnx/audio_model_fp16.onnx"
+        "https://huggingface.co/Xenova/larger_clap_music_and_speech/resolve/main/onnx/audio_model.onnx"
     )
     CLAP_TOKENIZER_URL: str = "https://huggingface.co/Xenova/larger_clap_music_and_speech/resolve/main/tokenizer.json"
 

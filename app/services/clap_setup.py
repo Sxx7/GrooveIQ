@@ -33,11 +33,13 @@ from app.core.config import settings
 logger = logging.getLogger(__name__)
 
 # Minimum plausible byte size for each file. Catches partial downloads,
-# 404 HTML pages saved as .onnx, etc. Sizes are based on Xenova fp16
-# weights with ~30% slack to tolerate variant swaps.
+# 404 HTML pages saved as .onnx, etc. Sizes are calibrated to the fp32
+# Xenova weights and deliberately above the fp16 sizes — that way a stale
+# fp16 install (default before issue #91 follow-up) gets re-downloaded as
+# fp32 automatically on the next start.
 _MIN_SIZES = {
-    "text": 100 * 1024 * 1024,  # text_model_fp16.onnx is ~251 MB
-    "audio": 50 * 1024 * 1024,  # audio_model_fp16.onnx is ~143 MB
+    "text": 300 * 1024 * 1024,  # text_model.onnx is ~478 MB; fp16 is ~239 MB (rejected)
+    "audio": 200 * 1024 * 1024,  # audio_model.onnx is ~269 MB; fp16 is ~137 MB (rejected)
     "tokenizer": 1 * 1024 * 1024,  # tokenizer.json is ~2 MB
 }
 
