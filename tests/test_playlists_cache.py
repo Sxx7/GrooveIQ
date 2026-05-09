@@ -254,11 +254,12 @@ class TestPlaylistDailyCache:
         See issue #91 follow-up.
         """
         await _seed_tracks()
-        from app.services import playlist_service
+        # Force the CLAP-disabled path inside _generate_text. settings is
+        # imported lazily inside the function, so we patch the module-level
+        # singleton in app.core.config.
+        from app.core.config import settings as core_settings
 
-        # Force the CLAP-disabled path inside _generate_text without needing
-        # the global settings flip — the route should still see 503.
-        monkeypatch.setattr(playlist_service.settings, "CLAP_ENABLED", False)
+        monkeypatch.setattr(core_settings, "CLAP_ENABLED", False)
 
         resp = await client.post(
             "/v1/playlists",
@@ -276,11 +277,11 @@ class TestPlaylistDailyCache:
         """Bad user input (empty prompt) must remain 400 — only operational
         failures convert to 503."""
         await _seed_tracks()
-        from app.services import playlist_service
+        from app.core.config import settings as core_settings
 
         # Pretend CLAP is on so the empty-prompt check is the failing
         # gate (not the upstream CLAP_ENABLED check).
-        monkeypatch.setattr(playlist_service.settings, "CLAP_ENABLED", True)
+        monkeypatch.setattr(core_settings, "CLAP_ENABLED", True)
 
         resp = await client.post(
             "/v1/playlists",
