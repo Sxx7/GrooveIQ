@@ -53,6 +53,13 @@ def _download_one(url: str, dest: Path, min_size: int, label: str) -> None:
     atomic — half-written files never appear at the final path even if
     the process is killed mid-download.
     """
+    # Defence-in-depth: settings come from a trusted operator-controlled
+    # .env, but reject anything other than https:// to make it impossible
+    # for an mis-configured URL to read local files via urllib's file://
+    # scheme support.
+    if not url.startswith("https://"):
+        raise ValueError(f"CLAP setup: refusing to fetch {label} from non-https URL: {url!r}")
+
     dest.parent.mkdir(parents=True, exist_ok=True)
     logger.info("CLAP setup: downloading %s from %s", label, url)
 
@@ -64,6 +71,8 @@ def _download_one(url: str, dest: Path, min_size: int, label: str) -> None:
         # 30s connect/read timeout; HF is fast but we don't want to hang
         # startup forever if the network is wedged.
         req = urllib.request.Request(url, headers={"User-Agent": "grooveiq/clap-setup"})
+        # nosemgrep: python.lang.security.audit.dynamic-urllib-use-detected.dynamic-urllib-use-detected
+        # — URL is restricted to https:// at the top of this function, so file:// reads are not reachable.
         with urllib.request.urlopen(req, timeout=30) as resp:
             total = int(resp.headers.get("Content-Length", "0"))
             written = 0
@@ -134,7 +143,7 @@ def _ensure_clap_models_sync() -> None:
     for label, dest, url, min_size in missing:
         try:
             _download_one(url, dest, min_size, label)
-        except (urllib.error.URLError, OSError, RuntimeError) as e:
+        except (urllib.error.URLError, OSError, RuntimeError, ValueError) as e:
             logger.warning(
                 "CLAP setup: failed to download %s from %s: %s — text strategy will return 503 until this resolves",
                 label,
