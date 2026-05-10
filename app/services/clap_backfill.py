@@ -85,18 +85,26 @@ async def backfill_clap_embeddings(limit: int | None = None) -> dict:
 
         try:
             # cached=None forces full re-analysis; the worker will compute
-            # everything. We only persist clap_embedding to avoid churning
-            # unrelated columns or bumping analysis_version.
+            # everything. We only persist clap_embedding (and the CLAP-derived
+            # mood_tags / valence the pool overlays in apply_clap_mood_to_result)
+            # to avoid churning unrelated columns or bumping analysis_version.
             res = await pool.analyze(file_path, cached=None)
             if not res:
                 continue
             clap = res.get("clap_embedding")
             if not clap:
                 continue
+            updates = {"clap_embedding": clap}
+            # The pool's analyze() already applied CLAP-derived mood scores
+            # in-place (#98). Persist them too so this backfill grows hybrid
+            # mood-score coverage track-by-track without an analysis_version
+            # bump.
+            if "mood_tags" in res:
+                updates["mood_tags"] = res["mood_tags"]
+            if "valence" in res:
+                updates["valence"] = res["valence"]
             async with AsyncSessionLocal() as session:
-                await session.execute(
-                    update(TrackFeatures).where(TrackFeatures.track_id == track_id).values(clap_embedding=clap)
-                )
+                await session.execute(update(TrackFeatures).where(TrackFeatures.track_id == track_id).values(**updates))
                 await session.commit()
             updated += 1
         except Exception as e:
