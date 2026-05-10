@@ -378,6 +378,14 @@ def _generate_text(
 
 def _generate_mood(tracks: list[TrackFeatures], mood: str, max_tracks: int) -> list[str]:
     """Filter tracks by mood tag confidence, order by energy arc."""
+    from app.services.audio_analysis import SUPPORTED_MOOD_LABELS
+
+    if mood not in SUPPORTED_MOOD_LABELS:
+        # Belt-and-braces: PlaylistCreate already validates this at the
+        # API boundary, but the service is also reachable via internal
+        # callers / tests, so reject defensively here too.
+        raise ValueError(f"Mood {mood!r} is not supported. Must be one of: {sorted(SUPPORTED_MOOD_LABELS)}.")
+
     scored = []
     for t in tracks:
         if not t.mood_tags:

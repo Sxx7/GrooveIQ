@@ -43,6 +43,13 @@ ANALYSIS_VERSION = "2.6"
 # Must match FAISS index dimension (faiss_index._EMBEDDING_DIM).
 EMBEDDING_DIM = 64
 
+# Mood labels emitted by the EffNet mood-classifier heads (see analysis_worker
+# `mood_models`). The single source of truth API endpoints validate against —
+# unknown labels passed to `?mood=` filters used to silently match nothing
+# and surface as "no available tracks" in clients (e.g. iOS sending mood=
+# "energetic"). Keep this in sync with `mood_models` in analysis_worker.py.
+SUPPORTED_MOOD_LABELS: frozenset[str] = frozenset({"happy", "sad", "aggressive", "relaxed", "party"})
+
 
 # ---------------------------------------------------------------------------
 # File hashing

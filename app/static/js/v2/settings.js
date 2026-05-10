@@ -1554,7 +1554,7 @@
         wrap.appendChild(sec('Preferred moods',
             'Pick the moods you reach for most.',
             _chips('mood_preferences',
-                ['happy', 'sad', 'aggressive', 'relaxed', 'party', 'acoustic', 'electronic', 'energetic'])));
+                ['happy', 'sad', 'aggressive', 'relaxed', 'party'])));
         wrap.appendChild(sec('Typical listening contexts',
             'Where do you usually listen?',
             _chips('listening_contexts',

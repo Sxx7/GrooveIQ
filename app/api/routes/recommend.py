@@ -66,7 +66,11 @@ async def get_recommendations(
     day_of_week: int = Query(None, ge=1, le=7, description="Client's local day of week (1=Mon, 7=Sun)"),
     genre: str = Query(None, description="Filter candidates by genre (case-insensitive substring match)"),
     mood: str = Query(
-        None, description="Filter candidates by mood tag label (e.g. happy, sad, aggressive). Requires confidence > 0.3"
+        None,
+        description=(
+            "Filter candidates by mood tag label. Must be one of: "
+            "happy, sad, aggressive, relaxed, party. Requires confidence > 0.3"
+        ),
     ),
     debug: bool = Query(
         False, description="Include debug info: candidates by source, feature vectors, reranker actions"
@@ -84,6 +88,18 @@ async def get_recommendations(
     # Per-user authorization check.
     validate_user_id(user_id)
     check_user_access(_key, user_id)
+
+    # Validate mood against the EffNet pipeline's actual labels — silently
+    # filtering on unknown moods used to swallow every candidate and
+    # surface as "no available tracks" client-side.
+    if mood is not None:
+        from app.services.audio_analysis import SUPPORTED_MOOD_LABELS
+
+        if mood not in SUPPORTED_MOOD_LABELS:
+            raise HTTPException(
+                status_code=400,
+                detail=(f"Unknown mood {mood!r}. Must be one of: {sorted(SUPPORTED_MOOD_LABELS)}."),
+            )
 
     # Verify user exists.
     result = await session.execute(select(User.user_id).where(User.user_id == user_id))
