@@ -1197,15 +1197,39 @@ def _extract_ml(
     if mood_tags:
         mood_tags.sort(key=lambda m: m["confidence"], reverse=True)
         result["mood_tags"] = mood_tags
-        # Valence proxy: mood_happy probability lands in [0, 1] from the
-        # softmax head and aligns with the schema's "musical positivity"
-        # description. Closest match to Spotify-style valence available in
-        # the Discogs-EffNet model bundle without a dedicated valence head.
-        happy = next((m for m in mood_tags if m["label"] == "happy"), None)
-        if happy is not None:
-            result["valence"] = happy["confidence"]
+        valence = _composite_valence({m["label"]: m["confidence"] for m in mood_tags})
+        if valence is not None:
+            result["valence"] = valence
 
     return mean_embedding
+
+
+def _composite_valence(confs: dict[str, float]) -> float | None:
+    """
+    Composite valence proxy from EffNet mood-head confidences.
+
+    The single `mood_happy` channel that v2.4/2.5 used is heavily compressed
+    on real libraries — observed [0, 0.46] range with 88% of tracks below
+    0.1 — so the ranker effectively can't use it (#88). `mood_sad` and
+    `mood_aggressive` are similarly pinned at the low end, while
+    `mood_party` is the only head with real spread across [0, 1]. This
+    composite is the issue's option-3 "weighted combination" tuned to the
+    actual signal each head carries: party dominates, happy is stretched
+    2x to compensate for its compression, aggressive applies a mild
+    penalty. `mood_sad` is dropped because (1 − sad) ≈ constant 1.0 across
+    the library, contributing no information.
+
+    Returns None when neither the full composite nor the happy fallback
+    can be computed, so callers can leave the field unset.
+    """
+    if "party" in confs and "happy" in confs and "aggressive" in confs:
+        raw = 0.6 * confs["party"] + 0.3 * min(1.0, confs["happy"] / 0.5) + 0.1 * (1.0 - confs["aggressive"])
+        return round(max(0.0, min(1.0, raw)), 3)
+    if "happy" in confs:
+        # Fallback if the party/aggressive heads failed to load: the
+        # stretched happy signal alone is still better than a hole.
+        return round(min(1.0, confs["happy"] / 0.5), 3)
+    return None
 
 
 # ---------------------------------------------------------------------------

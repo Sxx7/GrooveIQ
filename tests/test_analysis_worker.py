@@ -1,12 +1,9 @@
 """
-GrooveIQ – Tests for the analysis worker pool's hung-worker SIGKILL path.
+GrooveIQ – Tests for the analysis worker pool.
 
-Regression for #30: when libavcodec spins indefinitely on a corrupted
-bitstream (see #31), the per-task asyncio timeout used to abandon the
-future but leave the worker subprocess hanging. After this fix, the
-timeout path SIGKILLs the specific worker holding that ``request_id``
-based on the heartbeat the worker emits when it pulls from the input
-queue.
+Covers:
+  - Hung-worker SIGKILL path (#30 regression)
+  - Composite valence proxy from EffNet mood heads (#88 regression)
 """
 
 from __future__ import annotations
@@ -121,6 +118,116 @@ async def test_hung_worker_sigkilled_on_timeout(monkeypatch):
         pool._workers.clear()
         pool._pending.clear()
         pool._in_flight.clear()
+
+
+# ---------------------------------------------------------------------------
+# Composite valence proxy (#88)
+# ---------------------------------------------------------------------------
+
+
+class TestCompositeValence:
+    """The single-channel `mood_happy` proxy was pinned to [0, 0.46] across a
+    real 67k-track library, making valence a near-dead ranker feature. The
+    composite formula uses three EffNet mood heads weighted by their actual
+    signal-to-noise (party dominates, happy stretched 2x, aggressive penalty)."""
+
+    def test_full_composite_at_endpoints(self):
+        from app.services.analysis_worker import _composite_valence
+
+        # All-zero mood signals → near-zero valence floor (only the constant
+        # 0.1 * (1 - 0) = 0.1 contribution survives).
+        assert _composite_valence({"party": 0.0, "happy": 0.0, "aggressive": 0.0}) == 0.1
+
+        # All maxed → clipped to 1.0
+        assert _composite_valence({"party": 1.0, "happy": 1.0, "aggressive": 0.0}) == 1.0
+
+    def test_party_dominates(self):
+        from app.services.analysis_worker import _composite_valence
+
+        # mood_party is the only head with real spread, so it carries the
+        # most weight. A high-party / no-happy track should still rank above
+        # a no-party / moderate-happy track.
+        high_party = _composite_valence({"party": 0.8, "happy": 0.0, "aggressive": 0.0})
+        med_happy = _composite_valence({"party": 0.0, "happy": 0.2, "aggressive": 0.0})
+        assert high_party > med_happy
+
+    def test_happy_is_stretched_2x(self):
+        from app.services.analysis_worker import _composite_valence
+
+        # mood_happy was empirically capped near 0.5, so we stretch by 2x.
+        # happy=0.5 should contribute the full 0.3 weight, not 0.15.
+        # Composite = 0.6*0 + 0.3*1.0 + 0.1*1 = 0.4
+        assert _composite_valence({"party": 0.0, "happy": 0.5, "aggressive": 0.0}) == 0.4
+        # happy beyond 0.5 also clips at 1.0 inside the stretch
+        assert _composite_valence({"party": 0.0, "happy": 0.9, "aggressive": 0.0}) == 0.4
+
+    def test_aggressive_penalty(self):
+        from app.services.analysis_worker import _composite_valence
+
+        # Aggressive subtracts a small amount: same party/happy, more
+        # aggression → lower valence.
+        calm = _composite_valence({"party": 0.5, "happy": 0.2, "aggressive": 0.0})
+        rage = _composite_valence({"party": 0.5, "happy": 0.2, "aggressive": 1.0})
+        assert calm > rage
+        assert (calm - rage) == pytest.approx(0.1)
+
+    def test_clipped_to_unit_interval(self):
+        from app.services.analysis_worker import _composite_valence
+
+        # No combination of mood-head outputs should escape [0, 1].
+        for party in (0.0, 0.5, 1.0):
+            for happy in (0.0, 0.5, 1.0):
+                for aggr in (0.0, 0.5, 1.0):
+                    v = _composite_valence({"party": party, "happy": happy, "aggressive": aggr})
+                    assert 0.0 <= v <= 1.0, (party, happy, aggr, v)
+
+    def test_rounded_to_three_decimals(self):
+        from app.services.analysis_worker import _composite_valence
+
+        # Same precision as the rest of the analysis output (mood
+        # confidences, danceability, etc.) for stable storage.
+        v = _composite_valence({"party": 0.333, "happy": 0.111, "aggressive": 0.222})
+        assert isinstance(v, float)
+        assert round(v, 3) == v
+
+    def test_fallback_to_stretched_happy_when_party_missing(self):
+        from app.services.analysis_worker import _composite_valence
+
+        # If the party/aggressive heads failed to load, the stretched happy
+        # signal alone is still better than leaving valence unset.
+        assert _composite_valence({"happy": 0.25}) == 0.5
+        assert _composite_valence({"happy": 0.6}) == 1.0  # stretch caps at 1.0
+
+    def test_returns_none_when_no_signal(self):
+        from app.services.analysis_worker import _composite_valence
+
+        # If even mood_happy is missing, callers should leave valence unset
+        # rather than fabricate a default.
+        assert _composite_valence({}) is None
+        assert _composite_valence({"sad": 0.7, "relaxed": 0.5}) is None
+
+    def test_distribution_is_actually_useful(self):
+        """The whole point of #88: the composite must produce real spread
+        across plausible mood-head outputs, not collapse to ~constant the
+        way single-channel mood_happy does on real libraries."""
+        from app.services.analysis_worker import _composite_valence
+
+        # Sample mood profiles drawn to mirror the empirical distribution
+        # observed on dsvr-prod-03 (party has spread, happy compressed,
+        # aggressive mostly zero).
+        profiles = [
+            {"party": 0.0, "happy": 0.0, "aggressive": 0.0},
+            {"party": 0.2, "happy": 0.05, "aggressive": 0.0},
+            {"party": 0.4, "happy": 0.1, "aggressive": 0.0},
+            {"party": 0.6, "happy": 0.15, "aggressive": 0.0},
+            {"party": 0.8, "happy": 0.2, "aggressive": 0.0},
+            {"party": 1.0, "happy": 0.45, "aggressive": 0.0},
+            {"party": 0.7, "happy": 0.0, "aggressive": 0.5},
+        ]
+        valences = [_composite_valence(p) for p in profiles]
+        # Range of at least 0.5 across these — the dead single-channel
+        # version had a range under 0.1 across the entire 67k library.
+        assert max(valences) - min(valences) >= 0.5
 
 
 def _quick_worker(input_queue, output_queue, worker_id):
