@@ -108,6 +108,11 @@ def _load() -> None:
     )
 
 
+# Maximum tokens fed to the text tower. CLIP/CLAP exports are trained on a
+# 77-token window; longer inputs get truncated to stay within that budget.
+_MAX_TOKENS = 77
+
+
 @lru_cache(maxsize=256)
 def _encode_cached(prompt: str) -> bytes:
     """Inner cached encoder. Returns raw bytes so lru_cache can hash safely."""
@@ -115,19 +120,16 @@ def _encode_cached(prompt: str) -> bytes:
     assert _tokenizer is not None and _session is not None and _input_name is not None  # noqa: S101 - type narrowing after _load()
 
     encoded = _tokenizer.encode(prompt)
-    # LAION-CLAP typically expects a fixed 77-token window (CLIP convention).
-    # We pad/truncate to the length that the exported ONNX expects. Most
-    # exports use 77, but we read it off the model to stay portable.
-    try:
-        expected_len = _session.get_inputs()[0].shape[1]
-        if not isinstance(expected_len, int):
-            expected_len = 77
-    except Exception:
-        expected_len = 77
-
-    ids = encoded.ids[:expected_len]
-    if len(ids) < expected_len:
-        ids = ids + [0] * (expected_len - len(ids))
+    # The Xenova/larger_clap_music_and_speech ONNX export declares
+    # sequence_length as dynamic and only takes input_ids (no attention_mask),
+    # so any padding tokens contribute to attention and dilute the prompt's
+    # representation. Earlier versions padded with id 0 — which is the
+    # tokenizer's BOS token (<s>) for RoBERTa-BPE, not <pad> (id 1) —
+    # collapsing every prompt's vector to >0.99 cosine similarity with every
+    # other prompt's, since each one was content + ~70 BOS tokens. Pass the
+    # tokenizer's natural BOS+content+EOS sequence as-is, truncated only to
+    # stay within the trained 77-token budget.
+    ids = encoded.ids[:_MAX_TOKENS] or [0]
 
     input_ids = np.asarray([ids], dtype=np.int64)
     outputs = _session.run(None, {_input_name: input_ids})
