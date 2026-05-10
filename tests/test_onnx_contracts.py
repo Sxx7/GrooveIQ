@@ -12,10 +12,10 @@ What this catches that Layer 1 misses:
     inversion (fixed in c67f235): all three were reading col 0 when the
     named class lived at col 1. Pre-fix this would have failed the
     semantic-class assertion immediately.
-  - #99 ``voice_instrumental`` column inversion (open): code reads col 1
-    (= ``voice``) and stores it under the field named
-    ``instrumentalness``. The semantic-class assertion below FAILS RED
-    until #99 lands.
+  - #99 ``voice_instrumental`` column inversion (fixed in v2.7): code
+    used to read col 1 (= ``voice``) and store it under the field named
+    ``instrumentalness``. The semantic-class assertion below pins col 0
+    so a re-introduction would fail RED.
   - A future model file replacement that silently shifts the class
     ordering (e.g. someone re-exports the ONNX with a different output
     layout). The shape + class-list assertions catch that at CI time
@@ -69,7 +69,7 @@ FIELD_SEMANTIC_CLASS: dict[str, str] = {
 # ``test_mirror_matches_analyzer_source`` test below catches drift.
 ANALYZER_FIELD_TO_HEAD: dict[str, tuple[str, int]] = {
     "danceability": ("danceability-discogs-effnet-1.onnx", 0),
-    "instrumentalness": ("voice_instrumental-discogs-effnet-1.onnx", 1),
+    "instrumentalness": ("voice_instrumental-discogs-effnet-1.onnx", 0),
     "happy": ("mood_happy-discogs-effnet-1.onnx", 0),
     "sad": ("mood_sad-discogs-effnet-1.onnx", 1),
     "aggressive": ("mood_aggressive-discogs-effnet-1.onnx", 0),
@@ -122,44 +122,17 @@ EXPECTED_IO: dict[str, dict[str, list[tuple[str, list]]]] = {
 # ---------------------------------------------------------------------------
 
 
-def _semantic_param(field: str):
-    """Wrap each parametrize case so we can attach an xfail marker to
-    individual fields without losing per-case test IDs.
-
-    ``instrumentalness`` is xfail(strict=True) until #99 lands: the test
-    documents the bug, runs in CI as expected-fail, and when the column
-    index is corrected (col 1 → col 0) the test will flip to XPASS,
-    which strict=True turns into a CI failure — forcing someone to
-    remove this xfail marker. That makes the marker self-cleaning.
-    """
-    head = ANALYZER_FIELD_TO_HEAD[field]
-    if field == "instrumentalness":
-        return pytest.param(
-            field,
-            head,
-            marks=pytest.mark.xfail(
-                strict=True,
-                reason=(
-                    "#99 voice_instrumental column inversion. Code at "
-                    "analysis_worker.py:1144 reads col 1 = 'voice' and "
-                    "stores it under the field name 'instrumentalness'. "
-                    "Fix: change the col index to 0 in BOTH analysis_worker "
-                    "and gpu_inference, bump ANALYSIS_VERSION, rescan."
-                ),
-            ),
-            id=field,
-        )
-    return pytest.param(field, head, id=field)
-
-
-@pytest.mark.parametrize("field,head_col", [_semantic_param(f) for f in ANALYZER_FIELD_TO_HEAD])
+@pytest.mark.parametrize(
+    "field,head_col",
+    [pytest.param(f, ANALYZER_FIELD_TO_HEAD[f], id=f) for f in ANALYZER_FIELD_TO_HEAD],
+)
 def test_field_reads_semantically_correct_column(field, head_col):
     """For each analyser field, the column index the code reads must
     correspond to the class the field name implies.
 
-    This is the test that fails today on #99: ``instrumentalness`` reads
-    col 1 = ``voice``, but the field name semantically is ``instrumental``.
-    Fixing #99 (col 1 → col 0) makes this pass.
+    Catches the v2.5 mood-column inversion shape and #99's
+    ``instrumentalness`` (= voice probability) inversion. Re-introducing
+    either would fail this assertion.
     """
     model_file, col = head_col
     classes = MTG_CLASSES[model_file]

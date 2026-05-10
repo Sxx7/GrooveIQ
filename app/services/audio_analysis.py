@@ -38,7 +38,12 @@ import os
 # libraries (#88). The `mood_happy` channel turned out to be pinned to
 # [0, 0.46] across 67k tracks — useful for relative ranking, useless as
 # an absolute UI value or as a ranker feature with variance.
-ANALYSIS_VERSION = "2.6"
+# 2.7: corrected voice_instrumental column index — the head's classes are
+# ['instrumental', 'voice'] (col 0 = instrumental), but the code was reading
+# col 1, so 'instrumentalness' actually stored voice probability and the
+# derived 'speechiness = 1 - instrumentalness' was the instrumental
+# probability (#99). Same shape as the v2.5 mood inversion.
+ANALYSIS_VERSION = "2.7"
 
 # Must match FAISS index dimension (faiss_index._EMBEDDING_DIM).
 EMBEDDING_DIM = 64
