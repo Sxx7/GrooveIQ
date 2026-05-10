@@ -409,7 +409,7 @@ def infer_from_patches(
 
     heads = {
         "danceability": ("danceability-discogs-effnet-1.onnx", "softmax", 0),
-        "instrumentalness": ("voice_instrumental-discogs-effnet-1.onnx", "softmax", 1),
+        "instrumentalness": ("voice_instrumental-discogs-effnet-1.onnx", "softmax", 0),
         "valence": ("approachability_regression-discogs-effnet-1.onnx", "identity", 0),
         "mood_happy": ("mood_happy-discogs-effnet-1.onnx", "softmax", 0),
         "mood_sad": ("mood_sad-discogs-effnet-1.onnx", "softmax", 0),

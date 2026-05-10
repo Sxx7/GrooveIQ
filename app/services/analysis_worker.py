@@ -1141,7 +1141,7 @@ def _extract_ml(
     else:
         heads = {
             "danceability": ("danceability-discogs-effnet-1.onnx", 0),
-            "instrumentalness": ("voice_instrumental-discogs-effnet-1.onnx", 1),
+            "instrumentalness": ("voice_instrumental-discogs-effnet-1.onnx", 0),
             # Valence used to be mapped to approachability_regression here,
             # but that model (a) measures a different concept (approach-
             # ability ≠ Russell-circumplex valence) and (b) has an unbounded
