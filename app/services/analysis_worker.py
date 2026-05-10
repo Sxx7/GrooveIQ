@@ -206,7 +206,7 @@ class AnalysisWorkerPool:
         self._input_queue.put((request_id, file_path, cached))
 
         try:
-            result = await asyncio.wait_for(future, timeout=settings.ANALYSIS_TIMEOUT)
+            return await asyncio.wait_for(future, timeout=settings.ANALYSIS_TIMEOUT)
         except TimeoutError:
             self._pending.pop(request_id, None)
             self._kill_worker_holding(request_id, settings.ANALYSIS_TIMEOUT)
@@ -216,19 +216,6 @@ class AnalysisWorkerPool:
                 "analyzed_at": int(time.time()),
                 "analysis_version": ANALYSIS_VERSION,
             }
-
-        # When CLAP is enabled and the worker produced a clap_embedding,
-        # replace the EffNet composite mood_tags / valence with CLAP-derived
-        # values (#98). Done here in the main process so the CLAP text
-        # encoder loads only once, not once per worker subprocess.
-        if isinstance(result, dict) and result.get("clap_embedding"):
-            try:
-                from app.services.clap_mood import apply_clap_mood_to_result
-
-                apply_clap_mood_to_result(result)
-            except Exception as e:
-                logger.debug("CLAP mood override skipped for %s: %s", file_path, e)
-        return result
 
     async def shutdown(self) -> None:
         """Stop all workers and the collector task."""
