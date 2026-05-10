@@ -194,7 +194,7 @@ List analyzed tracks with filtering and sorting.
 | `max_energy` | float | — | Maximum energy |
 | `key` | string | — | Filter by musical key |
 | `mode` | string | — | Filter by mode (major/minor) |
-| `mood` | string | — | Filter by mood tag |
+| `mood` | string | — | Filter by mood tag (confidence > 0.3). One of `happy`, `sad`, `aggressive`, `relaxed`, `party`. Returns `400` for any other value. |
 
 **Response** `200`:
 ```json
@@ -443,7 +443,7 @@ Get ranked track recommendations. Candidates from 8 sources, scored by LightGBM,
 | `hour_of_day` | int | — | Client's local hour (0-23) |
 | `day_of_week` | int | — | ISO 8601: 1=Monday ... 7=Sunday |
 | `genre` | string | — | Filter candidates by genre (case-insensitive substring) |
-| `mood` | string | — | Filter by mood tag (e.g. `happy`, `sad`). Requires confidence > 0.3 |
+| `mood` | string | — | Filter by mood tag. One of `happy`, `sad`, `aggressive`, `relaxed`, `party`. Requires confidence > 0.3. Returns `400` for any other value. |
 | `debug` | bool | false | Include debug data (admin only) |
 
 **Response** `200`:
@@ -645,7 +645,7 @@ Generate a new playlist.
 Strategies:
 
 - `flow` — BPM/energy chain from `seed_track_id`
-- `mood` — filter by `params.mood` + energy arc
+- `mood` — filter by `params.mood` (one of `happy`, `sad`, `aggressive`, `relaxed`, `party`) + energy arc
 - `energy_curve` — shaped profile via `params.curve` (`ramp_up`, `cool_down`, `ramp_up_cool_down`, `steady_high`, `steady_low`)
 - `key_compatible` — Camelot wheel harmonic mixing from `seed_track_id`
 - `path` — **Song Path**: sonic bridge between `seed_track_id` and `params.target_track_id`. Slerp-interpolates between the two 64-dim embeddings and picks the nearest unused library track at each waypoint.

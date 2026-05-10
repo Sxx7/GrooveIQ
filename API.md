@@ -394,7 +394,7 @@ Single-user engagement numbers for stats cards / dashboards. Mirrors one row of 
 | `min_energy` / `max_energy` | float | - | Energy range (0-1) |
 | `key` | string | - | Musical key: `C`, `C#`, `D`, etc. |
 | `mode` | string | - | `major` or `minor` |
-| `mood` | string | - | Mood tag: `happy`, `energetic`, `chill`, `dark`, etc. |
+| `mood` | string | - | Mood tag — one of `happy`, `sad`, `aggressive`, `relaxed`, `party`. Requires confidence > 0.3. Returns `400` for any other value. |
 
 Each row in the response carries the full set of identifiers (the internal `track_id` plus every per-backend external ID currently known for that track):
 
@@ -531,7 +531,7 @@ returns
   "acousticness": 0.04,
   "instrumentalness": 0.01,
   "mood_tags": [
-    {"label": "energetic", "confidence": 0.74},
+    {"label": "party", "confidence": 0.74},
     {"label": "aggressive", "confidence": 0.31}
   ],
   "analyzed_at": 1775774191,
@@ -814,7 +814,7 @@ curl "http://localhost:8000/v1/recommend/simon?debug=true" \
 | `seed_track_id` | string | - | Bias results toward this track |
 | `limit` | int | 25 | 1-100 |
 | `genre` | string | - | Filter by genre (case-insensitive substring) |
-| `mood` | string | - | Filter by mood tag (confidence > 0.3) |
+| `mood` | string | - | Filter by mood tag (confidence > 0.3). One of `happy`, `sad`, `aggressive`, `relaxed`, `party`. Returns `400` for any other value. |
 | `debug` | bool | false | Include debug info |
 | `device_type` | string | - | `mobile`, `desktop`, `speaker`, `car`, `web` |
 | `output_type` | string | - | `headphones`, `speaker`, `bluetooth_speaker`, `car_audio`, `built_in`, `airplay` |
@@ -1106,7 +1106,7 @@ UTC day, or a different API key all produce a fresh playlist (`201`).
 | Strategy | Required | Description |
 |----------|----------|-------------|
 | `flow` | `seed_track_id` | Smooth BPM/energy transitions from seed |
-| `mood` | `params.mood` | Filter by mood tag + energy arc |
+| `mood` | `params.mood` | Filter by mood tag + energy arc. `params.mood` must be one of `happy`, `sad`, `aggressive`, `relaxed`, `party`. |
 | `energy_curve` | `params.curve` | Match target energy profile (`ramp_up`, `cool_down`, `ramp_up_cool_down`, `steady_high`, `steady_low`) |
 | `key_compatible` | `seed_track_id` | Camelot wheel harmonic chaining |
 | `path` | `seed_track_id` + `params.target_track_id` | **Song Path** — sonic bridge between two tracks. Slerp-interpolates between their 64-dim audio embeddings and picks the nearest unused library track at each waypoint. Both IDs must exist in `track_features` and have an `embedding`. |
