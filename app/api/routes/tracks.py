@@ -348,11 +348,23 @@ async def list_tracks(
     max_energy: float | None = Query(None),
     key: str | None = Query(None),
     mode: str | None = Query(None),
-    mood: str | None = Query(None),
+    mood: str | None = Query(
+        None,
+        description="Filter by mood tag label. Must be one of: happy, sad, aggressive, relaxed, party.",
+    ),
     session: AsyncSession = Depends(get_session),
     _key: str = Depends(require_api_key),
 ):
     from sqlalchemy import or_
+
+    if mood is not None:
+        from app.services.audio_analysis import SUPPORTED_MOOD_LABELS
+
+        if mood not in SUPPORTED_MOOD_LABELS:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Unknown mood {mood!r}. Must be one of: {sorted(SUPPORTED_MOOD_LABELS)}.",
+            )
 
     q = select(TrackFeatures).where(TrackFeatures.analysis_error.is_(None))
 

@@ -408,6 +408,12 @@ class PlaylistCreate(BaseModel):
             mood = (self.params or {}).get("mood")
             if not mood:
                 raise ValueError("params.mood is required for 'mood' strategy")
+            from app.services.audio_analysis import SUPPORTED_MOOD_LABELS
+
+            if mood not in SUPPORTED_MOOD_LABELS:
+                raise ValueError(
+                    f"params.mood {mood!r} is not supported. Must be one of: {sorted(SUPPORTED_MOOD_LABELS)}."
+                )
         if self.strategy == PlaylistStrategy.ENERGY_CURVE:
             curve = (self.params or {}).get("curve")
             valid = ("ramp_up", "cool_down", "ramp_up_cool_down", "steady_high", "steady_low")
@@ -529,7 +535,10 @@ class OnboardingRequest(BaseModel):
     mood_preferences: list[str] | None = Field(
         None,
         max_length=10,
-        description="Preferred moods, e.g. ['happy', 'relaxed', 'energetic'].",
+        description=(
+            "Preferred moods. Must be subset of: happy, sad, aggressive, relaxed, party. "
+            "Unknown labels are silently dropped (clients may evolve faster than the backend)."
+        ),
     )
     listening_contexts: list[str] | None = Field(
         None,
@@ -553,6 +562,18 @@ class OnboardingRequest(BaseModel):
         le=1.0,
         description="Preferred danceability (0=not danceable, 1=very danceable).",
     )
+
+    @field_validator("mood_preferences", mode="after")
+    @classmethod
+    def filter_unknown_moods(cls, v: list[str] | None) -> list[str] | None:
+        """Silently drop moods the EffNet pipeline doesn't emit. Onboarding is
+        forgiving: clients (especially older app versions) may include extra
+        labels — we keep what's usable rather than failing the whole call."""
+        if not v:
+            return v
+        from app.services.audio_analysis import SUPPORTED_MOOD_LABELS
+
+        return [m for m in v if m and m.lower() in SUPPORTED_MOOD_LABELS]
 
     @model_validator(mode="after")
     def at_least_one_field(self):
