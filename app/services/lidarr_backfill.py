@@ -1279,6 +1279,7 @@ async def delete_request(session: AsyncSession, request_id: int) -> bool:
 # Stats (for the dashboard top panel)
 # ---------------------------------------------------------------------------
 
+
 # Module-level cache for the live Lidarr totals (missing / cutoff). The
 # dashboard polls /v1/lidarr-backfill/stats every ~3 s; without a cache
 # each poll fires two synchronous HTTP calls to Lidarr (4–9 s each on a

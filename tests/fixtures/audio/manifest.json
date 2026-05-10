@@ -1,0 +1,172 @@
+{
+  "_doc": [
+    "Per-fixture expected output ranges for the analysis pipeline.",
+    "",
+    "The runner generates each fixture deterministically from synth.py,",
+    "feeds it through `_analyze_file()`, and asserts every numeric output",
+    "lands inside the band declared here. Values are PINNED to the current",
+    "production pipeline (v2.6) — so any code change that shifts a value",
+    "outside its band fails CI loudly, forcing an explicit manifest update.",
+    "",
+    "Range syntax:",
+    "  [lo, hi]       — closed numeric range, must be inside.",
+    "  null           — value MUST be None.",
+    "  'not_null'     — value MUST be populated (any non-None).",
+    "  {'error': S}   — analysis_error MUST contain substring S; scalar",
+    "                   feature columns must be missing or null.",
+    "",
+    "Bands have ~10-15% headroom around observed values to tolerate",
+    "non-determinism from ONNX provider differences (CPU vs CUDA) without",
+    "swallowing real regressions. If a fixture starts failing here on a",
+    "code change, treat it as a signal first, not noise."
+  ],
+
+  "_universal_invariants": {
+    "_doc": [
+      "Applied to every fixture except those with an expected error.",
+      "Caught historically: #42 (zero-norm embedding), #83 (NULL embedding",
+      "leak), CLAP-text BOS-padding (cos > 0.99), #98 (CLAP cosine spread)."
+    ],
+    "embedding_norm":   [0.99, 1.01],
+    "clap_norm":        [0.99, 1.01],
+    "embedding_dim":    [64, 64],
+    "clap_dim":         [512, 512],
+    "all_mood_labels_present": ["happy", "sad", "aggressive", "relaxed", "party"],
+    "no_nan_or_inf":    true,
+    "speechiness_invariant": "abs(speechiness - (1.0 - instrumentalness)) < 0.01"
+  },
+
+  "silence": {
+    "_doc": "12s of pure zeros. Pins the analyser's silence behaviour.",
+    "duration":         [11.8, 12.2],
+    "bpm":              null,
+    "bpm_confidence":   null,
+    "loudness":         [-100.0, -50.0],
+    "dynamic_range":    [0.0, 0.5],
+    "energy":           [0.0, 0.05],
+    "danceability":     [0.0, 1.0],
+    "valence":          [0.0, 1.0],
+    "acousticness":     [0.0, 1.0],
+    "instrumentalness": [0.0, 1.0],
+    "embedding":        "not_null",
+    "clap_embedding":   "not_null",
+    "analysis_error":   null
+  },
+
+  "pure_sine": {
+    "_doc": "440Hz concert-A sine. Single-tone tonal content.",
+    "duration":         [11.8, 12.2],
+    "bpm":              [30.0, 250.0],
+    "loudness":         [-15.0, 0.0],
+    "dynamic_range":    [0.0, 1.0],
+    "energy":           [0.7, 1.0],
+    "danceability":     [0.0, 1.0],
+    "valence":          [0.0, 1.0],
+    "acousticness":     [0.5, 1.0],
+    "instrumentalness": [0.0, 1.0],
+    "key_confidence":   [0.4, 1.0],
+    "key":              "not_null",
+    "mode":             "not_null",
+    "embedding":        "not_null",
+    "clap_embedding":   "not_null",
+    "analysis_error":   null
+  },
+
+  "too_short": {
+    "_doc": "5s — must short-circuit with the 'Track too short' error.",
+    "duration":         [4.5, 5.5],
+    "analysis_error":   {"error": "Track too short"},
+    "bpm":              null,
+    "embedding":        null,
+    "clap_embedding":   null
+  },
+
+  "white_noise": {
+    "_doc": "Broadband noise. Spectrally flat, no tonal content.",
+    "duration":         [11.8, 12.2],
+    "bpm":              [30.0, 250.0],
+    "loudness":         [-20.0, -2.0],
+    "dynamic_range":    [0.0, 1.0],
+    "energy":           [0.4, 1.0],
+    "danceability":     [0.5, 1.0],
+    "valence":          [0.0, 1.0],
+    "acousticness":     [0.0, 0.4],
+    "instrumentalness": [0.0, 1.0],
+    "embedding":        "not_null",
+    "clap_embedding":   "not_null",
+    "analysis_error":   null
+  },
+
+  "drum_loop": {
+    "_doc": "Programmed kick+snare+hat at 120 BPM. Strong rhythm.",
+    "duration":         [11.8, 12.2],
+    "bpm":              [80.0, 200.0],
+    "loudness":         [-30.0, -5.0],
+    "dynamic_range":    [0.0, 5.0],
+    "energy":           [0.05, 0.6],
+    "danceability":     [0.6, 1.0],
+    "valence":          [0.0, 1.0],
+    "acousticness":     [0.0, 0.5],
+    "instrumentalness": [0.0, 1.0],
+    "embedding":        "not_null",
+    "clap_embedding":   "not_null",
+    "analysis_error":   null
+  },
+
+  "acoustic_arpeggio": {
+    "_doc": "Slow plucked-string arpeggio in C major.",
+    "duration":         [11.8, 12.2],
+    "bpm":              [30.0, 250.0],
+    "loudness":         [-25.0, -2.0],
+    "dynamic_range":    [0.0, 5.0],
+    "energy":           [0.5, 1.0],
+    "danceability":     [0.5, 1.0],
+    "valence":          [0.0, 1.0],
+    "acousticness":     [0.5, 1.0],
+    "instrumentalness": [0.0, 1.0],
+    "key_confidence":   [0.4, 1.0],
+    "key":              "not_null",
+    "mode":             "not_null",
+    "embedding":        "not_null",
+    "clap_embedding":   "not_null",
+    "analysis_error":   null
+  },
+
+  "speech_like": {
+    "_doc": [
+      "Synthesized voice-shaped signal: glottal pulse train + formant",
+      "filtering + syllable-rate AM. The EffNet voice classifier doesn't",
+      "fully recognise it as voice (synthesis is too clean), so this",
+      "fixture is NOT a #99 smoking gun — Layer 3 (DB invariant against",
+      "taste_profile.py priors) catches that. Kept for embedding/CLAP",
+      "sanity on a non-music-shaped signal."
+    ],
+    "duration":         [11.8, 12.2],
+    "loudness":         [-25.0, -2.0],
+    "dynamic_range":    [0.0, 5.0],
+    "energy":           [0.3, 1.0],
+    "danceability":     [0.0, 1.0],
+    "valence":          [0.0, 1.0],
+    "acousticness":     [0.3, 1.0],
+    "instrumentalness": [0.0, 1.0],
+    "embedding":        "not_null",
+    "clap_embedding":   "not_null",
+    "analysis_error":   null
+  },
+
+  "distorted_metal": {
+    "_doc": "Distorted power chord, palm-mute rhythm at 160 BPM.",
+    "duration":         [11.8, 12.2],
+    "bpm":              [80.0, 250.0],
+    "loudness":         [-25.0, -2.0],
+    "dynamic_range":    [0.0, 5.0],
+    "energy":           [0.2, 1.0],
+    "danceability":     [0.5, 1.0],
+    "valence":          [0.0, 1.0],
+    "acousticness":     [0.0, 0.8],
+    "instrumentalness": [0.0, 1.0],
+    "embedding":        "not_null",
+    "clap_embedding":   "not_null",
+    "analysis_error":   null
+  }
+}
