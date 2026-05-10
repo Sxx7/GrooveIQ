@@ -15,6 +15,7 @@ from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.api.routes import (
+    admin,
     algorithm_config,
     api_calls,
     artists,
@@ -245,6 +246,7 @@ app.include_router(integrations.router, prefix="/v1", tags=["integrations"])
 app.include_router(news.router, prefix="/v1", tags=["news"])
 app.include_router(lidarr_backfill.router, prefix="/v1", tags=["lidarr-backfill"])
 app.include_router(api_calls.router, prefix="/v1", tags=["api-calls"])
+app.include_router(admin.router, prefix="/v1", tags=["admin"])
 
 # ---------------------------------------------------------------------------
 # Dashboard (static)

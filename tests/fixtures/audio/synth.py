@@ -211,20 +211,21 @@ def distorted_metal() -> tuple[int, np.ndarray]:
 
 
 FIXTURES = {
-    "silence":            silence,
-    "pure_sine":          pure_sine,
-    "too_short":          too_short,
-    "white_noise":        white_noise,
-    "drum_loop":          drum_loop,
-    "acoustic_arpeggio":  acoustic_arpeggio,
-    "speech_like":        speech_like,
-    "distorted_metal":    distorted_metal,
+    "silence": silence,
+    "pure_sine": pure_sine,
+    "too_short": too_short,
+    "white_noise": white_noise,
+    "drum_loop": drum_loop,
+    "acoustic_arpeggio": acoustic_arpeggio,
+    "speech_like": speech_like,
+    "distorted_metal": distorted_metal,
 }
 
 
 def write_all(out_dir: str) -> dict[str, str]:
     """Write every fixture as a 16-bit PCM WAV. Returns ``{name: path}``."""
     import os
+
     from scipy.io import wavfile
 
     os.makedirs(out_dir, exist_ok=True)

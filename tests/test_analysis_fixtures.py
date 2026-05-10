@@ -55,9 +55,11 @@ _MANIFEST: dict = json.loads(_MANIFEST_PATH.read_text())
 # for the model directory before attempting any imports that would 500.
 
 _ESSENTIA_CACHE = os.environ.get("ESSENTIA_MODELS_DIR", "/cache/essentia/onnx")
-_HAS_MODELS = os.path.isdir(_ESSENTIA_CACHE) and any(
-    f.endswith(".onnx") for f in os.listdir(_ESSENTIA_CACHE)
-) if os.path.isdir(_ESSENTIA_CACHE) else False
+_HAS_MODELS = (
+    os.path.isdir(_ESSENTIA_CACHE) and any(f.endswith(".onnx") for f in os.listdir(_ESSENTIA_CACHE))
+    if os.path.isdir(_ESSENTIA_CACHE)
+    else False
+)
 
 pytestmark = pytest.mark.skipif(
     not _HAS_MODELS,
@@ -97,8 +99,9 @@ def _pipeline_state(tmp_path_factory):
 def _fixture_results(_pipeline_state):
     """Runs every fixture through ``_analyze_file()`` exactly once for the
     whole session. Per-fixture tests then assert against the cached result."""
-    from app.services import analysis_worker as aw
     import essentia.standard as es
+
+    from app.services import analysis_worker as aw
 
     out = {}
     for name, path in _pipeline_state["paths"].items():
@@ -125,9 +128,7 @@ def _check_range(name: str, value, band, label: str) -> None:
         lo, hi = band
         assert value is not None, f"[{name}] {label}: expected in [{lo}, {hi}], got None"
         assert isinstance(value, (int, float)), f"[{name}] {label}: not numeric: {value!r}"
-        assert not (isinstance(value, float) and (math.isnan(value) or math.isinf(value))), (
-            f"[{name}] {label}: NaN/Inf"
-        )
+        assert not (isinstance(value, float) and (math.isnan(value) or math.isinf(value))), f"[{name}] {label}: NaN/Inf"
         assert lo <= value <= hi, f"[{name}] {label}: {value} not in [{lo}, {hi}]"
     elif band is None:
         assert value is None, f"[{name}] {label}: expected None, got {value!r}"
@@ -151,7 +152,7 @@ def _decode_emb(b64: str | None) -> np.ndarray | None:
 # ---------------------------------------------------------------------------
 
 
-_FIXTURE_NAMES = [k for k in _MANIFEST.keys() if not k.startswith("_")]
+_FIXTURE_NAMES = [k for k in _MANIFEST if not k.startswith("_")]
 
 
 @pytest.mark.parametrize("name", _FIXTURE_NAMES)
@@ -168,8 +169,7 @@ def test_fixture_output_matches_manifest(name, _fixture_results):
     err_spec = spec.get("analysis_error")
     if isinstance(err_spec, dict) and "error" in err_spec:
         assert err_spec["error"] in (result.get("analysis_error") or ""), (
-            f"[{name}] expected error containing {err_spec['error']!r}, "
-            f"got {result.get('analysis_error')!r}"
+            f"[{name}] expected error containing {err_spec['error']!r}, got {result.get('analysis_error')!r}"
         )
         # Subset of fields must still be honoured (e.g. duration, embedding null)
         for field, band in spec.items():
@@ -268,6 +268,4 @@ def test_universal_invariants(name, _fixture_results):
     inst = result.get("instrumentalness")
     speech = result.get("speechiness")
     if inst is not None and speech is not None:
-        assert abs(speech - (1.0 - inst)) < 0.01, (
-            f"[{name}] speechiness {speech} != 1 - instrumentalness {1.0 - inst}"
-        )
+        assert abs(speech - (1.0 - inst)) < 0.01, f"[{name}] speechiness {speech} != 1 - instrumentalness {1.0 - inst}"
