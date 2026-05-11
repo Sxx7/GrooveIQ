@@ -3,7 +3,7 @@
 # Build:  docker build -t spotdl-api .
 # Run:    docker run -p 8181:8181 -v /path/to/music:/music spotdl-api
 
-FROM python:3.12-slim@sha256:46cb7cc2877e60fbd5e21a9ae6115c30ace7a077b9f8772da879e4590c18c2e3 AS runtime
+FROM python:3.12-slim@sha256:ec948fa5f90f4f8907e89f4800cfd2d2e91e391a4bce4a6afa77ba265bc3a2fe AS runtime
 
 # FFmpeg is required by spotDL for transcoding
 RUN apt-get update \
