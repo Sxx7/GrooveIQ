@@ -43,7 +43,14 @@ import os
 # col 1, so 'instrumentalness' actually stored voice probability and the
 # derived 'speechiness = 1 - instrumentalness' was the instrumental
 # probability (#99). Same shape as the v2.5 mood inversion.
-ANALYSIS_VERSION = "2.7"
+# 2.8: fixed the EffNet mel-spectrogram front end. The hand-rolled
+# mel-spectrogram used 128 bands (model expects 96), 96-frame patches
+# (expects 128) and a transposed patch axis, feeding EffNet out-of-
+# distribution input — every embedding collapsed onto one direction and the
+# mood/danceability/instrumentalness heads were degenerate, so similarity
+# search returned near-random tracks. The per-frame log-mel is now produced
+# by es.TensorflowInputMusiCNN, the Discogs-EffNet training front end.
+ANALYSIS_VERSION = "2.8"
 
 # Must match FAISS index dimension (faiss_index._EMBEDDING_DIM).
 EMBEDDING_DIM = 64

@@ -77,16 +77,21 @@ _ONNX_MODEL_SHA256: dict[str, str] = {
 }
 
 # ---------------------------------------------------------------------------
-# Mel-spectrogram parameters (must match EffNet-Discogs training pipeline)
+# Mel-spectrogram parameters for Discogs-EffNet.
+#
+# The per-frame log-mel is delegated to es.TensorflowInputMusiCNN (96 bands)
+# — the front end the model was trained on. The model input tensor is
+# (batch, 128, 96) = (batch, frames, bands); a hand-rolled mel-spectrogram
+# with the wrong band count or a transposed patch axis feeds EffNet
+# out-of-distribution input and collapses every embedding (the pre-2.8 bug).
 # ---------------------------------------------------------------------------
 
 _EFFNET_SR = 16000  # EffNet expects 16 kHz mono
-_FFT_SIZE = 1024
-_HOP_SIZE = 256
-_N_MELS = 128
-_FREQ_MAX = 8000.0
-_PATCH_FRAMES = 96  # ~1.5 s per patch at 16 kHz / 256 hop
-_PATCH_HOP = 96  # non-overlapping patches
+_MEL_FRAME_SIZE = 512  # MusiCNN front-end frame size
+_MEL_HOP_SIZE = 256  # MusiCNN front-end hop size
+_N_MELS = 96  # Discogs-EffNet mel bands
+_PATCH_FRAMES = 128  # frames per patch — model input axis 1
+_PATCH_HOP = 128  # non-overlapping patches
 
 # ---------------------------------------------------------------------------
 # Embedding projection: EffNet 400-dim → 64-dim (Johnson-Lindenstrauss)
@@ -1024,46 +1029,43 @@ def _compute_melspec_patches(
     max_seconds: float = 15.0,
 ) -> np.ndarray:
     """
-    Compute mel-spectrogram patches matching EffNet-Discogs input format.
+    Compute Discogs-EffNet mel-spectrogram patches from 16 kHz mono audio.
 
-    Uses the centre *max_seconds* of audio.
-    Returns shape ``(num_patches, 128, 96)`` float32.
+    The per-frame log-mel is produced by Essentia's ``TensorflowInputMusiCNN``
+    — the front end Discogs-EffNet was trained against — giving 96 mel bands
+    per frame. Frames are sliced into non-overlapping ``_PATCH_FRAMES``-frame
+    patches.
+
+    Uses the centre *max_seconds* of audio. Returns shape
+    ``(num_patches, 128, 96)`` = ``(N, frames, bands)`` float32, matching the
+    model's ``(batch, 128, 96)`` input tensor.
     """
     max_samples = int(max_seconds * sr)
     if len(audio) > max_samples:
         start = (len(audio) - max_samples) // 2
         audio = audio[start : start + max_samples]
 
-    windowing = es.Windowing(type="hann", size=_FFT_SIZE, zeroPadding=0, normalized=False)
-    spectrum = es.Spectrum(size=_FFT_SIZE)
-    melbands = es.MelBands(
-        numberBands=_N_MELS,
-        sampleRate=sr,
-        lowFrequencyBound=0.0,
-        highFrequencyBound=_FREQ_MAX,
-        inputSize=_FFT_SIZE // 2 + 1,
-    )
-
-    frames = []
-    for frame in es.FrameGenerator(audio, frameSize=_FFT_SIZE, hopSize=_HOP_SIZE, startFromZero=True):
-        w = windowing(frame)
-        s = spectrum(w)
-        mel = melbands(s)
-        frames.append(np.log10(np.maximum(mel, 1e-10)))
+    musicnn_input = es.TensorflowInputMusiCNN()
+    frames = [
+        musicnn_input(frame)
+        for frame in es.FrameGenerator(
+            audio, frameSize=_MEL_FRAME_SIZE, hopSize=_MEL_HOP_SIZE, startFromZero=True
+        )
+    ]
 
     if len(frames) < _PATCH_FRAMES:
         if not frames:
-            return np.zeros((0, _N_MELS, _PATCH_FRAMES), dtype=np.float32)
+            return np.zeros((0, _PATCH_FRAMES, _N_MELS), dtype=np.float32)
         padded = np.zeros((_PATCH_FRAMES, _N_MELS), dtype=np.float32)
         arr = np.array(frames, dtype=np.float32)
         padded[: len(arr)] = arr
-        return padded.T[np.newaxis, :, :]  # (1, 128, 96)
+        return padded[np.newaxis, :, :]  # (1, 128, 96)
 
-    frames_arr = np.array(frames, dtype=np.float32)  # (num_frames, 128)
-    patches = []
-    for i in range(0, len(frames_arr) - _PATCH_FRAMES + 1, _PATCH_HOP):
-        patches.append(frames_arr[i : i + _PATCH_FRAMES].T)  # (128, 96)
-
+    frames_arr = np.array(frames, dtype=np.float32)  # (num_frames, 96)
+    patches = [
+        frames_arr[i : i + _PATCH_FRAMES]  # (128, 96) = (frames, bands)
+        for i in range(0, len(frames_arr) - _PATCH_FRAMES + 1, _PATCH_HOP)
+    ]
     return np.array(patches, dtype=np.float32)  # (N, 128, 96)
 
 

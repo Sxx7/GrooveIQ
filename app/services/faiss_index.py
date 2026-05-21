@@ -60,17 +60,27 @@ def _decode_embedding(b64: str, expected_dim: int) -> np.ndarray | None:
         return None
 
 
+def _center_and_normalise(vecs: np.ndarray, centroid: np.ndarray) -> np.ndarray:
+    """Subtract ``centroid`` from each row and re-normalise to unit length."""
+    out = vecs - centroid
+    norms = np.linalg.norm(out, axis=1, keepdims=True)
+    norms[norms < 1e-9] = 1.0
+    return (out / norms).astype(np.float32)
+
+
 class FaissIndex:
     """A single FAISS ANN index over a fixed-dimension embedding column."""
 
-    def __init__(self, dim: int, name: str):
+    def __init__(self, dim: int, name: str, center: bool = False):
         self.dim = dim
         self.name = name
+        self.center = center
         self._lock = threading.Lock()
         self._index: object | None = None  # faiss.Index
         self._id_to_track: list[str] = []
         self._track_to_id: dict[str, int] = {}
         self._embeddings: np.ndarray | None = None  # raw normalised matrix
+        self._centroid: np.ndarray | None = None  # global mean (when center=True)
 
     # -- build ----------------------------------------------------------
 
@@ -86,10 +96,21 @@ class FaissIndex:
                 vectors.append(vec)
 
         if not vectors:
-            return None, [], {}, None, 0
+            return None, [], {}, None, None, 0
 
         matrix = np.stack(vectors).astype(np.float32)
         n = matrix.shape[0]
+
+        # Mean-centre before indexing when enabled: EffNet embeddings carry a
+        # large shared (DC) component that otherwise dominates inner-product
+        # similarity and leaves every track ~equally close. Indexing the
+        # centred residual — and applying the same centroid to queries in
+        # search() — restores genre-bearing separation.
+        centroid: np.ndarray | None = None
+        index_matrix = matrix
+        if self.center:
+            centroid = matrix.mean(axis=0).astype(np.float32)
+            index_matrix = _center_and_normalise(matrix, centroid)
 
         if n < _IVF_THRESHOLD:
             index = faiss.IndexFlatIP(self.dim)
@@ -97,12 +118,12 @@ class FaissIndex:
             nlist = min(int(np.sqrt(n)), 256)
             quantiser = faiss.IndexFlatIP(self.dim)
             index = faiss.IndexIVFFlat(quantiser, self.dim, nlist, faiss.METRIC_INNER_PRODUCT)
-            index.train(matrix)
+            index.train(index_matrix)
             index.nprobe = min(nlist // 4, 16)
 
-        index.add(matrix)
+        index.add(index_matrix)
         id_map = {tid: i for i, tid in enumerate(track_ids)}
-        return index, track_ids, id_map, matrix, n
+        return index, track_ids, id_map, matrix, centroid, n
 
     async def rebuild(self, column: str) -> int:
         """Load all rows where ``column`` is not null and rebuild the index."""
@@ -112,7 +133,7 @@ class FaissIndex:
             rows = result.all()
 
         loop = asyncio.get_running_loop()
-        index, track_ids, id_map, matrix, n = await loop.run_in_executor(None, self._build_sync, rows)
+        index, track_ids, id_map, matrix, centroid, n = await loop.run_in_executor(None, self._build_sync, rows)
 
         if n == 0:
             logger.warning("FAISS build (%s): no valid embeddings found, index empty.", self.name)
@@ -122,6 +143,7 @@ class FaissIndex:
             self._id_to_track = track_ids
             self._track_to_id = id_map
             self._embeddings = matrix
+            self._centroid = centroid
 
         if n > 0:
             logger.info(
@@ -144,15 +166,18 @@ class FaissIndex:
         with self._lock:
             index = self._index
             id_to_track = self._id_to_track
+            centroid = self._centroid
 
         if index is None or len(id_to_track) == 0:
             return []
 
         vec = embedding.astype(np.float32).reshape(1, -1)
+        if centroid is not None:
+            vec = vec - centroid
         norm = np.linalg.norm(vec)
         if norm < 1e-9:
             return []
-        vec /= norm
+        vec = vec / norm
 
         fetch_k = min(k + (len(exclude_ids) if exclude_ids else 0) + 10, len(id_to_track))
         scores, ids = index.search(vec, fetch_k)
@@ -222,7 +247,7 @@ class FaissIndex:
 # Singleton instances
 # ---------------------------------------------------------------------------
 
-effnet_index = FaissIndex(dim=64, name="effnet")
+effnet_index = FaissIndex(dim=64, name="effnet", center=True)
 clap_index = FaissIndex(dim=512, name="clap")
 
 
