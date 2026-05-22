@@ -118,16 +118,15 @@ async def main() -> int:
     src = create_async_engine(src_url)
     dst = create_async_engine(dst_url)
     try:
-        # Build the schema with a bare create_all in its own transaction. This
-        # deliberately skips _apply_column_migrations: on a fresh DB create_all
-        # already emits every current column, and a failed ALTER would abort
-        # the whole transaction on PostgreSQL. TRUNCATE makes re-runs idempotent.
+        # Drop + recreate the whole schema so it always matches the current
+        # models and re-runs start clean. create_all alone won't alter an
+        # existing table; _apply_column_migrations is deliberately skipped
+        # (create_all emits every current column, and a failed ALTER would
+        # abort the transaction on PostgreSQL).
         async with dst.begin() as conn:
+            await conn.run_sync(Base.metadata.drop_all)
             await conn.run_sync(Base.metadata.create_all)
-            await conn.execute(
-                text("TRUNCATE TABLE " + ", ".join(TABLES) + " RESTART IDENTITY CASCADE")
-            )
-        print("schema: create_all + truncate complete")
+        print("schema: dropped + recreated")
 
         grand_total = 0
         for name in TABLES:

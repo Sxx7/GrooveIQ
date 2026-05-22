@@ -573,8 +573,8 @@ class ChartEntry(Base):
     track_title = Column(String(512), nullable=True)  # null for artist charts
     artist_name = Column(String(512), nullable=False)
     artist_mbid = Column(String(64), nullable=True)
-    playcount = Column(Integer, nullable=True)
-    listeners = Column(Integer, nullable=True)
+    playcount = Column(BigInteger, nullable=True)
+    listeners = Column(BigInteger, nullable=True)
 
     # Image URL from Last.fm (best available size)
     image_url = Column(String(1024), nullable=True)
