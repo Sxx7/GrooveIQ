@@ -16,7 +16,7 @@ import traceback
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
-from sqlalchemy import delete
+from sqlalchemy import delete, select
 
 from app.core.config import settings
 from app.db.session import AsyncSessionLocal
@@ -26,6 +26,12 @@ from app.workers.library_scanner import resume_interrupted_scans, trigger_scan
 logger = logging.getLogger(__name__)
 
 _scheduler = AsyncIOScheduler(timezone="UTC")
+
+# Per-file scan_logs are retained only for this many most-recent scans. The
+# library scanner prunes its own logs in a post-scan phase, but a scan that
+# dies mid-run never reaches it; the daily cleanup job below bounds the table
+# regardless of whether scans complete.
+_SCAN_LOG_KEEP_SCANS = 20
 
 
 async def start_scheduler() -> None:
@@ -136,6 +142,15 @@ async def start_scheduler() -> None:
             id="api_call_log_cleanup",
             replace_existing=True,
         )
+
+    # Scan log cleanup (daily, 02:40 UTC) — bounds scan_logs even when a scan
+    # dies mid-run before reaching its own post-scan log-prune phase.
+    _scheduler.add_job(
+        _purge_old_scan_logs,
+        trigger=CronTrigger(hour=2, minute=40, timezone="UTC"),
+        id="scan_log_cleanup",
+        replace_existing=True,
+    )
 
     # Lidarr backfill engine — drains /wanted/missing through streamrip-api.
     # Both jobs are gated on the persisted config's `enabled` flag; the API
@@ -478,6 +493,36 @@ async def _purge_old_api_call_logs() -> None:
             )
     except Exception:
         logger.error(f"API call log cleanup failed: {traceback.format_exc()}")
+
+
+async def _purge_old_scan_logs() -> None:
+    """Keep scan_logs only for the most recent _SCAN_LOG_KEEP_SCANS scans.
+
+    The library scanner prunes its own per-file log rows in a post-scan
+    phase, so a scan that dies mid-run (e.g. on SQLite lock contention)
+    leaks every row it wrote. This daily job bounds the table regardless.
+    """
+    try:
+        from app.models.db import LibraryScanState, ScanLog
+
+        keep_scans = (
+            select(LibraryScanState.id)
+            .order_by(LibraryScanState.id.desc())
+            .limit(_SCAN_LOG_KEEP_SCANS)
+            .correlate(None)
+            .scalar_subquery()
+        )
+        async with AsyncSessionLocal() as session:
+            result = await session.execute(delete(ScanLog).where(ScanLog.scan_id.notin_(keep_scans)))
+            await session.commit()
+        if result.rowcount:
+            logger.info(
+                "Scan log cleanup: purged %d rows, kept latest %d scans",
+                result.rowcount,
+                _SCAN_LOG_KEEP_SCANS,
+            )
+    except Exception:
+        logger.error(f"Scan log cleanup failed: {traceback.format_exc()}")
 
 
 # ---------------------------------------------------------------------------

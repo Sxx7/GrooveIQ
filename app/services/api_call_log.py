@@ -65,6 +65,21 @@ _SKIP_PATH_PREFIXES = (
     "/v1/api-calls",  # don't log the log-viewing endpoint itself
 )
 
+# High-frequency dashboard status-polling endpoints. The dashboard refreshes
+# these every few seconds; logging every poll added ~95% of api_call_logs'
+# row volume, and the resulting SQLite WAL churn starved the library scanner
+# of the write lock (scans died with "database is locked"). A status-poll
+# heartbeat carries no debugging signal that an actual frontend action would,
+# so it is dropped outright rather than made configurable.
+_SKIP_POLLING_PATHS = frozenset(
+    {
+        "/v1/stats",
+        "/v1/pipeline/status",
+        "/v1/downloads/queue",
+        "/v1/lidarr-backfill/stats",
+    }
+)
+
 
 def should_log_path(path: str) -> bool:
     """Return False for endpoints we deliberately skip."""
@@ -73,6 +88,8 @@ def should_log_path(path: str) -> bool:
     for prefix in _SKIP_PATH_PREFIXES:
         if path.startswith(prefix):
             return False
+    if path in _SKIP_POLLING_PATHS:
+        return False
     # /v1/users/{id}/api-calls is the dashboard's own log-viewer endpoint;
     # logging it would create a "poll == new row" feedback loop.
     if path.endswith("/api-calls") or "/api-calls/" in path:

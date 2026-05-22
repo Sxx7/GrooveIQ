@@ -176,6 +176,19 @@ class TestShouldLogPath:
         assert not should_log_path("/v1/users/alice/api-calls")
         assert not should_log_path("/v1/users/alice/api-calls/123")
 
+    def test_polling_endpoints_skipped(self):
+        # High-frequency dashboard status-polling: dropped so it stops
+        # dominating api_call_logs (it was ~95% of the table on prod) and
+        # starving the library scanner of the SQLite write lock.
+        assert not should_log_path("/v1/stats")
+        assert not should_log_path("/v1/pipeline/status")
+        assert not should_log_path("/v1/downloads/queue")
+        assert not should_log_path("/v1/lidarr-backfill/stats")
+        # Exact-match only — neighbouring real endpoints stay logged.
+        assert should_log_path("/v1/downloads")
+        assert should_log_path("/v1/lidarr-backfill/requests")
+        assert should_log_path("/v1/pipeline/models")
+
     def test_events_toggle(self, monkeypatch):
         monkeypatch.setattr(settings, "API_LOG_INCLUDE_EVENTS", False)
         assert not should_log_path("/v1/events")
