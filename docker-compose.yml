@@ -6,8 +6,8 @@
 #   docker compose logs -f        # follow logs
 #   docker compose down           # stop (data persists in ./data/)
 #
-# To use PostgreSQL instead of SQLite, uncomment the `db` service and
-# update DATABASE_URL in your .env file.
+# PostgreSQL is the recommended database (the `postgres` service below).
+# Set POSTGRES_PASSWORD in .env, then point DATABASE_URL at it.
 services:
   grooveiq:
     build:
@@ -20,6 +20,9 @@ services:
     platform: linux/amd64
     container_name: grooveiq
     restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
     read_only: true
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]
@@ -69,6 +72,31 @@ services:
       options:
         max-size: "20m"
         max-file: "5"
+  # ---------------------------------------------------------------------------
+  # PostgreSQL (primary database)
+  # ---------------------------------------------------------------------------
+  postgres:
+    image: postgres:17-alpine
+    container_name: grooveiq-postgres
+    restart: unless-stopped
+    security_opt: [no-new-privileges:true]
+    environment:
+      POSTGRES_USER:     grooveiq
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB:       grooveiq
+    volumes:
+      - grooveiq_pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U grooveiq -d grooveiq"]
+      interval: 10s
+      timeout:  5s
+      retries:  5
+      start_period: 30s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
   # ---------------------------------------------------------------------------
   # spotdl-api (Spotify-matched downloads via YouTube Music)
   # ---------------------------------------------------------------------------
@@ -261,25 +289,6 @@ services:
   #       max-file: "3"
 
   # ---------------------------------------------------------------------------
-  # Optional: PostgreSQL (uncomment for multi-user / production deployments)
-  # ---------------------------------------------------------------------------
-  # db:
-  #   image: postgres:16-alpine
-  #   container_name: grooveiq_db
-  #   restart: unless-stopped
-  #   environment:
-  #     POSTGRES_USER:     grooveiq
-  #     POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set in .env}
-  #     POSTGRES_DB:       grooveiq
-  #   volumes:
-  #     - grooveiq_pg:/var/lib/postgresql/data
-  #   healthcheck:
-  #     test: ["CMD-SHELL", "pg_isready -U grooveiq"]
-  #     interval: 10s
-  #     timeout:  5s
-  #     retries:  5
-
-  # ---------------------------------------------------------------------------
   # Optional: Caddy reverse proxy (HTTPS with auto TLS via Let's Encrypt)
   # ---------------------------------------------------------------------------
   # caddy:
@@ -311,7 +320,7 @@ volumes:
   ablookup_data:
   streamrip_config:
   # slskd_data: moved to arr_stack (slskd runs inside Gluetun VPN namespace there)
-  # grooveiq_pg:
+  grooveiq_pg:
   # caddy_data:
   # caddy_config:
 

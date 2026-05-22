@@ -162,8 +162,13 @@ async def _apply_column_migrations(conn) -> None:
             raise ValueError(f"Unsafe column name in migration: {column!r}")
         if not _SAFE_COL_TYPE.match(col_type):
             raise ValueError(f"Unsafe column type in migration: {col_type!r}")
+        # Each statement runs in its own SAVEPOINT: on PostgreSQL a failed
+        # statement aborts the entire transaction, so without this an
+        # already-applied ALTER would poison create_all() and every later
+        # migration. SQLite supports SAVEPOINT too, so the path is uniform.
         try:
-            await conn.exec_driver_sql(f"ALTER TABLE {table} ADD COLUMN {column} {col_type}")
+            async with conn.begin_nested():
+                await conn.exec_driver_sql(f"ALTER TABLE {table} ADD COLUMN {column} {col_type}")
             logger.info(f"Migration: added {table}.{column}")
         except Exception:
             pass  # Column already exists
@@ -188,28 +193,32 @@ async def _apply_column_migrations(conn) -> None:
             raise ValueError(f"Unsafe identifier in unique-index migration: {table}.{column}")
         index_name = f"ix_{table}_{column}"
         try:
-            await conn.exec_driver_sql(f"CREATE UNIQUE INDEX IF NOT EXISTS {index_name} ON {table} ({column})")
+            async with conn.begin_nested():
+                await conn.exec_driver_sql(f"CREATE UNIQUE INDEX IF NOT EXISTS {index_name} ON {table} ({column})")
         except Exception as e:
             logger.warning("Migration: could not create unique index %s: %s", index_name, e)
 
     # Plain (non-unique) index on musicbrainz_track_id for the lookup endpoint.
     try:
-        await conn.exec_driver_sql(
-            "CREATE INDEX IF NOT EXISTS ix_track_features_musicbrainz_track_id ON track_features (musicbrainz_track_id)"
-        )
+        async with conn.begin_nested():
+            await conn.exec_driver_sql(
+                "CREATE INDEX IF NOT EXISTS ix_track_features_musicbrainz_track_id ON track_features (musicbrainz_track_id)"
+            )
     except Exception as e:
         logger.warning("Migration: could not create musicbrainz_track_id index: %s", e)
 
     # Plain index on playlists.cache_key for the daily idempotency lookup (issue #89).
     try:
-        await conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_playlists_cache_key ON playlists (cache_key)")
+        async with conn.begin_nested():
+            await conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_playlists_cache_key ON playlists (cache_key)")
     except Exception as e:
         logger.warning("Migration: could not create playlists.cache_key index: %s", e)
 
     # Backfill: any pre-existing download_requests rows have source IS NULL
     # because the column was added without a default. Treat them as spotdl.
     try:
-        await conn.exec_driver_sql("UPDATE download_requests SET source = 'spotdl' WHERE source IS NULL")
+        async with conn.begin_nested():
+            await conn.exec_driver_sql("UPDATE download_requests SET source = 'spotdl' WHERE source IS NULL")
     except Exception:
         pass
 
