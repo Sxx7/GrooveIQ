@@ -136,7 +136,7 @@ Runs every hour (configurable). Each step is error-isolated.
 | Language | Python 3.12 |
 | Framework | FastAPI (async), Pydantic v2 |
 | ORM | SQLAlchemy 2.x async |
-| Database | SQLite (default) / PostgreSQL |
+| Database | SQLite (default) / PostgreSQL (recommended for production) |
 | Audio analysis | Essentia 2.1b6 + ONNX Runtime (Discogs-EffNet) |
 | Ranking | LightGBM / scikit-learn fallback |
 | Similarity | FAISS (IndexFlatIP, 64-dim) + gensim Word2Vec |
@@ -172,6 +172,23 @@ All settings via environment variables or `.env` file. See [`.env.example`](.env
 | News feed | `NEWS_ENABLED=true` (optional: `NEWS_INTERVAL_MINUTES`, `NEWS_DEFAULT_SUBREDDITS`) |
 | AcousticBrainz lookup | `AB_LOOKUP_URL`, `AB_LOOKUP_ENABLED=true` (separate container) |
 | CLAP text-to-music search | `CLAP_ENABLED=true` (~395 MB ONNX models auto-download on first start; persisted in the `grooveiq_data` volume) |
+
+## Database
+
+GrooveIQ runs on **SQLite by default** — zero-config, no extra container, ideal for trying it out and for small libraries.
+
+For **production deployments — especially libraries beyond ~50K tracks — use PostgreSQL.** GrooveIQ generates sustained concurrent writes: continuous library scans persisting audio features, the hourly recommendation pipeline, background jobs, and API traffic all hit the database at once. SQLite serializes every write behind a single database-wide lock, so under that load it spends increasing time blocked on busy-timeout waits and can stall with `database is locked`. PostgreSQL handles concurrent writers natively and removes that ceiling.
+
+`docker-compose.yml` already includes a `postgres` service. To use it:
+
+1. Set `POSTGRES_PASSWORD` in `.env`.
+2. Point `DATABASE_URL` at it (env-file values aren't variable-expanded, so write the password in full):
+   ```
+   DATABASE_URL=postgresql+asyncpg://grooveiq:YOUR_POSTGRES_PASSWORD@postgres:5432/grooveiq
+   ```
+3. `docker compose up -d` — a fresh install builds the schema automatically on first start.
+
+Already running on SQLite? `migrations/002_sqlite_to_postgres.py` copies your data into PostgreSQL — see the script's header comment for usage.
 
 ## Connecting your music app
 
