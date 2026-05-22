@@ -73,7 +73,10 @@ def read_metadata(file_path: str) -> dict:
         for tag_key, result_key in tag_map.items():
             values = audio.get(tag_key)
             if values:
-                val = values[0].strip() if isinstance(values, list) else str(values).strip()
+                raw = values[0] if isinstance(values, list) else str(values)
+                # PostgreSQL VARCHAR rejects NUL bytes (0x00) that creep in
+                # from messy ID3 tags; SQLite tolerated them.
+                val = raw.replace("\x00", "").strip()
                 if val:
                     if result_key == "track_number":
                         # Track numbers can be "3/12" — take only the number
