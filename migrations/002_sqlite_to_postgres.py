@@ -68,6 +68,17 @@ def _dst_url() -> str:
     return f"postgresql+asyncpg://grooveiq:{pw}@postgres:5432/grooveiq"
 
 
+def _clean_row(row: dict) -> dict:
+    """PostgreSQL text columns reject NUL bytes (0x00) that SQLite tolerates --
+    they slip in from messy ID3 tags. Strip them from string values. JSON
+    columns are unaffected: json.dumps escapes NUL and the PG `json` type
+    accepts the escape."""
+    for key, value in row.items():
+        if isinstance(value, str) and "\x00" in value:
+            row[key] = value.replace("\x00", "")
+    return row
+
+
 async def _copy_table(src, dst, name: str) -> int:
     """Keyset-paginate one table from src into dst. Returns the row count."""
     table = Base.metadata.tables[name]
@@ -77,7 +88,7 @@ async def _copy_table(src, dst, name: str) -> int:
         total = (await s.execute(select(func.count()).select_from(table))).scalar_one()
         while True:
             rows = [
-                dict(r._mapping)
+                _clean_row(dict(r._mapping))
                 for r in (
                     await s.execute(
                         select(table)
