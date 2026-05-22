@@ -1384,26 +1384,32 @@ async def _fetch_lidarr_totals_cached(cfg: LidarrBackfillConfigData) -> LidarrTo
                 )
                 missing = None
                 reachable = False
-            try:
-                resp = await client._client.get(
-                    f"{client._base_url}/api/v1/wanted/cutoff",
-                    params={
-                        "page": 1,
-                        "pageSize": 1,
-                        "monitored": "true" if cfg.sources.monitored_only else "false",
-                    },
-                    timeout=_LIDARR_STATS_TIMEOUT_S,
-                )
-                resp.raise_for_status()
-                cutoff = resp.json().get("totalRecords")
-            except Exception as exc:
-                logger.warning(
-                    "backfill: stats fetch /wanted/cutoff failed: %s: %s",
-                    type(exc).__name__,
-                    exc,
-                )
-                cutoff = None
-                reachable = False
+            # Only poll /wanted/cutoff when the engine is actually draining
+            # it. On large libraries Lidarr's cutoff queue is slow enough to
+            # blow the 2 s stats budget every 30 s; spamming WARNINGs and
+            # burning a request per refresh for a stat the operator opted
+            # out of is pure waste.
+            if cfg.sources.cutoff_unmet:
+                try:
+                    resp = await client._client.get(
+                        f"{client._base_url}/api/v1/wanted/cutoff",
+                        params={
+                            "page": 1,
+                            "pageSize": 1,
+                            "monitored": "true" if cfg.sources.monitored_only else "false",
+                        },
+                        timeout=_LIDARR_STATS_TIMEOUT_S,
+                    )
+                    resp.raise_for_status()
+                    cutoff = resp.json().get("totalRecords")
+                except Exception as exc:
+                    logger.warning(
+                        "backfill: stats fetch /wanted/cutoff failed: %s: %s",
+                        type(exc).__name__,
+                        exc,
+                    )
+                    cutoff = None
+                    reachable = False
         finally:
             await client.close()
 
