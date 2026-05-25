@@ -1400,6 +1400,8 @@ async def test_fetch_lidarr_totals_cached_single_flights_concurrent_calls(monkey
     lbf._lidarr_totals_cache = (0.0, lbf.LidarrTotals(None, None, True))
 
     cfg = get_defaults()
+    # /wanted/cutoff is only polled when the engine is configured to drain it.
+    cfg.sources.cutoff_unmet = True
 
     # Fire 50 concurrent callers; without single-flight every one would
     # call the upstream client.
