@@ -1048,9 +1048,7 @@ def _compute_melspec_patches(
     musicnn_input = es.TensorflowInputMusiCNN()
     frames = [
         musicnn_input(frame)
-        for frame in es.FrameGenerator(
-            audio, frameSize=_MEL_FRAME_SIZE, hopSize=_MEL_HOP_SIZE, startFromZero=True
-        )
+        for frame in es.FrameGenerator(audio, frameSize=_MEL_FRAME_SIZE, hopSize=_MEL_HOP_SIZE, startFromZero=True)
     ]
 
     if len(frames) < _PATCH_FRAMES:

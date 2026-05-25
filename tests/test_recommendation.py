@@ -458,8 +458,7 @@ class TestTrackScoring:
         # hold a score above 0.1. The original bug left only 1 track > 0.1.
         meaningful = sum(1 for s in scores.values() if s > 0.1)
         assert meaningful >= 3, (
-            f"Only {meaningful}/5 tracks kept a meaningful score after 5 "
-            f"incremental runs — distribution: {scores}"
+            f"Only {meaningful}/5 tracks kept a meaningful score after 5 incremental runs — distribution: {scores}"
         )
 
 
