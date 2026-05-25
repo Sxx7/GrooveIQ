@@ -970,6 +970,9 @@ GIQ.components.versionedConfigShell = function versionedConfigShell(opts) {
      * `working` directly via setWorking() (or by hand) and then calls refreshXxx().
      */
     function buildCtx(extra) {
+        // `extra` is always an internal literal (e.g. {groupKey, groupMeta}) from the
+        // call sites below — never user-controlled. Safe to merge via Object.assign.
+        // nosemgrep: javascript.lang.security.insecure-object-assign.insecure-object-assign
         return Object.assign({
             working: state.working,
             saved: state.active && state.active.config,
