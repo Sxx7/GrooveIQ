@@ -153,6 +153,10 @@ async def _apply_column_migrations(conn) -> None:
         ("api_call_logs", "source_class", "VARCHAR(16)"),
         # Playlist daily idempotency cache (issue #89)
         ("playlists", "cache_key", "VARCHAR(64)"),
+        # Raw (un-normalised) satisfaction score: separates source-of-truth raw
+        # from per-user min-max normalised label, so incremental scoring runs
+        # don't squash untouched rows toward zero.
+        ("track_interactions", "raw_satisfaction_score", "REAL"),
     ]
     for table, column, col_type in migrations:
         # Validate identifiers to prevent SQL injection via migration list.

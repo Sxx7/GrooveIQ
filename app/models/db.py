@@ -428,7 +428,13 @@ class TrackInteraction(Base):
     first_played_at = Column(Integer, nullable=True)
     last_played_at = Column(Integer, nullable=True)
 
-    # The computed satisfaction score (main training label)
+    # Raw (un-normalised) weighted sum of engagement signals. Source of
+    # truth — never overwritten by normalisation. New deploys backfill from
+    # counts; see _normalise_scores in track_scoring.py.
+    raw_satisfaction_score = Column(Float, nullable=True)
+
+    # Per-user min-max normalised score in [0, 1]; main training label.
+    # Derived from raw_satisfaction_score every scoring run.
     satisfaction_score = Column(Float, nullable=True)
 
     # Bookkeeping: highest event.id already folded in, for incremental updates

@@ -182,6 +182,7 @@ async def _process_events(session: AsyncSession, events: Sequence) -> tuple[int,
 
         if interaction is None:
             # Create new interaction.
+            raw = _raw_satisfaction(delta)
             row = TrackInteraction(
                 user_id=user_id,
                 track_id=track_id,
@@ -201,7 +202,8 @@ async def _process_events(session: AsyncSession, events: Sequence) -> tuple[int,
                 total_seekbk=delta["total_seekbk"],
                 first_played_at=delta["first_ts"],
                 last_played_at=delta["last_ts"],
-                satisfaction_score=_raw_satisfaction(delta),
+                raw_satisfaction_score=raw,
+                satisfaction_score=raw,
                 last_event_id=delta["max_event_id"],
                 updated_at=now,
             )
@@ -230,6 +232,7 @@ async def _process_events(session: AsyncSession, events: Sequence) -> tuple[int,
                     total_seekbk=merged["total_seekbk"],
                     first_played_at=merged["first_played_at"],
                     last_played_at=merged["last_played_at"],
+                    raw_satisfaction_score=merged["satisfaction_score"],
                     satisfaction_score=merged["satisfaction_score"],
                     last_event_id=merged["last_event_id"],
                     updated_at=now,
@@ -518,19 +521,66 @@ def _merge_interaction(existing: TrackInteraction, delta: dict) -> dict:
     }
 
 
+async def _backfill_raw_scores(session: AsyncSession) -> int:
+    """
+    Populate raw_satisfaction_score for rows that lack it.
+
+    Pre-bug-fix rows store a normalised value in satisfaction_score with no raw
+    counterpart. Reconstruct raw from the count columns using flat weights
+    (context_skip_penalty isn't recoverable from counts — same fallback the
+    incremental merge path uses).
+    """
+    rows = (
+        (await session.execute(select(TrackInteraction).where(TrackInteraction.raw_satisfaction_score.is_(None))))
+        .scalars()
+        .all()
+    )
+    for row in rows:
+        delta = {
+            "full_listen_count": row.full_listen_count,
+            "mid_skip_count": row.mid_skip_count,
+            "early_skip_count": row.early_skip_count,
+            "like_count": row.like_count,
+            "dislike_count": row.dislike_count,
+            "repeat_count": row.repeat_count,
+            "playlist_add_count": row.playlist_add_count,
+            "queue_add_count": row.queue_add_count,
+            "total_seekfwd": row.total_seekfwd,
+            "total_seekbk": row.total_seekbk,
+            "play_count": row.play_count,
+            "context_skip_penalty": 0.0,
+        }
+        await session.execute(
+            update(TrackInteraction)
+            .where(TrackInteraction.id == row.id)
+            .values(raw_satisfaction_score=_raw_satisfaction(delta))
+        )
+    return len(rows)
+
+
 async def _normalise_scores(session: AsyncSession) -> None:
     """
-    Min-max normalise satisfaction_score per user to [0, 1].
+    Per-user min-max normalise raw_satisfaction_score → satisfaction_score in [0, 1].
+
+    Reads from raw_satisfaction_score (source of truth) and writes derived
+    values to satisfaction_score. This keeps the two values cleanly separated
+    so incremental scoring runs can't squash untouched rows toward zero
+    (the bug where each new event divided every other track's score by the
+    new max, because raw and normalised values shared a single column).
 
     Users with only one interaction get score 0.5.
     Users where min == max (all same score) get score 0.5.
     """
-    # Get per-user min/max of raw satisfaction scores.
+    backfilled = await _backfill_raw_scores(session)
+    if backfilled:
+        logger.info("Backfilled raw_satisfaction_score for %d rows", backfilled)
+
+    # Per-user min/max of the raw score.
     result = await session.execute(
         select(
             TrackInteraction.user_id,
-            func.min(TrackInteraction.satisfaction_score).label("min_score"),
-            func.max(TrackInteraction.satisfaction_score).label("max_score"),
+            func.min(TrackInteraction.raw_satisfaction_score).label("min_score"),
+            func.max(TrackInteraction.raw_satisfaction_score).label("max_score"),
             func.count(TrackInteraction.id).label("cnt"),
         ).group_by(TrackInteraction.user_id)
     )
@@ -552,9 +602,8 @@ async def _normalise_scores(session: AsyncSession) -> None:
             )
             continue
 
-        # Normalise: (score - min) / (max - min).
         await session.execute(
             update(TrackInteraction)
             .where(TrackInteraction.user_id == user_id)
-            .values(satisfaction_score=((TrackInteraction.satisfaction_score - min_score) / score_range))
+            .values(satisfaction_score=((TrackInteraction.raw_satisfaction_score - min_score) / score_range))
         )

@@ -387,6 +387,81 @@ class TestTrackScoring:
         assert result["events_processed"] == 0
         assert result["interactions_created"] == 0
 
+    async def test_incremental_update_preserves_dynamic_range(self):
+        """
+        Regression: many incremental scoring runs must not collapse the [0, 1]
+        score distribution toward zero.
+
+        Before raw_satisfaction_score was split out, _normalise_scores read and
+        wrote the same column, so each new max divided every previously-
+        normalised row, leaving only the most-recently-touched track with a
+        meaningful score and squashing everything else toward zero.
+
+        Concretely: with 5 tracks of varied engagement, repeatedly add a like
+        to one different track per "run" and verify (a) ordering is preserved
+        and (b) at least 3 of 5 tracks end up with score > 0.1.
+        """
+        from app.services.track_scoring import run_track_scoring
+
+        now = _now()
+        # Seed: 5 tracks with i+1 likes each (raw scores 3, 5, 7, 9, 11).
+        seed_events = []
+        for i in range(5):
+            seed_events.append(
+                {
+                    "user_id": "u1",
+                    "track_id": f"t{i}",
+                    "event_type": "play_end",
+                    "timestamp": now + i,
+                    "value": 1.0,
+                    "dwell_ms": 180_000,
+                }
+            )
+            for j in range(i + 1):
+                seed_events.append(
+                    {
+                        "user_id": "u1",
+                        "track_id": f"t{i}",
+                        "event_type": "like",
+                        "timestamp": now + i * 10 + j,
+                    }
+                )
+        await _insert_events(seed_events)
+        await run_track_scoring()
+
+        # Simulate 5 follow-up pipeline ticks, each touching one different
+        # track. This is the pattern that triggered the original bug on prod.
+        for tick in range(5):
+            touched = f"t{tick}"
+            await _insert_events(
+                [
+                    {
+                        "user_id": "u1",
+                        "track_id": touched,
+                        "event_type": "like",
+                        "timestamp": now + 10000 + tick,
+                    }
+                ]
+            )
+            await run_track_scoring()
+
+        async with _TestSession() as session:
+            rows = (await session.execute(select(TrackInteraction))).scalars().all()
+            scores = {r.track_id: r.satisfaction_score for r in rows}
+
+        # (a) Ordering is preserved (more likes -> higher score). Each tick
+        # added one like to each track in turn, so the original ordering
+        # (t4 > t3 > t2 > t1 > t0) is still right.
+        assert scores["t4"] > scores["t3"] > scores["t2"] > scores["t1"] > scores["t0"]
+
+        # (b) The distribution hasn't collapsed: at least 3 of 5 tracks must
+        # hold a score above 0.1. The original bug left only 1 track > 0.1.
+        meaningful = sum(1 for s in scores.values() if s > 0.1)
+        assert meaningful >= 3, (
+            f"Only {meaningful}/5 tracks kept a meaningful score after 5 "
+            f"incremental runs — distribution: {scores}"
+        )
+
 
 # =============================================================================
 # Taste profile tests
