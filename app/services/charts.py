@@ -93,6 +93,16 @@ def _strip_features(title: str) -> str:
     return _FEATURE_RE.sub("", title).rstrip()
 
 
+def _snapshot_date(now: int) -> str:
+    """UTC calendar date ('YYYY-MM-DD') for a build timestamp (issue #75).
+
+    Derived from the shared ``now`` so every chart in one build run lands on the
+    same snapshot date. UTC (not local) to stay consistent with the scheduler's
+    UTC cron jobs and the epoch-based ``fetched_at``.
+    """
+    return time.strftime("%Y-%m-%d", time.gmtime(now))
+
+
 # ---------------------------------------------------------------------------
 # Last.fm chart API
 # ---------------------------------------------------------------------------
@@ -657,11 +667,15 @@ async def _build_track_chart(
     # Import once per chart build, not once per track.
     from app.services.cover_art import resolve_cover_art as _resolve_cover_art
 
-    # Delete old entries for this chart.
+    # Delete only *today's* rows for this chart, not the whole history (issue
+    # #75). This keeps prior days' snapshots intact while making a same-day
+    # rebuild idempotent (it replaces today's rows rather than duplicating them).
+    snapshot_date = _snapshot_date(now)
     await session.execute(
         delete(ChartEntry).where(
             ChartEntry.chart_type == chart_type,
             ChartEntry.scope == scope,
+            ChartEntry.snapshot_date == snapshot_date,
         )
     )
 
@@ -734,6 +748,7 @@ async def _build_track_chart(
                 matched_track_id=matched_track_id,
                 in_library=matched_track_id is not None,
                 fetched_at=now,
+                snapshot_date=snapshot_date,
             )
         )
         summary["total_entries"] += 1
@@ -767,10 +782,13 @@ async def _build_artist_chart(
     if not raw_artists:
         return
 
+    # Per-day delete (issue #75) — see _build_track_chart for rationale.
+    snapshot_date = _snapshot_date(now)
     await session.execute(
         delete(ChartEntry).where(
             ChartEntry.chart_type == chart_type,
             ChartEntry.scope == scope,
+            ChartEntry.snapshot_date == snapshot_date,
         )
     )
 
@@ -803,6 +821,7 @@ async def _build_artist_chart(
                 in_library=len(matched_tracks) > 0,
                 library_track_count=len(matched_tracks),
                 fetched_at=now,
+                snapshot_date=snapshot_date,
             )
         )
         summary["total_entries"] += 1

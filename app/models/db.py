@@ -592,7 +592,27 @@ class ChartEntry(Base):
 
     fetched_at = Column(Integer, nullable=False)  # when this chart was fetched
 
-    __table_args__ = (Index("ix_chart_type_scope_pos", "chart_type", "scope", "position"),)
+    # Daily snapshots (issue #75): UTC calendar date ('YYYY-MM-DD') of this
+    # snapshot. Last.fm's chart endpoints carry no time window, so we append a
+    # new day's rows each build instead of overwriting — this is what enables
+    # position history / deltas. Stored as an ISO string (sorts chronologically
+    # in SQLite, makes `?as_of=` an exact string match, and sidesteps the
+    # _apply_column_migrations type allow-list which has no DATE). Nullable so
+    # the ADD COLUMN migration succeeds on pre-#75 rows; those get backfilled
+    # from fetched_at. New rows always populate it.
+    snapshot_date = Column(String(10), nullable=True)
+
+    __table_args__ = (
+        Index("ix_chart_type_scope_pos", "chart_type", "scope", "position"),
+        # Serves the hot path: latest-snapshot reads and per-day lookups
+        # (WHERE chart_type=? AND scope=? AND snapshot_date=? ORDER BY position)
+        # plus per-chart MAX(snapshot_date).
+        Index("ix_chart_snapshot", "chart_type", "scope", "snapshot_date", "position"),
+        # One row per (chart, position) per day. Belt-and-suspenders behind the
+        # builder's DELETE-by-day → INSERT; multiple NULL snapshot_date rows stay
+        # distinct on both SQLite and Postgres so pre-#75 rows don't collide.
+        Index("ix_chart_unique_snapshot", "chart_type", "scope", "position", "snapshot_date", unique=True),
+    )
 
 
 # ---------------------------------------------------------------------------

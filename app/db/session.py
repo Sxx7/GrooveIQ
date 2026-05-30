@@ -121,6 +121,9 @@ async def _apply_column_migrations(conn) -> None:
         ("playlists", "created_by", "VARCHAR(128)"),
         # Chart entry images
         ("chart_entries", "image_url", "VARCHAR(1024)"),
+        # Daily chart snapshots (issue #75): keep prior days instead of
+        # overwriting. ISO 'YYYY-MM-DD' string (the type allow-list has no DATE).
+        ("chart_entries", "snapshot_date", "VARCHAR(10)"),
         # User onboarding preferences
         ("users", "onboarding_preferences", "TEXT"),
         # Soulseek (slskd) download backend — added by commit 77de205
@@ -217,6 +220,38 @@ async def _apply_column_migrations(conn) -> None:
             await conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_playlists_cache_key ON playlists (cache_key)")
     except Exception as e:
         logger.warning("Migration: could not create playlists.cache_key index: %s", e)
+
+    # Chart snapshots (issue #75). Backfill pre-#75 rows BEFORE creating the
+    # unique index: legacy rows were DELETE→INSERT so there is exactly one row
+    # per (chart_type, scope, position), and they all carry NULL snapshot_date.
+    # Stamp them with the UTC date derived from fetched_at so "latest snapshot"
+    # reads include them and the new unique index has no NULL-collision risk.
+    if "sqlite" in settings.DATABASE_URL:
+        _backfill_snapshot = (
+            "UPDATE chart_entries SET snapshot_date = "
+            "strftime('%Y-%m-%d', fetched_at, 'unixepoch') WHERE snapshot_date IS NULL"
+        )
+    else:
+        _backfill_snapshot = (
+            "UPDATE chart_entries SET snapshot_date = "
+            "to_char(to_timestamp(fetched_at) AT TIME ZONE 'UTC', 'YYYY-MM-DD') WHERE snapshot_date IS NULL"
+        )
+    try:
+        async with conn.begin_nested():
+            await conn.exec_driver_sql(_backfill_snapshot)
+    except Exception as e:
+        logger.warning("Migration: could not backfill chart_entries.snapshot_date: %s", e)
+
+    for _stmt in (
+        "CREATE INDEX IF NOT EXISTS ix_chart_snapshot ON chart_entries (chart_type, scope, snapshot_date, position)",
+        "CREATE UNIQUE INDEX IF NOT EXISTS ix_chart_unique_snapshot "
+        "ON chart_entries (chart_type, scope, position, snapshot_date)",
+    ):
+        try:
+            async with conn.begin_nested():
+                await conn.exec_driver_sql(_stmt)
+        except Exception as e:
+            logger.warning("Migration: could not create chart snapshot index: %s", e)
 
     # Backfill: any pre-existing download_requests rows have source IS NULL
     # because the column was added without a default. Treat them as spotdl.
