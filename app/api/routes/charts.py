@@ -9,6 +9,8 @@ scheduler and stored in the chart_entries table.
 from __future__ import annotations
 
 import logging
+import re
+from datetime import datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import func, select
@@ -19,10 +21,80 @@ from app.core.security import require_admin, require_api_key
 from app.db.session import get_session
 from app.models.db import ChartEntry, CoverArtCache, DiscoveryRequest, TrackFeatures
 from app.models.schemas import ChartDownloadRequest
+from app.services.charts import _normalize as _chart_norm
 from app.services.cover_art import _normalize as _normalize_cover_key
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+# --- Snapshot helpers (issue #75) ------------------------------------------
+
+_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+_COMPARE_RE = re.compile(r"^(\d+)d$", re.IGNORECASE)
+
+
+async def _resolve_snapshot_date(
+    session: AsyncSession,
+    chart_type: str,
+    scope: str,
+    as_of: str | None = None,
+) -> str | None:
+    """The snapshot date to serve: the latest one, or the newest on-or-before ``as_of``.
+
+    ISO 'YYYY-MM-DD' strings compare lexicographically == chronologically, so a
+    plain ``<=`` does date math. Returning the nearest snapshot on-or-before
+    ``as_of`` (rather than requiring an exact hit) keeps the API robust to a
+    build that was skipped on a given day. Returns None when no snapshot exists.
+    """
+    q = select(func.max(ChartEntry.snapshot_date)).where(
+        ChartEntry.chart_type == chart_type,
+        ChartEntry.scope == scope,
+    )
+    if as_of is not None:
+        q = q.where(ChartEntry.snapshot_date <= as_of)
+    return (await session.execute(q)).scalar()
+
+
+def _identity_key(chart_type: str, artist_name: str | None, track_title: str | None) -> tuple[str, str]:
+    """Cross-snapshot identity for delta matching.
+
+    Tracks are keyed by (artist, title); artists by (artist, ""). Normalised so
+    casing / punctuation / "the " drift between days doesn't break matching.
+    """
+    a = _chart_norm(artist_name or "")
+    if chart_type == "top_tracks":
+        return (a, _chart_norm(track_title or ""))
+    return (a, "")
+
+
+async def _snapshot_position_map(
+    session: AsyncSession,
+    chart_type: str,
+    scope: str,
+    snap_date: str,
+) -> dict[tuple[str, str], int]:
+    """identity_key -> position for one snapshot (used to compute deltas)."""
+    rows = (
+        await session.execute(
+            select(ChartEntry.artist_name, ChartEntry.track_title, ChartEntry.position).where(
+                ChartEntry.chart_type == chart_type,
+                ChartEntry.scope == scope,
+                ChartEntry.snapshot_date == snap_date,
+            )
+        )
+    ).all()
+    out: dict[tuple[str, str], int] = {}
+    for artist_name, track_title, position in rows:
+        # setdefault: if a normalised identity appears twice, the higher rank
+        # (lower position, encountered first under ORDER-free scan) is arbitrary
+        # but stable enough — duplicates within one snapshot are not expected.
+        out.setdefault(_identity_key(chart_type, artist_name, track_title), position)
+    return out
+
+
+def _shift_date(iso_date: str, days: int) -> str:
+    """ISO date shifted back by ``days`` (for ?compare= anchors)."""
+    return (datetime.strptime(iso_date, "%Y-%m-%d") - timedelta(days=days)).strftime("%Y-%m-%d")
 
 
 def _media_server_auth_params() -> str | None:
@@ -81,14 +153,34 @@ async def list_charts(
     session: AsyncSession = Depends(get_session),
     _key: str = Depends(require_api_key),
 ):
+    # Count entries at each chart's *latest* snapshot only (issue #75) — without
+    # this the count sums every retained day. Per-chart MAX (not a single global
+    # MAX) so a chart that failed to build on the most recent day still reports
+    # its own freshest snapshot.
+    latest = (
+        select(
+            ChartEntry.chart_type,
+            ChartEntry.scope,
+            func.max(ChartEntry.snapshot_date).label("msd"),
+        )
+        .group_by(ChartEntry.chart_type, ChartEntry.scope)
+        .subquery()
+    )
     result = await session.execute(
         select(
             ChartEntry.chart_type,
             ChartEntry.scope,
             func.count().label("entries"),
             func.max(ChartEntry.fetched_at).label("fetched_at"),
+            latest.c.msd.label("snapshot_date"),
         )
-        .group_by(ChartEntry.chart_type, ChartEntry.scope)
+        .join(
+            latest,
+            (ChartEntry.chart_type == latest.c.chart_type)
+            & (ChartEntry.scope == latest.c.scope)
+            & (ChartEntry.snapshot_date == latest.c.msd),
+        )
+        .group_by(ChartEntry.chart_type, ChartEntry.scope, latest.c.msd)
         .order_by(ChartEntry.chart_type, ChartEntry.scope)
     )
     rows = result.all()
@@ -99,6 +191,7 @@ async def list_charts(
                 "scope": r.scope,
                 "entries": r.entries,
                 "fetched_at": r.fetched_at,
+                "snapshot_date": r.snapshot_date,
             }
             for r in rows
         ],
@@ -114,11 +207,18 @@ async def chart_stats(
     session: AsyncSession = Depends(get_session),
     _key: str = Depends(require_api_key),
 ):
-    total = (await session.execute(select(func.count()).select_from(ChartEntry))).scalar() or 0
+    # Aggregate over the latest snapshot only (issue #75) so totals/match-rate
+    # describe the current charts, not the sum of every retained day. Charts in
+    # one build share a snapshot date, so a single global MAX is the right scope.
+    latest = (await session.execute(select(func.max(ChartEntry.snapshot_date)))).scalar()
+
+    latest_filter = [ChartEntry.snapshot_date == latest] if latest else []
+
+    total = (await session.execute(select(func.count()).select_from(ChartEntry).where(*latest_filter))).scalar() or 0
 
     matched = (
         await session.execute(
-            select(func.count()).select_from(ChartEntry).where(ChartEntry.matched_track_id.isnot(None))
+            select(func.count()).select_from(ChartEntry).where(ChartEntry.matched_track_id.isnot(None), *latest_filter)
         )
     ).scalar() or 0
 
@@ -128,11 +228,15 @@ async def chart_stats(
         await session.execute(
             select(func.count()).select_from(
                 select(ChartEntry.chart_type, ChartEntry.scope)
+                .where(*latest_filter)
                 .group_by(ChartEntry.chart_type, ChartEntry.scope)
                 .subquery()
             )
         )
     ).scalar() or 0
+
+    # How many distinct days of history we're retaining (powers the date picker).
+    snapshot_count = (await session.execute(select(func.count(func.distinct(ChartEntry.snapshot_date))))).scalar() or 0
 
     from app.core.config import settings as _settings
     from app.workers.scheduler import get_job_next_run
@@ -143,6 +247,8 @@ async def chart_stats(
         "match_rate": round(matched / total, 3) if total > 0 else 0,
         "chart_count": chart_count,
         "last_fetched_at": last_fetch,
+        "latest_snapshot_date": latest,
+        "snapshot_count": snapshot_count,
         "auto_rebuild_enabled": bool(_settings.charts_enabled),
         "interval_hours": _settings.CHARTS_INTERVAL_HOURS,
         "next_run_at": get_job_next_run("charts_build"),
@@ -164,6 +270,12 @@ Returns chart entries for the given chart type.
 
 Entries are sorted by chart position. Each entry includes library match info
 (`matched_track_id` is set when the track/artist exists in your library).
+
+By default the **latest** daily snapshot is returned (issue #75). Use
+`?as_of=YYYY-MM-DD` to view a historical snapshot (the newest one on or before
+that date), and `?compare=7d` (also `1d`/`30d`/`<int>d`) to annotate each entry
+with `position_change` (positive = climbed) and `previously` vs. that many days
+ago — `previously: null` marks a new entry.
 """,
 )
 async def get_chart(
@@ -171,36 +283,47 @@ async def get_chart(
     scope: str = Query("global", max_length=128, description="Chart scope: global, tag:<name>, geo:<country>"),
     limit: int = Query(100, ge=1, le=200),
     offset: int = Query(0, ge=0),
+    as_of: str | None = Query(
+        None, description="Historical snapshot date YYYY-MM-DD (newest snapshot on or before this date)"
+    ),
+    compare: str | None = Query(None, description="Annotate position deltas vs N days ago: 1d | 7d | 30d | <int>d"),
     session: AsyncSession = Depends(get_session),
     _key: str = Depends(require_api_key),
 ):
     if chart_type not in ("top_tracks", "top_artists"):
         raise HTTPException(status_code=400, detail="chart_type must be 'top_tracks' or 'top_artists'")
+    if as_of is not None and not _DATE_RE.match(as_of):
+        raise HTTPException(status_code=400, detail="as_of must be a date in YYYY-MM-DD form")
 
-    count_q = (
-        select(func.count())
-        .select_from(ChartEntry)
-        .where(ChartEntry.chart_type == chart_type, ChartEntry.scope == scope)
-    )
-    total = (await session.execute(count_q)).scalar() or 0
-
-    if total == 0:
-        # Give a helpful error: distinguish "never built" from "scope not configured".
+    # Resolve which snapshot to serve (latest, or newest on/before as_of).
+    target_date = await _resolve_snapshot_date(session, chart_type, scope, as_of)
+    if target_date is None:
+        # No matching snapshot. Distinguish never-built / scope-not-configured /
+        # as_of-too-early so the error is actionable.
         any_charts = (await session.execute(select(func.count()).select_from(ChartEntry))).scalar() or 0
-
         if any_charts == 0:
             raise HTTPException(
                 status_code=404,
                 detail="No chart data available. Run POST /v1/charts/build first.",
             )
-
+        scope_has_any = (
+            await session.execute(
+                select(func.count())
+                .select_from(ChartEntry)
+                .where(ChartEntry.chart_type == chart_type, ChartEntry.scope == scope)
+            )
+        ).scalar() or 0
+        if scope_has_any and as_of:
+            raise HTTPException(
+                status_code=404,
+                detail=f"No snapshot on or before {as_of} for {chart_type}/{scope}.",
+            )
         # Charts exist but not for this scope — list available scopes.
         available = (
             (await session.execute(select(ChartEntry.scope).where(ChartEntry.chart_type == chart_type).distinct()))
             .scalars()
             .all()
         )
-
         raise HTTPException(
             status_code=404,
             detail=f"No chart data for scope '{scope}'. "
@@ -208,9 +331,31 @@ async def get_chart(
             f"Configure CHARTS_TAGS or CHARTS_COUNTRIES in .env and rebuild.",
         )
 
+    # Whether we're viewing the freshest snapshot. The live library re-match
+    # below only runs in this case — re-matching mutates rows, and rewriting a
+    # historical snapshot's in_library against the *current* library would
+    # corrupt the record of what the chart looked like that day.
+    latest_date = target_date if as_of is None else await _resolve_snapshot_date(session, chart_type, scope)
+    is_latest = target_date == latest_date
+
+    count_q = (
+        select(func.count())
+        .select_from(ChartEntry)
+        .where(
+            ChartEntry.chart_type == chart_type,
+            ChartEntry.scope == scope,
+            ChartEntry.snapshot_date == target_date,
+        )
+    )
+    total = (await session.execute(count_q)).scalar() or 0
+
     q = (
         select(ChartEntry)
-        .where(ChartEntry.chart_type == chart_type, ChartEntry.scope == scope)
+        .where(
+            ChartEntry.chart_type == chart_type,
+            ChartEntry.scope == scope,
+            ChartEntry.snapshot_date == target_date,
+        )
         .order_by(ChartEntry.position)
         .offset(offset)
         .limit(limit)
@@ -225,48 +370,50 @@ async def get_chart(
     #       non-null match id with ``in_library=False``. Re-derive both at
     #       serve time. Mutations persist via the session's auto-commit so
     #       the row is self-healing on next read.
-    from app.services.charts import (
-        _build_artist_lookup,
-        _build_library_lookup,
-    )
-    from app.services.charts import (
-        _normalize as _chart_norm,
-    )
-    from app.services.charts import (
-        _strip_features as _chart_strip_features,
-    )
+    #
+    # Only for the latest snapshot (issue #75): re-matching writes to the rows,
+    # and a historical snapshot's in_library must reflect the library *as it was*
+    # that day, not today's.
+    if is_latest:
+        from app.services.charts import (
+            _build_artist_lookup,
+            _build_library_lookup,
+        )
+        from app.services.charts import (
+            _strip_features as _chart_strip_features,
+        )
 
-    if chart_type == "top_tracks":
-        live_lookup = await _build_library_lookup(session)
-        for e in entries:
-            if not e.artist_name or not e.track_title:
-                continue
-            if not e.matched_track_id:
-                a = _chart_norm(e.artist_name)
-                t = _chart_norm(e.track_title)
-                tid = live_lookup.get((a, t))
-                if not tid:
-                    # "Stateside + Zara Larsson" / "(feat. X)" -> bare title.
-                    t_stripped = _chart_norm(_chart_strip_features(e.track_title))
-                    if t_stripped and t_stripped != t:
-                        tid = live_lookup.get((a, t_stripped))
-                if tid:
-                    e.matched_track_id = tid
-            # in_library follows matched_track_id; covers both fresh promotions
-            # and legacy rows where the boolean drifted from the id.
-            if e.matched_track_id and not e.in_library:
-                e.in_library = True
-    else:  # top_artists
-        live_artist_lookup = await _build_artist_lookup(session)
-        for e in entries:
-            if not e.artist_name:
-                continue
-            if not e.in_library:
-                tracks = live_artist_lookup.get(_chart_norm(e.artist_name), [])
-                if tracks:
-                    e.matched_track_id = tracks[0]
+        if chart_type == "top_tracks":
+            live_lookup = await _build_library_lookup(session)
+            for e in entries:
+                if not e.artist_name or not e.track_title:
+                    continue
+                if not e.matched_track_id:
+                    a = _chart_norm(e.artist_name)
+                    t = _chart_norm(e.track_title)
+                    tid = live_lookup.get((a, t))
+                    if not tid:
+                        # "Stateside + Zara Larsson" / "(feat. X)" -> bare title.
+                        t_stripped = _chart_norm(_chart_strip_features(e.track_title))
+                        if t_stripped and t_stripped != t:
+                            tid = live_lookup.get((a, t_stripped))
+                    if tid:
+                        e.matched_track_id = tid
+                # in_library follows matched_track_id; covers both fresh promotions
+                # and legacy rows where the boolean drifted from the id.
+                if e.matched_track_id and not e.in_library:
                     e.in_library = True
-                    e.library_track_count = len(tracks)
+        else:  # top_artists
+            live_artist_lookup = await _build_artist_lookup(session)
+            for e in entries:
+                if not e.artist_name:
+                    continue
+                if not e.in_library:
+                    tracks = live_artist_lookup.get(_chart_norm(e.artist_name), [])
+                    if tracks:
+                        e.matched_track_id = tracks[0]
+                        e.in_library = True
+                        e.library_track_count = len(tracks)
 
     # Enrich matched tracks with metadata.
     matched_ids = [e.matched_track_id for e in entries if e.matched_track_id]
@@ -381,12 +528,131 @@ async def get_chart(
 
         items.append(item)
 
-    return {
+    resp = {
         "chart_type": chart_type,
         "scope": scope,
+        "snapshot_date": target_date,
         "total": total,
         "fetched_at": entries[0].fetched_at if entries else None,
         "entries": items,
+    }
+
+    # Position deltas vs N days ago (issue #75). Match entries by normalised
+    # identity against the comparison snapshot; positive position_change means
+    # the entry climbed (lower position number). previously=None marks an entry
+    # absent from the comparison snapshot (NEW / re-entry).
+    if compare is not None:
+        m = _COMPARE_RE.match(compare.strip())
+        if not m:
+            raise HTTPException(status_code=400, detail="compare must look like '1d', '7d', or '30d'")
+        n_days = int(m.group(1))
+        anchor = _shift_date(target_date, n_days)
+        cmp_date = await _resolve_snapshot_date(session, chart_type, scope, anchor)
+        resp["compare"] = compare
+        resp["compared_to"] = cmp_date
+        if cmp_date and cmp_date < target_date:
+            prev_map = await _snapshot_position_map(session, chart_type, scope, cmp_date)
+            for item, e in zip(items, entries):
+                prev_pos = prev_map.get(_identity_key(chart_type, e.artist_name, e.track_title))
+                item["previously"] = prev_pos
+                item["position_change"] = None if prev_pos is None else prev_pos - e.position
+        else:
+            # No comparison snapshot old enough — nothing to diff against.
+            for item in items:
+                item["previously"] = None
+                item["position_change"] = None
+
+    return resp
+
+
+@router.get(
+    "/charts/{chart_type}/snapshots",
+    summary="List available chart snapshot dates",
+    description="Distinct daily snapshot dates retained for this chart/scope (newest first). Powers the date picker.",
+)
+async def list_chart_snapshots(
+    chart_type: str,
+    scope: str = Query("global", max_length=128),
+    session: AsyncSession = Depends(get_session),
+    _key: str = Depends(require_api_key),
+):
+    if chart_type not in ("top_tracks", "top_artists"):
+        raise HTTPException(status_code=400, detail="chart_type must be 'top_tracks' or 'top_artists'")
+    rows = (
+        (
+            await session.execute(
+                select(ChartEntry.snapshot_date)
+                .where(
+                    ChartEntry.chart_type == chart_type,
+                    ChartEntry.scope == scope,
+                    ChartEntry.snapshot_date.isnot(None),
+                )
+                .distinct()
+                .order_by(ChartEntry.snapshot_date.desc())
+            )
+        )
+        .scalars()
+        .all()
+    )
+    return {"chart_type": chart_type, "scope": scope, "count": len(rows), "snapshots": list(rows)}
+
+
+@router.get(
+    "/charts/{chart_type}/track/{artist}/{title}/history",
+    summary="Position history for one chart entry",
+    description=(
+        "Full position trajectory for a single entry across retained snapshots. "
+        "For `top_artists`, `title` is ignored (match is on artist only) — pass any placeholder."
+    ),
+)
+async def get_chart_entry_history(
+    chart_type: str,
+    artist: str,
+    title: str,
+    scope: str = Query("global", max_length=128),
+    session: AsyncSession = Depends(get_session),
+    _key: str = Depends(require_api_key),
+):
+    if chart_type not in ("top_tracks", "top_artists"):
+        raise HTTPException(status_code=400, detail="chart_type must be 'top_tracks' or 'top_artists'")
+
+    conds = [
+        ChartEntry.chart_type == chart_type,
+        ChartEntry.scope == scope,
+        ChartEntry.snapshot_date.isnot(None),
+        func.lower(ChartEntry.artist_name) == artist.strip().lower(),
+    ]
+    if chart_type == "top_tracks":
+        conds.append(func.lower(ChartEntry.track_title) == title.strip().lower())
+
+    rows = (
+        await session.execute(
+            select(
+                ChartEntry.snapshot_date,
+                ChartEntry.position,
+                ChartEntry.playcount,
+                ChartEntry.listeners,
+            )
+            .where(*conds)
+            .order_by(ChartEntry.snapshot_date)
+        )
+    ).all()
+
+    return {
+        "chart_type": chart_type,
+        "scope": scope,
+        "artist": artist,
+        "title": title if chart_type == "top_tracks" else None,
+        "count": len(rows),
+        "history": [
+            {
+                "snapshot_date": r.snapshot_date,
+                "position": r.position,
+                "playcount": r.playcount,
+                "listeners": r.listeners,
+            }
+            for r in rows
+        ],
     }
 
 
@@ -430,12 +696,16 @@ async def download_chart_track(
     track_title = body.track_title
 
     if body.position is not None:
+        # Scope to the latest snapshot (issue #75) — there is now one row per
+        # position *per day*, so an unscoped query would raise MultipleResultsFound.
+        latest_date = await _resolve_snapshot_date(session, body.chart_type, body.scope)
         entry = (
             await session.execute(
                 select(ChartEntry).where(
                     ChartEntry.chart_type == body.chart_type,
                     ChartEntry.scope == body.scope,
                     ChartEntry.position == body.position,
+                    ChartEntry.snapshot_date == latest_date,
                 )
             )
         ).scalar_one_or_none()
