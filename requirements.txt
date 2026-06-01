@@ -37,11 +37,11 @@ mutagen>=1.47
 # ML inference (danceability, mood, embedding) uses ONNX Runtime below.
 essentia>=2.1b6.dev1389,<2.1b7
 
-numpy>=2.4.4,<3
+numpy>=2.4.6,<3
 
 # ONNX Runtime for Discogs-EffNet + classifier heads.
 # For Intel iGPU acceleration, install onnxruntime-openvino instead.
-onnxruntime>=1.25.1
+onnxruntime>=1.26.0
 
 # HuggingFace tokenizers — required by the CLAP text encoder (clap_text.py).
 # CLAP playlists (POST /v1/playlists strategy=text) silently 503 without it.
@@ -64,8 +64,8 @@ tokenizers>=0.15
 transformers>=5.0,<6
 
 # Candidate generation (Phase 4)
-faiss-cpu>=1.13.2
-implicit>=0.7.2
+faiss-cpu>=1.14.2
+implicit>=0.7.3
 scipy>=1.17.1
 
 # Ranking model (Phase 4)
