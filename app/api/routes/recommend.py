@@ -72,6 +72,20 @@ async def get_recommendations(
             "happy, sad, aggressive, relaxed, party. Requires confidence > 0.3"
         ),
     ),
+    # Discovery dial (recommendation modes) — see app/services/modes.py.
+    discovery: float = Query(
+        None,
+        ge=0.0,
+        le=1.0,
+        description="Discovery dial: 0.0 = familiar (proven favourites) … 1.0 = deep discovery (nothing you've heard)",
+    ),
+    mode: str = Query(
+        None,
+        description=(
+            "Named dial preset: familiar, balanced, discovery, deep_discovery. "
+            "Takes precedence over 'discovery' when both are given."
+        ),
+    ),
     debug: bool = Query(
         False, description="Include debug info: candidates by source, feature vectors, reranker actions"
     ),
@@ -101,6 +115,16 @@ async def get_recommendations(
                 detail=(f"Unknown mood {mood!r}. Must be one of: {sorted(SUPPORTED_MOOD_LABELS)}."),
             )
 
+    # Validate the dial preset name against the known presets (422 on unknown).
+    if mode is not None:
+        from app.models.algorithm_config_schema import PRESET_NAMES
+
+        if mode not in PRESET_NAMES:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Unknown mode {mode!r}. Must be one of: {list(PRESET_NAMES)}.",
+            )
+
     # Verify user exists.
     result = await session.execute(select(User.user_id).where(User.user_id == user_id))
     if result.scalar_one_or_none() is None:
@@ -112,16 +136,30 @@ async def get_recommendations(
         if result.scalar_one_or_none() is None:
             raise HTTPException(status_code=404, detail="Not found.")
 
+    # --- Resolve the discovery dial into a whitelisted, request-scoped override ---
+    # A named `mode` wins over a raw `discovery` float; neither -> the default
+    # preset (balanced, == today). The override is read by candidate_gen (source
+    # weights + proven-novelty filter) and the reranker (UCB acquisition +
+    # exploration/freshness/anti-repetition knobs); both call get_config(), so the
+    # override flows through without touching those call sites. resolve_dial is the
+    # untrusted-input boundary — it only ever emits whitelisted keys.
+    from app.services import modes as modes_svc
+    from app.services.algorithm_config import get_config
+    from app.services.request_config import apply_overrides
+
+    dial = modes_svc.resolve_dial(discovery, mode, get_config().modes)
+
     # Generate candidates — over-fetch more when filtering by genre/mood.
     from app.services.candidate_gen import get_candidates
 
     overfetch = limit * 6 if (genre or mood) else limit * 3
-    candidates = await get_candidates(
-        user_id=user_id,
-        seed_track_id=seed_track_id,
-        k=overfetch,
-        session=session,
-    )
+    with apply_overrides(dial.overrides):
+        candidates = await get_candidates(
+            user_id=user_id,
+            seed_track_id=seed_track_id,
+            k=overfetch,
+            session=session,
+        )
 
     # Filter candidates by genre/mood if requested.
     if candidates and (genre or mood):
@@ -177,6 +215,7 @@ async def get_recommendations(
             "model_version": model_version,
             "user_id": user_id,
             "seed_track_id": seed_track_id,
+            "discovery": dial.discovery,
             "reason": reason,
         }
 
@@ -234,14 +273,15 @@ async def get_recommendations(
     # of debug mode.  This is cheap (just appends to a list).
     from app.services.reranker import get_last_rerank_actions, rerank
 
-    reranked_full = await rerank(
-        scored,
-        user_id,
-        session,
-        device_type=device_type,
-        output_type=output_type,
-        collect_actions=True,
-    )
+    with apply_overrides(dial.overrides):
+        reranked_full = await rerank(
+            scored,
+            user_id,
+            session,
+            device_type=device_type,
+            output_type=output_type,
+            collect_actions=True,
+        )
     rerank_actions = get_last_rerank_actions()
     reranked = reranked_full[:limit]
     final_score_by_tid = {tid: float(score) for tid, score in reranked_full}
@@ -379,6 +419,7 @@ async def get_recommendations(
             "track_id": tid,
             "source": source_map.get(tid, "unknown"),
             "score": round(score, 4),
+            "reasons": modes_svc.derive_reasons(sources_by_tid.get(tid, []), actions_by_tid.get(tid, [])),
         }
         if tf:
             track_data.update(
@@ -405,6 +446,7 @@ async def get_recommendations(
         "model_version": model_version,
         "user_id": user_id,
         "seed_track_id": seed_track_id,
+        "discovery": dial.discovery,
         "context": {
             "hour_of_day": hour_of_day,
             "day_of_week": day_of_week,
