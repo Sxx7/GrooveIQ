@@ -55,6 +55,7 @@ ignore = [
 "tests/*" = [
     "S101",   # assert is fine in tests
     "S106",   # hardcoded passwords in test fixtures
+    "S311",   # pseudo-random generators — seeded RNG for deterministic tests
 ]
 "app/services/analysis_worker.py" = [
     "T20",    # print() used for subprocess IPC

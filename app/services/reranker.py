@@ -24,6 +24,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.db import TrackFeatures, TrackInteraction
+from app.services import confidence, faiss_index
 from app.services.algorithm_config import get_config
 
 logger = logging.getLogger(__name__)
@@ -53,6 +54,7 @@ async def rerank(
     device_type: str | None = None,
     output_type: str | None = None,
     collect_actions: bool = False,
+    rng: random.Random | None = None,
 ) -> list[tuple[str, float]]:
     """
     Apply diversity and business-rule filters to ranked candidates.
@@ -63,6 +65,9 @@ async def rerank(
         session: DB session.
         device_type: current device class (mobile, desktop, speaker, car, web).
         output_type: current audio output (headphones, speaker, car_audio, etc.).
+        rng: optional RNG for the (stochastic) exploration slots. Defaults to the
+            global ``random`` module — i.e. unchanged behaviour. Pass a seeded
+            ``random.Random`` for deterministic tests.
 
     Returns:
         Reranked list of (track_id, score).
@@ -97,6 +102,45 @@ async def rerank(
     inter_map: dict[str, TrackInteraction] = {i.track_id: i for i in inter_result.scalars().all()}
 
     cfg = get_config().reranker
+
+    # --- Discovery-dial acquisition (additive, gated) ---
+    # Apply the UCB-style adjustment on top of today's ranker score:
+    #     adj = ranker_score + kappa*sigma - lambda_proven*[is_proven]
+    # `modes.active` is the dial-resolved preset (a no-op by default). The gate
+    # below is *structural*, not float-luck: when both coefficients are zero
+    # (familiar / balanced / default) confidence is never computed and score_map
+    # is left exactly as the ranker produced it — so the default path is
+    # byte-for-byte unchanged. mu/sigma never replace the base ordering signal.
+    preset = get_config().modes.active
+    if preset.kappa > 0.0 or preset.lambda_proven > 0.0:
+        evidence = await confidence.load_user_evidence(session, user_id)
+        for tid, inter in inter_map.items():
+            evidence.setdefault(tid, confidence.InteractionEvidence.from_obj(inter))
+        conf = confidence.compute_confidence(
+            user_id,
+            track_ids,
+            interactions=evidence,
+            faiss_index=faiss_index.effnet_index,
+            base_scores=dict(score_map),
+            preset=preset,
+        )
+        for tid in track_ids:
+            cs = conf.get(tid)
+            if cs is None:
+                continue
+            old = score_map[tid]
+            score_map[tid] = old + preset.kappa * cs.sigma - preset.lambda_proven * (1.0 if cs.is_proven else 0.0)
+            if actions is not None:
+                actions.append(
+                    {
+                        "track_id": tid,
+                        "action": "acquisition",
+                        "score_before": round(old, 4),
+                        "score_after": round(score_map[tid], 4),
+                        "sigma": round(cs.sigma, 4),
+                        "is_proven": cs.is_proven,
+                    }
+                )
 
     # --- Rule 1: Freshness boost (never-played tracks get score uplift) ---
     for tid in track_ids:
@@ -168,7 +212,7 @@ async def rerank(
     adjusted.sort(key=lambda x: x[1], reverse=True)
 
     # --- Rule 4: Exploration slots (before artist diversity so diversity is final) ---
-    adjusted = _inject_exploration_slots(adjusted, inter_map, actions=actions)
+    adjusted = _inject_exploration_slots(adjusted, inter_map, actions=actions, rng=rng)
 
     # --- Rule 5: Artist diversity in top N (applied last to guarantee constraint) ---
     artist_map = {tid: _extract_artist(path_map.get(tid)) for tid in track_ids}
@@ -233,6 +277,7 @@ def _inject_exploration_slots(
     ranked: list[tuple[str, float]],
     inter_map: dict[str, TrackInteraction],
     actions: list[dict] | None = None,
+    rng: random.Random | None = None,
 ) -> list[tuple[str, float]]:
     """
     Reserve ~15% of recommendation slots for under-explored tracks.
@@ -251,6 +296,7 @@ def _inject_exploration_slots(
     if n < 5:
         return ranked
 
+    _rng = rng if rng is not None else random
     n_explore = max(1, int(n * cfg.exploration_fraction))
 
     # Split: top half = exploitation pool, bottom half = exploration pool.
@@ -263,7 +309,7 @@ def _inject_exploration_slots(
     for tid, score in explore_pool:
         plays = inter_map[tid].play_count if tid in inter_map else 0
         # More noise for tracks with fewer plays.
-        noise = random.gauss(0, 1) * cfg.exploration_noise_scale / math.sqrt(plays + 1)
+        noise = _rng.gauss(0, 1) * cfg.exploration_noise_scale / math.sqrt(plays + 1)
         noisy_score = score + abs(noise)  # bias upward to give them a chance
         scored_explore.append((tid, score, noisy_score))
 

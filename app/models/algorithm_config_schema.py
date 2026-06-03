@@ -12,9 +12,9 @@ Design:
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Annotated, Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 # ---------------------------------------------------------------------------
 # Per-group schemas
@@ -174,6 +174,177 @@ class SessionEmbeddingsConfig(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Recommendation modes — the "discovery dial"
+# ---------------------------------------------------------------------------
+
+# The labeled anchor points on the discovery dial. Locked product decision
+# (see docs/recommendation-modes-plan.md). Reused by the request-side mode
+# enum and the dial resolver in later chunks.
+PRESET_NAMES: tuple[str, ...] = ("familiar", "balanced", "discovery", "deep_discovery")
+
+
+class PresetConfig(BaseModel):
+    """Anchor values for one point on the discovery dial.
+
+    A preset re-weights knobs that already exist in the pipeline (exploration,
+    freshness, anti-repetition window, per-source multipliers) plus a UCB-style
+    acquisition *adjustment* and the proven-set novelty filter.  The adjustment
+    is **additive on top of today's ranker score** —
+    ``adj = ranker_score + kappa*sigma - lambda_proven*[is_proven]`` — never a
+    replacement of the base ordering signal, so ``kappa==0`` and
+    ``lambda_proven==0`` (familiar / balanced) leave the score untouched.  These
+    defaults define what each preset *means* out of the box; all are tunable via
+    the admin config API.
+    """
+
+    kappa: float = Field(
+        0.0, ge=0, le=5, description="UCB exploration coefficient — additive weight on uncertainty (+ kappa*sigma)"
+    )
+    lambda_proven: float = Field(
+        0.0, ge=0, le=5, description="Additive demotion applied to proven tracks (- lambda_proven) at the discovery end"
+    )
+    exploration_fraction: float = Field(
+        0.15, ge=0, le=0.5, description="Fraction of slots reserved for under-explored tracks"
+    )
+    freshness_boost: float = Field(0.10, ge=0, le=1, description="Score multiplier boost for never-played tracks")
+    novelty_filter: bool = Field(False, description="Exclude the user's proven set from candidates (the discovery end)")
+    novelty_strength: float = Field(
+        0.0, ge=0, le=1, description="How aggressively the novelty filter excludes the proven set (0=off, 1=full)"
+    )
+    repeat_window_hours: float = Field(
+        2.0, ge=0, le=168, description="Hours to suppress recently played tracks (0 = favourites may recur)"
+    )
+    proven_mu_min: float = Field(
+        0.6, ge=0, le=1, description="Minimum predicted engagement (mu) for a track to count as proven"
+    )
+    proven_sigma_max: float = Field(
+        0.3, ge=0, le=1, description="Maximum uncertainty (sigma) for a track to count as proven"
+    )
+    source_weight_mult: dict[str, Annotated[float, Field(ge=0, le=5)]] = Field(
+        default_factory=dict,
+        description="Per-source candidate-weight multipliers (each 0-5); sources omitted here default to 1.0",
+    )
+
+
+class ModesConfig(BaseModel):
+    """Discovery-dial preset definitions and dial->preset anchor positions.
+
+    ``balanced`` is calibrated to reproduce today's fixed policy exactly
+    (exploration_fraction=0.15, freshness_boost=0.10, kappa=0, no novelty
+    filter), so the default unparameterised request does not regress.
+    """
+
+    familiar: PresetConfig = Field(
+        default_factory=lambda: PresetConfig(
+            kappa=0.0,
+            exploration_fraction=0.0,
+            freshness_boost=0.0,
+            novelty_filter=False,
+            novelty_strength=0.0,
+            repeat_window_hours=0.0,
+            proven_mu_min=0.6,
+            proven_sigma_max=0.3,
+            source_weight_mult={
+                "content_profile": 1.5,
+                "cf": 1.4,
+                "artist_recall": 1.3,
+                "lastfm_similar": 0.6,
+                "sasrec": 0.7,
+                "popular": 0.5,
+            },
+        ),
+        description="Play me what I love — proven favourites, no novelty filter, relaxed anti-repetition.",
+    )
+    balanced: PresetConfig = Field(
+        default_factory=lambda: PresetConfig(
+            kappa=0.0,
+            exploration_fraction=0.15,
+            freshness_boost=0.10,
+            novelty_filter=False,
+            novelty_strength=0.0,
+            repeat_window_hours=2.0,
+            proven_mu_min=0.6,
+            proven_sigma_max=0.3,
+            source_weight_mult={},
+        ),
+        description="Today's behaviour, unchanged. The default preset.",
+    )
+    discovery: PresetConfig = Field(
+        default_factory=lambda: PresetConfig(
+            kappa=0.3,
+            lambda_proven=0.3,
+            exploration_fraction=0.30,
+            freshness_boost=0.20,
+            novelty_filter=True,
+            novelty_strength=0.5,
+            repeat_window_hours=2.0,
+            proven_mu_min=0.6,
+            proven_sigma_max=0.3,
+            source_weight_mult={
+                "content": 1.3,
+                "lastfm_similar": 1.5,
+                "sasrec": 1.4,
+                "session_skipgram": 1.2,
+                "content_profile": 0.8,
+                "popular": 0.7,
+                "artist_recall": 0.6,
+            },
+        ),
+        description="Mostly new, anchored to my taste.",
+    )
+    deep_discovery: PresetConfig = Field(
+        default_factory=lambda: PresetConfig(
+            kappa=0.6,
+            lambda_proven=0.6,
+            exploration_fraction=0.50,
+            freshness_boost=0.30,
+            novelty_filter=True,
+            novelty_strength=1.0,
+            repeat_window_hours=2.0,
+            proven_mu_min=0.6,
+            proven_sigma_max=0.3,
+            source_weight_mult={
+                "content": 1.4,
+                "lastfm_similar": 1.8,
+                "sasrec": 1.6,
+                "session_skipgram": 1.3,
+                "content_profile": 0.6,
+                "cf": 0.8,
+                "popular": 0.4,
+                "artist_recall": 0.3,
+            },
+        ),
+        description="Surprise me — nothing I've heard.",
+    )
+    default_preset: str = Field("balanced", description="Preset used when a request specifies no discovery/mode value.")
+    active: PresetConfig = Field(
+        default_factory=PresetConfig,
+        description=(
+            "The dial-resolved preset for the current request. The recommend handler overrides this "
+            "per-request (via the request-scoped config override). Its default is a no-op (kappa=0, "
+            "lambda_proven=0, novelty_filter=off, no source multipliers) so the unparameterised request "
+            "is byte-for-byte unchanged."
+        ),
+    )
+    dial_anchors: dict[str, Annotated[float, Field(ge=0, le=1)]] = Field(
+        default_factory=lambda: {
+            "familiar": 0.0,
+            "balanced": 0.3,
+            "discovery": 0.6,
+            "deep_discovery": 1.0,
+        },
+        description="Each preset's position on the continuous [0,1] discovery dial (used for interpolation).",
+    )
+
+    @field_validator("default_preset")
+    @classmethod
+    def _validate_default_preset(cls, v: str) -> str:
+        if v not in PRESET_NAMES:
+            raise ValueError(f"default_preset must be one of {PRESET_NAMES}, got {v!r}")
+        return v
+
+
+# ---------------------------------------------------------------------------
 # Top-level config
 # ---------------------------------------------------------------------------
 
@@ -193,6 +364,7 @@ class AlgorithmConfigData(BaseModel):
     ranker: RankerConfig = Field(default_factory=RankerConfig)
     radio: RadioConfig = Field(default_factory=RadioConfig)
     session_embeddings: SessionEmbeddingsConfig = Field(default_factory=SessionEmbeddingsConfig)
+    modes: ModesConfig = Field(default_factory=ModesConfig)
 
 
 # ---------------------------------------------------------------------------

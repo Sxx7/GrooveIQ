@@ -22,7 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.session import AsyncSessionLocal
 from app.models.db import TrackFeatures, TrackInteraction, User
-from app.services import collab_filter, faiss_index, lastfm_candidates, sasrec, session_embeddings
+from app.services import collab_filter, confidence, faiss_index, lastfm_candidates, sasrec, session_embeddings
 from app.services.algorithm_config import get_config
 
 logger = logging.getLogger(__name__)
@@ -360,6 +360,61 @@ async def _get_candidates_impl(
             seen.add(tid)
             merged.append(c)
 
+    # --- Discovery-dial: per-source weight multipliers (gated) ---
+    # The dial-resolved preset can up/down-weight whole sources (e.g. boost
+    # lastfm_similar at the discovery end, content_profile at the familiar end).
+    # Empty by default (balanced) -> no-op, so the default path is unchanged.
+    preset = get_config().modes.active
+    if preset.source_weight_mult:
+        for c in merged:
+            c["score"] *= preset.source_weight_mult.get(c["source"], 1.0)
+
+    # --- Discovery-dial: proven-set novelty filter (gated) ---
+    # At the discovery end, exclude the user's *proven* tracks so the pool
+    # leans toward the novel/uncertain. Off by default (balanced/familiar).
+    if preset.novelty_filter:
+        merged = await _apply_novelty_filter(merged, user_id, session, preset)
+
     # Sort by score descending, return up to k.
     merged.sort(key=lambda c: c["score"], reverse=True)
     return merged[:k]
+
+
+async def _apply_novelty_filter(
+    merged: list[dict[str, Any]],
+    user_id: str,
+    session: AsyncSession,
+    preset,
+) -> list[dict[str, Any]]:
+    """Exclude the user's proven set from the candidate pool (discovery end).
+
+    A track is excluded when it is proven *enough* — ``mu >= proven_mu_min`` and
+    ``sigma <= proven_sigma_max * novelty_strength`` — so higher ``novelty_strength``
+    excludes a wider slice of the proven set (deep_discovery is the hardest).
+    A floor guard relaxes the filter rather than starve a small library.
+    """
+    if not merged:
+        return merged
+
+    cand_ids = [c["track_id"] for c in merged]
+    evidence = await confidence.load_user_evidence(session, user_id)
+    conf = confidence.compute_confidence(
+        user_id,
+        cand_ids,
+        interactions=evidence,
+        faiss_index=faiss_index.effnet_index,
+        preset=preset,
+    )
+
+    sigma_bar = preset.proven_sigma_max * preset.novelty_strength
+    to_exclude = {tid for tid, cs in conf.items() if cs.mu >= preset.proven_mu_min and cs.sigma <= sigma_bar}
+    if not to_exclude:
+        return merged
+
+    kept = [c for c in merged if c["track_id"] not in to_exclude]
+
+    # Floor: never starve the pool below a minimum — relax the filter if too few remain.
+    floor = max(10, len(merged) // 5)
+    if len(kept) < floor:
+        return merged
+    return kept
