@@ -14,6 +14,7 @@ from __future__ import annotations
 import logging
 import threading
 import time
+from typing import Any
 
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -25,6 +26,7 @@ from app.models.algorithm_config_schema import (
     get_defaults_dict,
 )
 from app.models.db import AlgorithmConfig
+from app.services.request_config import current_overrides
 
 logger = logging.getLogger(__name__)
 
@@ -38,10 +40,40 @@ _active_version: int = 0
 _active_id: int | None = None
 
 
+def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
+    """Recursively merge ``override`` onto ``base``, returning a new dict.
+
+    Neither input is mutated.  Nested dicts merge key-by-key; any non-dict value
+    in ``override`` replaces the corresponding value in ``base``.
+    """
+    out = dict(base)
+    for key, val in override.items():
+        existing = out.get(key)
+        if isinstance(val, dict) and isinstance(existing, dict):
+            out[key] = _deep_merge(existing, val)
+        else:
+            out[key] = val
+    return out
+
+
 def get_config() -> AlgorithmConfigData:
-    """Return the current active config. Thread-safe, never blocks on DB."""
+    """Return the current active config, with any per-request override applied.
+
+    Fast path — no override active: returns the cached singleton directly
+    (allocation-free, as before).  Override path (see
+    ``app/services/request_config.py``): returns a fresh ``AlgorithmConfigData``
+    deep-merged from the cached config and the request's override dict; the
+    cached singleton is never mutated.
+
+    Thread-safe; never blocks on the DB.
+    """
+    overrides = current_overrides()
     with _lock:
-        return _active_config
+        base = _active_config
+    if not overrides:
+        return base
+    merged = _deep_merge(base.model_dump(), overrides)
+    return AlgorithmConfigData.model_validate(merged)
 
 
 def get_config_version() -> int:
