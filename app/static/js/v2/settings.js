@@ -102,6 +102,497 @@
         },
     };
 
+    /* ===================================================================
+     * Recommendation modes (the "discovery dial") — custom group body.
+     *
+     * The `modes` config group is nested (4 presets × knobs + a per-source
+     * weight map + dial anchors), so it can't use the shell's flat slider
+     * grid. We render per-preset sub-cards plus a dial→knob curve preview.
+     * It still saves through the same versioned PUT — `renderGroupBody`
+     * only swaps the *body* of this one accordion section.
+     * =================================================================== */
+
+    const MODE_PRESET_ORDER = ['familiar', 'balanced', 'discovery', 'deep_discovery'];
+    const MODE_PRESET_META = {
+        familiar:       { label: 'Familiar',       tag: 'On Repeat', desc: 'Play me what I love — proven favourites, no novelty filter, relaxed anti-repetition.' },
+        balanced:       { label: 'Balanced',       tag: 'Your Mix',  desc: "Today's behaviour, unchanged. The default preset." },
+        discovery:      { label: 'Discover',       tag: 'Discover',  desc: 'Mostly new, anchored to my taste.' },
+        deep_discovery: { label: 'Deep Discovery', tag: 'Deep Cuts', desc: "Surprise me — nothing I've heard." },
+    };
+    /* Numeric knobs per preset (min/max/step mirror PresetConfig ge/le). */
+    const MODE_PRESET_FIELDS = [
+        { key: 'kappa',                label: 'Exploration κ',     min: 0, max: 5,   step: 0.05, desc: 'UCB coefficient — additive weight on uncertainty (+κ·σ). 0 = off.' },
+        { key: 'lambda_proven',        label: 'Proven demotion λ', min: 0, max: 5,   step: 0.05, desc: 'Additive demotion applied to proven tracks (−λ) at the discovery end.' },
+        { key: 'exploration_fraction', label: 'Exploration slots', min: 0, max: 0.5, step: 0.01, desc: 'Fraction of slots reserved for under-explored tracks.' },
+        { key: 'freshness_boost',      label: 'Freshness boost',   min: 0, max: 1,   step: 0.01, desc: 'Score boost for never-played tracks.' },
+        { key: 'novelty_strength',     label: 'Novelty strength',  min: 0, max: 1,   step: 0.05, desc: 'How aggressively the proven set is excluded (needs the novelty filter on).' },
+        { key: 'repeat_window_hours',  label: 'Repeat window (h)', min: 0, max: 168, step: 0.5,  desc: 'Hours to suppress recently played tracks (0 = favourites may recur).' },
+        { key: 'proven_mu_min',        label: 'Proven μ min',      min: 0, max: 1,   step: 0.01, desc: 'Min predicted engagement (μ) for a track to count as proven.' },
+        { key: 'proven_sigma_max',     label: 'Proven σ max',      min: 0, max: 1,   step: 0.01, desc: 'Max uncertainty (σ) for a track to count as proven.' },
+    ];
+    /* Candidate sources eligible for a per-preset weight multiplier. */
+    const MODE_SOURCE_KEYS = ['content', 'content_profile', 'cf', 'session_skipgram', 'lastfm_similar', 'sasrec', 'popular', 'artist_recall'];
+    /* Knobs offered in the dial→knob curve preview. */
+    const MODE_CURVE_KNOBS = [
+        { key: 'kappa', label: 'Exploration κ', max: 5 },
+        { key: 'lambda_proven', label: 'Proven demotion λ', max: 5 },
+        { key: 'exploration_fraction', label: 'Exploration slots', max: 0.5 },
+        { key: 'freshness_boost', label: 'Freshness boost', max: 1 },
+        { key: 'novelty_strength', label: 'Novelty strength', max: 1 },
+    ];
+
+    function modesPathDirty(ctx, path) {
+        return JSON.stringify(ctx.pathGet(ctx.working, path)) !== JSON.stringify(ctx.pathGet(ctx.saved, path));
+    }
+
+    /* A slider + number field bound to a dotted path under `modes`. */
+    function modesSlider(ctx, o) {
+        const cur = Number(ctx.pathGet(ctx.working, o.path));
+        const row = document.createElement('div');
+        row.className = 'vc-field modes-field';
+        if (modesPathDirty(ctx, o.path)) row.classList.add('dirty');
+
+        const head = document.createElement('div');
+        head.className = 'vc-field-head';
+        const lbl = document.createElement('label');
+        lbl.className = 'vc-field-label';
+        lbl.textContent = o.label;
+        head.appendChild(lbl);
+        row.appendChild(head);
+
+        const ctrls = document.createElement('div');
+        ctrls.className = 'vc-field-controls';
+        const slider = document.createElement('input');
+        slider.type = 'range';
+        slider.className = 'vc-slider';
+        slider.min = String(o.min);
+        slider.max = String(o.max);
+        slider.step = String(o.step);
+        slider.value = String(cur);
+        const numWrap = document.createElement('div');
+        numWrap.className = 'vc-num-wrap';
+        const minus = document.createElement('button');
+        minus.type = 'button';
+        minus.className = 'vc-spin';
+        minus.textContent = '−';
+        const num = document.createElement('input');
+        num.type = 'number';
+        num.className = 'vc-num';
+        num.min = String(o.min);
+        num.max = String(o.max);
+        num.step = String(o.step);
+        num.value = String(cur);
+        const plus = document.createElement('button');
+        plus.type = 'button';
+        plus.className = 'vc-spin';
+        plus.textContent = '+';
+        numWrap.appendChild(minus);
+        numWrap.appendChild(num);
+        numWrap.appendChild(plus);
+        const decimals = (String(o.step).split('.')[1] || '').length;
+        function setVal(v) {
+            let n = v;
+            if (n < o.min) n = o.min;
+            if (n > o.max) n = o.max;
+            n = parseFloat(n.toFixed(Math.max(decimals, 0)));
+            slider.value = String(n);
+            num.value = String(n);
+            o.commit(o.path, n, row);
+        }
+        slider.addEventListener('input', () => {
+            const v = parseFloat(slider.value);
+            if (!Number.isNaN(v)) setVal(v);
+        });
+        num.addEventListener('change', () => {
+            const v = parseFloat(num.value);
+            if (Number.isNaN(v)) { num.value = String(ctx.pathGet(ctx.working, o.path)); return; }
+            setVal(v);
+        });
+        minus.addEventListener('click', () => setVal((parseFloat(num.value) || 0) - o.step));
+        plus.addEventListener('click', () => setVal((parseFloat(num.value) || 0) + o.step));
+        ctrls.appendChild(slider);
+        ctrls.appendChild(numWrap);
+        row.appendChild(ctrls);
+
+        const info = document.createElement('div');
+        info.className = 'vc-field-info';
+        const d = document.createElement('span');
+        d.className = 'vc-field-desc';
+        d.textContent = o.desc || '';
+        info.appendChild(d);
+        const defWrap = document.createElement('span');
+        defWrap.className = 'vc-field-default';
+        const defVal = ctx.pathGet(ctx.defaults, o.path);
+        if (JSON.stringify(ctx.pathGet(ctx.working, o.path)) !== JSON.stringify(defVal)) {
+            defWrap.textContent = 'default: ' + defVal;
+        }
+        info.appendChild(defWrap);
+        row.appendChild(info);
+        return row;
+    }
+
+    /* A boolean toggle field bound to a dotted path under `modes`. */
+    function modesToggle(ctx, o) {
+        const cur = !!ctx.pathGet(ctx.working, o.path);
+        const row = document.createElement('div');
+        row.className = 'vc-field modes-field modes-toggle-field';
+        if (modesPathDirty(ctx, o.path)) row.classList.add('dirty');
+        const head = document.createElement('div');
+        head.className = 'vc-field-head';
+        const lbl = document.createElement('label');
+        lbl.className = 'vc-field-label';
+        lbl.textContent = o.label;
+        head.appendChild(lbl);
+        row.appendChild(head);
+        const ctrls = document.createElement('div');
+        ctrls.className = 'vc-field-controls';
+        const toggleLbl = document.createElement('label');
+        toggleLbl.className = 'lbf-toggle-inline';
+        const cb = document.createElement('input');
+        cb.type = 'checkbox';
+        cb.checked = cur;
+        const stateText = document.createElement('span');
+        stateText.className = 'muted';
+        stateText.textContent = cur ? 'on' : 'off';
+        cb.addEventListener('change', () => {
+            stateText.textContent = cb.checked ? 'on' : 'off';
+            o.commit(o.path, cb.checked, row);
+        });
+        toggleLbl.appendChild(cb);
+        toggleLbl.appendChild(stateText);
+        ctrls.appendChild(toggleLbl);
+        row.appendChild(ctrls);
+        const info = document.createElement('div');
+        info.className = 'vc-field-info';
+        const d = document.createElement('span');
+        d.className = 'vc-field-desc';
+        d.textContent = o.desc || '';
+        info.appendChild(d);
+        row.appendChild(info);
+        return row;
+    }
+
+    /* Per-source weight-multiplier list editor (key→value map). */
+    function modesSourceMultEditor(ctx, preset) {
+        const basePath = 'modes.' + preset + '.source_weight_mult';
+        const map = ctx.pathGet(ctx.working, basePath) || {};
+        const sect = document.createElement('div');
+        sect.className = 'modes-srcmult';
+        const head = document.createElement('div');
+        head.className = 'modes-srcmult-head';
+        head.innerHTML = '<span class="eyebrow">SOURCE WEIGHT MULTIPLIERS</span>';
+        const hint = document.createElement('span');
+        hint.className = 'muted modes-srcmult-hint';
+        hint.textContent = 'Per-source candidate weight (omitted = 1.0×).';
+        head.appendChild(hint);
+        sect.appendChild(head);
+
+        const keys = Object.keys(map);
+        if (!keys.length) {
+            const empty = document.createElement('div');
+            empty.className = 'modes-srcmult-empty muted';
+            empty.textContent = 'No multipliers — every source at 1.0×.';
+            sect.appendChild(empty);
+        } else {
+            keys.forEach(src => sect.appendChild(modesSourceMultRow(ctx, preset, src)));
+        }
+
+        const avail = MODE_SOURCE_KEYS.filter(s => keys.indexOf(s) === -1);
+        if (avail.length) {
+            const addRow = document.createElement('div');
+            addRow.className = 'modes-srcmult-add';
+            const sel = document.createElement('select');
+            sel.className = 'reco-select';
+            avail.forEach(s => {
+                const o = document.createElement('option');
+                o.value = s;
+                o.textContent = s;
+                sel.appendChild(o);
+            });
+            const addBtn = document.createElement('button');
+            addBtn.type = 'button';
+            addBtn.className = 'vc-btn vc-btn-ghost-sm';
+            addBtn.textContent = '+ Add source';
+            addBtn.addEventListener('click', () => {
+                const src = sel.value;
+                if (!src) return;
+                const m = Object.assign({}, ctx.pathGet(ctx.working, basePath) || {});
+                m[src] = 1.0;
+                ctx.setWorking(basePath, m);
+                ctx.refreshHeader();
+                ctx.refreshGroupBadge('modes');
+                ctx.refreshGroup('modes');
+            });
+            addRow.appendChild(sel);
+            addRow.appendChild(addBtn);
+            sect.appendChild(addRow);
+        }
+        return sect;
+    }
+
+    function modesSourceMultRow(ctx, preset, src) {
+        const basePath = 'modes.' + preset + '.source_weight_mult';
+        const cur = Number(ctx.pathGet(ctx.working, basePath + '.' + src));
+        const row = document.createElement('div');
+        row.className = 'modes-srcmult-row';
+        const name = document.createElement('span');
+        name.className = 'modes-srcmult-name mono';
+        name.textContent = src;
+        row.appendChild(name);
+        const slider = document.createElement('input');
+        slider.type = 'range';
+        slider.className = 'vc-slider modes-srcmult-slider';
+        slider.min = '0';
+        slider.max = '5';
+        slider.step = '0.1';
+        slider.value = String(cur);
+        const readout = document.createElement('span');
+        readout.className = 'modes-srcmult-val mono';
+        readout.textContent = (Number.isFinite(cur) ? cur : 1).toFixed(1) + '×';
+        slider.addEventListener('input', () => {
+            let n = parseFloat(slider.value);
+            if (Number.isNaN(n)) return;
+            n = parseFloat(n.toFixed(1));
+            readout.textContent = n.toFixed(1) + '×';
+            const m = Object.assign({}, ctx.pathGet(ctx.working, basePath) || {});
+            m[src] = n;
+            ctx.setWorking(basePath, m);
+            row.classList.toggle('dirty', modesPathDirty(ctx, basePath));
+            ctx.refreshHeader();
+            ctx.refreshGroupBadge('modes');
+        });
+        row.appendChild(slider);
+        row.appendChild(readout);
+        const rm = document.createElement('button');
+        rm.type = 'button';
+        rm.className = 'vc-btn vc-btn-ghost-sm modes-srcmult-remove';
+        rm.textContent = '×';
+        rm.title = 'Remove (source returns to 1.0×)';
+        rm.addEventListener('click', () => {
+            const m = Object.assign({}, ctx.pathGet(ctx.working, basePath) || {});
+            delete m[src];
+            ctx.setWorking(basePath, m);
+            ctx.refreshHeader();
+            ctx.refreshGroupBadge('modes');
+            ctx.refreshGroup('modes');
+        });
+        row.appendChild(rm);
+        return row;
+    }
+
+    /* SVG of how the selected knob interpolates across the dial [0,1],
+     * using each preset's editable anchor position (mirrors resolve_dial). */
+    function modesCurveSvg(ctx, knobKey) {
+        const knobMeta = MODE_CURVE_KNOBS.find(k => k.key === knobKey) || { max: 1 };
+        const maxV = knobMeta.max || 1;
+        const W = 320, H = 72, padX = 14, padTop = 8, padBot = 18;
+        const NS = 'http://www.w3.org/2000/svg';
+        const svg = document.createElementNS(NS, 'svg');
+        svg.setAttribute('viewBox', '0 0 ' + W + ' ' + H);
+        svg.setAttribute('class', 'modes-curve-svg');
+
+        const X = (d) => padX + Math.max(0, Math.min(1, d)) * (W - 2 * padX);
+        const Y = (v) => (H - padBot) - (Math.max(0, Math.min(maxV, v)) / maxV) * (H - padTop - padBot);
+
+        const base = document.createElementNS(NS, 'line');
+        base.setAttribute('x1', X(0)); base.setAttribute('y1', Y(0));
+        base.setAttribute('x2', X(1)); base.setAttribute('y2', Y(0));
+        base.setAttribute('class', 'modes-curve-base');
+        svg.appendChild(base);
+
+        const pts = MODE_PRESET_ORDER.map(p => ({
+            preset: p,
+            d: Math.max(0, Math.min(1, Number(ctx.pathGet(ctx.working, 'modes.dial_anchors.' + p)))),
+            v: Number(ctx.pathGet(ctx.working, 'modes.' + p + '.' + knobKey)),
+        })).sort((a, b) => a.d - b.d);
+
+        const poly = document.createElementNS(NS, 'polyline');
+        poly.setAttribute('points', pts.map(pt => X(pt.d).toFixed(2) + ',' + Y(pt.v).toFixed(2)).join(' '));
+        poly.setAttribute('class', 'modes-curve-line');
+        svg.appendChild(poly);
+
+        const defPreset = ctx.pathGet(ctx.working, 'modes.default_preset');
+        const defD = Math.max(0, Math.min(1, Number(ctx.pathGet(ctx.working, 'modes.dial_anchors.' + defPreset))));
+        const marker = document.createElementNS(NS, 'line');
+        marker.setAttribute('x1', X(defD)); marker.setAttribute('y1', padTop - 2);
+        marker.setAttribute('x2', X(defD)); marker.setAttribute('y2', H - padBot);
+        marker.setAttribute('class', 'modes-curve-marker');
+        const mtitle = document.createElementNS(NS, 'title');
+        mtitle.textContent = 'default preset: ' + (MODE_PRESET_META[defPreset] ? MODE_PRESET_META[defPreset].label : defPreset);
+        marker.appendChild(mtitle);
+        svg.appendChild(marker);
+
+        pts.forEach(pt => {
+            const c = document.createElementNS(NS, 'circle');
+            c.setAttribute('cx', X(pt.d)); c.setAttribute('cy', Y(pt.v)); c.setAttribute('r', '3');
+            c.setAttribute('class', 'modes-curve-dot');
+            const ttl = document.createElementNS(NS, 'title');
+            ttl.textContent = MODE_PRESET_META[pt.preset].label + ' · dial ' + pt.d.toFixed(2) + ' · ' + knobKey + ' ' + pt.v;
+            c.appendChild(ttl);
+            svg.appendChild(c);
+            const t = document.createElementNS(NS, 'text');
+            t.setAttribute('x', X(pt.d)); t.setAttribute('y', H - 5);
+            t.setAttribute('text-anchor', 'middle');
+            t.setAttribute('class', 'modes-curve-label');
+            t.textContent = MODE_PRESET_META[pt.preset].label.charAt(0);
+            svg.appendChild(t);
+        });
+        return svg;
+    }
+
+    function modesPresetCard(ctx, preset, commit) {
+        const meta = MODE_PRESET_META[preset];
+        const card = document.createElement('div');
+        card.className = 'modes-card modes-preset';
+        if (ctx.fieldDirty('modes', preset)) card.classList.add('dirty');
+        const isDefault = ctx.pathGet(ctx.working, 'modes.default_preset') === preset;
+
+        const head = document.createElement('div');
+        head.className = 'modes-preset-head';
+        const titleRow = document.createElement('div');
+        titleRow.className = 'modes-preset-title-row';
+        const title = document.createElement('span');
+        title.className = 'modes-preset-title';
+        title.textContent = meta.label;
+        titleRow.appendChild(title);
+        const tag = document.createElement('span');
+        tag.className = 'modes-preset-tag';
+        tag.textContent = meta.tag;
+        titleRow.appendChild(tag);
+        if (isDefault) {
+            const db = document.createElement('span');
+            db.className = 'vc-badge vc-badge-active modes-default-badge';
+            db.textContent = 'DEFAULT';
+            titleRow.appendChild(db);
+        }
+        head.appendChild(titleRow);
+        const desc = document.createElement('div');
+        desc.className = 'modes-preset-desc muted';
+        desc.textContent = meta.desc;
+        head.appendChild(desc);
+        card.appendChild(head);
+
+        card.appendChild(modesSlider(ctx, {
+            path: 'modes.dial_anchors.' + preset,
+            label: 'Dial position', min: 0, max: 1, step: 0.05,
+            desc: 'Where this preset sits on the [0,1] discovery dial (used for interpolation).',
+            commit,
+        }));
+
+        const grid = document.createElement('div');
+        grid.className = 'modes-knob-grid';
+        MODE_PRESET_FIELDS.forEach(f => {
+            grid.appendChild(modesSlider(ctx, {
+                path: 'modes.' + preset + '.' + f.key, label: f.label,
+                min: f.min, max: f.max, step: f.step, desc: f.desc, commit,
+            }));
+        });
+        card.appendChild(grid);
+
+        card.appendChild(modesToggle(ctx, {
+            path: 'modes.' + preset + '.novelty_filter',
+            label: 'Novelty filter',
+            desc: 'Exclude the proven set from candidates (the discovery end).',
+            commit,
+        }));
+
+        card.appendChild(modesSourceMultEditor(ctx, preset));
+        return card;
+    }
+
+    function renderModesGroup(ctx) {
+        GIQ.state.modesEditor = GIQ.state.modesEditor || { curveKnob: 'kappa' };
+        const wrap = document.createElement('div');
+        wrap.className = 'modes-editor';
+
+        const intro = document.createElement('p');
+        intro.className = 'modes-intro muted';
+        intro.textContent = 'Tune what each discovery-dial preset does. The Explore dial and Radio "Comfort ↔ Adventurous" posture interpolate between these anchors; "balanced" reproduces today\'s default. Save & Apply takes effect on the next request — no pipeline run needed.';
+        wrap.appendChild(intro);
+
+        function commit(path, v, rowEl) {
+            ctx.setWorking(path, v);
+            if (rowEl) rowEl.classList.toggle('dirty', modesPathDirty(ctx, path));
+            ctx.refreshHeader();
+            ctx.refreshGroupBadge('modes');
+            redrawCurve();
+        }
+
+        /* ---- Dial setup card: default preset + curve preview ---- */
+        const setupCard = document.createElement('div');
+        setupCard.className = 'modes-card modes-setup';
+
+        const dpField = document.createElement('div');
+        dpField.className = 'modes-inline-field';
+        const dpLabel = document.createElement('label');
+        dpLabel.className = 'modes-inline-label';
+        dpLabel.textContent = 'Default preset';
+        dpField.appendChild(dpLabel);
+        const dpSel = document.createElement('select');
+        dpSel.className = 'reco-select';
+        MODE_PRESET_ORDER.forEach(p => {
+            const o = document.createElement('option');
+            o.value = p;
+            o.textContent = MODE_PRESET_META[p].label;
+            if (ctx.pathGet(ctx.working, 'modes.default_preset') === p) o.selected = true;
+            dpSel.appendChild(o);
+        });
+        dpSel.addEventListener('change', () => {
+            ctx.setWorking('modes.default_preset', dpSel.value);
+            ctx.refreshHeader();
+            ctx.refreshGroupBadge('modes');
+            ctx.refreshGroup('modes');
+        });
+        dpField.appendChild(dpSel);
+        const dpHint = document.createElement('span');
+        dpHint.className = 'muted modes-inline-hint';
+        dpHint.textContent = 'Used when a request specifies no discovery/mode value.';
+        dpField.appendChild(dpHint);
+        setupCard.appendChild(dpField);
+
+        const curveWrap = document.createElement('div');
+        curveWrap.className = 'modes-curve';
+        const curveHead = document.createElement('div');
+        curveHead.className = 'modes-curve-head';
+        curveHead.innerHTML = '<span class="eyebrow">DIAL → KNOB CURVE</span>';
+        const knobSel = document.createElement('select');
+        knobSel.className = 'reco-select modes-curve-knob';
+        MODE_CURVE_KNOBS.forEach(k => {
+            const o = document.createElement('option');
+            o.value = k.key;
+            o.textContent = k.label;
+            if (GIQ.state.modesEditor.curveKnob === k.key) o.selected = true;
+            knobSel.appendChild(o);
+        });
+        knobSel.addEventListener('change', () => {
+            GIQ.state.modesEditor.curveKnob = knobSel.value;
+            redrawCurve();
+        });
+        curveHead.appendChild(knobSel);
+        curveWrap.appendChild(curveHead);
+        const curveHost = document.createElement('div');
+        curveHost.className = 'modes-curve-host';
+        curveWrap.appendChild(curveHost);
+        setupCard.appendChild(curveWrap);
+        wrap.appendChild(setupCard);
+
+        function redrawCurve() {
+            curveHost.innerHTML = '';
+            curveHost.appendChild(modesCurveSvg(ctx, GIQ.state.modesEditor.curveKnob));
+        }
+
+        /* ---- Per-preset cards ---- */
+        const cardsHost = document.createElement('div');
+        cardsHost.className = 'modes-cards';
+        MODE_PRESET_ORDER.forEach(preset => {
+            cardsHost.appendChild(modesPresetCard(ctx, preset, commit));
+        });
+        wrap.appendChild(cardsHost);
+
+        redrawCurve();
+        return wrap;
+    }
+
     GIQ.pages.settings.algorithm = function renderAlgorithm(root) {
         root.innerHTML = '';
         const host = document.createElement('div');
@@ -115,6 +606,11 @@
             retrainGroups: ['ranker', 'session_embeddings'],
             fieldMeta: ALGO_FIELD_META,
             exportName: 'grooveiq-algorithm',
+            /* `modes` is nested — render it as preset sub-cards; every other
+             * group falls back to the shell's standard slider grid. */
+            renderGroupBody: (ctx) => (ctx.groupKey === 'modes')
+                ? renderModesGroup(ctx)
+                : ctx.defaultGroupBody(),
             saveSideEffect: {
                 label: 'Pipeline reset triggered',
                 onSave: () => GIQ.api.post('/v1/pipeline/reset'),

@@ -62,6 +62,21 @@ async def get_defaults_endpoint(
     }
 
 
+@router.get("/algorithm/modes", summary="Get active discovery-dial preset definitions (read-only)")
+async def get_modes(
+    _key: str = Depends(require_api_key),
+):
+    """Return just the discovery-dial ``modes`` group from the active config.
+
+    Read-only convenience for the Explore discovery dial: **any authenticated
+    key** may read it (no admin required, unlike the full-config routes), and it
+    reflects the serving-time config immediately after a save (no pipeline run
+    needed) because it reads the in-memory cache. Avoids shipping the entire
+    algorithm config to end-user surfaces.
+    """
+    return config_service.get_config().modes.model_dump()
+
+
 @router.get("/algorithm/config/history", summary="Config version history")
 async def get_history(
     limit: int = Query(20, ge=1, le=100),

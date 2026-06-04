@@ -970,6 +970,7 @@ GIQ.components.versionedConfigShell = function versionedConfigShell(opts) {
      * `working` directly via setWorking() (or by hand) and then calls refreshXxx().
      */
     function buildCtx(extra) {
+        const gk = extra && extra.groupKey;
         // `extra` is always an internal literal (e.g. {groupKey, groupMeta}) from the
         // call sites below — never user-controlled. Safe to merge via Object.assign.
         // nosemgrep: javascript.lang.security.insecure-object-assign.insecure-object-assign
@@ -986,11 +987,22 @@ GIQ.components.versionedConfigShell = function versionedConfigShell(opts) {
             },
             anyDirty,
             groupDirty,
-            fieldDirty(gk, fk) { return fieldDirty(gk, fk); },
+            fieldDirty(gk2, fk) { return fieldDirty(gk2, fk); },
+            /* Build the shell's default slider+input field grid for THIS group.
+             * Lets a renderGroupBody handle one special group while delegating the
+             * rest back to the standard renderer (e.g. Algorithm customises only
+             * `modes` and returns ctx.defaultGroupBody() for every other group). */
+            defaultGroupBody() {
+                const grid = document.createElement('div');
+                grid.className = 'vc-fields';
+                const defaults = (state.defaults?.config?.[gk]) || {};
+                Object.keys(defaults).forEach(fk => grid.appendChild(_buildField(gk, fk)));
+                return grid;
+            },
             refresh() { renderAll(); },
             refreshHeader: _refreshHeaderWithBanner,
-            refreshGroup(gk) { _refreshGroupBody(gk); },
-            refreshGroupBadge(gk) { _refreshGroupBadges(gk); },
+            refreshGroup(gk2) { _refreshGroupBody(gk2); },
+            refreshGroupBadge(gk2) { _refreshGroupBadges(gk2); },
         }, extra || {});
     }
 

@@ -1496,6 +1496,7 @@
         seedValue: '',
         contextOpen: false,
         ctx: {},
+        discovery: 0.3,   /* Comfort ↔ Adventurous posture (the discovery dial) */
         sessionId: null,
         seedDisplayName: '',
         seedTypeLoaded: '',
@@ -1509,10 +1510,12 @@
         if (!GIQ.state.radio) {
             GIQ.state.radio = {
                 userId: null, seedType: 'track', seedValue: '', contextOpen: false, ctx: {},
+                discovery: 0.3,
                 sessionId: null, seedDisplayName: '', seedTypeLoaded: '',
                 tracks: [], totalServed: 0, sessions: [], feedback: {},
             };
         }
+        if (GIQ.state.radio.discovery == null) GIQ.state.radio.discovery = 0.3;
         const state = GIQ.state.radio;
 
         /* Allow deep-link from Artists / others — ?seed_type=artist&seed_value=name. */
@@ -1635,6 +1638,46 @@
             }
         }
         rebuildSeedInput();
+
+        /* Discovery posture — Comfort ↔ Adventurous (maps to the discovery dial).
+         * Sets the radio session's baseline; in-session like/skip feedback still
+         * drifts the taste vector around whatever posture is chosen here. */
+        const discField = document.createElement('div');
+        discField.className = 'radio-field radio-disc-field';
+        discField.innerHTML = '<div class="eyebrow">Posture</div>';
+        const discTrack = document.createElement('div');
+        discTrack.className = 'radio-disc-track';
+        const discSlider = document.createElement('input');
+        discSlider.type = 'range';
+        discSlider.className = 'radio-disc-slider';
+        discSlider.min = '0';
+        discSlider.max = '1';
+        discSlider.step = '0.05';
+        discSlider.value = String(state.discovery != null ? state.discovery : 0.3);
+        discSlider.setAttribute('aria-label', 'Radio discovery posture (comfort to adventurous)');
+        discTrack.appendChild(discSlider);
+        discField.appendChild(discTrack);
+        const discEnds = document.createElement('div');
+        discEnds.className = 'radio-disc-ends';
+        discEnds.innerHTML = '<span>Comfort</span><span class="radio-disc-readout mono"></span><span>Adventurous</span>';
+        discField.appendChild(discEnds);
+        const discReadout = discEnds.querySelector('.radio-disc-readout');
+        function radioNearestStop(v) {
+            return RECO_DIAL_STOPS.reduce((a, b) =>
+                Math.abs(b.value - v) < Math.abs(a.value - v) ? b : a);
+        }
+        function updateDiscReadout() {
+            const v = state.discovery != null ? state.discovery : 0.3;
+            const near = radioNearestStop(v);
+            const isStop = Math.abs(near.value - v) < 0.001;
+            discReadout.textContent = v.toFixed(2) + ' · ' + (isStop ? '' : '~') + near.label;
+        }
+        discSlider.addEventListener('input', () => {
+            state.discovery = parseFloat(discSlider.value);
+            updateDiscReadout();
+        });
+        updateDiscReadout();
+        startBody.appendChild(discField);
 
         /* Advanced context section (collapsible) */
         const ctxToggle = document.createElement('button');
@@ -1814,6 +1857,7 @@
                     seed_type: state.seedType,
                     seed_value: state.seedValue,
                     count: 10,
+                    discovery: state.discovery != null ? state.discovery : 0.3,
                 };
                 Object.keys(state.ctx).forEach(k => {
                     if (state.ctx[k] != null && state.ctx[k] !== '') body[k] = state.ctx[k];

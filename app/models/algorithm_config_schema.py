@@ -446,6 +446,16 @@ CONFIG_GROUPS: list[dict[str, Any]] = [
         "description": "Word2Vec skip-gram training parameters for behavioural co-occurrence embeddings.",
         "retrain_required": True,
     },
+    {
+        "key": "modes",
+        "label": "Recommendation Modes (Discovery Dial)",
+        "description": (
+            "Per-preset definitions for the discovery dial (familiar → deep discovery): acquisition "
+            "(kappa/lambda), novelty filter, proven thresholds, exploration/freshness, and per-source "
+            "weight multipliers. 'balanced' is calibrated to reproduce today's default behaviour."
+        ),
+        "retrain_required": False,
+    },
 ]
 
 
