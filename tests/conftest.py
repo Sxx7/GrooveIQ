@@ -18,6 +18,8 @@ from __future__ import annotations
 
 import os
 
+import pytest
+
 # Must run before any `from app...` import, so set env at module top-level.
 _TEST_ENV = {
     "ALLOWED_HOSTS": "*",
@@ -48,3 +50,26 @@ _TEST_ENV = {
 
 for _k, _v in _TEST_ENV.items():
     os.environ[_k] = _v
+
+
+@pytest.fixture(autouse=True)
+def _isolate_mix_cache():
+    """Clear the in-memory SWR mix cache around every test.
+
+    The recommend handler caches "plain" mode/dial requests in a module-level
+    singleton (``app.services.mix_cache``). Without per-test isolation, a cached
+    mix from one test could be served to another that rebuilt the same user with
+    different DB state. Clearing before *and* after guarantees each test starts
+    cold (its first request always regenerates).
+
+    Lazy-imported and guarded so the legacy Python 3.9 dev env — which can't
+    import the full app — silently skips it instead of erroring at collection.
+    """
+    try:
+        from app.services import mix_cache
+    except Exception:
+        yield
+        return
+    mix_cache.clear()
+    yield
+    mix_cache.clear()

@@ -299,6 +299,17 @@ class Settings(BaseSettings):
     RECO_AUDIT_MAX_CANDIDATES: int = 200  # cap candidates persisted per request (top-N by raw_score)
 
     # ------------------------------------------------------------------
+    # Mix cache (stale-while-revalidate cache for recommendation-mode requests)
+    # ------------------------------------------------------------------
+    MIX_CACHE_ENABLED: bool = True  # serve cacheable recommend/mode requests from the SWR cache
+    MIX_CACHE_FRESH_SECONDS: int = 120  # within this age the cached mix is served as-is (no rebuild)
+    MIX_CACHE_STALE_SECONDS: int = 900  # beyond fresh but within this grace: serve stale + one bg rebuild
+    MIX_CACHE_MAX_ENTRIES: int = 512  # cap on total cached mixes (oldest evicted first — memory bound)
+    MIX_CACHE_MAX_CONCURRENT_REBUILDS: int = 4  # semaphore cap on background/get_or_build regenerations
+    MIX_PREWARM_RATE_LIMIT_PER_MIN: int = 12  # per (api-key, user) cap on prewarm calls
+    MIX_PREWARM_MAX_MODES: int = 8  # cap modes warmed per prewarm request (bounds background fan-out)
+
+    # ------------------------------------------------------------------
     # API call logging (per-user HTTP request/response history for the dashboard)
     # ------------------------------------------------------------------
     API_LOG_ENABLED: bool = True  # master switch — disable to skip middleware writes entirely

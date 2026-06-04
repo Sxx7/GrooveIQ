@@ -329,6 +329,22 @@ def check_user_event_rate(user_id: str, count: int = 1) -> None:
         )
 
 
+def check_rate_limit(bucket: str, limit: int, window_seconds: int = 60) -> None:
+    """Enforce a sliding-window rate limit on an arbitrary ``bucket`` identifier.
+
+    Generic counterpart to :func:`check_user_event_rate` for endpoints that need
+    their own budget (e.g. the bounded ``mixes/prewarm`` warm-up).  Callers build
+    a stable bucket string (typically ``f"{feature}:{key_hash}:{scope}"``) so the
+    budget is per-key and per-scope.  Raises ``429`` when exhausted.
+    """
+    if not _limiter.is_allowed(bucket, limit=limit, window_seconds=window_seconds):
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=f"Rate limit exceeded. Max {limit} requests per {window_seconds}s.",
+            headers={"Retry-After": str(window_seconds)},
+        )
+
+
 # ---------------------------------------------------------------------------
 # Optional auth (for endpoints that work anonymously but can be keyed)
 # ---------------------------------------------------------------------------

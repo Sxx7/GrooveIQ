@@ -13,6 +13,7 @@ import time
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -30,6 +31,311 @@ def _get_model_version() -> str:
     from app.services.ranker import get_model_version
 
     return get_model_version() or "phase4-candidate-gen-v1"
+
+
+# ---------------------------------------------------------------------------
+# Mix-cache key buckets (Chunk 6)
+# ---------------------------------------------------------------------------
+
+
+def _dial_bucket(dial) -> str:
+    """A stable, low-cardinality bucket for a resolved discovery dial.
+
+    A named preset keys on its name; a free-floating ``discovery`` value buckets
+    to two decimals so a continuous slider produces a bounded set of keys.
+    """
+    return dial.preset if dial.preset else f"d{dial.discovery:.2f}"
+
+
+def _context_bucket(
+    device_type: str | None,
+    output_type: str | None,
+    context_type: str | None,
+    location_label: str | None,
+    hour_of_day: int | None,
+    day_of_week: int | None,
+) -> str:
+    """A stable key fragment for the ranking-affecting context params.
+
+    These feed the ranker / reranker, so a mobile-in-the-gym mix must not be
+    served to a desktop-at-home request — every context dimension is in the key.
+    """
+    return "|".join(
+        "" if v is None else str(v)
+        for v in (device_type, output_type, context_type, location_label, hour_of_day, day_of_week)
+    )
+
+
+def _make_payload_builder(session_factory, gen_kwargs: dict):
+    """Build a self-contained, zero-arg async builder for the mix cache.
+
+    Background rebuilds run detached from the request, so the builder opens its
+    own session via ``session_factory`` (``AsyncSessionLocal`` in production;
+    monkeypatched to the test sessionmaker under test).  Imported lazily so
+    patching ``app.db.session.AsyncSessionLocal`` is honoured.
+    """
+
+    async def _builder():
+        async with session_factory() as own_session:
+            return await generate_recommendation_payload(own_session, **gen_kwargs)
+
+    return _builder
+
+
+async def generate_recommendation_payload(
+    session: AsyncSession,
+    *,
+    user_id: str,
+    dial,
+    limit: int,
+    model_version: str,
+    seed_track_id: str | None = None,
+    genre: str | None = None,
+    mood: str | None = None,
+    hour_of_day: int | None = None,
+    day_of_week: int | None = None,
+    device_type: str | None = None,
+    output_type: str | None = None,
+    context_type: str | None = None,
+    location_label: str | None = None,
+    want_debug: bool = False,
+) -> dict:
+    """Run the candidate-gen → rank → rerank → feature pipeline for one request.
+
+    Returns a **session-detached** payload (plain dicts/lists/tuples — no ORM
+    rows) so it is safe to cache and reuse across requests.  The caller layers
+    on the per-request bits that must stay fresh: a new ``request_id``, impression
+    logging, and the audit dispatch.
+
+    The discovery-dial overrides are applied *inside* this function (around
+    candidate-gen and rerank), so it produces the same result whether invoked on
+    the request's session or a detached background session.
+    """
+    from app.services.candidate_gen import get_candidates
+    from app.services.request_config import apply_overrides
+
+    overfetch = limit * 6 if (genre or mood) else limit * 3
+    with apply_overrides(dial.overrides):
+        candidates = await get_candidates(
+            user_id=user_id,
+            seed_track_id=seed_track_id,
+            k=overfetch,
+            session=session,
+        )
+
+    # Filter candidates by genre/mood if requested.
+    if candidates and (genre or mood):
+        cand_ids = [c["track_id"] for c in candidates]
+        feat_q = await session.execute(select(TrackFeatures).where(TrackFeatures.track_id.in_(cand_ids)))
+        feat_lookup = {t.track_id: t for t in feat_q.scalars().all()}
+
+        filtered = []
+        for c in candidates:
+            tf = feat_lookup.get(c["track_id"])
+            if not tf:
+                continue
+            if genre and not (tf.genre and genre.lower() in tf.genre.lower()):
+                continue
+            if mood:
+                tags = tf.mood_tags if isinstance(tf.mood_tags, list) else []
+                if not any(
+                    isinstance(tag, dict) and tag.get("label") == mood and tag.get("confidence", 0) > 0.3
+                    for tag in tags
+                ):
+                    continue
+            filtered.append(c)
+        candidates = filtered
+
+    empty_payload = {
+        "reason": None,
+        "reranked": [],
+        "source_map": {},
+        "sources_by_tid": {},
+        "actions_by_tid": {},
+        "track_meta": {},
+        "audit_track_ids": [],
+        "candidate_rows": [],
+        "candidates_by_source": {},
+        "debug_data": None,
+    }
+
+    if not candidates:
+        # Diagnose why there are no candidates so the client can show a useful message.
+        from sqlalchemy import func as sa_func
+
+        track_count = (await session.execute(select(sa_func.count()).select_from(TrackFeatures))).scalar() or 0
+        if track_count == 0:
+            reason = "no_library"
+        else:
+            interaction_count = (
+                await session.execute(
+                    select(sa_func.count()).select_from(TrackInteraction).where(TrackInteraction.user_id == user_id)
+                )
+            ).scalar() or 0
+            if interaction_count == 0:
+                reason = "no_history"
+            else:
+                user_row = (
+                    await session.execute(select(User.taste_profile).where(User.user_id == user_id))
+                ).scalar_one_or_none()
+                reason = "no_taste_profile" if not user_row else "no_candidates"
+        return {**empty_payload, "reason": reason}
+
+    candidate_ids = [c["track_id"] for c in candidates]
+
+    # Per-candidate source attribution (a candidate may surface from multiple sources).
+    sources_by_tid: dict[str, list[str]] = {}
+    for c in candidates:
+        sources_by_tid.setdefault(c["track_id"], []).append(c["source"])
+    candidates_by_source_counts: dict[str, int] = {}
+    for src_list in sources_by_tid.values():
+        for s in src_list:
+            candidates_by_source_counts[s] = candidates_by_source_counts.get(s, 0) + 1
+
+    debug_data: dict | None = None
+    if want_debug:
+        from collections import defaultdict
+
+        cbs = defaultdict(list)
+        for c in candidates:
+            cbs[c["source"]].append({"track_id": c["track_id"], "score": round(c["score"], 4)})
+        debug_data = {"candidates_by_source": dict(cbs), "total_candidates": len(candidates)}
+
+    # --- Step 1: Score candidates with LightGBM ranker (or fallback) ---
+    from app.services.ranker import score_candidates
+
+    scored = await score_candidates(
+        user_id,
+        candidate_ids,
+        session,
+        hour_of_day=hour_of_day,
+        day_of_week=day_of_week,
+        device_type=device_type,
+        output_type=output_type,
+        context_type=context_type,
+        location_label=location_label,
+    )
+    raw_score_by_tid = {tid: float(score) for tid, score in scored}
+    pre_rerank_pos_by_tid = {tid: i for i, (tid, _) in enumerate(scored)}
+    source_map = {c["track_id"]: c["source"] for c in candidates}
+
+    if debug_data is not None:
+        debug_data["pre_rerank"] = [
+            {"track_id": tid, "score": round(score, 4), "position": i} for i, (tid, score) in enumerate(scored)
+        ]
+
+    # --- Step 2: Rerank for diversity / business rules ---
+    from app.services.reranker import get_last_rerank_actions, rerank
+
+    with apply_overrides(dial.overrides):
+        reranked_full = await rerank(
+            scored,
+            user_id,
+            session,
+            device_type=device_type,
+            output_type=output_type,
+            collect_actions=True,
+        )
+    rerank_actions = get_last_rerank_actions()
+    reranked = reranked_full[:limit]
+    final_score_by_tid = {tid: float(score) for tid, score in reranked_full}
+    final_pos_by_tid = {tid: i for i, (tid, _) in enumerate(reranked_full)}
+    shown_tids = {tid for tid, _ in reranked}
+
+    actions_by_tid: dict[str, list[dict]] = {}
+    for action in rerank_actions:
+        tid = action.get("track_id")
+        if tid:
+            actions_by_tid.setdefault(tid, []).append(action)
+
+    # --- Feature vectors for the audit / debug (top-N by raw_score ∪ shown) ---
+    audit_track_ids: list[str] = []
+    feature_vectors: dict[str, dict] = {}
+    if settings.RECO_AUDIT_ENABLED or want_debug:
+        from app.services.feature_eng import FEATURE_COLUMNS, build_features
+
+        cap = settings.RECO_AUDIT_MAX_CANDIDATES
+        ranked_by_raw = sorted(raw_score_by_tid.items(), key=lambda x: x[1], reverse=True)
+        top_n = [tid for tid, _ in ranked_by_raw[:cap]]
+        audit_track_ids = list({*top_n, *shown_tids})
+
+        feat_result = await build_features(
+            user_id,
+            audit_track_ids,
+            session,
+            hour_of_day=hour_of_day,
+            day_of_week=day_of_week,
+            device_type=device_type,
+            output_type=output_type,
+            context_type=context_type,
+            location_label=location_label,
+        )
+        for idx, tid in enumerate(feat_result["track_ids"]):
+            feature_vectors[tid] = {
+                col: round(float(feat_result["features"][idx][ci]), 4) for ci, col in enumerate(FEATURE_COLUMNS)
+            }
+
+    if debug_data is not None:
+        debug_data["reranker_actions"] = rerank_actions
+        debug_data["feature_vectors"] = {tid: feature_vectors.get(tid, {}) for tid, _ in reranked}
+
+    # --- Track metadata for the response (detached dicts, not ORM rows) ---
+    final_ids = [tid for tid, _ in reranked]
+    feat_meta_result = await session.execute(select(TrackFeatures).where(TrackFeatures.track_id.in_(final_ids)))
+    track_meta: dict[str, dict] = {}
+    for tf in feat_meta_result.scalars().all():
+        track_meta[tf.track_id] = {
+            "media_server_id": tf.media_server_id,
+            "title": tf.title,
+            "artist": tf.artist,
+            "album": tf.album,
+            "genre": tf.genre,
+            "bpm": tf.bpm,
+            "key": tf.key,
+            "mode": tf.mode,
+            "energy": tf.energy,
+            "danceability": tf.danceability,
+            "valence": tf.valence,
+            "mood_tags": tf.mood_tags,
+            "duration": tf.duration,
+        }
+
+    # --- Audit candidate rows (deterministic from generation; no request_id) ---
+    candidate_rows: list[dict] = []
+    for tid in audit_track_ids:
+        candidate_rows.append(
+            {
+                "track_id": tid,
+                "sources": sources_by_tid.get(tid, []),
+                "raw_score": raw_score_by_tid.get(tid, 0.0),
+                "pre_rerank_position": pre_rerank_pos_by_tid.get(tid, -1),
+                "final_score": final_score_by_tid.get(tid),
+                "final_position": final_pos_by_tid.get(tid) if tid in final_pos_by_tid else None,
+                "shown": tid in shown_tids,
+                "reranker_actions": actions_by_tid.get(tid, []),
+                "feature_vector": feature_vectors.get(tid, {}),
+            }
+        )
+
+    return {
+        "reason": None,
+        "reranked": reranked,
+        "source_map": source_map,
+        "sources_by_tid": sources_by_tid,
+        "actions_by_tid": actions_by_tid,
+        "track_meta": track_meta,
+        "audit_track_ids": audit_track_ids,
+        "candidate_rows": candidate_rows,
+        "candidates_by_source": candidates_by_source_counts,
+        "debug_data": debug_data,
+    }
+
+
+class PrewarmRequest(BaseModel):
+    """Body for ``POST /v1/users/{user_id}/mixes/prewarm``."""
+
+    modes: list[str] | None = Field(None, description="Preset names to warm; defaults to all presets.")
+    limit: int = Field(25, ge=1, le=100, description="Track count to warm (must match the client's request limit).")
 
 
 @router.get(
@@ -138,77 +444,67 @@ async def get_recommendations(
 
     # --- Resolve the discovery dial into a whitelisted, request-scoped override ---
     # A named `mode` wins over a raw `discovery` float; neither -> the default
-    # preset (balanced, == today). The override is read by candidate_gen (source
-    # weights + proven-novelty filter) and the reranker (UCB acquisition +
-    # exploration/freshness/anti-repetition knobs); both call get_config(), so the
-    # override flows through without touching those call sites. resolve_dial is the
-    # untrusted-input boundary — it only ever emits whitelisted keys.
+    # preset (balanced, == today). resolve_dial is the untrusted-input boundary —
+    # it only ever emits whitelisted keys. The override is applied inside
+    # generate_recommendation_payload (around candidate_gen + rerank).
+    from app.services import mix_cache
     from app.services import modes as modes_svc
-    from app.services.algorithm_config import get_config
-    from app.services.request_config import apply_overrides
+    from app.services.algorithm_config import get_config, get_config_version
 
     dial = modes_svc.resolve_dial(discovery, mode, get_config().modes)
-
-    # Generate candidates — over-fetch more when filtering by genre/mood.
-    from app.services.candidate_gen import get_candidates
-
-    overfetch = limit * 6 if (genre or mood) else limit * 3
-    with apply_overrides(dial.overrides):
-        candidates = await get_candidates(
-            user_id=user_id,
-            seed_track_id=seed_track_id,
-            k=overfetch,
-            session=session,
-        )
-
-    # Filter candidates by genre/mood if requested.
-    if candidates and (genre or mood):
-        cand_ids = [c["track_id"] for c in candidates]
-        feat_q = await session.execute(select(TrackFeatures).where(TrackFeatures.track_id.in_(cand_ids)))
-        feat_lookup = {t.track_id: t for t in feat_q.scalars().all()}
-
-        filtered = []
-        for c in candidates:
-            tf = feat_lookup.get(c["track_id"])
-            if not tf:
-                continue
-            if genre and not (tf.genre and genre.lower() in tf.genre.lower()):
-                continue
-            if mood:
-                tags = tf.mood_tags if isinstance(tf.mood_tags, list) else []
-                if not any(
-                    isinstance(tag, dict) and tag.get("label") == mood and tag.get("confidence", 0) > 0.3
-                    for tag in tags
-                ):
-                    continue
-            filtered.append(c)
-        candidates = filtered
-
     model_version = _get_model_version()
 
-    if not candidates:
-        # Diagnose why there are no candidates so the client can show a useful message.
-        from sqlalchemy import func as sa_func
+    gen_kwargs = dict(
+        user_id=user_id,
+        dial=dial,
+        limit=limit,
+        model_version=model_version,
+        seed_track_id=seed_track_id,
+        genre=genre,
+        mood=mood,
+        hour_of_day=hour_of_day,
+        day_of_week=day_of_week,
+        device_type=device_type,
+        output_type=output_type,
+        context_type=context_type,
+        location_label=location_label,
+        want_debug=debug,
+    )
 
-        track_count = (await session.execute(select(sa_func.count()).select_from(TrackFeatures))).scalar() or 0
+    # --- Stale-while-revalidate mix cache (Chunk 6) ---
+    # Cache only "plain" mode/dial requests — seed/genre/mood/debug carry params
+    # that aren't in the key, so those bypass the cache and always generate fresh
+    # (today's path, byte-for-byte). Impressions + audit always run per request,
+    # so cache hits stay fully tracked.
+    cacheable = bool(settings.MIX_CACHE_ENABLED) and not debug and not seed_track_id and not genre and not mood
+    payload = None
+    if cacheable:
+        from app.db.session import AsyncSessionLocal
 
-        if track_count == 0:
-            reason = "no_library"
-        else:
-            interaction_count = (
-                await session.execute(
-                    select(sa_func.count()).select_from(TrackInteraction).where(TrackInteraction.user_id == user_id)
-                )
-            ).scalar() or 0
+        cache_key = mix_cache.build_key(
+            user_id=user_id,
+            dial_bucket=_dial_bucket(dial),
+            context_bucket=_context_bucket(
+                device_type, output_type, context_type, location_label, hour_of_day, day_of_week
+            ),
+            limit=limit,
+            model_version=model_version,
+            config_version=get_config_version(),
+        )
+        cached, state = mix_cache.peek(cache_key)
+        if state == "fresh":
+            payload = cached
+        elif state == "stale":
+            payload = cached
+            mix_cache.schedule_rebuild(cache_key, _make_payload_builder(AsyncSessionLocal, gen_kwargs))
 
-            if interaction_count == 0:
-                reason = "no_history"
-            else:
-                user_row = (
-                    await session.execute(select(User.taste_profile).where(User.user_id == user_id))
-                ).scalar_one_or_none()
-                reason = "no_taste_profile" if not user_row else "no_candidates"
+    if payload is None:
+        payload = await generate_recommendation_payload(session, **gen_kwargs)
+        if cacheable:
+            mix_cache.put(cache_key, payload)
 
+    # --- No-candidates short-circuit ---
+    if payload["reason"] is not None:
         return {
             "request_id": str(uuid.uuid4()),
             "tracks": [],
@@ -216,125 +512,14 @@ async def get_recommendations(
             "user_id": user_id,
             "seed_track_id": seed_track_id,
             "discovery": dial.discovery,
-            "reason": reason,
+            "reason": payload["reason"],
         }
 
-    candidate_ids = [c["track_id"] for c in candidates]
-
-    # Build per-candidate source attribution (a candidate may surface from
-    # multiple sources — we keep them all for the audit).
-    sources_by_tid: dict[str, list[str]] = {}
-    for c in candidates:
-        sources_by_tid.setdefault(c["track_id"], []).append(c["source"])
-    # Counts per source for the audit summary.
-    candidates_by_source_counts: dict[str, int] = {}
-    for src_list in sources_by_tid.values():
-        for s in src_list:
-            candidates_by_source_counts[s] = candidates_by_source_counts.get(s, 0) + 1
-
-    # Collect debug data if requested.
-    debug_data = None
-    if debug:
-        from collections import defaultdict
-
-        candidates_by_source = defaultdict(list)
-        for c in candidates:
-            candidates_by_source[c["source"]].append({"track_id": c["track_id"], "score": round(c["score"], 4)})
-        debug_data = {
-            "candidates_by_source": dict(candidates_by_source),
-            "total_candidates": len(candidates),
-        }
-
-    # --- Step 1: Score candidates with LightGBM ranker (or fallback) ---
-    from app.services.ranker import score_candidates
-
-    scored = await score_candidates(
-        user_id,
-        candidate_ids,
-        session,
-        hour_of_day=hour_of_day,
-        day_of_week=day_of_week,
-        device_type=device_type,
-        output_type=output_type,
-        context_type=context_type,
-        location_label=location_label,
-    )
-    raw_score_by_tid = {tid: float(score) for tid, score in scored}
-    pre_rerank_pos_by_tid = {tid: i for i, (tid, _) in enumerate(scored)}
-    source_map = {c["track_id"]: c["source"] for c in candidates}
-
-    if debug:
-        debug_data["pre_rerank"] = [
-            {"track_id": tid, "score": round(score, 4), "position": i} for i, (tid, score) in enumerate(scored)
-        ]
-
-    # --- Step 2: Rerank for diversity / business rules ---
-    # Always collect rerank actions so the audit can record them, regardless
-    # of debug mode.  This is cheap (just appends to a list).
-    from app.services.reranker import get_last_rerank_actions, rerank
-
-    with apply_overrides(dial.overrides):
-        reranked_full = await rerank(
-            scored,
-            user_id,
-            session,
-            device_type=device_type,
-            output_type=output_type,
-            collect_actions=True,
-        )
-    rerank_actions = get_last_rerank_actions()
-    reranked = reranked_full[:limit]
-    final_score_by_tid = {tid: float(score) for tid, score in reranked_full}
-    final_pos_by_tid = {tid: i for i, (tid, _) in enumerate(reranked_full)}
-    shown_tids = {tid for tid, _ in reranked}
-
-    # Group reranker actions by track for the audit (so each candidate row
-    # carries the actions that affected it).
-    actions_by_tid: dict[str, list[dict]] = {}
-    for action in rerank_actions:
-        tid = action.get("track_id")
-        if tid:
-            actions_by_tid.setdefault(tid, []).append(action)
-
-    # --- Build feature vectors for the candidates we'll persist in the audit.
-    # Persist the top-N by raw_score (capped by RECO_AUDIT_MAX_CANDIDATES).
-    # We always do this so the audit has a complete picture, but we cap the
-    # set so a 500-candidate request doesn't write 500 feature vectors.
-    audit_track_ids: list[str] = []
-    feature_vectors: dict[str, dict] = {}
-    if settings.RECO_AUDIT_ENABLED or debug:
-        from app.services.feature_eng import FEATURE_COLUMNS, build_features
-
-        cap = settings.RECO_AUDIT_MAX_CANDIDATES
-        # Pick top-N by raw_score, but always include shown tracks.
-        ranked_by_raw = sorted(raw_score_by_tid.items(), key=lambda x: x[1], reverse=True)
-        top_n = [tid for tid, _ in ranked_by_raw[:cap]]
-        audit_track_ids = list({*top_n, *shown_tids})
-
-        feat_result = await build_features(
-            user_id,
-            audit_track_ids,
-            session,
-            hour_of_day=hour_of_day,
-            day_of_week=day_of_week,
-            device_type=device_type,
-            output_type=output_type,
-            context_type=context_type,
-            location_label=location_label,
-        )
-        for idx, tid in enumerate(feat_result["track_ids"]):
-            feature_vectors[tid] = {
-                col: round(float(feat_result["features"][idx][ci]), 4) for ci, col in enumerate(FEATURE_COLUMNS)
-            }
-
-    if debug:
-        debug_data["reranker_actions"] = rerank_actions
-        debug_data["feature_vectors"] = {tid: feature_vectors.get(tid, {}) for tid, _ in reranked}
-
-    # Fetch track metadata for response.
-    final_ids = [tid for tid, _ in reranked]
-    feat_meta_result = await session.execute(select(TrackFeatures).where(TrackFeatures.track_id.in_(final_ids)))
-    feat_map = {t.track_id: t for t in feat_meta_result.scalars().all()}
+    reranked = payload["reranked"]
+    source_map = payload["source_map"]
+    sources_by_tid = payload["sources_by_tid"]
+    actions_by_tid = payload["actions_by_tid"]
+    track_meta = payload["track_meta"]
 
     # Generate a request_id for impression tracking.
     request_id = str(uuid.uuid4())
@@ -364,24 +549,8 @@ async def get_recommendations(
 
     # --- Fire-and-forget audit write ---
     if settings.RECO_AUDIT_ENABLED:
-        from app.services.algorithm_config import get_config_version
         from app.services.reco_audit import write_audit
 
-        candidate_rows = []
-        for tid in audit_track_ids:
-            candidate_rows.append(
-                {
-                    "track_id": tid,
-                    "sources": sources_by_tid.get(tid, []),
-                    "raw_score": raw_score_by_tid.get(tid, 0.0),
-                    "pre_rerank_position": pre_rerank_pos_by_tid.get(tid, -1),
-                    "final_score": final_score_by_tid.get(tid),
-                    "final_position": final_pos_by_tid.get(tid) if tid in final_pos_by_tid else None,
-                    "shown": tid in shown_tids,
-                    "reranker_actions": actions_by_tid.get(tid, []),
-                    "feature_vector": feature_vectors.get(tid, {}),
-                }
-            )
         duration_ms = int((time.monotonic() - request_t0) * 1000)
         request_context_payload = {
             "device_type": device_type,
@@ -405,15 +574,14 @@ async def get_recommendations(
                 config_version=get_config_version(),
                 duration_ms=duration_ms,
                 limit_requested=limit,
-                candidates_by_source=candidates_by_source_counts,
-                candidate_rows=candidate_rows,
+                candidates_by_source=payload["candidates_by_source"],
+                candidate_rows=payload["candidate_rows"],
             )
         )
 
     # Build response.
     tracks = []
     for i, (tid, score) in enumerate(reranked):
-        tf = feat_map.get(tid)
         track_data = {
             "position": i,
             "track_id": tid,
@@ -421,24 +589,9 @@ async def get_recommendations(
             "score": round(score, 4),
             "reasons": modes_svc.derive_reasons(sources_by_tid.get(tid, []), actions_by_tid.get(tid, [])),
         }
-        if tf:
-            track_data.update(
-                {
-                    "media_server_id": tf.media_server_id,
-                    "title": tf.title,
-                    "artist": tf.artist,
-                    "album": tf.album,
-                    "genre": tf.genre,
-                    "bpm": tf.bpm,
-                    "key": tf.key,
-                    "mode": tf.mode,
-                    "energy": tf.energy,
-                    "danceability": tf.danceability,
-                    "valence": tf.valence,
-                    "mood_tags": tf.mood_tags,
-                    "duration": tf.duration,
-                }
-            )
+        meta = track_meta.get(tid)
+        if meta:
+            track_data.update(meta)
         tracks.append(track_data)
 
     response = {
@@ -457,9 +610,131 @@ async def get_recommendations(
         },
         "tracks": tracks,
     }
-    if debug and debug_data:
-        response["debug"] = debug_data
+    if debug and payload["debug_data"]:
+        response["debug"] = payload["debug_data"]
     return response
+
+
+@router.post(
+    "/users/{user_id}/mixes/prewarm",
+    status_code=202,
+    summary="Prewarm a user's recommendation mixes",
+    description=(
+        "Warms the SWR mix cache for the given user's preset mixes in the "
+        "background so a subsequent `GET /v1/recommend/{user_id}?mode=...` is "
+        "served instantly. Rate-limited per (key, user); the background fan-out "
+        "is bounded by a semaphore and a max-modes cap. Returns 202 immediately."
+    ),
+)
+async def prewarm_mixes(
+    user_id: str,
+    body: PrewarmRequest | None = None,
+    session: AsyncSession = Depends(get_session),
+    _key: str = Depends(require_api_key),
+):
+    from app.core.security import check_rate_limit, hash_key
+    from app.db.session import AsyncSessionLocal
+    from app.models.algorithm_config_schema import PRESET_NAMES
+    from app.services import mix_cache
+    from app.services import modes as modes_svc
+    from app.services.algorithm_config import get_config, get_config_version
+
+    validate_user_id(user_id)
+    check_user_access(_key, user_id)
+    # Bound how often a caller can trigger background warm-ups for a user.
+    check_rate_limit(f"mix_prewarm:{hash_key(_key)}:{user_id}", limit=settings.MIX_PREWARM_RATE_LIMIT_PER_MIN)
+
+    result = await session.execute(select(User.user_id).where(User.user_id == user_id))
+    if result.scalar_one_or_none() is None:
+        raise HTTPException(status_code=404, detail="Not found.")
+
+    body = body or PrewarmRequest()
+    requested = body.modes if body.modes else list(PRESET_NAMES)
+    # Drop unknown presets and cap the fan-out (resource bound).
+    valid_modes = [m for m in requested if m in PRESET_NAMES][: settings.MIX_PREWARM_MAX_MODES]
+
+    modes_cfg = get_config().modes
+    model_version = _get_model_version()
+    config_version = get_config_version()
+
+    warmed: list[str] = []
+    for m in valid_modes:
+        dial = modes_svc.resolve_dial(None, m, modes_cfg)
+        cache_key = mix_cache.build_key(
+            user_id=user_id,
+            dial_bucket=_dial_bucket(dial),
+            context_bucket=_context_bucket(None, None, None, None, None, None),
+            limit=body.limit,
+            model_version=model_version,
+            config_version=config_version,
+        )
+        gen_kwargs = dict(
+            user_id=user_id,
+            dial=dial,
+            limit=body.limit,
+            model_version=model_version,
+            seed_track_id=None,
+            genre=None,
+            mood=None,
+            hour_of_day=None,
+            day_of_week=None,
+            device_type=None,
+            output_type=None,
+            context_type=None,
+            location_label=None,
+            want_debug=False,
+        )
+        # get_or_build is a no-op when the key is already fresh, and is
+        # semaphore-bounded, so repeated prewarms don't pile up work.
+        asyncio.create_task(mix_cache.get_or_build(cache_key, _make_payload_builder(AsyncSessionLocal, gen_kwargs)))
+        warmed.append(m)
+
+    return {"status": "warming", "user_id": user_id, "modes": warmed, "limit": body.limit}
+
+
+@router.get(
+    "/users/{user_id}/mixes",
+    summary="List suggested recommendation mixes (shelves) for a user",
+    description=(
+        "Returns a menu of suggested shelves, each a ready-to-call recommend "
+        "request spec (mode + endpoint). Powers the multi-shelf home view."
+    ),
+)
+async def list_mixes(
+    user_id: str,
+    session: AsyncSession = Depends(get_session),
+    _key: str = Depends(require_api_key),
+):
+    from app.services.algorithm_config import get_config
+
+    validate_user_id(user_id)
+    check_user_access(_key, user_id)
+
+    result = await session.execute(select(User.user_id).where(User.user_id == user_id))
+    if result.scalar_one_or_none() is None:
+        raise HTTPException(status_code=404, detail="Not found.")
+
+    modes_cfg = get_config().modes
+    shelves = [
+        ("on_repeat", "On Repeat", "familiar"),
+        ("your_mix", "Your Mix", "balanced"),
+        ("discover", "Discover", "discovery"),
+        ("deep_cuts", "Deep Cuts", "deep_discovery"),
+    ]
+    mixes = []
+    for shelf_id, title, preset in shelves:
+        if not hasattr(modes_cfg, preset):
+            continue
+        mixes.append(
+            {
+                "id": shelf_id,
+                "title": title,
+                "mode": preset,
+                "discovery": float(modes_cfg.dial_anchors.get(preset, 0.0)),
+                "endpoint": f"/v1/recommend/{user_id}?mode={preset}",
+            }
+        )
+    return {"user_id": user_id, "mixes": mixes}
 
 
 @router.get(

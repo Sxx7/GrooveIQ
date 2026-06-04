@@ -129,6 +129,21 @@ def _apply_to_cache(row: AlgorithmConfig) -> None:
         _active_id = row.id
 
 
+def _invalidate_mix_cache() -> None:
+    """Drop cached recommendation mixes after a config change.
+
+    The mix-cache key already includes ``config_version`` (so a stale-version
+    mix is never *served*), but clearing reclaims the memory immediately.
+    Lazy import keeps this module free of a hard dependency on the cache.
+    """
+    try:
+        from app.services import mix_cache
+
+        mix_cache.clear()
+    except Exception:  # pragma: no cover - cache invalidation must never break a save
+        logger.debug("mix_cache invalidation skipped", exc_info=True)
+
+
 async def get_active(session: AsyncSession) -> AlgorithmConfig | None:
     """Fetch the active config row."""
     result = await session.execute(
@@ -176,6 +191,7 @@ async def save_config(
     await session.refresh(row)
 
     _apply_to_cache(row)
+    _invalidate_mix_cache()
     logger.info(f"Algorithm config saved: v{new_version} (id={row.id})")
     return row
 
@@ -196,6 +212,7 @@ async def activate_version(session: AsyncSession, version: int) -> AlgorithmConf
     await session.flush()
 
     _apply_to_cache(row)
+    _invalidate_mix_cache()
     logger.info(f"Algorithm config activated: v{version}")
     return row
 
