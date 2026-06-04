@@ -655,6 +655,12 @@ class RadioStartRequest(BaseModel):
     seed_type: RadioSeedType
     seed_value: str = Field(..., min_length=1, max_length=512, description="track_id, artist name, or playlist_id")
     count: int = Field(10, ge=1, le=50, description="Number of tracks in the first batch")
+    discovery: float = Field(
+        0.3,
+        ge=0.0,
+        le=1.0,
+        description="Discovery-dial posture (0=familiar … 1=deep discovery). Default 0.3 = balanced.",
+    )
     # Optional context (updatable on each /next call)
     device_type: str | None = Field(None, max_length=32)
     output_type: str | None = Field(None, max_length=32)
@@ -711,12 +717,14 @@ class RadioStartResponse(BaseModel):
     seed_type: str
     seed_value: str
     seed_display_name: str | None = None
+    discovery: float = 0.3
     tracks: list[RadioTrackItem]
 
 
 class RadioNextResponse(BaseModel):
     session_id: str
     total_served: int
+    discovery: float = 0.3
     tracks: list[RadioTrackItem]
 
 

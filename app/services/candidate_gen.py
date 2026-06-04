@@ -373,14 +373,14 @@ async def _get_candidates_impl(
     # At the discovery end, exclude the user's *proven* tracks so the pool
     # leans toward the novel/uncertain. Off by default (balanced/familiar).
     if preset.novelty_filter:
-        merged = await _apply_novelty_filter(merged, user_id, session, preset)
+        merged = await apply_novelty_filter(merged, user_id, session, preset)
 
     # Sort by score descending, return up to k.
     merged.sort(key=lambda c: c["score"], reverse=True)
     return merged[:k]
 
 
-async def _apply_novelty_filter(
+async def apply_novelty_filter(
     merged: list[dict[str, Any]],
     user_id: str,
     session: AsyncSession,
@@ -392,6 +392,10 @@ async def _apply_novelty_filter(
     ``sigma <= proven_sigma_max * novelty_strength`` — so higher ``novelty_strength``
     excludes a wider slice of the proven set (deep_discovery is the hardest).
     A floor guard relaxes the filter rather than starve a small library.
+
+    Reused by the radio service (Chunk 7) so the dial's novelty filter applies
+    identically to radio's own candidate pool — same thresholds, same starvation
+    floor — against ``played + proven`` (radio already excludes ``played``).
     """
     if not merged:
         return merged

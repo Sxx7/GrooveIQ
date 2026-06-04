@@ -114,6 +114,7 @@ async def start_radio(
         seed_type=body.seed_type,
         seed_value=body.seed_value,
         db=db,
+        discovery=body.discovery,
         device_type=body.device_type,
         output_type=body.output_type,
         location_label=body.location_label,
@@ -213,6 +214,7 @@ async def start_radio(
         seed_type=session.seed_type,
         seed_value=session.seed_value,
         seed_display_name=session.seed_display_name,
+        discovery=session.discovery,
         tracks=[RadioTrackItem(**t) for t in tracks],
     )
 
@@ -231,6 +233,8 @@ to reflect changing conditions (e.g. switching from headphones to speaker).
 async def radio_next(
     session_id: str,
     count: int = Query(10, ge=1, le=50),
+    # Updatable discovery-dial posture (omit to keep the session's current value).
+    discovery: float = Query(None, ge=0.0, le=1.0),
     # Updatable context
     device_type: str = Query(None),
     output_type: str = Query(None),
@@ -246,7 +250,9 @@ async def radio_next(
 
     check_user_access(_key, s.user_id)
 
-    # Update context if provided.
+    # Update context / posture if provided.
+    if discovery is not None:
+        s.discovery = discovery
     if device_type is not None:
         s.device_type = device_type
     if output_type is not None:
@@ -331,6 +337,7 @@ async def radio_next(
     return RadioNextResponse(
         session_id=session_id,
         total_served=s.total_served,
+        discovery=s.discovery,
         tracks=[RadioTrackItem(**t) for t in tracks],
     )
 

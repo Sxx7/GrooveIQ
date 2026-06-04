@@ -45,6 +45,42 @@ logger = logging.getLogger(__name__)
 _BATCH_OVERFETCH = 5  # multiplier for candidate overfetch
 _ARTIST_MAX_CONSECUTIVE = 2  # max tracks from same artist in a row
 
+# ---------------------------------------------------------------------------
+# Discovery dial (Chunk 7) — radio honours the same posture as /v1/recommend.
+# ---------------------------------------------------------------------------
+
+# Map radio's own retrieval sources onto the per-source weight keys the dial
+# interpolates (those keys are named for the global-recommend sources). A
+# familiar posture boosts the seed/CF/artist anchors and damps the exploratory
+# Last.fm source; a discovery posture does the reverse. ``radio_drift`` (the
+# feedback-adaptive core) has no analog and is deliberately never re-weighted by
+# the dial. An empty multiplier map (balanced / default) is a no-op.
+_RADIO_SOURCE_DIAL_KEY: dict[str, str] = {
+    "radio_seed": "content_profile",
+    "radio_content": "content",
+    "radio_skipgram": "session_skipgram",
+    "radio_lastfm": "lastfm_similar",
+    "radio_cf": "cf",
+    "radio_artist": "artist_recall",
+}
+
+# How strongly the dial scales the radio drift step. The drift step (how far each
+# like/skip moves the taste vector) scales linearly around the balanced anchor so
+# the default posture is unchanged, the familiar end drifts less (hugs the seed),
+# and the deep-discovery end drifts more (roams faster on feedback).
+_DRIFT_DIAL_GAIN = 1.0
+
+
+def _dial_drift_scale(discovery: float) -> float:
+    """Multiplier on the drift step for a dial position (1.0 at the balanced anchor).
+
+    Anchored at the configured ``balanced`` dial position so the default radio
+    (discovery == balanced anchor) keeps today's drift behaviour byte-for-byte.
+    Clamped at 0 so an extreme dial can never invert the step direction.
+    """
+    balanced = float(get_config().modes.dial_anchors.get("balanced", 0.3))
+    return max(0.0, 1.0 + _DRIFT_DIAL_GAIN * (discovery - balanced))
+
 
 # ---------------------------------------------------------------------------
 # Data structures
@@ -81,6 +117,11 @@ class RadioSession:
     liked: set[str] = field(default_factory=set)
     disliked: set[str] = field(default_factory=set)
     feedback_log: list[RadioFeedback] = field(default_factory=list)
+
+    # Discovery-dial posture (0=familiar … 1=deep discovery). Default 0.3 =
+    # balanced, so a session created without a dial value behaves like today.
+    # Updatable on each /next call. Sets the baseline that feedback drifts around.
+    discovery: float = 0.3
 
     # Context (updatable on each /next call)
     device_type: str | None = None
@@ -182,6 +223,7 @@ async def create_radio_session(
     seed_type: str,
     seed_value: str,
     db: AsyncSession,
+    discovery: float = 0.3,
     **context,
 ) -> RadioSession:
     """
@@ -189,6 +231,7 @@ async def create_radio_session(
 
     seed_type: "track" | "artist" | "playlist"
     seed_value: track_id, artist name, or playlist_id
+    discovery: discovery-dial posture (0=familiar … 1=deep discovery, 0.3=balanced).
     """
     from app.services import faiss_index
 
@@ -197,6 +240,7 @@ async def create_radio_session(
         user_id=user_id,
         seed_type=seed_type,
         seed_value=seed_value,
+        discovery=discovery,
         device_type=context.get("device_type"),
         output_type=context.get("output_type"),
         location_label=context.get("location_label"),
@@ -337,13 +381,18 @@ def _update_drift_embedding(s: RadioSession) -> None:
     radio_cfg = get_config().radio
     drift = s.seed_embedding.copy().astype(np.float64)
 
+    # Discovery dial sets the baseline drift magnitude: familiar hugs the seed
+    # (small steps), deep-discovery roams (large steps). Feedback still moves the
+    # vector at every posture — the dial only scales how far each signal pushes.
+    drift_scale = _dial_drift_scale(s.discovery)
+
     # Pull toward liked tracks
     for vec, weight in attract_vecs:
-        drift += vec.astype(np.float64) * weight * radio_cfg.feedback_weight
+        drift += vec.astype(np.float64) * weight * radio_cfg.feedback_weight * drift_scale
 
     # Push away from skipped/disliked tracks
     for vec, weight in repel_vecs:
-        drift -= vec.astype(np.float64) * weight * radio_cfg.feedback_weight * 0.5
+        drift -= vec.astype(np.float64) * weight * radio_cfg.feedback_weight * 0.5 * drift_scale
 
     # Normalize
     norm = np.linalg.norm(drift)
@@ -376,13 +425,21 @@ async def get_next_tracks(
         positions, reranker actions, feature vectors)
       - ``candidates_by_source``: count by source
     """
-    from app.services import collab_filter, faiss_index, lastfm_candidates, session_embeddings
+    from app.services import candidate_gen, collab_filter, faiss_index, lastfm_candidates, session_embeddings
+    from app.services.modes import resolve_dial
     from app.services.ranker import score_candidates
+    from app.services.request_config import apply_overrides
     from app.services.reranker import get_last_rerank_actions, rerank
 
     s = get_session(session_id)
     if s is None:
         return None
+
+    # Resolve the session's dial posture into a request-scoped config override
+    # (read pre-override, exactly like the recommend handler). The override is
+    # applied around the modes-reading call sites below — the source-weight /
+    # novelty filter on the candidate pool and the reranker's acquisition term.
+    dial = resolve_dial(s.discovery, None, get_config().modes)
 
     # Build exclusion set: already played + disliked in this session
     exclude = set(s.played_set) | s.disliked
@@ -491,6 +548,21 @@ async def get_next_tracks(
             ]
         )
 
+    # --- Discovery dial: per-source weight tilt + proven-novelty filter ---
+    # Both are gated so the default (balanced) posture is a no-op. The dial's
+    # interpolated per-source multipliers (keyed by recommend-source name) are
+    # mapped onto radio's analogous sources, and at the discovery end the user's
+    # proven set is excluded from the pool (radio already excludes `played`).
+    with apply_overrides(dial.overrides):
+        active = get_config().modes.active
+        if active.source_weight_mult:
+            for c in candidates:
+                key = _RADIO_SOURCE_DIAL_KEY.get(c["source"])
+                if key:
+                    c["score"] *= active.source_weight_mult.get(key, 1.0)
+        if active.novelty_filter:
+            candidates = await candidate_gen.apply_novelty_filter(candidates, s.user_id, db, active)
+
     if not candidates:
         return []
 
@@ -530,15 +602,17 @@ async def get_next_tracks(
     raw_score_by_tid = {tid: float(score) for tid, score in scored}
     pre_rerank_pos_by_tid = {tid: i for i, (tid, _) in enumerate(scored)}
 
-    # --- Rerank for diversity ---
-    reranked = await rerank(
-        scored,
-        s.user_id,
-        db,
-        device_type=s.device_type,
-        output_type=s.output_type,
-        collect_actions=collect_audit,
-    )
+    # --- Rerank for diversity (under the dial override so the acquisition term
+    # — additive +kappa*sigma - lambda_proven*[is_proven] — reflects the posture).
+    with apply_overrides(dial.overrides):
+        reranked = await rerank(
+            scored,
+            s.user_id,
+            db,
+            device_type=s.device_type,
+            output_type=s.output_type,
+            collect_actions=collect_audit,
+        )
     rerank_actions = get_last_rerank_actions() if collect_audit else []
 
     # Additional radio-specific filtering: enforce no consecutive same-artist
