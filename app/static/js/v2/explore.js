@@ -22,10 +22,7 @@
     GIQ.state.recoState = GIQ.state.recoState || {
         userId: null,
         seedTrackId: '',
-        limit: 25,
-        result: null,        /* last response */
-        contextOpen: false,
-        ctx: {},             /* device_type / output_type / etc. */
+        discovery: 0.3,      /* discovery-dial position driving the Custom Mix shelf */
     };
 
     GIQ.state.trackList = GIQ.state.trackList || {
@@ -41,10 +38,45 @@
 
     /* ── Recommendations ───────────────────────────────────────────── */
 
+    /* The discovery-dial anchor stops (must mirror modes_cfg.dial_anchors). */
+    const RECO_DIAL_STOPS = [
+        { value: 0.0, label: 'Familiar' },
+        { value: 0.3, label: 'Balanced' },
+        { value: 0.6, label: 'Discover' },
+        { value: 1.0, label: 'Deep' },
+    ];
+    /* Shelf fan-out is fixed so the prewarm limit matches the per-shelf request
+     * limit — the SWR mix-cache key includes `limit`, so a mismatch would miss. */
+    const RECO_SHELF_LIMIT = 12;
+    const RECO_DEFAULT_MIXES = [
+        { title: 'On Repeat', mode: 'familiar' },
+        { title: 'Your Mix', mode: 'balanced' },
+        { title: 'Discover', mode: 'discovery' },
+        { title: 'Deep Cuts', mode: 'deep_discovery' },
+    ];
+    /* Map the API's per-track `reasons[]` tags to human chip labels. The three
+     * "intent" reasons (why the dial surfaced it) get a stronger accent. */
+    const RECO_REASON_LABELS = {
+        proven_favourite: 'Proven favourite',
+        exploring: 'Exploring',
+        new_to_you: 'New to you',
+        matches_your_taste: 'Matches your taste',
+        fans_like_this: 'Fans like this',
+        similar_listeners: 'Similar listeners',
+        your_listening_pattern: 'Your pattern',
+        artist_you_know: 'Artist you know',
+        popular: 'Popular',
+    };
+    const RECO_INTENT_REASONS = { proven_favourite: 1, exploring: 1, new_to_you: 1 };
+
     GIQ.pages.explore.recommendations = function renderRecommendations(root, params) {
         const state = GIQ.state.recoState;
         if (params && params.user) state.userId = decodeURIComponent(params.user);
 
+        let customShelf = null;
+        let customTimer = null;
+
+        /* ── Header controls ──────────────────────────────────────────── */
         const headerRight = document.createElement('div');
         headerRight.className = 'reco-header-controls';
 
@@ -59,28 +91,13 @@
         seedInput.value = state.seedTrackId || '';
         seedInput.style.width = '180px';
 
-        const limitInput = document.createElement('input');
-        limitInput.type = 'number';
-        limitInput.min = '1';
-        limitInput.max = '100';
-        limitInput.className = 'reco-input';
-        limitInput.value = String(state.limit || 25);
-        limitInput.style.width = '60px';
-
-        const ctxBtn = document.createElement('button');
-        ctxBtn.type = 'button';
-        ctxBtn.className = 'vc-btn vc-btn-sm';
-        ctxBtn.textContent = state.contextOpen ? 'Hide context' : 'Add context';
-
         const goBtn = document.createElement('button');
         goBtn.type = 'button';
         goBtn.className = 'vc-btn vc-btn-primary vc-btn-sm';
-        goBtn.textContent = 'Get Recs';
+        goBtn.textContent = 'Refresh';
 
         headerRight.appendChild(userSel);
         headerRight.appendChild(seedInput);
-        headerRight.appendChild(limitInput);
-        headerRight.appendChild(ctxBtn);
         headerRight.appendChild(goBtn);
 
         root.appendChild(GIQ.components.pageHeader({
@@ -93,58 +110,272 @@
         body.className = 'reco-body';
         root.appendChild(body);
 
-        const ctxRow = document.createElement('div');
-        ctxRow.className = 'reco-context-row';
-        ctxRow.style.display = state.contextOpen ? '' : 'none';
-        body.appendChild(ctxRow);
+        /* ── Discovery dial (drives the Custom Mix shelf) ─────────────── */
+        const dialPanel = document.createElement('section');
+        dialPanel.className = 'reco-dial';
 
-        const banner = document.createElement('div');
-        banner.className = 'reco-banner';
-        banner.style.display = 'none';
-        body.appendChild(banner);
+        const dialHead = document.createElement('div');
+        dialHead.className = 'reco-dial-head';
+        dialHead.innerHTML = '<span class="eyebrow">DISCOVERY DIAL</span>';
+        const dialReadout = document.createElement('span');
+        dialReadout.className = 'reco-dial-readout mono';
+        dialHead.appendChild(dialReadout);
+        dialPanel.appendChild(dialHead);
 
-        const results = document.createElement('div');
-        results.className = 'reco-results';
-        body.appendChild(results);
+        const dialTrack = document.createElement('div');
+        dialTrack.className = 'reco-dial-track';
+        const slider = document.createElement('input');
+        slider.type = 'range';
+        slider.className = 'reco-dial-slider';
+        slider.min = '0';
+        slider.max = '1';
+        slider.step = '0.05';
+        slider.value = String(state.discovery);
+        slider.setAttribute('aria-label', 'Discovery dial');
+        dialTrack.appendChild(slider);
 
-        function buildContextRow() {
-            ctxRow.innerHTML = '';
-            const fields = [
-                ['device_type', 'Device', ['mobile', 'desktop', 'speaker', 'car', 'web']],
-                ['output_type', 'Output', ['headphones', 'speaker', 'bluetooth_speaker', 'car_audio', 'built_in', 'airplay']],
-                ['context_type', 'Context', ['playlist', 'album', 'radio', 'search', 'home_shelf']],
-                ['location_label', 'Location', ['home', 'work', 'gym', 'commute']],
-                ['hour_of_day', 'Hour', _hours()],
-                ['day_of_week', 'Day', [['1', 'Mon'], ['2', 'Tue'], ['3', 'Wed'], ['4', 'Thu'], ['5', 'Fri'], ['6', 'Sat'], ['7', 'Sun']]],
-            ];
-            fields.forEach(([key, label, opts]) => {
-                const fld = document.createElement('div');
-                fld.className = 'reco-ctx-field';
-                fld.innerHTML = '<div class="eyebrow">' + GIQ.fmt.esc(label) + '</div>';
-                const sel = document.createElement('select');
-                sel.className = 'reco-select';
-                sel.innerHTML = '<option value="">—</option>';
-                opts.forEach(opt => {
-                    const o = document.createElement('option');
-                    if (Array.isArray(opt)) { o.value = opt[0]; o.textContent = opt[1]; }
-                    else { o.value = opt; o.textContent = opt; }
-                    if (state.ctx[key] === o.value) o.selected = true;
-                    sel.appendChild(o);
-                });
-                sel.addEventListener('change', () => { state.ctx[key] = sel.value || undefined; });
-                fld.appendChild(sel);
-                ctxRow.appendChild(fld);
+        const ticks = document.createElement('div');
+        ticks.className = 'reco-dial-ticks';
+        RECO_DIAL_STOPS.forEach(stop => {
+            const tick = document.createElement('button');
+            tick.type = 'button';
+            tick.className = 'reco-dial-tick';
+            tick.style.left = (stop.value * 100) + '%';
+            tick.textContent = stop.label;
+            tick.addEventListener('click', () => setDiscovery(stop.value));
+            ticks.appendChild(tick);
+        });
+        dialTrack.appendChild(ticks);
+        dialPanel.appendChild(dialTrack);
+        body.appendChild(dialPanel);
+
+        /* ── Shelves host ─────────────────────────────────────────────── */
+        const shelvesHost = document.createElement('div');
+        shelvesHost.className = 'reco-shelves';
+        body.appendChild(shelvesHost);
+
+        /* ── Dial behaviour ───────────────────────────────────────────── */
+        function nearestStop(v) {
+            return RECO_DIAL_STOPS.reduce((a, b) =>
+                Math.abs(b.value - v) < Math.abs(a.value - v) ? b : a);
+        }
+        function updateReadout() {
+            const v = state.discovery;
+            const near = nearestStop(v);
+            const isStop = Math.abs(near.value - v) < 0.001;
+            dialReadout.textContent = v.toFixed(2) + ' · ' + (isStop ? '' : '~') + near.label;
+            ticks.querySelectorAll('.reco-dial-tick').forEach((t, i) => {
+                t.classList.toggle('active', Math.abs(RECO_DIAL_STOPS[i].value - v) < 0.001);
             });
         }
-        buildContextRow();
-
-        ctxBtn.addEventListener('click', () => {
-            state.contextOpen = !state.contextOpen;
-            ctxRow.style.display = state.contextOpen ? '' : 'none';
-            ctxBtn.textContent = state.contextOpen ? 'Hide context' : 'Add context';
+        function setDiscovery(v) {
+            state.discovery = v;
+            slider.value = String(v);
+            updateReadout();
+            clearTimeout(customTimer);
+            reloadCustom();
+        }
+        slider.addEventListener('input', () => {
+            state.discovery = parseFloat(slider.value);
+            updateReadout();
+            clearTimeout(customTimer);
+            customTimer = setTimeout(reloadCustom, 250);
         });
+        updateReadout();
 
-        /* Load users for the dropdown — admin-only endpoint, may 401 */
+        /* ── Reason chips + track cards ───────────────────────────────── */
+        function reasonChip(tag) {
+            const chip = document.createElement('span');
+            chip.className = 'reco-reason' + (RECO_INTENT_REASONS[tag] ? ' reco-reason-intent' : '');
+            chip.textContent = RECO_REASON_LABELS[tag] || tag;
+            return chip;
+        }
+        function trackCard(t) {
+            const card = document.createElement('article');
+            card.className = 'reco-card';
+
+            const title = document.createElement('div');
+            title.className = 'reco-card-title';
+            title.textContent = t.title || t.track_id || '—';
+            title.title = title.textContent;
+            card.appendChild(title);
+
+            const artist = document.createElement('div');
+            artist.className = 'reco-card-artist muted';
+            artist.textContent = t.artist || '—';
+            card.appendChild(artist);
+
+            if (Array.isArray(t.reasons) && t.reasons.length) {
+                const reasons = document.createElement('div');
+                reasons.className = 'reco-card-reasons';
+                t.reasons.slice(0, 4).forEach(r => reasons.appendChild(reasonChip(r)));
+                card.appendChild(reasons);
+            }
+
+            const bits = [];
+            if (t.bpm != null) bits.push(Math.round(t.bpm) + ' bpm');
+            if (t.key) bits.push(t.key + (t.mode ? ' ' + t.mode : ''));
+            if (t.energy != null) bits.push('e ' + Number(t.energy).toFixed(2));
+            if (bits.length) {
+                const foot = document.createElement('div');
+                foot.className = 'reco-card-foot mono muted';
+                foot.textContent = bits.join(' · ');
+                card.appendChild(foot);
+            }
+            return card;
+        }
+        function skeletonRail() {
+            const frag = document.createDocumentFragment();
+            for (let i = 0; i < 5; i++) {
+                const s = document.createElement('div');
+                s.className = 'reco-card reco-card-skeleton';
+                frag.appendChild(s);
+            }
+            return frag;
+        }
+        function shelfEmpty(reason) {
+            const el = document.createElement('div');
+            el.className = 'reco-shelf-empty muted';
+            el.textContent = {
+                no_library: 'No analysed tracks yet.',
+                no_history: 'No listening history yet.',
+                no_taste_profile: 'No taste profile yet — run the pipeline.',
+                no_candidates: 'No tracks for this mix.',
+            }[reason] || 'No tracks.';
+            return el;
+        }
+
+        /* ── Shelf factory ────────────────────────────────────────────── */
+        function makeShelf(opts) {
+            const sec = document.createElement('section');
+            sec.className = 'reco-shelf' + (opts.variant ? ' reco-shelf-' + opts.variant : '');
+
+            const head = document.createElement('div');
+            head.className = 'reco-shelf-head';
+            const titleEl = document.createElement('div');
+            titleEl.className = 'reco-shelf-title';
+            titleEl.textContent = opts.title;
+            head.appendChild(titleEl);
+            const sub = document.createElement('div');
+            sub.className = 'reco-shelf-sub mono muted';
+            sub.textContent = opts.subtitle || '';
+            head.appendChild(sub);
+            const grow = document.createElement('span');
+            grow.style.flexGrow = '1';
+            head.appendChild(grow);
+            const debugWrap = document.createElement('span');
+            head.appendChild(debugWrap);
+            sec.appendChild(head);
+
+            const rail = document.createElement('div');
+            rail.className = 'reco-shelf-rail';
+            sec.appendChild(rail);
+
+            let query = opts.query;
+            async function load() {
+                rail.innerHTML = '';
+                rail.appendChild(skeletonRail());
+                try {
+                    const url = '/v1/recommend/' + encodeURIComponent(state.userId) + '?' + query;
+                    const data = await GIQ.api.get(url);
+                    const tracks = data.tracks || [];
+                    rail.innerHTML = '';
+                    if (!tracks.length) {
+                        rail.appendChild(shelfEmpty(data.reason));
+                    } else {
+                        tracks.forEach(t => rail.appendChild(trackCard(t)));
+                    }
+                    const parts = [];
+                    if (data.discovery != null) parts.push('dial ' + Number(data.discovery).toFixed(2));
+                    parts.push(tracks.length + ' tracks');
+                    sub.textContent = parts.join(' · ');
+                    debugWrap.innerHTML = '';
+                    if (data.request_id) {
+                        const a = document.createElement('a');
+                        a.className = 'reco-debug-link';
+                        a.textContent = 'debug→';
+                        a.href = '#/monitor/recs-debug?debug=' + encodeURIComponent(data.request_id);
+                        debugWrap.appendChild(a);
+                    }
+                } catch (e) {
+                    rail.innerHTML = '';
+                    const err = document.createElement('div');
+                    err.className = 'reco-shelf-error';
+                    err.textContent = 'Error: ' + e.message;
+                    rail.appendChild(err);
+                }
+            }
+            return { el: sec, load, setQuery(q) { query = q; } };
+        }
+
+        function customQuery() {
+            return 'discovery=' + state.discovery + '&limit=' + RECO_SHELF_LIMIT;
+        }
+        function reloadCustom() {
+            if (!state.userId || !customShelf) return;
+            customShelf.setQuery(customQuery());
+            customShelf.load();
+        }
+
+        /* ── Build the multi-shelf home for the selected user ─────────── */
+        function buildShelves() {
+            shelvesHost.innerHTML = '';
+            customShelf = null;
+            if (!state.userId) {
+                const ph = document.createElement('div');
+                ph.className = 'reco-empty';
+                ph.textContent = 'Pick a user above to see their mixes.';
+                shelvesHost.appendChild(ph);
+                return;
+            }
+
+            /* Warm the SWR mix cache so the preset shelves + dial stops serve
+             * instantly (fire-and-forget; an unprivileged key may 4xx). */
+            GIQ.api.post('/v1/users/' + encodeURIComponent(state.userId) + '/mixes/prewarm',
+                { limit: RECO_SHELF_LIMIT }).catch(() => {});
+
+            /* Custom Mix — driven by the discovery dial. */
+            customShelf = makeShelf({
+                title: 'Custom Mix',
+                variant: 'custom',
+                query: customQuery(),
+            });
+            shelvesHost.appendChild(customShelf.el);
+            customShelf.load();
+
+            /* Seed shelf — "More like this" (seeded ⇒ non-cacheable, that's ok). */
+            if (state.seedTrackId) {
+                const seedShelf = makeShelf({
+                    title: 'More like this',
+                    subtitle: 'seed ' + state.seedTrackId,
+                    query: 'seed_track_id=' + encodeURIComponent(state.seedTrackId) + '&limit=' + RECO_SHELF_LIMIT,
+                });
+                shelvesHost.appendChild(seedShelf.el);
+                seedShelf.load();
+            }
+
+            /* Preset shelves from the purpose-built menu (fallback to defaults). */
+            const forUser = state.userId;
+            GIQ.api.get('/v1/users/' + encodeURIComponent(forUser) + '/mixes')
+                .then(r => (r && Array.isArray(r.mixes) && r.mixes.length) ? r.mixes : RECO_DEFAULT_MIXES)
+                .catch(() => RECO_DEFAULT_MIXES)
+                .then(mixes => {
+                    if (state.userId !== forUser) return;  /* user changed mid-flight */
+                    mixes.forEach(m => {
+                        const shelf = makeShelf({
+                            title: m.title,
+                            subtitle: m.mode,
+                            query: 'mode=' + encodeURIComponent(m.mode) + '&limit=' + RECO_SHELF_LIMIT,
+                        });
+                        shelvesHost.appendChild(shelf.el);
+                        shelf.load();
+                    });
+                });
+        }
+
+        /* ── User selector wiring ─────────────────────────────────────── */
+        /* /v1/users is admin-only and may 401; a non-admin still reaches its
+         * own mixes via a deep-linked ?user= (added as the sole option below). */
         const usersPromise = (window.cachedUsers && Array.isArray(window.cachedUsers) && window.cachedUsers.length)
             ? Promise.resolve(window.cachedUsers)
             : GIQ.api.get('/v1/users').then(r => {
@@ -162,147 +393,37 @@
                 userSel.appendChild(o);
             });
             if (!users.length && state.userId) {
-                /* deep-linked but couldn't load users — still allow a fetch */
                 const o = document.createElement('option');
                 o.value = state.userId; o.textContent = state.userId; o.selected = true;
                 userSel.appendChild(o);
             }
-            /* If we loaded the page with cached results for this user, re-render. */
-            if (state.result && state.result.user_id === state.userId) renderResults();
+            if (state.userId) buildShelves();
         });
 
         userSel.addEventListener('change', () => {
             state.userId = userSel.value || null;
-            /* Reflect in URL so reloads land in the same place. */
             if (state.userId) {
                 const next = '#/explore/recommendations?user=' + encodeURIComponent(state.userId);
-                if (window.location.hash !== next) {
-                    history.replaceState(null, '', next);
-                }
+                if (window.location.hash !== next) history.replaceState(null, '', next);
             }
+            buildShelves();
         });
         seedInput.addEventListener('input', () => { state.seedTrackId = seedInput.value.trim(); });
-        limitInput.addEventListener('input', () => {
-            const v = parseInt(limitInput.value, 10);
-            state.limit = (isNaN(v) || v < 1) ? 25 : Math.min(100, v);
+        goBtn.addEventListener('click', () => {
+            if (!state.userId) { GIQ.toast('Pick a user first.', 'warning'); return; }
+            buildShelves();
         });
+        seedInput.addEventListener('keydown', e => { if (e.key === 'Enter') goBtn.click(); });
 
-        goBtn.addEventListener('click', fetchRecs);
-        seedInput.addEventListener('keydown', e => { if (e.key === 'Enter') fetchRecs(); });
-        limitInput.addEventListener('keydown', e => { if (e.key === 'Enter') fetchRecs(); });
-
-        async function fetchRecs() {
-            if (!state.userId) {
-                GIQ.toast('Pick a user first.', 'warning');
-                return;
-            }
-            goBtn.disabled = true;
-            const oldLabel = goBtn.textContent;
-            goBtn.textContent = 'Loading…';
-            results.innerHTML = '<div class="vc-loading">Loading recommendations…</div>';
-            banner.style.display = 'none';
-
-            const qs = ['limit=' + state.limit];
-            if (state.seedTrackId) qs.push('seed_track_id=' + encodeURIComponent(state.seedTrackId));
-            Object.keys(state.ctx).forEach(k => {
-                const v = state.ctx[k];
-                if (v != null && v !== '') qs.push(k + '=' + encodeURIComponent(v));
-            });
-            const url = '/v1/recommend/' + encodeURIComponent(state.userId) + '?' + qs.join('&');
-
-            try {
-                const data = await GIQ.api.get(url);
-                state.result = data;
-                renderResults();
-            } catch (e) {
-                results.innerHTML = '';
-                const err = document.createElement('div');
-                err.className = 'reco-error';
-                err.textContent = 'Error: ' + e.message;
-                results.appendChild(err);
-            } finally {
-                goBtn.disabled = false;
-                goBtn.textContent = oldLabel;
-            }
+        /* Initial placeholder until a user is chosen / loaded. */
+        if (!state.userId) {
+            const ph = document.createElement('div');
+            ph.className = 'reco-empty';
+            ph.textContent = 'Pick a user above, optionally a seed track, to see their mixes.';
+            shelvesHost.appendChild(ph);
         }
 
-        function renderResults() {
-            const data = state.result;
-            results.innerHTML = '';
-            if (!data) return;
-
-            /* Cross-link banner */
-            banner.innerHTML = '';
-            banner.style.display = '';
-            const lbl = document.createElement('span');
-            lbl.className = 'eyebrow';
-            lbl.textContent = 'request_id';
-            const id = document.createElement('span');
-            id.className = 'mono';
-            id.textContent = (data.request_id || '').slice(0, 18) + '…';
-            id.title = data.request_id || '';
-            const grow = document.createElement('span');
-            grow.style.flexGrow = '1';
-            const jump = GIQ.components.jumpLink({
-                label: 'Debug this request',
-                href: '#/monitor/recs-debug?debug=' + encodeURIComponent(data.request_id || ''),
-            });
-            banner.appendChild(lbl);
-            banner.appendChild(id);
-            banner.appendChild(grow);
-            banner.appendChild(jump);
-
-            const tracks = data.tracks || [];
-            const meta = document.createElement('div');
-            meta.className = 'reco-meta';
-            const modelChip = '<span class="rd-source-chip">model · ' + GIQ.fmt.esc(data.model_version || '?') + '</span>';
-            meta.innerHTML = '<span class="mono muted">' + tracks.length + ' tracks · '
-                + GIQ.fmt.esc(data.user_id || '') + '</span>'
-                + ' <span style="margin-left:10px">' + modelChip + '</span>';
-            results.appendChild(meta);
-
-            const tableHost = document.createElement('section');
-            tableHost.className = 'panel reco-table-panel';
-            const head = document.createElement('div');
-            head.className = 'panel-head';
-            head.innerHTML = '<div class="panel-head-left"><div class="panel-title-row">'
-                + '<div class="panel-title">Results</div></div>'
-                + '<div class="panel-sub">' + tracks.length + ' candidates · click '
-                + '<span class="mono" style="color:var(--accent)">debug→</span> on any row to inspect</div></div>';
-            tableHost.appendChild(head);
-
-            const body2 = document.createElement('div');
-            body2.className = 'panel-body';
-            const debugRid = data.request_id || '';
-            const tableEl = GIQ.components.trackTable({
-                columns: ['rank', 'title', 'artist', 'source', 'score', 'bpm', 'key', 'energy', 'mood', 'duration'],
-                rows: tracks,
-                empty: 'No recommendations available. Try a different user or remove filters.',
-                rowAction: (row) => {
-                    const a = document.createElement('a');
-                    a.className = 'reco-debug-link';
-                    a.textContent = 'debug→';
-                    const tid = row.track_id || '';
-                    a.href = '#/monitor/recs-debug?debug=' + encodeURIComponent(debugRid)
-                        + (tid ? '&track=' + encodeURIComponent(tid) : '');
-                    return a;
-                },
-            });
-            body2.appendChild(tableEl);
-            tableHost.appendChild(body2);
-            results.appendChild(tableHost);
-        }
-
-        /* If we already had results cached and the user matches, re-render
-         * after the user list has been wired in (above). */
-        if (state.result && state.userId === (state.result.user_id || '')) {
-            renderResults();
-        } else {
-            results.innerHTML = '<div class="reco-empty">'
-                + 'Pick a user, optionally a seed track, then click <strong>Get Recs</strong>.</div>';
-        }
-
-        return function cleanup() { /* nothing to tear down */ };
+        return function cleanup() { clearTimeout(customTimer); };
     };
 
     function _hours() {

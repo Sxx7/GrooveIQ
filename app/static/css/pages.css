@@ -3507,6 +3507,161 @@
 }
 .reco-debug-link:hover { text-decoration: underline; }
 
+/* ── Explore → Recommendations: discovery dial ────────────────────── */
+
+.reco-dial {
+    background: var(--paper);
+    border: 1px solid var(--line-faint);
+    border-radius: var(--r-panel);
+    padding: 14px 18px 30px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+.reco-dial-head {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+}
+.reco-dial-readout { color: var(--accent); font-size: 11px; }
+.reco-dial-track { position: relative; padding: 4px 0; }
+.reco-dial-slider {
+    width: 100%;
+    margin: 0;
+    accent-color: var(--accent);
+    cursor: pointer;
+}
+.reco-dial-ticks {
+    position: relative;
+    height: 16px;
+    margin-top: 6px;
+}
+.reco-dial-tick {
+    position: absolute;
+    top: 0;
+    transform: translateX(-50%);
+    background: none;
+    border: none;
+    padding: 0;
+    font-family: var(--mono);
+    font-size: 10px;
+    letter-spacing: 0.04em;
+    color: var(--ink-3);
+    cursor: pointer;
+    white-space: nowrap;
+}
+.reco-dial-tick:first-child { transform: translateX(0); }
+.reco-dial-tick:last-child { transform: translateX(-100%); }
+.reco-dial-tick:hover { color: var(--ink-2); }
+.reco-dial-tick.active { color: var(--accent); font-weight: 600; }
+
+/* ── Explore → Recommendations: shelves ───────────────────────────── */
+
+.reco-shelves {
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+}
+.reco-shelf { display: flex; flex-direction: column; gap: 8px; }
+.reco-shelf-head {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+}
+.reco-shelf-title {
+    font-family: var(--display);
+    font-size: 15px;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+}
+.reco-shelf-custom .reco-shelf-title { color: var(--accent); }
+.reco-shelf-sub { font-size: 10.5px; }
+.reco-shelf-rail {
+    display: flex;
+    gap: 10px;
+    overflow-x: auto;
+    padding-bottom: 6px;
+    scrollbar-width: thin;
+}
+.reco-shelf-rail::-webkit-scrollbar { height: 6px; }
+.reco-shelf-rail::-webkit-scrollbar-thumb {
+    background: var(--line-soft);
+    border-radius: 999px;
+}
+.reco-shelf-empty, .reco-shelf-error {
+    padding: 18px 14px;
+    font-size: 11.5px;
+    border: 1px dashed var(--line-soft);
+    border-radius: var(--r-tile);
+    width: 100%;
+}
+.reco-shelf-error { color: var(--wine); border-color: rgba(156, 82, 109, 0.30); }
+
+/* ── Explore → Recommendations: track cards ───────────────────────── */
+
+.reco-card {
+    flex: 0 0 auto;
+    width: 180px;
+    min-height: 96px;
+    background: var(--paper);
+    border: 1px solid var(--line-faint);
+    border-radius: var(--r-tile);
+    padding: 11px 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+    transition: border-color 0.12s ease;
+}
+.reco-card:hover { border-color: var(--accent); }
+.reco-card-title {
+    font-size: 12.5px;
+    font-weight: 600;
+    line-height: 1.3;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+}
+.reco-card-artist {
+    font-size: 11px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.reco-card-reasons {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    margin-top: 2px;
+}
+.reco-reason {
+    display: inline-flex;
+    align-items: center;
+    padding: 1px 7px;
+    border-radius: 999px;
+    font-size: 9.5px;
+    background: var(--paper-sub);
+    color: var(--ink-2);
+    border: 1px solid var(--line-faint);
+}
+.reco-reason-intent {
+    background: rgba(168, 135, 206, 0.10);
+    color: var(--accent);
+    border-color: rgba(168, 135, 206, 0.30);
+}
+.reco-card-foot { font-size: 9.5px; margin-top: auto; }
+.reco-card-skeleton {
+    background: linear-gradient(100deg, var(--paper) 30%, var(--paper-sub) 50%, var(--paper) 70%);
+    background-size: 200% 100%;
+    animation: reco-shimmer 1.2s ease-in-out infinite;
+    border-color: transparent;
+}
+@keyframes reco-shimmer {
+    0% { background-position: 200% 0; }
+    100% { background-position: -200% 0; }
+}
+
 /* ── Explore → Tracks ─────────────────────────────────────────────── */
 
 .tracks-body {
