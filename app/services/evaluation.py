@@ -21,8 +21,10 @@ from typing import Any
 import numpy as np
 from sqlalchemy import func, select
 
+from app.core.config import settings
 from app.db.session import AsyncSessionLocal
-from app.models.db import ListenEvent, TrackInteraction
+from app.models.algorithm_config_schema import PRESET_NAMES
+from app.models.db import ListenEvent, TrackFeatures, TrackInteraction
 from app.services.feature_eng import build_features
 from app.services.ranker import get_model_stats as _ranker_stats
 
@@ -30,6 +32,13 @@ logger = logging.getLogger(__name__)
 
 # Cached latest evaluation results.
 _last_eval: dict[str, Any] = {}
+
+# Cached latest per-dial-bucket evaluation (Chunk 10).
+_last_dial_eval: dict[str, Any] = {}
+
+# Skip vs play event types used for the proven-set skip-rate diagnostic.
+_SKIP_EVENT_TYPES: tuple[str, ...] = ("skip",)
+_PLAY_EVENT_TYPES: tuple[str, ...] = ("play_start",)
 
 
 def _ndcg_at_k(relevances: list[float], k: int) -> float:
@@ -258,13 +267,338 @@ async def get_impression_stats() -> dict[str, Any]:
         }
 
 
+# ---------------------------------------------------------------------------
+# Per-dial-bucket list-quality metrics (Chunk 10)
+# ---------------------------------------------------------------------------
+#
+# NDCG measures whether a ranking matches held-out satisfaction, but it cannot
+# tell whether the discovery dial is doing its job: a "deep discovery" mix that
+# scores fine on held-out plays might still be recycling the same popular
+# favourites.  These metrics measure the *shape* of each dial bucket's output —
+# how novel, how varied, how much of the catalog it reaches — plus a
+# familiar-end sanity check that the user's "proven" set really is low-skip.
+#
+# All four are pure list functions (unit-tested directly); the orchestrator
+# below runs the live pipeline per preset for a bounded user sample and
+# aggregates them into per-bucket numbers surfaced on the model-stats endpoint.
+
+
+def mean_inverse_popularity(track_ids: list[str], popularity: dict[str, int]) -> float | None:
+    """Novelty as mean ``1 / (1 + global_play_count)`` over the list.
+
+    A track nobody has played scores 1.0; a heavily played track approaches 0.
+    Higher = a more obscure / novel list.  Returns ``None`` for an empty list.
+    """
+    if not track_ids:
+        return None
+    return round(float(np.mean([1.0 / (1.0 + max(0, popularity.get(t, 0))) for t in track_ids])), 4)
+
+
+def pct_never_played(track_ids: list[str], popularity: dict[str, int]) -> float | None:
+    """Fraction of the list with zero global plays (genuinely new to everyone)."""
+    if not track_ids:
+        return None
+    return round(sum(1 for t in track_ids if popularity.get(t, 0) <= 0) / len(track_ids), 4)
+
+
+def intra_list_diversity(track_ids: list[str], embeddings: dict[str, np.ndarray | None]) -> float | None:
+    """Mean pairwise cosine *distance* (``1 - cos``) over tracks with embeddings.
+
+    Identical tracks → 0.0; orthogonal → 1.0.  Vectors are L2-normalised here so
+    the caller can pass raw embeddings.  Returns ``None`` when fewer than two
+    tracks have a usable embedding.
+    """
+    vecs: list[np.ndarray] = []
+    for t in track_ids:
+        emb = embeddings.get(t)
+        if emb is None:
+            continue
+        v = np.asarray(emb, dtype=np.float64).ravel()
+        norm = float(np.linalg.norm(v))
+        if norm < 1e-9:
+            continue
+        vecs.append(v / norm)
+    if len(vecs) < 2:
+        return None
+    total = 0.0
+    pairs = 0
+    for i in range(len(vecs)):
+        for j in range(i + 1, len(vecs)):
+            total += 1.0 - float(np.dot(vecs[i], vecs[j]))
+            pairs += 1
+    return round(total / pairs, 4) if pairs else None
+
+
+def catalog_coverage(recommended_ids: set[str], catalog_size: int) -> float | None:
+    """Fraction of the catalog reached by the union of recommendations."""
+    if catalog_size <= 0:
+        return None
+    return round(min(len(recommended_ids), catalog_size) / catalog_size, 4)
+
+
+def skip_rate_on_set(skips: dict[str, int], plays: dict[str, int], target_ids: set[str]) -> float | None:
+    """Skip rate restricted to ``target_ids``: ``skips / (skips + plays)``.
+
+    Returns ``None`` when there is no skip-or-play activity on the set.
+    """
+    s = sum(skips.get(t, 0) for t in target_ids)
+    p = sum(plays.get(t, 0) for t in target_ids)
+    denom = s + p
+    if denom <= 0:
+        return None
+    return round(s / denom, 4)
+
+
+def _avg(values: list[float | None]) -> float | None:
+    """Mean of the non-null values, rounded; ``None`` when all are null/empty."""
+    vals = [v for v in values if v is not None]
+    if not vals:
+        return None
+    return round(float(np.mean(vals)), 4)
+
+
+async def _load_dial_eval_context(session, max_users: int) -> tuple[int, dict[str, int], list[str]]:
+    """Catalog size, global popularity, and the most-active sample users."""
+    catalog_size = (await session.execute(select(func.count()).select_from(TrackFeatures))).scalar() or 0
+
+    pop_rows = (
+        await session.execute(
+            select(TrackInteraction.track_id, func.sum(TrackInteraction.play_count)).group_by(TrackInteraction.track_id)
+        )
+    ).all()
+    popularity = {tid: int(total or 0) for tid, total in pop_rows}
+
+    user_rows = (
+        await session.execute(
+            select(TrackInteraction.user_id, func.sum(TrackInteraction.play_count).label("plays"))
+            .group_by(TrackInteraction.user_id)
+            .order_by(func.sum(TrackInteraction.play_count).desc())
+            .limit(max(1, max_users))
+        )
+    ).all()
+    user_ids = [uid for uid, _ in user_rows]
+    return int(catalog_size), popularity, user_ids
+
+
+async def _proven_skip_rate(session, user_ids: list[str], faiss_index, now: int) -> tuple[float | None, int]:
+    """Skip rate on each sample user's proven set, aggregated over real events.
+
+    The proven set is computed exactly like the dial does (``confidence`` proxy),
+    so this answers "when we call a track *proven*, does the user actually keep
+    listening?".  Returns ``(rate, proven_pair_count)``; the rate is ``None`` when
+    there is no proven track or no skip/play activity on the proven set.
+    """
+    from app.services import confidence
+
+    proven_pairs: set[tuple[str, str]] = set()
+    for uid in user_ids:
+        evidence = await confidence.load_user_evidence(session, uid)
+        if not evidence:
+            continue
+        scores = confidence.compute_confidence(
+            uid, list(evidence.keys()), interactions=evidence, faiss_index=faiss_index, now=now
+        )
+        for tid in confidence.proven_set(scores):
+            proven_pairs.add((uid, tid))
+
+    if not proven_pairs:
+        return None, 0
+
+    uids = {u for u, _ in proven_pairs}
+    tids = {t for _, t in proven_pairs}
+    event_rows = (
+        await session.execute(
+            select(ListenEvent.user_id, ListenEvent.track_id, ListenEvent.event_type).where(
+                ListenEvent.user_id.in_(uids),
+                ListenEvent.track_id.in_(tids),
+                ListenEvent.event_type.in_(list(_SKIP_EVENT_TYPES) + list(_PLAY_EVENT_TYPES)),
+            )
+        )
+    ).all()
+
+    skips: dict[str, int] = {}
+    plays: dict[str, int] = {}
+    for uid, tid, event_type in event_rows:
+        if (uid, tid) not in proven_pairs:
+            continue
+        if event_type in _SKIP_EVENT_TYPES:
+            skips[tid] = skips.get(tid, 0) + 1
+        else:
+            plays[tid] = plays.get(tid, 0) + 1
+
+    return skip_rate_on_set(skips, plays, tids), len(proven_pairs)
+
+
+async def _default_generate(user_id: str, dial, limit: int, session) -> list[str]:
+    """Run the live candidate-gen → rank → rerank pipeline under the dial override.
+
+    Mirrors ``generate_recommendation_payload`` but returns only the final
+    track-id list — the dial overrides are applied around candidate-gen and
+    rerank, so this produces the same ordering the serving endpoint would.
+    """
+    from app.services.candidate_gen import get_candidates
+    from app.services.ranker import score_candidates
+    from app.services.request_config import apply_overrides
+    from app.services.reranker import rerank
+
+    with apply_overrides(dial.overrides):
+        candidates = await get_candidates(user_id=user_id, k=max(limit * 4, limit), session=session)
+    if not candidates:
+        return []
+    candidate_ids = [c["track_id"] for c in candidates]
+    scored = await score_candidates(user_id, candidate_ids, session)
+    if not scored:
+        return []
+    with apply_overrides(dial.overrides):
+        reranked = await rerank(scored, user_id, session)
+    return [tid for tid, _ in reranked[:limit]]
+
+
+async def evaluate_dial_modes(
+    *,
+    generate=None,
+    faiss_index=None,
+    user_ids: list[str] | None = None,
+    limit: int = 25,
+    max_users: int = 8,
+    now: int | None = None,
+) -> dict[str, Any]:
+    """Measure novelty / coverage / diversity for each discovery-dial preset.
+
+    For every named preset it generates a recommendation list for a bounded
+    sample of users (read-only — no impressions, no audit), then aggregates the
+    list-quality metrics per bucket.  The familiar bucket also carries the
+    proven-set skip-rate diagnostic.  The result is cached in ``_last_dial_eval``
+    and surfaced via :func:`get_model_report`.
+
+    ``generate`` and ``faiss_index`` are injectable for testing; the defaults
+    run the real pipeline and read the live EffNet index.
+    """
+    from app.services import modes as modes_svc
+    from app.services.algorithm_config import get_config
+
+    if faiss_index is None:
+        from app.services.faiss_index import effnet_index
+
+        faiss_index = effnet_index
+    now = int(time.time()) if now is None else now
+    gen = generate or _default_generate
+    modes_cfg = get_config().modes
+
+    async with AsyncSessionLocal() as session:
+        catalog_size, popularity, discovered_users = await _load_dial_eval_context(session, max_users)
+        if user_ids is None:
+            user_ids = discovered_users
+
+        if not user_ids or catalog_size <= 0:
+            result = {
+                "error": "insufficient_data",
+                "buckets": {},
+                "users_evaluated": len(user_ids or []),
+                "catalog_size": catalog_size,
+            }
+            _set_last_dial_eval(result, now)
+            return result
+
+        # Familiar-end diagnostic — independent of which preset generated a list.
+        try:
+            proven_rate, proven_count = await _proven_skip_rate(session, user_ids, faiss_index, now)
+        except Exception:
+            logger.warning("proven-set skip-rate computation failed", exc_info=True)
+            proven_rate, proven_count = None, 0
+
+        buckets: dict[str, Any] = {}
+        for preset_name in PRESET_NAMES:
+            dial = modes_svc.resolve_dial(None, preset_name, modes_cfg)
+            union_ids: set[str] = set()
+            novelty_per_user: list[float | None] = []
+            never_played_per_user: list[float | None] = []
+            diversity_per_user: list[float | None] = []
+
+            for uid in user_ids:
+                try:
+                    ranked = await gen(uid, dial, limit, session)
+                except Exception:
+                    logger.warning("dial generate failed (user=%s, preset=%s)", uid, preset_name, exc_info=True)
+                    ranked = []
+                ranked = list(ranked)[:limit]
+                if not ranked:
+                    continue
+                union_ids.update(ranked)
+                novelty_per_user.append(mean_inverse_popularity(ranked, popularity))
+                never_played_per_user.append(pct_never_played(ranked, popularity))
+                embs = {t: faiss_index.get_embedding(t) for t in ranked}
+                diversity_per_user.append(intra_list_diversity(ranked, embs))
+
+            bucket: dict[str, Any] = {
+                "novelty": _avg(novelty_per_user),
+                "pct_never_played": _avg(never_played_per_user),
+                "intra_list_diversity": _avg(diversity_per_user),
+                "catalog_coverage": catalog_coverage(union_ids, catalog_size),
+                "tracks_seen": len(union_ids),
+                "users_evaluated": len(user_ids),
+            }
+            if preset_name == "familiar":
+                # The proven set is what familiar leans on — surface its skip-rate here.
+                bucket["proven_skip_rate"] = proven_rate
+                bucket["proven_set_size"] = proven_count
+            buckets[preset_name] = bucket
+
+    result = {
+        "buckets": buckets,
+        "catalog_size": catalog_size,
+        "users_evaluated": len(user_ids),
+        "limit": limit,
+        "proven_skip_rate": proven_rate,
+        "proven_set_size": proven_count,
+    }
+    _set_last_dial_eval(result, now)
+    return result
+
+
+def _set_last_dial_eval(result: dict[str, Any], now: int) -> None:
+    global _last_dial_eval
+    _last_dial_eval = {**result, "evaluated_at": now}
+
+
+async def get_dial_mode_report() -> dict[str, Any] | None:
+    """Return the per-dial metrics, refreshing them lazily within a TTL.
+
+    Bounded (``RECO_DIAL_EVAL_MAX_USERS``) and admin-only via the calling
+    endpoint; a failure never propagates — the report degrades to the last
+    cached value (or ``None``).  Set ``RECO_DIAL_EVAL_ENABLED=false`` to disable
+    the auto-refresh and only ever serve a previously computed result.
+    """
+    if not settings.RECO_DIAL_EVAL_ENABLED:
+        return _last_dial_eval or None
+
+    now = int(time.time())
+    ttl = max(0, settings.RECO_DIAL_EVAL_TTL_MINUTES) * 60
+    cached_at = _last_dial_eval.get("evaluated_at", 0) if _last_dial_eval else 0
+    if _last_dial_eval and ttl > 0 and (now - cached_at) < ttl:
+        return _last_dial_eval
+
+    try:
+        await evaluate_dial_modes(
+            limit=settings.RECO_DIAL_EVAL_LIMIT,
+            max_users=settings.RECO_DIAL_EVAL_MAX_USERS,
+            now=now,
+        )
+    except Exception:
+        logger.warning("dial-mode evaluation failed", exc_info=True)
+
+    return _last_dial_eval or None
+
+
 async def get_model_report() -> dict[str, Any]:
-    """Full model report: ranker stats + latest eval + impression metrics."""
+    """Full model report: ranker stats + latest eval + impression + dial metrics."""
     ranker = _ranker_stats()
     impressions = await get_impression_stats()
+    dial_modes = await get_dial_mode_report()
 
     return {
         "ranker": ranker,
         "latest_evaluation": _last_eval if _last_eval else None,
         "impressions": impressions,
+        "dial_modes": dial_modes,
     }

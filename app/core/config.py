@@ -299,6 +299,14 @@ class Settings(BaseSettings):
     RECO_AUDIT_MAX_CANDIDATES: int = 200  # cap candidates persisted per request (top-N by raw_score)
 
     # ------------------------------------------------------------------
+    # Per-dial evaluation metrics (discovery-dial novelty/coverage/diversity)
+    # ------------------------------------------------------------------
+    RECO_DIAL_EVAL_ENABLED: bool = True  # lazily refresh per-dial metrics on the model-stats endpoint
+    RECO_DIAL_EVAL_MAX_USERS: int = 8  # cap sample users per dial-mode evaluation (bounds the work)
+    RECO_DIAL_EVAL_LIMIT: int = 25  # recommendation list length measured per dial bucket
+    RECO_DIAL_EVAL_TTL_MINUTES: int = 60  # reuse the cached dial-mode metrics within this window
+
+    # ------------------------------------------------------------------
     # Mix cache (stale-while-revalidate cache for recommendation-mode requests)
     # ------------------------------------------------------------------
     MIX_CACHE_ENABLED: bool = True  # serve cacheable recommend/mode requests from the SWR cache
