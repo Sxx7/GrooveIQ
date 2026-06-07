@@ -535,11 +535,13 @@ async def _compute_session_stats(session: AsyncSession, user_id: str) -> dict[st
     if row is None or row.cnt == 0:
         return {}
 
+    # PostgreSQL returns AVG() over INTEGER columns as NUMERIC (-> Decimal),
+    # which json.dumps can't serialize. Cast to float before rounding.
     return {
-        "avg_track_count": round(row.avg_tc, 2) if row.avg_tc else None,
-        "avg_skip_rate": round(row.avg_sr, 4) if row.avg_sr else None,
-        "avg_duration_s": round(row.avg_dur, 1) if row.avg_dur else None,
-        "session_count": row.cnt,
+        "avg_track_count": round(float(row.avg_tc), 2) if row.avg_tc is not None else None,
+        "avg_skip_rate": round(float(row.avg_sr), 4) if row.avg_sr is not None else None,
+        "avg_duration_s": round(float(row.avg_dur), 1) if row.avg_dur is not None else None,
+        "session_count": int(row.cnt),
     }
 
 
