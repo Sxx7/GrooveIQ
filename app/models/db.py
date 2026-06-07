@@ -843,6 +843,29 @@ class LidarrBackfillRequest(Base):
     )
 
 
+class LidarrBackfillState(Base):
+    """Singleton sweep state for the backfill engine (one row, id=1).
+
+    Holds a rotating page cursor per wanted-queue source. The tick pages
+    Lidarr starting from these cursors instead of always restarting at page 1,
+    so successive ticks sweep the *entire* missing/cutoff queue. Without this,
+    once the recent-release head of a large queue fills with terminal rows
+    (no_match maxed out / complete / in-cooldown) the candidate filter drops
+    every one, a page-1 restart re-scans that same blocked head forever
+    ("0 fresh candidates"), and the tens of thousands of never-attempted
+    albums deeper in the queue are never reached. The cursor advances each
+    tick and wraps back to 1 at end-of-queue.
+    """
+
+    __tablename__ = "lidarr_backfill_state"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    # Next Lidarr page (1-based) to resume from on the next tick, per source.
+    missing_cursor_page = Column(Integer, nullable=False, default=1)
+    cutoff_cursor_page = Column(Integer, nullable=False, default=1)
+    updated_at = Column(Integer, nullable=False, default=lambda: int(time.time()))
+
+
 class PlaylistTrack(Base):
     """Ordered track within a playlist."""
 

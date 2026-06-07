@@ -35,7 +35,7 @@ from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
-from app.models.db import LidarrBackfillRequest
+from app.models.db import LidarrBackfillRequest, LidarrBackfillState
 from app.models.download_routing_schema import QualityTier, quality_meets
 from app.models.lidarr_backfill_schema import LidarrBackfillConfigData, QueueOrder, get_defaults
 from app.services.discovery import LidarrClient
@@ -177,6 +177,65 @@ def _normalize_artist_name(name: str) -> str:
     if n.startswith("the "):
         n = n[4:]
     return n
+
+
+# ---------------------------------------------------------------------------
+# Sweep cursor (page-rotation state)
+# ---------------------------------------------------------------------------
+#
+# The engine pages Lidarr's wanted queues from a persisted per-source cursor
+# instead of always restarting at page 1. On a large library the missing queue
+# is tens of thousands of albums deep; the recent-release head fills with
+# terminal rows (no_match maxed out, complete, in-cooldown) that the candidate
+# filter drops every tick. Without a rotating cursor the tick re-scans that same
+# blocked head forever ("0 fresh candidates") and never reaches the bulk of the
+# queue. The cursor advances each tick and wraps to the top at end-of-queue.
+
+_SINGLETON_STATE_ID = 1
+_CURSOR_ATTR: dict[str, str] = {
+    "missing": "missing_cursor_page",
+    "cutoff": "cutoff_cursor_page",
+}
+
+
+async def _get_sweep_state(session: AsyncSession) -> LidarrBackfillState:
+    """Return the singleton sweep-state row, creating it (cursors=1) if absent."""
+    row = await session.get(LidarrBackfillState, _SINGLETON_STATE_ID)
+    if row is None:
+        row = LidarrBackfillState(
+            id=_SINGLETON_STATE_ID,
+            missing_cursor_page=1,
+            cutoff_cursor_page=1,
+            updated_at=_now_ts(),
+        )
+        session.add(row)
+        await session.flush()
+    return row
+
+
+async def _retire_exhausted_no_match(session: AsyncSession, cfg: LidarrBackfillConfigData) -> int:
+    """Relabel no_match rows that have hit max_attempts as permanently_skipped.
+
+    These rows are already excluded from candidate selection (the cooldown/state
+    filter drops ``attempt_count >= max_attempts``), so this changes no
+    scheduling behaviour — it's a clarity step. The no_match bucket then means
+    "couldn't match, will retry", while rows the engine has *given up on* live
+    in permanently_skipped instead of inflating the active-failure count.
+    Idempotent: matches 0 rows once the backlog is drained. Caller commits.
+    """
+    result = await session.execute(
+        update(LidarrBackfillRequest)
+        .where(
+            LidarrBackfillRequest.status == STATUS_NO_MATCH,
+            LidarrBackfillRequest.attempt_count >= cfg.retry.max_attempts,
+        )
+        .values(
+            status=STATUS_PERMANENTLY_SKIPPED,
+            next_retry_at=None,
+            updated_at=_now_ts(),
+        )
+    )
+    return result.rowcount or 0
 
 
 # ---------------------------------------------------------------------------
@@ -574,13 +633,18 @@ async def _stream_fresh_candidates(
     "Fresh" = passes the artist allow/deny lists and survives
     ``_filter_by_cooldown_and_state`` (i.e. not in-flight, completed,
     permanently-skipped, over max_attempts, or still inside its retry
-    cooldown). We fetch one page at a time and stop as soon as we have
-    enough — at saturation that's typically a handful of pages even
-    against tens of thousands of missing albums.
+    cooldown).
 
-    The caller is expected to take the first ``batch_target`` of what we
-    return; ``target`` should be set to a multiple of that (e.g. 4×) so the
-    later filtering / matching step has headroom.
+    Paging resumes from a persisted per-source **cursor** rather than
+    restarting at page 1 every tick. This is what lets the engine sweep an
+    entire multi-ten-thousand-album queue: once the recent-release head fills
+    with terminal rows the candidate filter drops every one, and a page-1
+    restart would re-scan that blocked head forever (0 fresh, no progress).
+    The cursor advances by the pages scanned this tick and wraps back to 1 at
+    end-of-queue. ``max_pages_per_source`` bounds the per-tick scan window (so
+    a tick never makes hundreds of Lidarr calls); successive ticks pick up
+    where the last one stopped. The caller must commit the session so the
+    advanced cursor persists across ticks.
     """
     sort_key, sort_direction = _QUEUE_SORT.get(cfg.sources.queue_order, _QUEUE_SORT[QueueOrder.RECENT_RELEASE])
 
@@ -593,11 +657,19 @@ async def _stream_fresh_candidates(
     if cfg.sources.cutoff_unmet:
         sources.append(("cutoff", "/api/v1/wanted/cutoff"))
 
+    state = await _get_sweep_state(session)
+
     fresh: list[dict[str, Any]] = []
     stats = {"pages_fetched": 0, "lidarr_seen": 0}
 
     for source_name, path in sources:
-        for page in range(1, max_pages_per_source + 1):
+        attr = _CURSOR_ATTR[source_name]
+        page = getattr(state, attr) or 1
+        if page < 1:
+            page = 1
+        pages_this_source = 0
+
+        while pages_this_source < max_pages_per_source:
             try:
                 page_records = await lidarr_client.fetch_wanted_page(
                     path,
@@ -619,8 +691,12 @@ async def _stream_fresh_candidates(
 
             stats["pages_fetched"] += 1
             stats["lidarr_seen"] += len(page_records)
+            pages_this_source += 1
 
             if not page_records:
+                # Paged one past the end → wrap so the next sweep restarts from
+                # the front (newly-added albums + rows whose cooldown expired).
+                page = 1
                 break
 
             tagged = [{**r, "_source": source_name} for r in page_records]
@@ -641,10 +717,21 @@ async def _stream_fresh_candidates(
             page_fresh = await _filter_by_cooldown_and_state(session, tagged, cfg)
             fresh.extend(page_fresh)
 
+            if len(page_records) < page_size:
+                # Last (partial) page of the queue → wrap to the top next sweep.
+                page = 1
+                break
+
+            page += 1
+
             if len(fresh) >= target:
                 break
-            if len(page_records) < page_size:
-                break  # exhausted source
+
+        # Persist where this source should resume on the next tick. Advancing
+        # even when this page yielded 0 fresh is the whole point — it's what
+        # stops the engine wedging on a saturated head.
+        setattr(state, attr, page)
+        state.updated_at = _now_ts()
 
         if len(fresh) >= target:
             break
@@ -653,6 +740,9 @@ async def _stream_fresh_candidates(
         import random
 
         random.shuffle(fresh)
+
+    stats["cursor_missing"] = state.missing_cursor_page
+    stats["cursor_cutoff"] = state.cutoff_cursor_page
 
     return fresh, stats
 
@@ -910,6 +1000,19 @@ async def _run_backfill_tick_inner(session: AsyncSession, lidarr_enabled_in_chai
     if not settings.STREAMRIP_API_URL:
         return {"skipped": "streamrip_not_configured"}
 
+    # Declutter the queue: no_match rows that have exhausted max_attempts are
+    # already filtered out of candidate selection, but leaving them labelled
+    # "no_match" (which should mean "will retry") inflates the active-failure
+    # count and hides that the engine has given up on them. Retire them to
+    # permanently_skipped. Idempotent — matches 0 rows once drained.
+    retired = await _retire_exhausted_no_match(session, cfg)
+    if retired:
+        await session.commit()
+        logger.info(
+            "Lidarr backfill: retired %d exhausted no_match row(s) to permanently_skipped",
+            retired,
+        )
+
     capacity = await _compute_capacity(session, cfg)
     if capacity == 0:
         return {"skipped": "rate_limited", "capacity": 0}
@@ -937,15 +1040,25 @@ async def _run_backfill_tick_inner(session: AsyncSession, lidarr_enabled_in_chai
             )
             candidates = fresh_candidates[:batch_target]
 
+            # Persist the advanced sweep cursor *before* the (possibly early)
+            # return below — otherwise a 0-fresh tick would roll the cursor back
+            # and re-scan the same blocked head next time, which is exactly the
+            # wedge this fix removes.
+            await session.commit()
+
             if not candidates:
                 # Surface why we did nothing — silent zero-progress ticks make
-                # this kind of stall invisible without DEBUG logging.
+                # this kind of stall invisible without DEBUG logging. The cursor
+                # fields show the sweep advancing even across empty ticks.
                 logger.info(
                     "Lidarr backfill tick: 0 fresh candidates "
-                    "(pages_fetched=%d, lidarr_seen=%d, capacity=%d, available_services=%s)",
+                    "(pages_fetched=%d, lidarr_seen=%d, capacity=%d, "
+                    "cursor_missing=%s, cursor_cutoff=%s, available_services=%s)",
                     fetch_stats["pages_fetched"],
                     fetch_stats["lidarr_seen"],
                     capacity,
+                    fetch_stats.get("cursor_missing"),
+                    fetch_stats.get("cursor_cutoff"),
                     available_services,
                 )
                 return {
@@ -956,6 +1069,8 @@ async def _run_backfill_tick_inner(session: AsyncSession, lidarr_enabled_in_chai
                     "pages_fetched": fetch_stats["pages_fetched"],
                     "lidarr_seen": fetch_stats["lidarr_seen"],
                     "after_filter": len(fresh_candidates),
+                    "cursor_missing": fetch_stats.get("cursor_missing"),
+                    "cursor_cutoff": fetch_stats.get("cursor_cutoff"),
                 }
 
             results: list[dict[str, Any]] = []

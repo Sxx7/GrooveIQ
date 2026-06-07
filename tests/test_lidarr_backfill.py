@@ -1244,6 +1244,135 @@ async def test_stream_fresh_candidates_skips_blocked_rows_and_keeps_paging(db_se
 
 
 @pytest.mark.asyncio
+async def test_stream_fresh_candidates_resumes_from_cursor_across_ticks(db_session, cfg):
+    """Successive ticks must resume paging from the persisted cursor, not
+    restart at page 1 — so the engine sweeps the whole queue over time instead
+    of re-scanning the same head every tick."""
+    fake = _FakeLidarrClient(missing_rows=_make_albums(1000))  # 10 pages of 100
+
+    # Tick 1: starts at page 1, finds target on page 1, parks the cursor at 2.
+    fresh1, stats1 = await lbf._stream_fresh_candidates(db_session, cfg, fake, target=8, page_size=100)
+    assert len(fresh1) >= 8
+    assert stats1["cursor_missing"] == 2
+
+    # Tick 2 (same session = same persisted state): resumes at page 2.
+    fresh2, stats2 = await lbf._stream_fresh_candidates(db_session, cfg, fake, target=8, page_size=100)
+    assert len(fresh2) >= 8
+    assert stats2["cursor_missing"] == 3
+    # Across both ticks we fetched page 1 then page 2 — not page 1 twice.
+    assert [c["page"] for c in fake.page_calls] == [1, 2]
+
+
+@pytest.mark.asyncio
+async def test_stream_fresh_candidates_advances_cursor_past_fully_blocked_head(db_session, cfg):
+    """The wedge fix: when every album in the scan window is terminal (so 0
+    fresh come through), the cursor must still advance so the *next* tick moves
+    deeper into the queue instead of re-scanning the same blocked head."""
+    rows = _make_albums(300)  # 3 pages of 100
+    now = int(time.time())
+    # Mark every album as complete → the cooldown/state filter drops them all.
+    for r in rows:
+        db_session.add(
+            LidarrBackfillRequest(
+                lidarr_album_id=r["id"],
+                artist=r["artist"]["artistName"],
+                album_title=r["title"],
+                source="missing",
+                status="complete",
+                attempt_count=1,
+                created_at=now,
+                updated_at=now,
+            )
+        )
+    await db_session.commit()
+
+    fake = _FakeLidarrClient(missing_rows=rows)
+
+    # Window of 2 pages per tick. No fresh anywhere, but the cursor must move.
+    fresh, stats = await lbf._stream_fresh_candidates(
+        db_session, cfg, fake, target=5, page_size=100, max_pages_per_source=2
+    )
+    assert fresh == []
+    assert stats["pages_fetched"] == 2
+    # Scanned pages 1-2 this tick → cursor parked at page 3 for the next tick.
+    assert stats["cursor_missing"] == 3
+    assert [c["page"] for c in fake.page_calls] == [1, 2]
+
+
+@pytest.mark.asyncio
+async def test_stream_fresh_candidates_wraps_cursor_at_end_of_queue(db_session, cfg):
+    """Reaching the end of the queue (a short final page) wraps the cursor back
+    to 1 so the next sweep restarts from the front."""
+    fake = _FakeLidarrClient(missing_rows=_make_albums(150))  # page1=100, page2=50 (partial)
+
+    # target high enough that we never short-circuit — we run to the end.
+    fresh, stats = await lbf._stream_fresh_candidates(db_session, cfg, fake, target=10_000, page_size=100)
+
+    assert len(fresh) == 150
+    assert stats["pages_fetched"] == 2
+    assert stats["cursor_missing"] == 1  # wrapped
+
+
+@pytest.mark.asyncio
+async def test_retire_exhausted_no_match_relabels_only_maxed_rows(db_session, cfg):
+    """Maxed-out no_match rows become permanently_skipped; under-cap no_match
+    and non-no_match rows are left untouched. Idempotent on a second pass."""
+    now = int(time.time())
+    db_session.add_all(
+        [
+            LidarrBackfillRequest(
+                lidarr_album_id=7001,
+                artist="A",
+                album_title="maxed",
+                source="missing",
+                status="no_match",
+                attempt_count=cfg.retry.max_attempts,
+                next_retry_at=now + 999,
+                created_at=now,
+                updated_at=now,
+            ),
+            LidarrBackfillRequest(
+                lidarr_album_id=7002,
+                artist="A",
+                album_title="eligible",
+                source="missing",
+                status="no_match",
+                attempt_count=1,
+                created_at=now,
+                updated_at=now,
+            ),
+            LidarrBackfillRequest(
+                lidarr_album_id=7003,
+                artist="A",
+                album_title="complete-maxed",
+                source="missing",
+                status="complete",
+                attempt_count=cfg.retry.max_attempts,
+                created_at=now,
+                updated_at=now,
+            ),
+        ]
+    )
+    await db_session.commit()
+
+    n = await lbf._retire_exhausted_no_match(db_session, cfg)
+    await db_session.commit()
+    assert n == 1
+
+    rows = {
+        r.lidarr_album_id: r
+        for r in (await db_session.execute(select(LidarrBackfillRequest))).scalars().all()
+    }
+    assert rows[7001].status == "permanently_skipped"
+    assert rows[7001].next_retry_at is None
+    assert rows[7002].status == "no_match"  # under the cap — untouched
+    assert rows[7003].status == "complete"  # not a no_match — untouched
+
+    # Idempotent: nothing left to retire.
+    assert await lbf._retire_exhausted_no_match(db_session, cfg) == 0
+
+
+@pytest.mark.asyncio
 async def test_no_match_gets_cooldown_to_avoid_back_to_back_retries(db_session, cfg):
     """Regression: no_match rows previously had next_retry_at=None, so the
     cooldown filter let them through every scheduler tick. With default
