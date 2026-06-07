@@ -234,6 +234,38 @@ async def test_compute_capacity_returns_zero_when_full(db_session, cfg):
     assert await lbf._compute_capacity(db_session, cfg) == 0
 
 
+@pytest.mark.asyncio
+async def test_compute_capacity_counts_only_dispatched_downloads(db_session, cfg):
+    """no_match (search-only), dry-run skipped, and permanently_skipped must NOT
+    consume the per-hour download budget — only downloading/complete/failed do.
+    Regression for the 'classical dead-zone rate-limits everything' bug."""
+    now = int(time.time())
+    aid = 11000
+    # 4 rows that actually dispatched a download (these count).
+    for st in ("downloading", "downloading", "complete", "failed"):
+        db_session.add(
+            LidarrBackfillRequest(
+                lidarr_album_id=aid, artist="A", album_title="T", source="missing",
+                status=st, created_at=now - 60, updated_at=now,
+            )
+        )
+        aid += 1
+    # A pile of search-only / terminal rows in the same window (these must NOT count).
+    for st in (["no_match"] * 20 + ["skipped", "permanently_skipped"]):
+        db_session.add(
+            LidarrBackfillRequest(
+                lidarr_album_id=aid, artist="A", album_title="T", source="missing",
+                status=st, attempt_count=1, created_at=now - 60, updated_at=now,
+            )
+        )
+        aid += 1
+    await db_session.commit()
+
+    # Only the 4 dispatched downloads count; if the 22 search-only rows counted,
+    # capacity would be 0 (26 > default cap of 10).
+    assert await lbf._compute_capacity(db_session, cfg) == cfg.max_downloads_per_hour - 4
+
+
 # ---------------------------------------------------------------------------
 # State filter (cooldown / max-attempts / in-flight dedupe)
 # ---------------------------------------------------------------------------

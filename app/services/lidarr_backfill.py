@@ -69,6 +69,15 @@ STATUS_PERMANENTLY_SKIPPED = "permanently_skipped"
 _TERMINAL_STATUSES = {STATUS_COMPLETE, STATUS_PERMANENTLY_SKIPPED}
 _IN_FLIGHT_STATUSES = {STATUS_QUEUED, STATUS_DOWNLOADING}
 
+# Only these statuses represent a download actually dispatched to a streaming
+# service, so only these consume the per-hour download budget. A no_match issued
+# a search but downloaded nothing; skipped is dry-run; permanently_skipped is
+# terminal (mostly retired no_match). None of those should count against the cap
+# — otherwise a classical/singles dead-zone burns the whole hour on searches and
+# starves real downloads. (Qobuz API request-rate is guarded separately by
+# streamrip's own requests_per_minute throttle.)
+_DOWNLOAD_DISPATCHED_STATUSES = {STATUS_DOWNLOADING, STATUS_COMPLETE, STATUS_FAILED}
+
 
 # Streamrip's declared quality per service (best case — actual track quality
 # can be lower depending on the album's source). Mirrors the values used in
@@ -475,11 +484,22 @@ async def _find_streamrip_album(
 
 
 async def _compute_capacity(session: AsyncSession, cfg: LidarrBackfillConfigData) -> int:
-    """How many more downloads can we start in the current sliding hour."""
+    """How many more downloads can we start in the current sliding hour.
+
+    Counts only rows that actually dispatched a download to a streaming service
+    (``downloading`` / ``complete`` / ``failed``) within the window. Search-only
+    outcomes (``no_match``), dry-run ``skipped``, and terminal
+    ``permanently_skipped`` do not consume the budget.
+    """
     cutoff = datetime.now(UTC) - timedelta(hours=1)
     cutoff_ts = int(cutoff.timestamp())
     in_window = await session.scalar(
-        select(func.count()).select_from(LidarrBackfillRequest).where(LidarrBackfillRequest.created_at > cutoff_ts)
+        select(func.count())
+        .select_from(LidarrBackfillRequest)
+        .where(
+            LidarrBackfillRequest.created_at > cutoff_ts,
+            LidarrBackfillRequest.status.in_(_DOWNLOAD_DISPATCHED_STATUSES),
+        )
     )
     in_window = in_window or 0
     capacity = cfg.max_downloads_per_hour - in_window
@@ -1565,7 +1585,12 @@ async def get_stats(
 
     in_window = (
         await session.scalar(
-            select(func.count()).select_from(LidarrBackfillRequest).where(LidarrBackfillRequest.created_at > cutoff_ts)
+            select(func.count())
+            .select_from(LidarrBackfillRequest)
+            .where(
+                LidarrBackfillRequest.created_at > cutoff_ts,
+                LidarrBackfillRequest.status.in_(_DOWNLOAD_DISPATCHED_STATUSES),
+            )
         )
     ) or 0
 
