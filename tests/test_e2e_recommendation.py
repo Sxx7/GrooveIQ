@@ -352,16 +352,28 @@ class TestEndToEndRecommendation:
         assert "source" in track
         assert "position" in track
 
-    async def test_impression_tracking(self, client: AsyncClient):
-        """Recommendations should log reco_impression events for feedback loop."""
+    async def test_recommend_does_not_self_impression(self, client: AsyncClient):
+        """The server must NOT log reco_impression events for /v1/recommend.
+
+        A reco_impression means a track *actually shown* to the user — only the
+        client knows that. Logging one row per reranked track (whether shown or
+        not) polluted ranker training with never-shown tracks as false negatives.
+        The server still generates and returns a request_id (it ties the client's
+        impressions and plays together and is the audit PK), but writes zero
+        impressions; the served list is captured by the audit tables instead.
+        """
         await _create_library()
         await _create_users_and_events()
         await _run_pipeline()
 
         resp = await client.get("/v1/recommend/metal_fan?limit=5")
-        request_id = resp.json()["request_id"]
+        assert resp.status_code == 200
+        body = resp.json()
+        request_id = body["request_id"]
+        assert request_id  # still generated + returned
+        assert len(body["tracks"]) > 0  # recommendations are still served
 
-        # Check that impression events were logged.
+        # The server wrote NO reco_impression rows for this request.
         async with _TestSession() as session:
             from sqlalchemy import func, select
 
@@ -374,7 +386,7 @@ class TestEndToEndRecommendation:
                 )
             ).scalar_one()
 
-        assert count == 5, f"Should log 5 impression events, got {count}"
+        assert count == 0, f"Server must not self-impression; got {count} reco_impression rows"
 
     async def test_model_beats_random_baseline(self):
         """The trained model should produce better NDCG than random ordering."""

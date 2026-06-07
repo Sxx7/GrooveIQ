@@ -24,7 +24,7 @@ from sqlalchemy import func, select
 from app.core.config import settings
 from app.db.session import AsyncSessionLocal
 from app.models.algorithm_config_schema import PRESET_NAMES
-from app.models.db import ListenEvent, TrackFeatures, TrackInteraction
+from app.models.db import ListenEvent, TrackFeatures, TrackInteraction, shown_impression_clause
 from app.services.feature_eng import build_features
 from app.services.ranker import get_model_stats as _ranker_stats
 
@@ -224,7 +224,11 @@ async def get_impression_stats() -> dict[str, Any]:
     async with AsyncSessionLocal() as session:
         # Total impressions.
         imp_count = (
-            await session.execute(select(func.count(ListenEvent.id)).where(ListenEvent.event_type == "reco_impression"))
+            await session.execute(
+                select(func.count(ListenEvent.id)).where(
+                    ListenEvent.event_type == "reco_impression", shown_impression_clause()
+                )
+            )
         ).scalar_one()
 
         if imp_count == 0:
@@ -236,6 +240,7 @@ async def get_impression_stats() -> dict[str, Any]:
                 select(func.count(func.distinct(ListenEvent.request_id))).where(
                     ListenEvent.event_type == "reco_impression",
                     ListenEvent.request_id.isnot(None),
+                    shown_impression_clause(),
                 )
             )
         ).scalar_one()
@@ -249,7 +254,7 @@ async def get_impression_stats() -> dict[str, Any]:
                     ListenEvent.request_id.isnot(None),
                     ListenEvent.request_id.in_(
                         select(ListenEvent.request_id)
-                        .where(ListenEvent.event_type == "reco_impression")
+                        .where(ListenEvent.event_type == "reco_impression", shown_impression_clause())
                         .where(ListenEvent.request_id.isnot(None))
                         .distinct()
                     ),

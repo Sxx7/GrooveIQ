@@ -132,14 +132,14 @@ class TestImpressionLogging:
         """Reco impressions are stored in listen_events."""
         now = _now()
         async with _TestSession() as session:
-            # Simulate what the recommend endpoint does.
+            # Simulate what the client logs when it renders a shelf.
             for i in range(5):
                 session.add(
                     ListenEvent(
                         user_id="user0",
                         track_id=f"t{i}",
                         event_type="reco_impression",
-                        surface="recommend_api",
+                        surface="library:in_this_mix",
                         position=i,
                         request_id="req-123",
                         model_version="test-v1",
@@ -212,6 +212,136 @@ class TestImpressionStats:
         stats = await get_impression_stats()
         assert stats["impressions"] == 0
         assert stats["i2s_rate"] is None
+
+
+class TestImpressionSurfaceExclusion:
+    """Regression tests for the reco_impression data-integrity fix.
+
+    Server-side ``surface="recommend_api"`` rows record the *served list* (whether
+    or not a track was actually shown), not a real impression. They must be excluded
+    from impression-based negatives, position bias, and i2s — while genuinely-shown
+    surfaces (client surfaces, ``radio``) and legacy NULL-surface rows are kept.
+    """
+
+    async def test_get_impression_stats_excludes_recommend_api(self):
+        from app.services.evaluation import get_impression_stats
+
+        now = _now()
+        async with _TestSession() as session:
+            # 4 server-side recommend_api impressions — must be ignored.
+            for i in range(4):
+                session.add(
+                    ListenEvent(
+                        user_id="user0",
+                        track_id=f"srv{i}",
+                        event_type="reco_impression",
+                        surface="recommend_api",
+                        request_id="rq-srv",
+                        timestamp=now,
+                    )
+                )
+            # 2 genuinely-shown client impressions — must count.
+            for i in range(2):
+                session.add(
+                    ListenEvent(
+                        user_id="user0",
+                        track_id=f"cli{i}",
+                        event_type="reco_impression",
+                        surface="library:in_this_mix",
+                        request_id="rq-cli",
+                        timestamp=now,
+                    )
+                )
+            # 1 play attributed to the client request.
+            session.add(
+                ListenEvent(
+                    user_id="user0",
+                    track_id="cli0",
+                    event_type="play_start",
+                    request_id="rq-cli",
+                    timestamp=now + 1,
+                )
+            )
+            await session.commit()
+
+        stats = await get_impression_stats()
+        # Only the 2 client impressions count; the 4 recommend_api rows are excluded.
+        assert stats["impressions"] == 2
+        # The recommend_api request is not counted as an impression request either.
+        assert stats["impression_requests"] == 1
+        # i2s denominator uses the clean count → 1 stream / 2 impressions.
+        assert stats["streams_from_reco"] == 1
+        assert stats["i2s_rate"] == 0.5
+
+    async def test_get_impression_stats_keeps_radio_and_null(self):
+        from app.services.evaluation import get_impression_stats
+
+        now = _now()
+        async with _TestSession() as session:
+            session.add_all(
+                [
+                    ListenEvent(user_id="u", track_id="r0", event_type="reco_impression",
+                                surface="radio", request_id="rq-radio", timestamp=now),
+                    ListenEvent(user_id="u", track_id="n0", event_type="reco_impression",
+                                surface=None, request_id="rq-null", timestamp=now),
+                    ListenEvent(user_id="u", track_id="s0", event_type="reco_impression",
+                                surface="recommend_api", request_id="rq-srv", timestamp=now),
+                ]
+            )
+            await session.commit()
+
+        stats = await get_impression_stats()
+        # radio + NULL-surface kept (2); recommend_api excluded.
+        assert stats["impressions"] == 2
+
+    async def test_load_impression_negatives_excludes_recommend_api(self):
+        from app.services.feature_eng import _load_impression_negatives
+
+        now = _now()
+        async with _TestSession() as session:
+            session.add_all(
+                [
+                    # Shown only via recommend_api, never played → must NOT be a negative.
+                    ListenEvent(user_id="u", track_id="server_only", event_type="reco_impression",
+                                surface="recommend_api", request_id="rq1", timestamp=now),
+                    # Genuinely shown (client), never played → SHOULD be a negative.
+                    ListenEvent(user_id="u", track_id="client_shown", event_type="reco_impression",
+                                surface="library:in_this_mix", request_id="rq2", timestamp=now),
+                    # Shown (client) AND played → not a negative.
+                    ListenEvent(user_id="u", track_id="played", event_type="reco_impression",
+                                surface="discover:discover_mix", request_id="rq3", timestamp=now),
+                    ListenEvent(user_id="u", track_id="played", event_type="play_start",
+                                request_id="rq3", timestamp=now + 1),
+                ]
+            )
+            await session.commit()
+            negatives = await _load_impression_negatives(session)
+
+        user_negs = negatives.get("u", set())
+        assert "client_shown" in user_negs
+        assert "server_only" not in user_negs  # recommend_api excluded — the core fix
+        assert "played" not in user_negs
+
+    async def test_load_impression_positions_excludes_recommend_api(self):
+        from app.services.feature_eng import _load_impression_positions
+
+        now = _now()
+        async with _TestSession() as session:
+            session.add_all(
+                [
+                    # recommend_api rank (10) must be ignored...
+                    ListenEvent(user_id="u", track_id="t", event_type="reco_impression",
+                                surface="recommend_api", position=10, request_id="rq1", timestamp=now),
+                    # ...only the real shown position (2) should remain.
+                    ListenEvent(user_id="u", track_id="t", event_type="reco_impression",
+                                surface="library:in_this_mix", position=2, request_id="rq2", timestamp=now),
+                ]
+            )
+            await session.commit()
+            positions = await _load_impression_positions(session)
+
+        # Avg position reflects only the shown row → 2, not avg(10, 2) = 6.
+        assert positions["u"]["t"] == 2
 
 
 class TestHoldoutEvaluation:

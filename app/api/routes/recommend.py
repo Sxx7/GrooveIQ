@@ -104,8 +104,8 @@ async def generate_recommendation_payload(
 
     Returns a **session-detached** payload (plain dicts/lists/tuples — no ORM
     rows) so it is safe to cache and reuse across requests.  The caller layers
-    on the per-request bits that must stay fresh: a new ``request_id``, impression
-    logging, and the audit dispatch.
+    on the per-request bits that must stay fresh: a new ``request_id`` and the
+    audit dispatch. (Impressions are logged client-side, for tracks actually shown.)
 
     The discovery-dial overrides are applied *inside* this function (around
     candidate-gen and rerank), so it produces the same result whether invoked on
@@ -354,7 +354,11 @@ Candidates are generated from multiple sources:
 Optionally provide a `seed_track_id` to bias results toward a specific track.
 
 Each result includes the source tag for debugging.
-A `reco_impression` event is logged for feedback loop training.
+
+Returns a `request_id` that ties this served list to the client-side
+`reco_impression` events and the plays that follow. The server does **not** log
+impressions itself — an impression means a track *actually shown* to the user,
+which only the client knows; the served list is recorded in the audit tables.
 """,
 )
 async def get_recommendations(
@@ -521,31 +525,17 @@ async def get_recommendations(
     actions_by_tid = payload["actions_by_tid"]
     track_meta = payload["track_meta"]
 
-    # Generate a request_id for impression tracking.
+    # Generate a request_id that ties this served list to the client-side
+    # reco_impression events and the play events that follow, and to the audit row below.
     request_id = str(uuid.uuid4())
 
-    # Log reco_impression events for feedback loop (include context for future training).
-    now = int(time.time())
-    for i, (tid, score) in enumerate(reranked):
-        session.add(
-            ListenEvent(
-                user_id=user_id,
-                track_id=tid,
-                event_type="reco_impression",
-                surface="recommend_api",
-                position=i,
-                request_id=request_id,
-                model_version=model_version,
-                device_type=device_type,
-                output_type=output_type,
-                context_type=context_type,
-                location_label=location_label,
-                hour_of_day=hour_of_day,
-                day_of_week=day_of_week,
-                timestamp=now,
-            )
-        )
-    await session.commit()
+    # NOTE: The server intentionally does NOT write reco_impression events here.
+    # A reco_impression means a track *actually shown to the user* — only the client
+    # knows that, and it fires impressions for the tiles it renders. Serving the whole
+    # reranked list is provenance, not an impression, and is captured by the audit
+    # tables below (RecommendationRequestAudit / RecommendationCandidateAudit). Writing
+    # one impression per reranked track previously polluted ranker training: the unshown
+    # tail of every list became false "shown-but-not-played" negatives.
 
     # --- Fire-and-forget audit write ---
     if settings.RECO_AUDIT_ENABLED:

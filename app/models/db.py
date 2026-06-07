@@ -123,6 +123,35 @@ class ListenEvent(Base):
 
 
 # ---------------------------------------------------------------------------
+# Impression-surface policy (shared by feature_eng / evaluation / recommend)
+# ---------------------------------------------------------------------------
+#
+# A `reco_impression` row should mean "a track actually shown to the user." Some
+# surfaces are written server-side for the *served list* as a whole (provenance),
+# not for what the user saw, and must be excluded from impression-based training
+# negatives, position-bias, i2s eval, and history display — otherwise the unshown
+# tail of every list becomes a false "shown-but-not-played" negative.
+#
+# Only "recommend_api" (GET /v1/recommend) over-logs this way. "radio" is kept:
+# radio tracks play sequentially, so they are genuinely surfaced. If that policy
+# changes, edit this one tuple.
+NON_IMPRESSION_SURFACES: tuple[str, ...] = ("recommend_api",)
+
+
+def shown_impression_clause():
+    """SQLAlchemy boolean clause selecting ``reco_impression`` rows that represent a
+    track *actually shown* to the user — excludes server-side served-list provenance
+    such as ``recommend_api`` (see ``NON_IMPRESSION_SURFACES``). NULL-surface rows are
+    kept (legacy client rows that never set a surface)."""
+    from sqlalchemy import or_
+
+    return or_(
+        ListenEvent.surface.is_(None),
+        ListenEvent.surface.notin_(NON_IMPRESSION_SURFACES),
+    )
+
+
+# ---------------------------------------------------------------------------
 # Track features  (Phase 3)
 # ---------------------------------------------------------------------------
 

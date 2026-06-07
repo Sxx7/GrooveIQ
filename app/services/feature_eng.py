@@ -329,7 +329,7 @@ async def _load_impression_positions(session: AsyncSession) -> dict[str, dict[st
     """
     from sqlalchemy import func
 
-    from app.models.db import ListenEvent
+    from app.models.db import ListenEvent, shown_impression_clause
 
     result = await session.execute(
         select(
@@ -340,6 +340,8 @@ async def _load_impression_positions(session: AsyncSession) -> dict[str, dict[st
         .where(
             ListenEvent.event_type == "reco_impression",
             ListenEvent.position.isnot(None),
+            # Only positions of tracks actually shown (exclude server-side served-list provenance).
+            shown_impression_clause(),
         )
         .group_by(ListenEvent.user_id, ListenEvent.track_id)
     )
@@ -358,15 +360,15 @@ async def _load_impression_negatives(session: AsyncSession) -> dict[str, set]:
 
     Returns {user_id: {track_id, ...}} of impression-only tracks.
     """
-    from app.models.db import ListenEvent
+    from app.models.db import ListenEvent, shown_impression_clause
 
-    # All impressed tracks per user.
+    # All impressed tracks per user — only tracks actually shown (exclude served-list provenance).
     imp_result = await session.execute(
         select(
             ListenEvent.user_id,
             ListenEvent.track_id,
         )
-        .where(ListenEvent.event_type == "reco_impression")
+        .where(ListenEvent.event_type == "reco_impression", shown_impression_clause())
         .distinct()
     )
     impressed: dict[str, set] = {}
