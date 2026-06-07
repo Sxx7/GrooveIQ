@@ -185,6 +185,53 @@ GIQ.components.liveBadge = function liveBadge() {
     return el;
 };
 
+/* ── Download cascade attempts ────────────────────────────────────────
+ * Renders a DownloadRequest.attempts[] array (the per-backend cascade log)
+ * as a compact list — one row per backend tried, each showing its status
+ * and, on failure, the real backend error truncated to one line with the
+ * full text on hover (title=). This is what makes an infra failure like
+ * streamrip's "[Errno 13] Permission denied: '/music/...'" visible from the
+ * dashboard instead of only in `docker logs` (issue #108).
+ *
+ * Returns null when there's nothing worth showing (no attempts, or a single
+ * clean success) so callers can skip the toggle entirely.
+ */
+GIQ.components.attemptsList = function attemptsList(attempts, opts) {
+    opts = opts || {};
+    const list = Array.isArray(attempts) ? attempts : [];
+    if (!list.length) return null;
+    const anyError = list.some(function (a) { return a && a.error; });
+    if (list.length <= 1 && !anyError && !opts.force) return null;
+
+    const esc = GIQ.fmt.esc;
+    const wrap = document.createElement('div');
+    wrap.className = 'op-dl-attempts';
+
+    list.forEach(function (a) {
+        a = a || {};
+        const ok = a.success === true;
+        const status = a.status || (ok ? 'ok' : 'error');
+        const kind = ok ? 'good' : (status === 'skipped' ? 'muted' : 'bad');
+        const mark = ok ? '✓' : (status === 'skipped' ? '·' : '✗');
+
+        let html = ''
+            + '<span class="op-backend-chip mono">' + esc(String(a.backend || '?').toUpperCase()) + '</span>'
+            + '<span class="op-dl-attempt-status mono ' + kind + '">' + mark + ' ' + esc(status) + '</span>';
+        if (a.error) {
+            html += '<span class="op-dl-attempt-err mono" title="' + esc(String(a.error)) + '">'
+                + esc(String(a.error)) + '</span>';
+        }
+        if (a.duration_ms != null) {
+            html += '<span class="op-dl-attempt-dur mono muted">' + esc(String(a.duration_ms)) + 'ms</span>';
+        }
+        const row = document.createElement('div');
+        row.className = 'op-dl-attempt';
+        row.innerHTML = html;
+        wrap.appendChild(row);
+    });
+    return wrap;
+};
+
 /* ── Page header ──────────────────────────────────────────────────── */
 
 GIQ.components.pageHeader = function pageHeader(opts) {

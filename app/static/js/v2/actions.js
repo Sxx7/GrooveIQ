@@ -625,12 +625,34 @@
             const tb = document.createElement('tbody');
             items.slice(0, 10).forEach(r => {
                 const tr = document.createElement('tr');
+                let statusCell = '<span class="mono">' + esc(r.status || '—') + '</span>';
+                if (r.error_message) {
+                    statusCell += '<div class="actions-recent-err mono" title="' + esc(r.error_message) + '">'
+                        + esc(r.error_message) + '</div>';
+                }
                 tr.innerHTML =
                       '<td class="mono">' + esc(timeAgo(r.created_at || r.requested_at || r.queued_at)) + '</td>'
-                    + '<td class="mono">' + esc(r.backend || r.client || '—') + '</td>'
+                    + '<td class="mono">' + esc(r.source || r.backend || r.client || '—') + '</td>'
                     + '<td>' + esc((r.artist_name || r.artist || '') + (r.track_title ? ' — ' + r.track_title : '')) + '</td>'
-                    + '<td class="mono">' + esc(r.status || '—') + '</td>';
+                    + '<td>' + statusCell + '</td>';
                 tb.appendChild(tr);
+
+                // Click the row to expand the per-backend cascade attempts —
+                // each backend's real error (e.g. streamrip "Permission
+                // denied: '/music/...'") instead of only the final status (#108).
+                const attemptsEl = GIQ.components.attemptsList(r.attempts);
+                if (attemptsEl) {
+                    attemptsEl.classList.add('op-collapsed');
+                    tr.classList.add('actions-recent-expandable');
+                    const detail = document.createElement('tr');
+                    detail.className = 'actions-recent-detail';
+                    const td = document.createElement('td');
+                    td.colSpan = 4;
+                    td.appendChild(attemptsEl);
+                    detail.appendChild(td);
+                    tb.appendChild(detail);
+                    tr.addEventListener('click', () => attemptsEl.classList.toggle('op-collapsed'));
+                }
             });
             tbl.appendChild(tb);
             recentSection.appendChild(tbl);
@@ -639,7 +661,7 @@
         function reloadRecent() {
             if (!GIQ.state.apiKey) { renderRecent([]); return; }
             GIQ.api.get('/v1/downloads?limit=10').then(data => {
-                renderRecent((data && (data.items || data.recent || [])) || []);
+                renderRecent((data && (data.downloads || data.items || data.recent || [])) || []);
             }).catch(() => renderRecent([]));
         }
 

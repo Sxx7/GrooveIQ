@@ -4298,12 +4298,33 @@
                 sub.classList.add('wine');
             }
             main.appendChild(sub);
+
+            // Per-backend cascade attempts (collapsible). Surfaces each
+            // backend's real error — e.g. streamrip "[Errno 13] Permission
+            // denied: '/music/...'" — so an infra failure is diagnosable from
+            // the dashboard, not just `docker logs` (issue #108).
+            const attemptsEl = GIQ.components.attemptsList(row.attempts);
+            if (attemptsEl) {
+                attemptsEl.classList.add('op-collapsed');
+                const n = row.attempts.length;
+                const toggle = document.createElement('button');
+                toggle.type = 'button';
+                toggle.className = 'op-dl-attempts-toggle mono';
+                toggle.textContent = '▸ ' + n + ' attempt' + (n === 1 ? '' : 's');
+                toggle.addEventListener('click', function () {
+                    const collapsed = attemptsEl.classList.toggle('op-collapsed');
+                    toggle.textContent = (collapsed ? '▸ ' : '▾ ') + n + ' attempt' + (n === 1 ? '' : 's');
+                });
+                main.appendChild(toggle);
+            }
             r.appendChild(main);
 
             const status = document.createElement('div');
             status.className = 'op-dl-row-status';
             status.appendChild(buildDlStatusBadge(row, bucket));
             r.appendChild(status);
+
+            if (attemptsEl) r.appendChild(attemptsEl);
 
             return r;
         }
