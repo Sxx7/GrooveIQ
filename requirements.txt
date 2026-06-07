@@ -84,4 +84,4 @@ httpx==0.28.*
 # Testing
 # pytest >=9.0.3 fixes CVE-2025-71176 (predictable /tmp/pytest-of-{user} path).
 pytest>=9.0.3,<10
-pytest-asyncio>=1.3.0,<2
+pytest-asyncio>=1.4.0,<2
