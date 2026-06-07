@@ -40,7 +40,7 @@ jobs:
 
       - name: Run container
         run: |
-          docker run -d --name w \
+          docker run -d --name wrapper \
             -e SAMPLE_MODE=true \
             -p 127.0.0.1:8000:${{ matrix.port }} \
             smoke:${{ matrix.wrapper }}
@@ -60,4 +60,4 @@ jobs:
 
       - name: Container logs (always)
         if: always()
-        run: docker logs w 2>&1 | tail -80
+        run: docker logs wrapper 2>&1 | tail -80
