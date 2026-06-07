@@ -15,12 +15,32 @@ from __future__ import annotations
 import logging
 import re
 import time
+from dataclasses import dataclass, field
 from typing import Any
 
 import httpx
 
 # Alphanumeric IDs only — prevents path traversal in URL interpolation.
 _SAFE_ID_RE = re.compile(r"^[a-zA-Z0-9]{1,64}$")
+
+
+@dataclass
+class SearchOutcome:
+    """Result of a streamrip-api search that distinguishes *a successful search
+    that found nothing* from *a search that never completed* (infra/transient).
+
+    ``ok`` is True only when the backend returned a 2xx response — i.e. the
+    catalog was actually queried (the result may still be empty). It is False
+    for network errors, timeouts, 5xx, and 503 "service not configured": in
+    those cases an empty ``results`` does **not** mean "this album isn't on the
+    service." Callers (notably the Lidarr backfill engine) must not record a
+    ``no_match`` unless at least one service returned ``ok=True`` — see
+    GitHub issue #122.
+    """
+
+    results: list[dict[str, Any]] = field(default_factory=list)
+    ok: bool = False
+    error: str | None = None
 
 
 def _validate_id(value: str, label: str = "ID") -> None:
@@ -102,6 +122,27 @@ class StreamripClient:
         ``service`` (qobuz / tidal / deezer / soundcloud) overrides
         streamrip-api's DEFAULT_SERVICE. Used by the Lidarr backfill engine
         to walk the configured service-priority list per request.
+
+        Back-compat wrapper: returns just the result list (empty on any
+        failure). Callers that must distinguish "searched, empty" from
+        "couldn't search" use :meth:`search_detailed`.
+        """
+        return (await self.search_detailed(query, limit, service)).results
+
+    async def search_detailed(
+        self,
+        query: str,
+        limit: int = 10,
+        service: str | None = None,
+    ) -> SearchOutcome:
+        """Like :meth:`search`, but reports whether the search actually ran.
+
+        ``SearchOutcome.ok`` is True only on a 2xx response (the catalog was
+        queried — the result may be empty). It is False for network errors,
+        timeouts, 5xx, and 503 "service not configured". This lets the Lidarr
+        backfill engine tell a genuine catalog gap (record ``no_match``) apart
+        from an infra/transient failure (record a re-queueable error) — see
+        GitHub issue #122.
         """
         await self._throttle()
         params: dict[str, Any] = {"q": query, "limit": limit}
@@ -112,16 +153,41 @@ class StreamripClient:
                 f"{self._base_url}/search",
                 params=params,
             )
-            resp.raise_for_status()
-            data = resp.json()
-        except Exception as exc:
+        except httpx.RequestError as exc:
+            # Network-level: timeout, connection refused, DNS — the backend was
+            # never reached. Transient; the caller should re-queue, not no_match.
             logger.warning(
-                "streamrip-api search failed for %r (service=%s): %s",
+                "streamrip-api search transport error for %r (service=%s): %s",
                 query,
                 service or "default",
                 exc,
             )
-            return []
+            return SearchOutcome(results=[], ok=False, error=f"network error: {exc}")
+
+        if resp.status_code != 200:
+            # 5xx (backend/gateway down), 503 (service not configured), or 4xx
+            # (bad request). None of these is a successful catalog search, so an
+            # empty result here must not be read as "not available".
+            detail = ""
+            try:
+                body = resp.json()
+                detail = body.get("detail") or body.get("error") or ""
+            except Exception:
+                detail = (resp.text or "")[:200]
+            err = f"streamrip-api HTTP {resp.status_code}" + (f": {detail}" if detail else "")
+            logger.warning(
+                "streamrip-api search non-200 for %r (service=%s): %s",
+                query,
+                service or "default",
+                err,
+            )
+            return SearchOutcome(results=[], ok=False, error=err)
+
+        try:
+            data = resp.json()
+        except Exception as exc:
+            logger.warning("streamrip-api search returned unparseable body for %r: %s", query, exc)
+            return SearchOutcome(results=[], ok=False, error=f"unparseable response: {exc}")
 
         # Reshape streamrip-api results to match Spotify-like format
         # so _pick_best_match, _flatten_track, etc. work unchanged.
@@ -150,7 +216,7 @@ class StreamripClient:
                     "_quality": entry.get("quality", ""),
                 }
             )
-        return items
+        return SearchOutcome(results=items, ok=True, error=None)
 
     # -- Cover art ----------------------------------------------------------
 
@@ -309,6 +375,47 @@ class StreamripClient:
                 "streamrip-api album download transport error for %s/%s: %s",
                 service,
                 album_id,
+                exc,
+            )
+            return {"task_id": "", "status": "error", "error": str(exc)}
+
+        try:
+            data = resp.json()
+        except Exception:
+            data = {}
+
+        if resp.status_code >= 400:
+            err_msg = data.get("error") or data.get("detail") or f"streamrip-api HTTP {resp.status_code}"
+            return {"task_id": data.get("task_id", ""), "status": "error", "error": err_msg}
+
+        return {
+            "task_id": data.get("task_id", ""),
+            "status": data.get("status", "downloading"),
+        }
+
+    async def download_track(self, service: str, track_id: str) -> dict[str, Any]:
+        """Download a single track by service + service-native track ID.
+
+        Mirrors :meth:`download_album` but for one track. Used by the Lidarr
+        backfill engine's track-level fallback (GitHub issue #124) when a
+        "missing album" is really an individual track that only exists inside
+        an album on the streaming service (singles / remixes / promos).
+        """
+        _validate_id(track_id, "track_id")
+        if service not in ("qobuz", "tidal", "deezer", "soundcloud"):
+            return {"task_id": "", "status": "error", "error": f"unknown service {service!r}"}
+        await self._throttle()
+
+        try:
+            resp = await self._client.post(
+                f"{self._base_url}/download",
+                json={"service_id": track_id, "service": service, "entity_type": "track"},
+            )
+        except Exception as exc:
+            logger.warning(
+                "streamrip-api track download transport error for %s/%s: %s",
+                service,
+                track_id,
                 exc,
             )
             return {"task_id": "", "status": "error", "error": str(exc)}

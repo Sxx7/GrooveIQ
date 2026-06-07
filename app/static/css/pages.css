@@ -736,6 +736,14 @@
     border-color: rgba(168, 135, 206, 0.30);
     color: var(--accent);
 }
+/* search_error = infra/transient (backend unreachable), NOT "not available" —
+   amber distinguishes it from the wine no_match so operators don't mistake a
+   stale mount / down backend for a real catalog gap (issue #122). */
+.lbf-state-chip.lbf-state-search_error {
+    background: rgba(212, 160, 92, 0.16);
+    border-color: rgba(212, 160, 92, 0.40);
+    color: #b07d34;
+}
 .lbf-row-actions {
     display: flex;
     gap: 4px;

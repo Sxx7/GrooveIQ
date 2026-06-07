@@ -286,6 +286,51 @@ If exposing GrooveIQ on the internet:
 4. **Rotate API keys** periodically (`openssl rand -base64 32`).
 5. **Firewall** — expose only port 443 externally.
 
+## Troubleshooting
+
+### Downloads silently stopped / `[Errno 13] Permission denied`
+
+`streamrip-api` and `spotdl-api` bind-mount your library at `/music`. If the host
+directory backing that mount is replaced while the containers keep running (e.g. a
+deploy recreates it), the containers keep a reference to the *old* inode — `/music`
+looks empty and root-owned inside the container and every download fails, even
+though search still works.
+
+Each sidecar's `/health` now self-checks the `/music` mount (existence + a
+writability probe) and returns **HTTP 503** (container shows `(unhealthy)`) when it
+isn't writable, so the failure is no longer silent. Confirm and fix:
+
+```bash
+docker exec streamrip-api sh -c 'ls /music | wc -l'   # ~0 while the host dir is full?
+docker compose up -d --force-recreate streamrip-api spotdl-api   # re-bind the mount
+```
+
+Better, recreate the sidecars after any deploy step that can swap the library dir.
+Set `MUSIC_MIN_ENTRIES=1` on the sidecars to *also* flag a writable-but-empty mount
+as unhealthy (leave at `0` if your library can legitimately be empty).
+
+### Lidarr backfill: lots of `no_match`
+
+`no_match` means the streaming catalog was searched successfully and nothing
+acceptable was found. (Infra/transient search failures are recorded separately as
+`search_error` and re-queue automatically once the backend recovers.) On a large
+library the residual `no_match` tail is usually *structural*, not a bug:
+
+- **Singles / remixes / promos** — if Lidarr's metadata profile monitors the
+  `Single` (and `EP`) release types, many "missing albums" are really individual
+  tracks that only exist *inside* an album on streaming services, so album-level
+  matching can't fetch them. **The biggest single fix is to narrow the Lidarr
+  metadata profile to `Album` (+ `EP`).** Alternatively, enable
+  `match.allow_track_fallback` in the backfill settings to download the single
+  track instead.
+- **Classical** — Lidarr's album artist is the *composer* (often non-Latin script)
+  while services list the *performer / orchestra*, so the artist-similarity check
+  rejects an otherwise-correct album. Enable `match.classical_relax_artist` to
+  accept when the album title matches strongly.
+
+Both options are off by default — use the **Preview Match** modal to calibrate
+before enabling, especially for libraries with significant non-Latin content.
+
 ## Development
 
 ```bash

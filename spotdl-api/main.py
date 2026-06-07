@@ -11,6 +11,7 @@ Downloads are backed by YouTube Music audio; metadata comes from Spotify.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import os
 import time
@@ -20,6 +21,7 @@ from enum import Enum
 from typing import Any, Dict, List, Optional
 
 from fastapi import FastAPI, HTTPException, Query
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 # ---------------------------------------------------------------------------
@@ -27,6 +29,12 @@ from pydantic import BaseModel
 # ---------------------------------------------------------------------------
 
 OUTPUT_DIR = os.environ.get("OUTPUT_DIR", "/music")
+# Readiness self-check (GitHub issue #123). When > 0, /health also requires the
+# /music mount to contain at least this many entries — catches the rarer
+# "writable but empty/wrong inode" stale-mount case. 0 (default) gates on
+# writability only, which has zero false positives on a legitimately-empty
+# library.
+MUSIC_MIN_ENTRIES = int(os.environ.get("MUSIC_MIN_ENTRIES", "0"))
 OUTPUT_FORMAT = os.environ.get("OUTPUT_FORMAT", "opus")
 BITRATE = os.environ.get("BITRATE", "auto")
 OUTPUT_TEMPLATE = os.environ.get(
@@ -329,9 +337,72 @@ def _do_download(spotdl_instance, task_id: str, spotify_url: str) -> None:
 # Routes
 # ---------------------------------------------------------------------------
 
+def _music_status() -> Dict[str, Any]:
+    """Probe the /music bind-mount: existence, entry count, and writability.
+
+    Detects the stale-bind-mount failure mode (GitHub issue #123): when the host
+    library dir backing /music is replaced while this long-lived container keeps
+    running, the container holds the old (now empty, root-owned) inode and every
+    download fails with ``[Errno 13] Permission denied`` — yet a disk-blind
+    /health stays green. The writability probe turns that silent failure into an
+    unhealthy container.
+    """
+    path = OUTPUT_DIR
+    out: Dict[str, Any] = {"path": path, "exists": False, "entries": None, "writable": False, "error": None}
+    try:
+        if not os.path.isdir(path):
+            out["error"] = "directory does not exist"
+            return out
+        out["exists"] = True
+        try:
+            out["entries"] = len(os.listdir(path))
+        except OSError as exc:
+            out["error"] = f"cannot list: {exc}"
+        probe = os.path.join(path, ".grooveiq_write_probe")
+        try:
+            fd = os.open(probe, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+            os.close(fd)
+            os.unlink(probe)
+            out["writable"] = True
+        except FileExistsError:
+            # A concurrent probe left it behind — the dir is writable; clean up.
+            with contextlib.suppress(OSError):
+                os.unlink(probe)
+            out["writable"] = True
+        except OSError as exc:
+            if out["error"] is None:
+                out["error"] = f"not writable: {exc}"
+    except Exception as exc:  # pragma: no cover - defensive
+        out["error"] = str(exc)
+    return out
+
+
+def _music_ready(status: Dict[str, Any]) -> bool:
+    """Readiness gate for /music: must exist and be writable (the definitive
+    stale-mount signal). When MUSIC_MIN_ENTRIES > 0, also require that many
+    entries."""
+    if not status.get("exists") or not status.get("writable"):
+        return False
+    if MUSIC_MIN_ENTRIES > 0 and (status.get("entries") or 0) < MUSIC_MIN_ENTRIES:
+        return False
+    return True
+
+
 @app.get("/health")
 async def health():
-    return {"status": "ok", "service": "spotdl-api"}
+    music = _music_status()
+    ready = _music_ready(music)
+    body: Dict[str, Any] = {
+        "status": "ok" if ready else "degraded",
+        "service": "spotdl-api",
+        "ready": ready,
+        "music": music,
+    }
+    if not ready:
+        # 503 → Docker HEALTHCHECK fails → container shows (unhealthy), turning a
+        # silent "every download fails" into an obvious signal (issue #123).
+        return JSONResponse(status_code=503, content=body)
+    return body
 
 
 @app.get("/search", response_model=List[SearchResult])

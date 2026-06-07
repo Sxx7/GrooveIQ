@@ -972,6 +972,8 @@
         'match.require_year_match': { desc: 'Reject if release year differs by more than 1', type: 'bool' },
         'match.require_track_count_match': { desc: 'Reject if track count differs from Lidarr’s expectation', type: 'bool' },
         'match.prefer_album_over_tracks': { desc: 'Album-first: only fall back to per-track downloads when no album hit exists', type: 'bool' },
+        'match.allow_track_fallback': { desc: 'When no album matches on any service, download the best single track whose title matches the Lidarr album title. Recovers the singles/remixes tail (issue #124). Off by default.', type: 'bool' },
+        'match.classical_relax_artist': { desc: 'Classical-aware: when album-title similarity is very strong (≥0.90), accept even if artist similarity is below threshold (Lidarr uses the composer, services list the performer). Off by default.', type: 'bool' },
         'match.allow_structural_fallback': { desc: 'Accept candidates with low album-title similarity if artist matches exactly + same track count + same year (±1).', type: 'bool' },
         'retry.cooldown_hours': { desc: 'Wait this many hours before retrying a failed album', type: 'float', min: 0, max: 720, step: 0.5 },
         'retry.max_attempts': { desc: 'Permanently skip after this many failed attempts', type: 'int', min: 1, max: 20, step: 1 },

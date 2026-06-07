@@ -340,7 +340,7 @@
         // Bulk actions row
         const bulkBar = document.createElement('div');
         bulkBar.className = 'lbf-queue-bulk';
-        ['failed', 'no_match', 'permanently_skipped'].forEach(scope => {
+        ['failed', 'no_match', 'search_error', 'permanently_skipped'].forEach(scope => {
             const btn = document.createElement('button');
             btn.type = 'button';
             btn.className = 'vc-btn';
@@ -418,7 +418,7 @@
                     + '<td class="mono">' + (r.last_attempt_at ? esc(timeAgo(r.last_attempt_at)) : '—') + '</td>';
                 const td = document.createElement('td');
                 td.className = 'lbf-row-actions';
-                if (r.status === 'failed' || r.status === 'no_match') {
+                if (r.status === 'failed' || r.status === 'no_match' || r.status === 'search_error') {
                     td.appendChild(_iconBtn('Retry', () => rowAction(r.id, 'retry')));
                 }
                 if (r.status !== 'permanently_skipped' && r.status !== 'complete') {

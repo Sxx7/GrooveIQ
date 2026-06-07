@@ -26,6 +26,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from app.models.db import Base, LidarrBackfillRequest
 from app.models.lidarr_backfill_schema import LidarrBackfillConfigData, get_defaults
 from app.services import lidarr_backfill as lbf
+from app.services.streamrip import SearchOutcome
 
 TEST_DB_URL = "sqlite+aiosqlite:///:memory:"
 
@@ -421,24 +422,40 @@ async def test_filter_handles_large_candidate_list(db_session, cfg):
 class _FakeStreamrip:
     """In-memory stand-in for StreamripClient. Records calls for assertions."""
 
-    def __init__(self, search_results=None, download_result=None, status_results=None):
+    def __init__(self, search_results=None, download_result=None, status_results=None, search_errors=None):
         self.search_results = search_results if search_results is not None else []
         self.download_result = download_result or {"task_id": "task-123", "status": "downloading"}
         # Map of task_id → status payload (for poll_in_flight tests).
         self.status_results: dict[str, dict[str, Any]] = status_results or {}
+        # Services (or "*") that should simulate an infra/transient search failure
+        # (search_detailed returns ok=False) — for the issue #122 tests.
+        self.search_errors: set[str] = set(search_errors or [])
         self.search_calls: list[tuple[str, int, str | None]] = []
         self.download_calls: list[tuple[str, str]] = []
+        self.track_download_calls: list[tuple[str, str]] = []
         self.status_calls: list[str] = []
 
-    async def search(self, query, limit=10, service=None):
-        self.search_calls.append((query, limit, service))
-        # Return per-service hits if a dict was provided, else flat list
+    def _results_for(self, service):
         if isinstance(self.search_results, dict):
             return self.search_results.get(service or "qobuz", [])
         return self.search_results
 
+    async def search(self, query, limit=10, service=None):
+        self.search_calls.append((query, limit, service))
+        return self._results_for(service)
+
+    async def search_detailed(self, query, limit=10, service=None):
+        self.search_calls.append((query, limit, service))
+        if "*" in self.search_errors or service in self.search_errors:
+            return SearchOutcome(results=[], ok=False, error=f"simulated infra failure ({service})")
+        return SearchOutcome(results=self._results_for(service), ok=True, error=None)
+
     async def download_album(self, service, album_id):
         self.download_calls.append((service, album_id))
+        return self.download_result
+
+    async def download_track(self, service, track_id):
+        self.track_download_calls.append((service, track_id))
         return self.download_result
 
     async def get_status(self, task_id):
@@ -526,6 +543,175 @@ async def test_service_priority_skipped_below_quality_floor(db_session, cfg):
     # soundcloud should be skipped entirely → no_match
     assert result["decision"] == "no_match"
     assert fake.search_calls == []  # never even searched (gated by quality)
+
+
+# ---------------------------------------------------------------------------
+# Issue #122 — infra/transient search failures must NOT become no_match
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_search_outcome_distinguishes_empty_from_error():
+    """SearchOutcome.ok is the contract _find_streamrip_album relies on:
+    a 2xx with no hits is ok=True (searched, empty); an infra failure is ok=False."""
+    assert SearchOutcome(results=[], ok=True).ok is True
+    assert SearchOutcome(results=[], ok=False, error="boom").ok is False
+
+
+@pytest.mark.asyncio
+async def test_process_album_search_error_when_backend_unreachable(db_session, cfg):
+    """Every configured service errors on search → re-queueable search_error,
+    NOT no_match. The album may well exist; we just couldn't look (#122)."""
+    fake = _FakeStreamrip(search_results={"qobuz": []}, search_errors={"*"})
+
+    result = await lbf._process_album(db_session, _lidarr_album(album_id=4101), cfg, fake)
+    await db_session.commit()
+
+    assert result["decision"] == "search_error"
+    assert fake.download_calls == []
+    row = (
+        await db_session.execute(select(LidarrBackfillRequest).where(LidarrBackfillRequest.lidarr_album_id == 4101))
+    ).scalar_one()
+    assert row.status == "search_error"
+    # Infra outage must NOT burn the retry budget or eventually permanently-skip.
+    assert row.attempt_count == 0
+    # Short cooldown so it re-queues once the backend recovers.
+    assert row.next_retry_at is not None and row.next_retry_at > lbf._now_ts()
+    assert "infra failure" in (row.last_error or "")
+
+
+@pytest.mark.asyncio
+async def test_partial_service_failure_still_no_match_not_search_error(db_session, cfg):
+    """If at least one service searched successfully (even with no acceptable hit),
+    the verdict is a genuine no_match — only a *total* search failure re-queues."""
+    sr_tracks = [_streamrip_track(artist="Some Other Band", album="Different Album")]
+    # qobuz answers (200, non-matching); tidal + deezer error out.
+    fake = _FakeStreamrip(search_results={"qobuz": sr_tracks}, search_errors={"tidal", "deezer"})
+
+    result = await lbf._process_album(db_session, _lidarr_album(album_id=4102), cfg, fake)
+    await db_session.commit()
+
+    assert result["decision"] == "no_match"
+    row = (
+        await db_session.execute(select(LidarrBackfillRequest).where(LidarrBackfillRequest.lidarr_album_id == 4102))
+    ).scalar_one()
+    assert row.status == "no_match"
+    assert row.attempt_count == 1
+
+
+@pytest.mark.asyncio
+async def test_compute_capacity_ignores_search_error_rows(db_session, cfg):
+    """search_error dispatched no download, so it must not consume the hourly cap
+    — otherwise a backend outage would rate-limit the engine to a standstill."""
+    now = lbf._now_ts()
+    for aid in range(7001, 7026):  # 25 search_error rows in the window
+        db_session.add(
+            LidarrBackfillRequest(
+                lidarr_album_id=aid, artist="A", album_title="T", source="missing",
+                status="search_error", attempt_count=0, created_at=now - 60, updated_at=now,
+            )
+        )
+    await db_session.commit()
+    assert await lbf._compute_capacity(db_session, cfg) == cfg.max_downloads_per_hour
+
+
+@pytest.mark.asyncio
+async def test_search_error_row_requeues_after_cooldown(db_session, cfg):
+    """A search_error row inside its cooldown is filtered out; once the cooldown
+    expires it's eligible again (it never hits max_attempts because attempts=0)."""
+    now = lbf._now_ts()
+    db_session.add(
+        LidarrBackfillRequest(
+            lidarr_album_id=7100, artist="A", album_title="T", source="missing",
+            status="search_error", attempt_count=0,
+            next_retry_at=now + 300, created_at=now, updated_at=now,
+        )
+    )
+    await db_session.commit()
+    # Inside cooldown → dropped.
+    assert await lbf._filter_by_cooldown_and_state(db_session, [_lidarr_album(album_id=7100)], cfg) == []
+    # Past cooldown → eligible.
+    row = (
+        await db_session.execute(select(LidarrBackfillRequest).where(LidarrBackfillRequest.lidarr_album_id == 7100))
+    ).scalar_one()
+    row.next_retry_at = now - 1
+    await db_session.commit()
+    out = await lbf._filter_by_cooldown_and_state(db_session, [_lidarr_album(album_id=7100)], cfg)
+    assert {c["id"] for c in out} == {7100}
+
+
+# ---------------------------------------------------------------------------
+# Issue #124 — classical-aware matching + single-track fallback
+# ---------------------------------------------------------------------------
+
+
+def test_classical_relax_artist_accepts_when_album_strong(cfg):
+    """Composer (Lidarr) vs performer (service): a strong album-title match
+    forgives a weak artist match when classical_relax_artist is on."""
+    cfg = cfg.model_copy(update={"match": cfg.match.model_copy(update={"classical_relax_artist": True})})
+    sr = {"artist": "Nicola Benedetti", "album": "Currents", "album_year": 2015, "album_track_count": 13}
+    score = lbf._score_match(_lidarr_album(artist="Пётр Ильич Чайковский", title="Currents"), sr, cfg)
+    assert score.accepted is True
+    assert any("classical_artist_relaxed" in r for r in score.reasons)
+
+
+def test_classical_relax_artist_still_rejects_when_album_weak(cfg):
+    """Relaxation only applies when the album title is a strong anchor (≥0.90).
+    A weak album match must still be rejected to avoid false accepts."""
+    cfg = cfg.model_copy(update={"match": cfg.match.model_copy(update={"classical_relax_artist": True})})
+    sr = {"artist": "Nicola Benedetti", "album": "Some Other Symphony", "album_year": 2015, "album_track_count": 13}
+    score = lbf._score_match(_lidarr_album(artist="Пётр Ильич Чайковский", title="Currents"), sr, cfg)
+    assert score.accepted is False
+
+
+def test_classical_relax_off_by_default_rejects(cfg):
+    """Default behaviour unchanged: weak artist similarity rejects."""
+    sr = {"artist": "Nicola Benedetti", "album": "Currents", "album_year": 2015, "album_track_count": 13}
+    score = lbf._score_match(_lidarr_album(artist="Пётр Ильич Чайковский", title="Currents"), sr, cfg)
+    assert score.accepted is False
+
+
+@pytest.mark.asyncio
+async def test_track_fallback_downloads_single_track_when_no_album(db_session, cfg):
+    """A 'missing album' that is really a single: no album-title match exists,
+    but a track titled like the album does → download that track (#124)."""
+    cfg = cfg.model_copy(update={"match": cfg.match.model_copy(update={"allow_track_fallback": True})})
+    # The track's *title* is the Lidarr 'album' title; the album it lives in is
+    # a compilation whose title won't match → no album-level acceptance.
+    single = _streamrip_track(
+        service="qobuz", album="Greatest Hits Compilation", track_number=7
+    )
+    single["name"] = "Currents"  # track title == Lidarr "album" title
+    single["_service_id"] = "qobuztrack123"
+    fake = _FakeStreamrip(search_results={"qobuz": [single]})
+
+    result = await lbf._process_album(db_session, _lidarr_album(album_id=4201), cfg, fake)
+    await db_session.commit()
+
+    assert result["decision"] == "downloading"
+    assert result["entity_type"] == "track"
+    assert fake.track_download_calls == [("qobuz", "qobuztrack123")]
+    assert fake.download_calls == []  # no whole-album download
+    row = (
+        await db_session.execute(select(LidarrBackfillRequest).where(LidarrBackfillRequest.lidarr_album_id == 4201))
+    ).scalar_one()
+    assert row.status == "downloading"
+    assert row.picked_service == "qobuz"
+
+
+@pytest.mark.asyncio
+async def test_track_fallback_disabled_by_default(db_session, cfg):
+    """Without allow_track_fallback the single-track tail stays no_match."""
+    single = _streamrip_track(service="qobuz", album="Greatest Hits Compilation")
+    single["name"] = "Currents"
+    single["_service_id"] = "qobuztrack123"
+    fake = _FakeStreamrip(search_results={"qobuz": [single]})
+
+    result = await lbf._process_album(db_session, _lidarr_album(album_id=4202), cfg, fake)
+    await db_session.commit()
+
+    assert result["decision"] == "no_match"
+    assert fake.track_download_calls == []
 
 
 # ---------------------------------------------------------------------------
@@ -1083,14 +1269,15 @@ async def test_find_streamrip_album_skips_unconfigured_services(db_session, cfg)
     sr_tracks = [_streamrip_track(track_number=1, service="qobuz")]
     fake = _FakeStreamrip(search_results={"qobuz": sr_tracks})
 
-    match = await lbf._find_streamrip_album(
+    lookup = await lbf._find_streamrip_album(
         fake,
         _lidarr_album(),
         cfg,
         available_services=["qobuz"],  # only qobuz is configured
     )
-    assert match is not None
-    assert match.service == "qobuz"
+    assert lookup.match is not None
+    assert lookup.match.service == "qobuz"
+    assert lookup.searched_ok is True
     services_searched = {svc for _, _, svc in fake.search_calls}
     assert services_searched == {"qobuz"}, services_searched  # tidal/deezer/soundcloud skipped silently
 

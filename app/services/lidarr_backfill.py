@@ -65,6 +65,22 @@ STATUS_FAILED = "failed"
 STATUS_SKIPPED = "skipped"
 STATUS_NO_MATCH = "no_match"
 STATUS_PERMANENTLY_SKIPPED = "permanently_skipped"
+# Infra / transient failure of the *search* step itself (backend unreachable,
+# timeout, 5xx, service not configured) — distinct from no_match, which means
+# "searched successfully, nothing acceptable found". A search_error never burns
+# the album's retry budget (attempt_count is not bumped) and gets a short
+# cooldown so it re-queues once the backend recovers (GitHub issue #122).
+STATUS_SEARCH_ERROR = "search_error"
+
+# How long a search_error row waits before the next tick may re-pick it. Short,
+# because the usual cause (backend restart / stale mount → force-recreate) clears
+# in minutes; we just don't want to hammer a down backend every single tick.
+_SEARCH_ERROR_COOLDOWN_S = 600  # 10 minutes
+
+# Album-title similarity above which we trust the match enough to relax the
+# artist axis for classical releases (composer-vs-performer mismatch) — see
+# MatchConfig.classical_relax_artist (GitHub issue #124).
+_CLASSICAL_STRONG_ALBUM_SIM = 0.90
 
 _TERMINAL_STATUSES = {STATUS_COMPLETE, STATUS_PERMANENTLY_SKIPPED}
 _IN_FLIGHT_STATUSES = {STATUS_QUEUED, STATUS_DOWNLOADING}
@@ -186,6 +202,23 @@ def _normalize_artist_name(name: str) -> str:
     if n.startswith("the "):
         n = n[4:]
     return n
+
+
+def _artist_reject(artist_sim: float, album_sim: float, cfg: LidarrBackfillConfigData) -> bool:
+    """Whether the artist axis should hard-reject this candidate.
+
+    Normally rejects when ``artist_sim`` is below ``min_artist_similarity``.
+    With ``classical_relax_artist`` enabled, a sufficiently strong album-title
+    match (``album_sim >= _CLASSICAL_STRONG_ALBUM_SIM``) overrides the artist
+    rejection — for classical releases Lidarr's album artist is the composer
+    while the service lists the performer, so the album title is the more
+    reliable anchor (GitHub issue #124).
+    """
+    if artist_sim >= cfg.match.min_artist_similarity:
+        return False
+    # Below threshold: reject unless classical relaxation forgives it — a strong
+    # album-title match overrides the artist axis (composer vs performer).
+    return not (cfg.match.classical_relax_artist and album_sim >= _CLASSICAL_STRONG_ALBUM_SIM)
 
 
 # ---------------------------------------------------------------------------
@@ -323,9 +356,12 @@ def _score_match(
     reasons: list[str] = []
     accepted = True
 
-    if artist_sim < cfg.match.min_artist_similarity:
+    if _artist_reject(artist_sim, album_sim, cfg):
         accepted = False
         reasons.append(f"artist_similarity={artist_sim:.2f}<{cfg.match.min_artist_similarity}")
+    elif artist_sim < cfg.match.min_artist_similarity:
+        # Passed only because classical relaxation forgave a weak artist match.
+        reasons.append(f"classical_artist_relaxed(artist={artist_sim:.2f},album={album_sim:.2f})")
     if album_sim < cfg.match.min_album_similarity:
         # Optional structural fallback: forgive a low album-title similarity
         # when artist + track count + year all align tightly.
@@ -380,6 +416,36 @@ class StreamripMatch:
     score: MatchScore
     track_count: int | None
     year: int | None
+    # "album" (default) downloads the whole album by album_id; "track" downloads
+    # a single track by track_id (the singles/remixes fallback — issue #124).
+    entity_type: str = "album"
+    track_id: str | None = None
+
+
+@dataclass
+class AlbumLookup:
+    """Outcome of a streamrip lookup for one Lidarr album.
+
+    Separates the three cases the caller must treat differently (issue #122):
+
+    * ``match`` set                         → download it.
+    * ``match`` None, ``searched_ok`` True  → genuine no_match (a real, successful
+                                              search returned nothing acceptable).
+    * ``match`` None, ``searched_ok`` False,
+      ``error`` set                         → infra/transient: every attempted
+                                              service failed to search. Record a
+                                              re-queueable search_error, NOT a
+                                              no_match.
+    * ``match`` None, ``searched_ok`` False,
+      ``error`` None                        → no service was eligible to search
+                                              (e.g. all gated out by the quality
+                                              floor) → treat as no_match (config
+                                              issue, normal backoff — won't churn).
+    """
+
+    match: StreamripMatch | None
+    searched_ok: bool
+    error: str | None = None
 
 
 def _group_tracks_by_album(track_results: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
@@ -408,6 +474,72 @@ def _group_tracks_by_album(track_results: list[dict[str, Any]]) -> dict[str, dic
     return by_album
 
 
+def _best_track_match(
+    results: list[dict[str, Any]],
+    lidarr_album: dict[str, Any],
+    cfg: LidarrBackfillConfigData,
+    service: str,
+) -> StreamripMatch | None:
+    """Find the best single-track hit whose title matches the Lidarr album title.
+
+    Used for the singles / remixes / promos tail (issue #124): Lidarr's
+    "missing album" is really an individual track, so the *track* title — not
+    an album title — is what matches. Reuses the album thresholds
+    (``min_album_similarity`` for the title axis, ``min_artist_similarity`` for
+    the artist axis, with classical relaxation) to stay consistent with the
+    album path.
+    """
+    target_artist = (lidarr_album.get("artist") or {}).get("artistName") or ""
+    target_title = lidarr_album.get("title") or ""
+
+    best: tuple[float, StreamripMatch] | None = None
+    for t in results:
+        track_id = t.get("_service_id") or t.get("id") or ""
+        if not track_id:
+            continue
+        artists = t.get("artists") or []
+        track_artist = ""
+        if artists and isinstance(artists[0], dict):
+            track_artist = artists[0].get("name") or ""
+        track_title = t.get("name") or ""
+
+        artist_sim = _fuzzy_ratio(target_artist, track_artist)
+        title_sim = _fuzzy_ratio(target_title, track_title)
+
+        if _artist_reject(artist_sim, title_sim, cfg):
+            continue
+        if title_sim < cfg.match.min_album_similarity:
+            continue
+
+        score_val = 0.5 * artist_sim + 0.5 * title_sim
+        reasons = ["track_fallback", "accepted"]
+        if artist_sim < cfg.match.min_artist_similarity:
+            reasons.insert(0, f"classical_artist_relaxed(artist={artist_sim:.2f},title={title_sim:.2f})")
+        match = StreamripMatch(
+            service=t.get("_service") or service,
+            album_id=str(t.get("_album_id") or ""),
+            album_artist=track_artist,
+            album_title=track_title,
+            score=MatchScore(
+                score=score_val,
+                accepted=True,
+                reasons=reasons,
+                artist_similarity=artist_sim,
+                album_similarity=title_sim,
+                year_diff=None,
+                track_count_diff=None,
+            ),
+            track_count=None,
+            year=t.get("_album_year") if isinstance(t.get("_album_year"), int) else None,
+            entity_type="track",
+            track_id=str(track_id),
+        )
+        if best is None or score_val > best[0]:
+            best = (score_val, match)
+
+    return best[1] if best else None
+
+
 async def _find_streamrip_album(
     streamrip_client: StreamripClient,
     lidarr_album: dict[str, Any],
@@ -415,8 +547,17 @@ async def _find_streamrip_album(
     *,
     available_services: list[str] | None = None,
     search_limit: int = 25,
-) -> StreamripMatch | None:
-    """Walk ``cfg.service_priority`` and return the first acceptable album hit.
+) -> AlbumLookup:
+    """Walk ``cfg.service_priority`` and return the best acceptable hit.
+
+    Returns an :class:`AlbumLookup` so the caller can tell a genuine catalog
+    gap (``searched_ok=True``, no match → record no_match) apart from an
+    infra/transient failure (``searched_ok=False`` → record a re-queueable
+    search_error). See GitHub issue #122.
+
+    Album hits take priority over per-track hits. When ``allow_track_fallback``
+    is enabled and no service yields an acceptable *album*, the best matching
+    single *track* across all searched services is returned instead (issue #124).
 
     ``available_services`` (when not None) restricts the walk to services
     that streamrip-api is actually configured for — avoids the noisy 503
@@ -427,9 +568,16 @@ async def _find_streamrip_album(
     target_artist = (lidarr_album.get("artist") or {}).get("artistName") or ""
     target_title = lidarr_album.get("title") or ""
     if not target_artist or not target_title:
-        return None
+        # Missing metadata is a permanent data gap, not an infra failure — treat
+        # as a (genuine) no_match so it follows the normal retry/retire path
+        # rather than re-queueing forever as a search_error.
+        return AlbumLookup(match=None, searched_ok=True, error="missing artist or title")
 
     query = f"{target_artist} {target_title}".strip()
+
+    searched_ok = False
+    last_error: str | None = None
+    track_candidates: list[tuple[float, StreamripMatch]] = []
 
     for service in cfg.service_priority:
         # Skip services not configured on streamrip-api (silent — keeps logs clean).
@@ -441,18 +589,20 @@ async def _find_streamrip_album(
         if declared is not None and not quality_meets(declared, cfg.min_quality_floor):
             continue
 
-        try:
-            results = await streamrip_client.search(query, limit=search_limit, service=service)
-        except Exception as exc:
-            logger.warning("backfill: streamrip search failed (%s): %s", service, exc)
+        outcome = await streamrip_client.search_detailed(query, limit=search_limit, service=service)
+        if not outcome.ok:
+            # Infra/transient (network, 5xx, 503 not-configured) — this service
+            # was never actually queried, so its empty result tells us nothing.
+            last_error = outcome.error or f"{service} search failed"
+            logger.warning("backfill: streamrip search not ok (%s): %s", service, last_error)
             continue
+
+        searched_ok = True
+        results = outcome.results
         if not results:
             continue
 
         grouped = _group_tracks_by_album(results)
-        if not grouped:
-            continue
-
         scored: list[tuple[float, StreamripMatch]] = []
         for entry in grouped.values():
             score = _score_match(lidarr_album, entry, cfg)
@@ -469,13 +619,24 @@ async def _find_streamrip_album(
             )
             scored.append((score.score, match))
 
-        if not scored:
-            continue
+        if scored:
+            scored.sort(key=lambda x: x[0], reverse=True)
+            return AlbumLookup(match=scored[0][1], searched_ok=True, error=None)
 
-        scored.sort(key=lambda x: x[0], reverse=True)
-        return scored[0][1]
+        # No album matched on this service — remember the best track candidate so
+        # we can fall back to it if no album matches on *any* service.
+        if cfg.match.allow_track_fallback:
+            tc = _best_track_match(results, lidarr_album, cfg, service)
+            if tc is not None:
+                track_candidates.append((tc.score.score, tc))
 
-    return None
+    if cfg.match.allow_track_fallback and track_candidates:
+        track_candidates.sort(key=lambda x: x[0], reverse=True)
+        return AlbumLookup(match=track_candidates[0][1], searched_ok=True, error=None)
+
+    # No acceptable hit. searched_ok distinguishes "real search, nothing found"
+    # (no_match) from "couldn't search any service" (search_error).
+    return AlbumLookup(match=None, searched_ok=searched_ok, error=None if searched_ok else last_error)
 
 
 # ---------------------------------------------------------------------------
@@ -549,7 +710,9 @@ async def _filter_by_cooldown_and_state(
             continue
         if existing.status == STATUS_COMPLETE:
             continue
-        # failed / no_match / skipped — honour cooldown / max_attempts.
+        # failed / no_match / search_error / skipped — honour cooldown /
+        # max_attempts. (search_error never bumps attempt_count, so it re-queues
+        # after its short cooldown until the backend recovers — issue #122.)
         if existing.attempt_count >= cfg.retry.max_attempts:
             continue
         if existing.next_retry_at is not None and existing.next_retry_at > now:
@@ -805,6 +968,9 @@ async def _persist_request(
         # success rate of immediate back-to-back retries is near zero anyway.
         if status in (STATUS_FAILED, STATUS_NO_MATCH) and bump_attempt:
             next_retry_at = _next_retry_timestamp(attempt_count, cfg)
+        elif status == STATUS_SEARCH_ERROR:
+            # Infra/transient: short cooldown, no attempt bump (see status const).
+            next_retry_at = _now_ts() + _SEARCH_ERROR_COOLDOWN_S
         row = LidarrBackfillRequest(
             lidarr_album_id=lidarr_album_id,
             mb_album_id=mb_album_id,
@@ -845,6 +1011,12 @@ async def _persist_request(
             existing.next_retry_at = _next_retry_timestamp(existing.attempt_count, cfg)
         elif status in _TERMINAL_STATUSES or status in (STATUS_DOWNLOADING, STATUS_QUEUED):
             existing.next_retry_at = None
+    if status == STATUS_SEARCH_ERROR:
+        # Infra/transient: short cooldown and NO attempt bump (caller passes
+        # bump_attempt=False), so an outage never burns the album's retry budget
+        # or retires it to permanently_skipped — it re-queues once the backend
+        # recovers (GitHub issue #122).
+        existing.next_retry_at = _now_ts() + _SEARCH_ERROR_COOLDOWN_S
     existing.last_error = error
     existing.updated_at = now
     return existing
@@ -881,34 +1053,68 @@ async def _process_album(
         "decision": "pending",
     }
 
-    match = await _find_streamrip_album(
+    lookup = await _find_streamrip_album(
         streamrip_client,
         lidarr_album,
         cfg,
         available_services=available_services,
     )
+    match = lookup.match
     if match is None:
-        await _persist_request(
-            session,
-            lidarr_album,
-            status=STATUS_NO_MATCH,
-            match=None,
-            streamrip_task_id=None,
-            error="no acceptable streamrip match",
-            cfg=cfg,
-            bump_attempt=True,
-        )
-        decision["decision"] = "no_match"
-        logger.info(
-            "lidarr_backfill: no_match album_id=%s artist=%r album=%r",
-            lidarr_album.get("id"),
-            artist,
-            title,
-        )
+        # search_error (re-queueable) ONLY when at least one service was actually
+        # attempted and every attempt failed to reach the backend (lookup.error
+        # set, searched_ok False). A genuine catalog gap (searched_ok) OR no
+        # eligible service to search at all (e.g. all gated out by the quality
+        # floor → error None) is a no_match that follows the normal backoff path,
+        # not an infinitely-retrying search_error.
+        if lookup.searched_ok or not lookup.error:
+            # A real, successful search returned nothing acceptable → no_match.
+            await _persist_request(
+                session,
+                lidarr_album,
+                status=STATUS_NO_MATCH,
+                match=None,
+                streamrip_task_id=None,
+                error="no acceptable streamrip match",
+                cfg=cfg,
+                bump_attempt=True,
+            )
+            decision["decision"] = "no_match"
+            logger.info(
+                "lidarr_backfill: no_match album_id=%s artist=%r album=%r",
+                lidarr_album.get("id"),
+                artist,
+                title,
+            )
+        else:
+            # No service could be searched (backend unreachable / 5xx / timeout).
+            # Record a re-queueable search_error with the real reason — never a
+            # no_match, which would bury an album that may well exist (issue #122).
+            err = lookup.error or "streamrip search unavailable"
+            await _persist_request(
+                session,
+                lidarr_album,
+                status=STATUS_SEARCH_ERROR,
+                match=None,
+                streamrip_task_id=None,
+                error=err[:1000],
+                cfg=cfg,
+                bump_attempt=False,
+            )
+            decision["decision"] = "search_error"
+            decision["error"] = err[:200]
+            logger.warning(
+                "lidarr_backfill: search_error album_id=%s artist=%r album=%r reason=%s",
+                lidarr_album.get("id"),
+                artist,
+                title,
+                err[:200],
+            )
         return decision
 
     decision["picked_service"] = match.service
     decision["picked_album_id"] = match.album_id
+    decision["entity_type"] = match.entity_type
     decision["match_score"] = round(match.score.score, 3)
 
     if cfg.dry_run:
@@ -933,9 +1139,14 @@ async def _process_album(
         return decision
 
     try:
-        result = await streamrip_client.download_album(match.service, match.album_id)
+        if match.entity_type == "track" and match.track_id:
+            # Singles / remixes tail (issue #124): the "missing album" is really
+            # an individual track — download it instead of a whole album.
+            result = await streamrip_client.download_track(match.service, match.track_id)
+        else:
+            result = await streamrip_client.download_album(match.service, match.album_id)
     except Exception as exc:
-        logger.warning("lidarr_backfill: download_album raised: %s", exc)
+        logger.warning("lidarr_backfill: download raised: %s", exc)
         await _persist_request(
             session,
             lidarr_album,
@@ -1307,22 +1518,25 @@ async def preview_matches(
             if deny and norm in deny:
                 continue
 
-            match = await _find_streamrip_album(
+            lookup = await _find_streamrip_album(
                 streamrip_client,
                 album,
                 cfg,
                 available_services=available_services,
             )
+            match = lookup.match
             if match is None:
+                # Distinguish a genuine no_match from an infra/transient search
+                # failure so calibration isn't misled by a flaky backend (#122).
                 out.append(
                     {
                         "lidarr_album_id": album.get("id"),
                         "artist": artist_name,
                         "album": album.get("title"),
-                        "decision": "no_match",
+                        "decision": "no_match" if lookup.searched_ok else "search_error",
                         "match_score": None,
                         "picked_service": None,
-                        "reasons": [],
+                        "reasons": [] if lookup.searched_ok else [lookup.error or "search unavailable"],
                     }
                 )
             else:
@@ -1335,6 +1549,7 @@ async def preview_matches(
                         "match_score": round(match.score.score, 3),
                         "picked_service": match.service,
                         "picked_album_id": match.album_id,
+                        "entity_type": match.entity_type,
                         "matched_artist": match.album_artist,
                         "matched_album": match.album_title,
                         "reasons": match.score.reasons,
@@ -1359,16 +1574,20 @@ async def reset_backfill_state(session: AsyncSession, scope: str) -> int:
     Scopes:
       * ``failed``      — only rows currently in the failed bucket
       * ``no_match``    — only rows currently in no_match
+      * ``search_error`` — only rows whose search step failed (infra/transient)
       * ``permanently_skipped`` — only rows the engine gave up on
       * ``all``         — wipe every backfill row (dev / "start over")
     """
     scope = (scope or "").strip().lower()
     if scope == "all":
         stmt = delete(LidarrBackfillRequest)
-    elif scope in {STATUS_FAILED, STATUS_NO_MATCH, STATUS_PERMANENTLY_SKIPPED}:
+    elif scope in {STATUS_FAILED, STATUS_NO_MATCH, STATUS_SEARCH_ERROR, STATUS_PERMANENTLY_SKIPPED}:
         stmt = delete(LidarrBackfillRequest).where(LidarrBackfillRequest.status == scope)
     else:
-        raise ValueError(f"unknown scope {scope!r}; expected one of failed / no_match / permanently_skipped / all")
+        raise ValueError(
+            f"unknown scope {scope!r}; expected one of "
+            "failed / no_match / search_error / permanently_skipped / all"
+        )
     result = await session.execute(stmt)
     return result.rowcount or 0
 
@@ -1676,6 +1895,7 @@ async def get_stats(
         "failed": by_status.get(STATUS_FAILED, 0),
         "failed_24h": int(failed_24h),
         "no_match": by_status.get(STATUS_NO_MATCH, 0),
+        "search_error": by_status.get(STATUS_SEARCH_ERROR, 0),
         "permanently_skipped": by_status.get(STATUS_PERMANENTLY_SKIPPED, 0),
         "skipped": by_status.get(STATUS_SKIPPED, 0),
         "in_window": int(in_window),

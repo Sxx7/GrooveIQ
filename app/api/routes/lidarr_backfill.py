@@ -279,7 +279,9 @@ async def delete_request(
 
 @router.post("/lidarr-backfill/requests/reset", summary="Bulk-delete by scope")
 async def reset_requests(
-    body: dict[str, Any] = Body(..., description='{"scope": "failed"|"no_match"|"permanently_skipped"|"all"}'),
+    body: dict[str, Any] = Body(
+        ..., description='{"scope": "failed"|"no_match"|"search_error"|"permanently_skipped"|"all"}'
+    ),
     session: AsyncSession = Depends(get_session),
     _key: str = Depends(require_api_key),
 ):

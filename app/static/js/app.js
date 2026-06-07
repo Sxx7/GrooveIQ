@@ -2086,6 +2086,8 @@ var LBF_FIELD_META = {
   'match.require_year_match': { desc: 'Reject if release year differs by more than 1', type: 'bool' },
   'match.require_track_count_match': { desc: 'Reject if track count differs from Lidarr\u2019s expectation', type: 'bool' },
   'match.prefer_album_over_tracks': { desc: 'Album-first: only fall back to per-track downloads when no album hit exists', type: 'bool' },
+  'match.allow_track_fallback': { desc: 'When no album matches on any service, download the best single track whose title matches the Lidarr album title. Recovers the singles/remixes tail (issue #124). Off by default.', type: 'bool' },
+  'match.classical_relax_artist': { desc: 'Classical-aware: when album-title similarity is very strong (\u22650.90), accept even if artist similarity is below threshold (Lidarr uses the composer, services list the performer). Off by default.', type: 'bool' },
   'match.allow_structural_fallback': { desc: 'Accept candidates with low album-title similarity if artist matches exactly + same track count + same year (\u00B11). Catches multi-disc / re-issue / localized titles.', type: 'bool' },
   'retry.cooldown_hours': { desc: 'Wait this many hours before retrying a failed album', type: 'float', min: 0, max: 720, step: 0.5 },
   'retry.max_attempts': { desc: 'Permanently skip after this many failed attempts', type: 'int', min: 1, max: 20, step: 1 },
@@ -2198,7 +2200,7 @@ function renderDiscoveryBackfill() {
   h += '<div class="card"><div class="card-header"><span>Queue</span>';
   h += '<div style="display:flex;gap:0.5rem;align-items:center">';
   h += '<select class="form-select" style="height:28px;font-size:0.75rem" onchange="lbfFilterStatus(this.value)">';
-  var statusOpts = ['', 'queued', 'downloading', 'complete', 'failed', 'no_match', 'permanently_skipped', 'skipped'];
+  var statusOpts = ['', 'queued', 'downloading', 'complete', 'failed', 'no_match', 'search_error', 'permanently_skipped', 'skipped'];
   for (var si = 0; si < statusOpts.length; si++) {
     h += '<option value="' + statusOpts[si] + '"' + (statusOpts[si] === lbfState.requests.status ? ' selected' : '') + '>' + (statusOpts[si] || 'all statuses') + '</option>';
   }
@@ -2222,11 +2224,12 @@ function renderDiscoveryBackfill() {
         failed: 'danger',
         permanently_skipped: 'warning',
         skipped: 'warning',
-        no_match: 'warning'
+        no_match: 'warning',
+        search_error: 'info'
       })[r.status] || '';
       var err = r.last_error ? ' title="' + esc(r.last_error) + '"' : '';
       var actions = '';
-      if (r.status === 'failed' || r.status === 'no_match') actions += '<button class="btn btn-secondary btn-xs" onclick="lbfRetry(' + r.id + ')">Retry</button> ';
+      if (r.status === 'failed' || r.status === 'no_match' || r.status === 'search_error') actions += '<button class="btn btn-secondary btn-xs" onclick="lbfRetry(' + r.id + ')">Retry</button> ';
       if (r.status !== 'permanently_skipped' && r.status !== 'complete') actions += '<button class="btn btn-secondary btn-xs" onclick="lbfSkip(' + r.id + ')">Skip</button> ';
       actions += '<button class="btn btn-secondary btn-xs" onclick="lbfDeleteRow(' + r.id + ')">Forget</button>';
       h += '<tr' + err + '><td><span class="badge badge-' + statusCls + '">' + esc(r.status) + '</span></td>';

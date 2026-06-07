@@ -79,6 +79,28 @@ class MatchConfig(BaseModel):
         True,
         description="Album-first: only fall back to per-track downloads when no album hit exists",
     )
+    allow_track_fallback: bool = Field(
+        False,
+        description=(
+            "When no acceptable album is found on any service, fall back to "
+            "downloading the single best-matching track whose title matches the "
+            "Lidarr album title. Recovers the singles / remixes / promos tail "
+            "where Lidarr's 'missing album' is really an individual track that "
+            "only exists inside an album on streaming services (GitHub issue "
+            "#124). Off by default — preview-match first."
+        ),
+    )
+    classical_relax_artist: bool = Field(
+        False,
+        description=(
+            "Classical-aware matching: when album-title similarity is very strong "
+            "(≥0.90), accept a candidate even if artist similarity is below "
+            "min_artist_similarity. Lidarr lists classical album artists as the "
+            "composer (often non-Latin script) while streaming services list the "
+            "performer / orchestra, so a strong album-title match is the more "
+            "reliable signal (GitHub issue #124). Off by default."
+        ),
+    )
     allow_structural_fallback: bool = Field(
         False,
         description=(
