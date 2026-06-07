@@ -1605,8 +1605,7 @@ async def reset_backfill_state(session: AsyncSession, scope: str) -> int:
         stmt = delete(LidarrBackfillRequest).where(LidarrBackfillRequest.status == scope)
     else:
         raise ValueError(
-            f"unknown scope {scope!r}; expected one of "
-            "failed / no_match / search_error / permanently_skipped / all"
+            f"unknown scope {scope!r}; expected one of failed / no_match / search_error / permanently_skipped / all"
         )
     result = await session.execute(stmt)
     return result.rowcount or 0

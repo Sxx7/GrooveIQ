@@ -246,17 +246,28 @@ async def test_compute_capacity_counts_only_dispatched_downloads(db_session, cfg
     for st in ("downloading", "downloading", "complete", "failed"):
         db_session.add(
             LidarrBackfillRequest(
-                lidarr_album_id=aid, artist="A", album_title="T", source="missing",
-                status=st, created_at=now - 60, updated_at=now,
+                lidarr_album_id=aid,
+                artist="A",
+                album_title="T",
+                source="missing",
+                status=st,
+                created_at=now - 60,
+                updated_at=now,
             )
         )
         aid += 1
     # A pile of search-only / terminal rows in the same window (these must NOT count).
-    for st in (["no_match"] * 20 + ["skipped", "permanently_skipped"]):
+    for st in ["no_match"] * 20 + ["skipped", "permanently_skipped"]:
         db_session.add(
             LidarrBackfillRequest(
-                lidarr_album_id=aid, artist="A", album_title="T", source="missing",
-                status=st, attempt_count=1, created_at=now - 60, updated_at=now,
+                lidarr_album_id=aid,
+                artist="A",
+                album_title="T",
+                source="missing",
+                status=st,
+                attempt_count=1,
+                created_at=now - 60,
+                updated_at=now,
             )
         )
         aid += 1
@@ -607,8 +618,14 @@ async def test_compute_capacity_ignores_search_error_rows(db_session, cfg):
     for aid in range(7001, 7026):  # 25 search_error rows in the window
         db_session.add(
             LidarrBackfillRequest(
-                lidarr_album_id=aid, artist="A", album_title="T", source="missing",
-                status="search_error", attempt_count=0, created_at=now - 60, updated_at=now,
+                lidarr_album_id=aid,
+                artist="A",
+                album_title="T",
+                source="missing",
+                status="search_error",
+                attempt_count=0,
+                created_at=now - 60,
+                updated_at=now,
             )
         )
     await db_session.commit()
@@ -622,9 +639,15 @@ async def test_search_error_row_requeues_after_cooldown(db_session, cfg):
     now = lbf._now_ts()
     db_session.add(
         LidarrBackfillRequest(
-            lidarr_album_id=7100, artist="A", album_title="T", source="missing",
-            status="search_error", attempt_count=0,
-            next_retry_at=now + 300, created_at=now, updated_at=now,
+            lidarr_album_id=7100,
+            artist="A",
+            album_title="T",
+            source="missing",
+            status="search_error",
+            attempt_count=0,
+            next_retry_at=now + 300,
+            created_at=now,
+            updated_at=now,
         )
     )
     await db_session.commit()
@@ -707,9 +730,7 @@ async def test_track_fallback_downloads_single_track_when_no_album(db_session, c
     cfg = cfg.model_copy(update={"match": cfg.match.model_copy(update={"allow_track_fallback": True})})
     # The track's *title* is the Lidarr 'album' title; the album it lives in is
     # a compilation whose title won't match → no album-level acceptance.
-    single = _streamrip_track(
-        service="qobuz", album="Greatest Hits Compilation", track_number=7
-    )
+    single = _streamrip_track(service="qobuz", album="Greatest Hits Compilation", track_number=7)
     single["name"] = "Currents"  # track title == Lidarr "album" title
     single["_service_id"] = "qobuztrack123"
     fake = _FakeStreamrip(search_results={"qobuz": [single]})
@@ -1607,10 +1628,7 @@ async def test_retire_exhausted_no_match_relabels_only_maxed_rows(db_session, cf
     await db_session.commit()
     assert n == 1
 
-    rows = {
-        r.lidarr_album_id: r
-        for r in (await db_session.execute(select(LidarrBackfillRequest))).scalars().all()
-    }
+    rows = {r.lidarr_album_id: r for r in (await db_session.execute(select(LidarrBackfillRequest))).scalars().all()}
     assert rows[7001].status == "permanently_skipped"
     assert rows[7001].next_retry_at is None
     assert rows[7002].status == "no_match"  # under the cap — untouched
