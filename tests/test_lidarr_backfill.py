@@ -1373,6 +1373,47 @@ async def test_retire_exhausted_no_match_relabels_only_maxed_rows(db_session, cf
 
 
 @pytest.mark.asyncio
+async def test_get_stats_throughput_7d_counts_completes_per_day(db_session, cfg, monkeypatch):
+    """The throughput histogram is computed server-side from completed rows'
+    updated_at — covering the full 7-day window, not a recency-capped slice of
+    the requests list (which is dominated by no_match churn in practice)."""
+    monkeypatch.setattr(lbf, "get_config", lambda: cfg)
+    now = int(time.time())
+    day = 86400
+
+    def add(album_id, updated_at, status="complete"):
+        db_session.add(
+            LidarrBackfillRequest(
+                lidarr_album_id=album_id,
+                artist="A",
+                album_title="T",
+                source="missing",
+                status=status,
+                created_at=updated_at,
+                updated_at=updated_at,
+            )
+        )
+
+    add(1, now)  # today
+    add(2, now)  # today (2 completes today)
+    add(3, now - 2 * day)  # 2 days ago
+    add(4, now - 8 * day)  # outside the 7-day window → excluded
+    add(5, now, status="no_match")  # not complete → excluded
+    await db_session.commit()
+
+    # Pass lidarr_totals so get_stats makes no upstream Lidarr HTTP call.
+    stats = await lbf.get_stats(db_session, lidarr_totals=lbf.LidarrTotals(None, None, False))
+
+    tp = stats["throughput_7d"]
+    assert len(tp) == 7  # always 7 buckets, zero-filled
+    assert all(len(b["date"]) == 10 for b in tp)  # YYYY-MM-DD
+    assert tp[-1]["count"] == 2  # today (newest bucket)
+    assert tp[4]["count"] == 1  # 2 days ago (today=idx6, so 2 days back=idx4)
+    # Only the 3 in-window completes count (8-day-old + no_match excluded).
+    assert sum(b["count"] for b in tp) == 3
+
+
+@pytest.mark.asyncio
 async def test_no_match_gets_cooldown_to_avoid_back_to_back_retries(db_session, cfg):
     """Regression: no_match rows previously had next_retry_at=None, so the
     cooldown filter let them through every scheduler tick. With default

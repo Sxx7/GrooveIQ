@@ -4569,38 +4569,49 @@
 
         function renderThroughput() {
             throughputHost.innerHTML = '';
-            const reqs = state.requests || [];
+            const st = state.stats || {};
 
-            // Build 7-day buckets keyed by YYYY-MM-DD (UTC). Counts only
-            // status === 'complete' rows whose updated_at falls in the window.
-            const now = Math.floor(Date.now() / 1000);
-            const dayMs = 86400;
-            const buckets = [];
-            for (let i = 6; i >= 0; i--) {
-                const dayStart = Math.floor(now / dayMs) * dayMs - i * dayMs;
-                buckets.push({ start: dayStart, end: dayStart + dayMs, value: 0 });
+            let rows;
+            if (Array.isArray(st.throughput_7d) && st.throughput_7d.length) {
+                // Preferred: server-computed daily completion counts. Covers the
+                // full 7-day window regardless of how the requests list is
+                // ordered or capped.
+                rows = st.throughput_7d.map(d => {
+                    const p = (d.date || '').split('-');
+                    const label = p.length === 3 ? (parseInt(p[1], 10) + '/' + parseInt(p[2], 10)) : (d.date || '');
+                    return { label: label, value: d.count || 0 };
+                });
+            } else {
+                // Fallback for an older backend without throughput_7d: derive
+                // from the requests sample. This under-counts once the list is
+                // dominated by non-complete churn (it only sees the most-recent
+                // ~200 rows by updated_at), which is why the server field exists.
+                const reqs = state.requests || [];
+                const now = Math.floor(Date.now() / 1000);
+                const dayS = 86400;
+                const buckets = [];
+                for (let i = 6; i >= 0; i--) {
+                    const dayStart = Math.floor(now / dayS) * dayS - i * dayS;
+                    buckets.push({ start: dayStart, end: dayStart + dayS, value: 0 });
+                }
+                const oldest = buckets[0].start;
+                reqs.forEach(r => {
+                    if (r.status !== 'complete') return;
+                    const ts = r.updated_at || r.created_at;
+                    if (!ts || ts < oldest) return;
+                    const idx = buckets.findIndex(b => ts >= b.start && ts < b.end);
+                    if (idx >= 0) buckets[idx].value++;
+                });
+                rows = buckets.map(b => {
+                    const d = new Date(b.start * 1000);
+                    return { label: (d.getMonth() + 1) + '/' + d.getDate(), value: b.value };
+                });
             }
-            const oldest = buckets[0].start;
-            reqs.forEach(r => {
-                if (r.status !== 'complete') return;
-                const ts = r.updated_at || r.created_at;
-                if (!ts || ts < oldest) return;
-                const idx = buckets.findIndex(b => ts >= b.start && ts < b.end);
-                if (idx >= 0) buckets[idx].value++;
-            });
-
-            const rows = buckets.map(b => {
-                const d = new Date(b.start * 1000);
-                return {
-                    label: (d.getMonth() + 1) + '/' + d.getDate(),
-                    value: b.value,
-                };
-            });
 
             const noData = rows.every(r => r.value === 0);
             const sub = noData
                 ? 'no completed downloads in the last 7 days'
-                : 'derived from /v1/lidarr-backfill/requests · status = complete';
+                : 'completed downloads per day (UTC)';
 
             throughputHost.appendChild(GIQ.components.panel({
                 title: 'Throughput · last 7 days',

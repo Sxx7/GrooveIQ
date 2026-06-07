@@ -1607,6 +1607,36 @@ async def get_stats(
         eta_hours = round(work_remaining / cfg.max_downloads_per_hour, 1)
         eta_days = round(eta_hours / 24.0, 2)
 
+    # 7-day daily completion histogram (UTC midnight buckets, oldest→newest).
+    # Server-side source of truth for the dashboard throughput chart. Counting
+    # completed rows here avoids the frontend's old approach of bucketing a
+    # recency-capped 200-row slice of the requests list — once the engine starts
+    # churning no_match retries (which bump updated_at) that slice is dominated
+    # by non-complete rows and spans far fewer than 7 days. A completed row's
+    # updated_at is its completion time (terminal rows aren't touched again), so
+    # grouping completes by updated_at day is the correct throughput measure.
+    _day = 86400
+    today_start = (_now_ts() // _day) * _day
+    bucket_starts = [today_start - i * _day for i in range(6, -1, -1)]
+    bucket_counts = [0] * len(bucket_starts)
+    index_by_start = {start: i for i, start in enumerate(bucket_starts)}
+    completed_ts = await session.execute(
+        select(LidarrBackfillRequest.updated_at).where(
+            LidarrBackfillRequest.status == STATUS_COMPLETE,
+            LidarrBackfillRequest.updated_at >= bucket_starts[0],
+        )
+    )
+    for (ts,) in completed_ts.all():
+        if ts is None:
+            continue
+        idx = index_by_start.get((int(ts) // _day) * _day)
+        if idx is not None:
+            bucket_counts[idx] += 1
+    throughput_7d = [
+        {"date": datetime.fromtimestamp(start, UTC).strftime("%Y-%m-%d"), "count": bucket_counts[i]}
+        for i, start in enumerate(bucket_starts)
+    ]
+
     return {
         "enabled": cfg.enabled,
         "tick_in_progress": is_tick_in_progress(),
@@ -1628,6 +1658,7 @@ async def get_stats(
         "capacity_remaining": capacity_remaining,
         "eta_hours": eta_hours,
         "eta_days": eta_days,
+        "throughput_7d": throughput_7d,
     }
 
 
