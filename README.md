@@ -326,7 +326,9 @@ library the residual `no_match` tail is usually *structural*, not a bug:
 - **Classical** — Lidarr's album artist is the *composer* (often non-Latin script)
   while services list the *performer / orchestra*, so the artist-similarity check
   rejects an otherwise-correct album. Enable `match.classical_relax_artist` to
-  accept when the album title matches strongly.
+  accept when the album title matches strongly **and** the year or track count
+  corroborates (the corroboration guards against unrelated albums that merely
+  share a common title).
 
 Both options are off by default — use the **Preview Match** modal to calibrate
 before enabling, especially for libraries with significant non-Latin content.

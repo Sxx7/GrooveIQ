@@ -671,6 +671,35 @@ def test_classical_relax_off_by_default_rejects(cfg):
     assert score.accepted is False
 
 
+def test_classical_relax_rejects_common_title_collision(cfg):
+    """Hardening: a common album title shared by unrelated artists must NOT pass
+    on the title match alone. Year AND track count both diverge, so the wrong
+    artist is rejected (regression for Future 'Game Time' -> Don Toliver)."""
+    cfg = cfg.model_copy(update={"match": cfg.match.model_copy(update={"classical_relax_artist": True})})
+    sr = {"artist": "Don Toliver", "album": "Game Time", "album_year": 2020, "album_track_count": 9}
+    score = lbf._score_match(
+        _lidarr_album(artist="Future", title="Game Time", track_count=16, release_date="2024-05-01"),
+        sr,
+        cfg,
+    )
+    assert score.accepted is False
+    assert any("artist_similarity" in r for r in score.reasons)
+
+
+def test_classical_relax_accepts_with_year_corroboration_only(cfg):
+    """Corroboration is OR: a strong title + matching year is enough even when the
+    performer release has a different track count (common for classical reissues)."""
+    cfg = cfg.model_copy(update={"match": cfg.match.model_copy(update={"classical_relax_artist": True})})
+    sr = {"artist": "Kerson Leong", "album": "Currents", "album_year": 2015, "album_track_count": 99}
+    score = lbf._score_match(
+        _lidarr_album(artist="Gabriel Fauré", title="Currents", track_count=13, release_date="2015-03-01"),
+        sr,
+        cfg,
+    )
+    assert score.accepted is True
+    assert any("classical_artist_relaxed" in r for r in score.reasons)
+
+
 @pytest.mark.asyncio
 async def test_track_fallback_downloads_single_track_when_no_album(db_session, cfg):
     """A 'missing album' that is really a single: no album-title match exists,

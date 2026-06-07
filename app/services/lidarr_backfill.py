@@ -204,21 +204,38 @@ def _normalize_artist_name(name: str) -> str:
     return n
 
 
-def _artist_reject(artist_sim: float, album_sim: float, cfg: LidarrBackfillConfigData) -> bool:
+def _artist_reject(
+    artist_sim: float,
+    album_sim: float,
+    cfg: LidarrBackfillConfigData,
+    *,
+    year_diff: int | None = None,
+    track_count_diff: int | None = None,
+) -> bool:
     """Whether the artist axis should hard-reject this candidate.
 
     Normally rejects when ``artist_sim`` is below ``min_artist_similarity``.
     With ``classical_relax_artist`` enabled, a sufficiently strong album-title
-    match (``album_sim >= _CLASSICAL_STRONG_ALBUM_SIM``) overrides the artist
+    match (``album_sim >= _CLASSICAL_STRONG_ALBUM_SIM``) can override the artist
     rejection — for classical releases Lidarr's album artist is the composer
     while the service lists the performer, so the album title is the more
     reliable anchor (GitHub issue #124).
+
+    The relaxation additionally requires **structural corroboration** — the
+    release year (±1) OR the track count must align. Without it, a common album
+    title shared across unrelated artists (e.g. "Game Time" by Future vs Don
+    Toliver) would slip a wrong artist through on the title match alone; two
+    distinct albums almost always differ in *both* year and track count, so
+    requiring one to agree rejects the collision while still accepting a genuine
+    composer→performer release of the same recording.
     """
     if artist_sim >= cfg.match.min_artist_similarity:
         return False
-    # Below threshold: reject unless classical relaxation forgives it — a strong
-    # album-title match overrides the artist axis (composer vs performer).
-    return not (cfg.match.classical_relax_artist and album_sim >= _CLASSICAL_STRONG_ALBUM_SIM)
+    if not (cfg.match.classical_relax_artist and album_sim >= _CLASSICAL_STRONG_ALBUM_SIM):
+        return True
+    year_ok = year_diff is not None and year_diff <= 1
+    track_count_ok = track_count_diff is not None and track_count_diff == 0
+    return not (year_ok or track_count_ok)
 
 
 # ---------------------------------------------------------------------------
@@ -356,11 +373,12 @@ def _score_match(
     reasons: list[str] = []
     accepted = True
 
-    if _artist_reject(artist_sim, album_sim, cfg):
+    if _artist_reject(artist_sim, album_sim, cfg, year_diff=year_diff, track_count_diff=track_count_diff):
         accepted = False
         reasons.append(f"artist_similarity={artist_sim:.2f}<{cfg.match.min_artist_similarity}")
     elif artist_sim < cfg.match.min_artist_similarity:
-        # Passed only because classical relaxation forgave a weak artist match.
+        # Passed only because classical relaxation forgave a weak artist match
+        # (with year/track-count corroboration — see _artist_reject).
         reasons.append(f"classical_artist_relaxed(artist={artist_sim:.2f},album={album_sim:.2f})")
     if album_sim < cfg.match.min_album_similarity:
         # Optional structural fallback: forgive a low album-title similarity
@@ -506,15 +524,17 @@ def _best_track_match(
         artist_sim = _fuzzy_ratio(target_artist, track_artist)
         title_sim = _fuzzy_ratio(target_title, track_title)
 
-        if _artist_reject(artist_sim, title_sim, cfg):
+        # Track fallback requires a real artist match — no classical relaxation
+        # here. A single track has a short, collision-prone title, so relaxing
+        # the artist on a title-only match would be far too loose; the classical
+        # composer/performer case is an album-level concern (see _score_match).
+        if artist_sim < cfg.match.min_artist_similarity:
             continue
         if title_sim < cfg.match.min_album_similarity:
             continue
 
         score_val = 0.5 * artist_sim + 0.5 * title_sim
         reasons = ["track_fallback", "accepted"]
-        if artist_sim < cfg.match.min_artist_similarity:
-            reasons.insert(0, f"classical_artist_relaxed(artist={artist_sim:.2f},title={title_sim:.2f})")
         match = StreamripMatch(
             service=t.get("_service") or service,
             album_id=str(t.get("_album_id") or ""),

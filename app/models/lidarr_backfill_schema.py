@@ -94,11 +94,13 @@ class MatchConfig(BaseModel):
         False,
         description=(
             "Classical-aware matching: when album-title similarity is very strong "
-            "(≥0.90), accept a candidate even if artist similarity is below "
-            "min_artist_similarity. Lidarr lists classical album artists as the "
-            "composer (often non-Latin script) while streaming services list the "
-            "performer / orchestra, so a strong album-title match is the more "
-            "reliable signal (GitHub issue #124). Off by default."
+            "(≥0.90) AND the release year (±1) or track count corroborates, accept "
+            "a candidate even if artist similarity is below min_artist_similarity. "
+            "Lidarr lists classical album artists as the composer while streaming "
+            "services list the performer / orchestra, so a strong album-title match "
+            "is the more reliable signal (GitHub issue #124). The year/track-count "
+            "corroboration prevents a common album title shared across unrelated "
+            "artists from slipping a wrong artist through. Off by default."
         ),
     )
     allow_structural_fallback: bool = Field(
