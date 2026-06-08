@@ -45,7 +45,7 @@ onnxruntime>=1.26.0
 
 # HuggingFace tokenizers — required by the CLAP text encoder (clap_text.py).
 # CLAP playlists (POST /v1/playlists strategy=text) silently 503 without it.
-tokenizers>=0.15
+tokenizers>=0.23.1
 
 # HuggingFace transformers — used in numpy mode for the CLAP audio feature
 # extractor (mel-spectrogram + fusion truncation). The Xenova ONNX export
