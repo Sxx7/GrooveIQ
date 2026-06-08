@@ -61,7 +61,7 @@ tokenizers>=0.15
 # so the numpy-only path is taken. A ~5-line stub of the ``torch`` module is
 # installed before the import (when torch isn't already available) —
 # saves ~700 MB vs. installing real torch.
-transformers>=5.0,<6
+transformers>=5.10.2,<6
 
 # Candidate generation (Phase 4)
 faiss-cpu>=1.14.2
