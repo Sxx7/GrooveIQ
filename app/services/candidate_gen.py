@@ -417,8 +417,15 @@ async def apply_novelty_filter(
 
     kept = [c for c in merged if c["track_id"] not in to_exclude]
 
-    # Floor: never starve the pool below a minimum — relax the filter if too few remain.
+    # Floor: never starve the pool below a minimum. Rather than ABANDON the filter
+    # entirely (the old `return merged`, which silently no-ops the discovery posture
+    # for exactly the heavy users whose pool is mostly proven), CAP the exclusion:
+    # re-admit the *least* confidently-proven excluded tracks (highest sigma → closest
+    # to the novelty boundary) until the pool reaches the floor. The caller re-sorts
+    # by score, so insertion order here doesn't matter — only which tracks survive.
     floor = max(10, len(merged) // 5)
     if len(kept) < floor:
-        return merged
+        excluded = [c for c in merged if c["track_id"] in to_exclude]
+        excluded.sort(key=lambda c: conf[c["track_id"]].sigma, reverse=True)
+        kept += excluded[: floor - len(kept)]
     return kept

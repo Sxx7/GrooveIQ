@@ -29,6 +29,12 @@ from app.services.algorithm_config import get_config
 
 logger = logging.getLogger(__name__)
 
+# T3 (discovery-dial): play count at which a track counts as fully "familiar" for
+# the continuous novelty penalty. ~8 plays ≈ a track the user clearly knows and
+# returns to; below that, familiarity ramps linearly so lightly-heard tracks
+# aren't over-penalised.
+_NOVELTY_FULL_PLAYS = 8.0
+
 
 def _extract_artist(file_path: str | None) -> str:
     """
@@ -139,6 +145,33 @@ async def rerank(
                         "score_after": round(score_map[tid], 4),
                         "sigma": round(cs.sigma, 4),
                         "is_proven": cs.is_proven,
+                    }
+                )
+
+    # --- Discovery-dial novelty penalty (continuous familiarity demotion, gated) ---
+    # Distinct from lambda_proven (binary, thresholded on the confidence mu/sigma):
+    # this demotes tracks *smoothly* by how much THIS user has actually played them,
+    # so the familiar cluster sinks proportionally and novel tracks can surface past
+    # it. Uses raw play history (not the confidence model, which can misclassify a
+    # heavy favourite as un-proven). Off (=0) for familiar/balanced — default path
+    # is left exactly as the ranker produced it.
+    if preset.novelty_weight > 0.0:
+        for tid in track_ids:
+            inter = inter_map.get(tid)
+            plays = inter.play_count if inter else 0
+            if plays <= 0:
+                continue
+            familiarity = min(1.0, plays / _NOVELTY_FULL_PLAYS)
+            old = score_map[tid]
+            score_map[tid] = old - preset.novelty_weight * familiarity
+            if actions is not None:
+                actions.append(
+                    {
+                        "track_id": tid,
+                        "action": "novelty_penalty",
+                        "score_before": round(old, 4),
+                        "score_after": round(score_map[tid], 4),
+                        "familiarity": round(familiarity, 4),
                     }
                 )
 

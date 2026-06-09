@@ -215,6 +215,25 @@ async def generate_recommendation_payload(
         context_type=context_type,
         location_label=location_label,
     )
+
+    # --- Step 1b: Discovery-dial per-source reweighting on the FINAL ranker score ---
+    # candidate_gen applies source_weight_mult to the *recall* score, but the LightGBM
+    # ranker then re-scores and discards that ordering — so the dial's "boost lastfm /
+    # damp cf" intent never reaches the output. Re-apply the active preset's per-source
+    # multipliers to the ranker score here so source posture actually moves the final
+    # order. Empty dict (balanced / un-dialed) → no-op, so the default path is unchanged.
+    from app.services.algorithm_config import get_config
+
+    with apply_overrides(dial.overrides):
+        _src_mult = dict(get_config().modes.active.source_weight_mult)
+    if _src_mult:
+        _src_of = {c["track_id"]: c["source"] for c in candidates}
+        scored = sorted(
+            ((tid, s * _src_mult.get(_src_of.get(tid, ""), 1.0)) for tid, s in scored),
+            key=lambda x: x[1],
+            reverse=True,
+        )
+
     raw_score_by_tid = {tid: float(score) for tid, score in scored}
     pre_rerank_pos_by_tid = {tid: i for i, (tid, _) in enumerate(scored)}
     source_map = {c["track_id"]: c["source"] for c in candidates}

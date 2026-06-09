@@ -58,6 +58,7 @@ _NUMERIC_FIELDS: tuple[str, ...] = (
     "exploration_fraction",
     "freshness_boost",
     "novelty_strength",
+    "novelty_weight",
     "repeat_window_hours",
     "proven_mu_min",
     "proven_sigma_max",

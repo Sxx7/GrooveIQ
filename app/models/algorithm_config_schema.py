@@ -211,6 +211,17 @@ class PresetConfig(BaseModel):
     novelty_strength: float = Field(
         0.0, ge=0, le=1, description="How aggressively the novelty filter excludes the proven set (0=off, 1=full)"
     )
+    novelty_weight: float = Field(
+        0.0,
+        ge=0,
+        le=5,
+        description=(
+            "Continuous familiarity demotion applied at rerank: subtract "
+            "novelty_weight * play-based familiarity from the final score. A smooth "
+            "complement to the binary lambda_proven — sinks the whole familiar cluster "
+            "proportionally so novel tracks can surface. 0 = off (familiar/balanced)."
+        ),
+    )
     repeat_window_hours: float = Field(
         2.0, ge=0, le=168, description="Hours to suppress recently played tracks (0 = favourites may recur)"
     )
@@ -271,19 +282,21 @@ class ModesConfig(BaseModel):
     )
     discovery: PresetConfig = Field(
         default_factory=lambda: PresetConfig(
-            kappa=0.3,
-            lambda_proven=0.3,
+            kappa=0.35,
+            lambda_proven=0.5,
             exploration_fraction=0.30,
             freshness_boost=0.20,
             novelty_filter=True,
-            novelty_strength=0.5,
+            novelty_strength=0.75,
+            novelty_weight=0.25,
             repeat_window_hours=2.0,
             proven_mu_min=0.6,
             proven_sigma_max=0.3,
             source_weight_mult={
+                "cf": 0.75,
                 "content": 1.3,
-                "lastfm_similar": 1.5,
-                "sasrec": 1.4,
+                "lastfm_similar": 1.6,
+                "sasrec": 1.5,
                 "session_skipgram": 1.2,
                 "content_profile": 0.8,
                 "popular": 0.7,
@@ -300,6 +313,7 @@ class ModesConfig(BaseModel):
             freshness_boost=0.30,
             novelty_filter=True,
             novelty_strength=1.0,
+            novelty_weight=0.5,
             repeat_window_hours=2.0,
             proven_mu_min=0.6,
             proven_sigma_max=0.3,
