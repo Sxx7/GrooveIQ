@@ -23,7 +23,7 @@ pydantic-settings==2.14.*
 apscheduler==3.11.*
 
 # Security
-cryptography>=47.0.0
+cryptography>=48.0.0
 redis>=8.0.0                      # optional: cross-process rate limiting (set REDIS_URL)
 
 # Logging
