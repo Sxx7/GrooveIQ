@@ -44,6 +44,12 @@ logger = logging.getLogger(__name__)
 
 _BATCH_OVERFETCH = 5  # multiplier for candidate overfetch
 _ARTIST_MAX_CONSECUTIVE = 2  # max tracks from same artist in a row
+# Energy/tempo continuity for the flow guard (best-effort, gentle): only reorder
+# within a small score window, and only to soften jumps bigger than the threshold.
+# Tracks with null energy/bpm are neutral (never blocked, never forced).
+_CONTINUITY_SCORE_EPS = 0.05  # near-tie score window for the continuity tiebreak
+_CONTINUITY_JUMP_THRESHOLD = 0.25  # only smooth normalised jumps larger than this
+_CONTINUITY_BPM_SCALE = 100.0  # normalise a bpm delta onto the energy [0,1] scale
 
 # Proven-set thresholds for the radio_proven recall source (single-user regime):
 # a track is "proven" for this user if liked, played enough, or high-satisfaction.
@@ -901,6 +907,29 @@ def _apply_session_feedback_boost(
                 c["score"] *= max(0.3, 1.0 - (sim - 0.7) * 1.5)  # up to -45% penalty
 
 
+def _continuity_dist(
+    prev_energy: float | None,
+    prev_bpm: float | None,
+    cand_energy: float | None,
+    cand_bpm: float | None,
+) -> float | None:
+    """Normalised energy/tempo gap between two tracks, or None if not comparable.
+
+    Averages whichever of energy (already 0-1) and bpm (scaled onto 0-1) are
+    present on *both* tracks. Returns None when neither metric is comparable, so
+    null-feature tracks are simply skipped by the continuity tiebreak rather than
+    blocked or forced.
+    """
+    parts: list[float] = []
+    if prev_energy is not None and cand_energy is not None:
+        parts.append(abs(prev_energy - cand_energy))
+    if prev_bpm and cand_bpm:
+        parts.append(abs(prev_bpm - cand_bpm) / _CONTINUITY_BPM_SCALE)
+    if not parts:
+        return None
+    return sum(parts) / len(parts)
+
+
 async def _enforce_no_consecutive_artist(
     ranked: list[tuple[str, float]],
     db: AsyncSession,
@@ -908,32 +937,75 @@ async def _enforce_no_consecutive_artist(
 ) -> list[tuple[str, float]]:
     """
     Reorder to avoid more than _ARTIST_MAX_CONSECUTIVE tracks from the same artist
-    in a row, preserving score order as much as possible (a "spread" reorder).
+    in a row, then gently soften large energy/tempo jumps between consecutive
+    tracks — both while preserving score order as much as possible.
 
     Best-effort: tracks whose artist is unknown are treated as distinct so they're
     never deferred. Score order is otherwise honoured — a track is only pushed back
-    when placing it would exceed the consecutive-artist cap.
+    when placing it would exceed the consecutive-artist cap, or (within a small
+    score window) when a near-tie candidate makes for a smoother transition. Tracks
+    with null energy/bpm are neutral: never blocked, never forced.
     """
     if len(ranked) <= _ARTIST_MAX_CONSECUTIVE:
         return ranked
 
     ids = [tid for tid, _ in ranked]
-    rows = await db.execute(select(TrackFeatures.track_id, TrackFeatures.artist).where(TrackFeatures.track_id.in_(ids)))
-    artist_of = {r.track_id: (r.artist or "") for r in rows.all()}
+    rows = await db.execute(
+        select(TrackFeatures.track_id, TrackFeatures.artist, TrackFeatures.energy, TrackFeatures.bpm).where(
+            TrackFeatures.track_id.in_(ids)
+        )
+    )
+    artist_of: dict[str, str] = {}
+    energy_of: dict[str, float | None] = {}
+    bpm_of: dict[str, float | None] = {}
+    for r in rows.all():
+        artist_of[r.track_id] = r.artist or ""
+        energy_of[r.track_id] = r.energy
+        bpm_of[r.track_id] = r.bpm
 
     remaining = list(ranked)
     result: list[tuple[str, float]] = []
     recent_artists: list[str] = []  # artists of the tracks already placed
+    prev_energy: float | None = None
+    prev_bpm: float | None = None
     while remaining:
-        pick_idx = 0  # fallback: everyone left is the blocked artist -> take the top
-        for i, (tid, _) in enumerate(remaining):
-            artist = artist_of.get(tid, "")
-            # Block only if the same artist already fills the last N placed slots.
-            if artist and recent_artists[-_ARTIST_MAX_CONSECUTIVE:].count(artist) >= _ARTIST_MAX_CONSECUTIVE:
-                continue
-            pick_idx = i
-            break
+        # Artist-eligible indices (not capping the same-artist run); fall back to
+        # the top of the list when every remaining track is the blocked artist.
+        eligible = [
+            i
+            for i, (tid, _) in enumerate(remaining)
+            if not (
+                artist_of.get(tid, "")
+                and recent_artists[-_ARTIST_MAX_CONSECUTIVE:].count(artist_of.get(tid, "")) >= _ARTIST_MAX_CONSECUTIVE
+            )
+        ]
+        if not eligible:
+            eligible = [0]
+        pick_idx = eligible[0]  # default: the highest-scoring eligible track
+
+        # Gentle energy/tempo continuity: if the top eligible pick would jump more
+        # than the threshold from the previous track, prefer a near-tie eligible
+        # candidate (within _CONTINUITY_SCORE_EPS of the best score) that is closer.
+        # Never overrides the artist/score constraints hard; null-feature tracks
+        # (dist is None) are skipped so they're never blocked.
+        top_dist = _continuity_dist(
+            prev_energy, prev_bpm, energy_of.get(remaining[pick_idx][0]), bpm_of.get(remaining[pick_idx][0])
+        )
+        if top_dist is not None and top_dist > _CONTINUITY_JUMP_THRESHOLD:
+            best_score = remaining[pick_idx][1]
+            best_idx, best_dist = pick_idx, top_dist
+            for i in eligible:
+                cand_tid, cand_score = remaining[i]
+                if cand_score < best_score - _CONTINUITY_SCORE_EPS:
+                    break  # remaining is score-sorted -> beyond the near-tie window
+                d = _continuity_dist(prev_energy, prev_bpm, energy_of.get(cand_tid), bpm_of.get(cand_tid))
+                if d is not None and d < best_dist:
+                    best_idx, best_dist = i, d
+            pick_idx = best_idx
+
         tid, score = remaining.pop(pick_idx)
         result.append((tid, score))
         recent_artists.append(artist_of.get(tid, ""))
+        prev_energy = energy_of.get(tid)
+        prev_bpm = bpm_of.get(tid)
     return result

@@ -124,3 +124,42 @@ async def test_no_consecutive_artist_spreads_runs():
     amap = {**{f"a{i}": "A" for i in range(4)}, **{f"b{i}": "B" for i in range(2)}}
     seq = [amap[tid] for tid, _ in out]
     assert not any(seq[i] == seq[i + 1] == seq[i + 2] for i in range(len(seq) - 2))
+
+
+async def test_energy_continuity_smooths_near_tie_jumps():
+    """Near-tie tracks are reordered to reduce large energy jumps; nothing dropped.
+
+    Distinct artists isolate the energy effect from the artist guard. In raw score
+    order the energies alternate high/low (max jumps); the continuity tiebreak
+    groups same-energy tracks so consecutive transitions are gentler.
+    """
+    energies = {"hi0": 0.9, "lo0": 0.1, "hi1": 0.9, "lo1": 0.1, "hi2": 0.9, "lo2": 0.1}
+    async with _Session() as session:
+        for i, (tid, e) in enumerate(energies.items()):
+            session.add(
+                TrackFeatures(
+                    track_id=tid,
+                    artist=f"art{i}",  # distinct artists -> artist guard never reorders
+                    title=tid,
+                    file_path=f"/m/{tid}.mp3",
+                    energy=e,
+                    analyzed_at=_now(),
+                    analysis_version="1",
+                )
+            )
+        await session.commit()
+
+    # Scores in a tight band so each pair is a near-tie the continuity pass may swap.
+    ranked = [("hi0", 0.90), ("lo0", 0.89), ("hi1", 0.88), ("lo1", 0.87), ("hi2", 0.86), ("lo2", 0.85)]
+    async with _Session() as session:
+        out = await _enforce_no_consecutive_artist(ranked, session, None)
+
+    assert {tid for tid, _ in out} == {tid for tid, _ in ranked}  # nothing dropped
+
+    def avg_delta(order: list[str]) -> float:
+        es = [energies[tid] for tid in order]
+        return sum(abs(es[i] - es[i + 1]) for i in range(len(es) - 1)) / (len(es) - 1)
+
+    raw = avg_delta([tid for tid, _ in ranked])
+    smoothed = avg_delta([tid for tid, _ in out])
+    assert smoothed < raw  # consecutive energy transitions are gentler than score order
