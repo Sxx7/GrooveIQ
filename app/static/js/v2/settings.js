@@ -129,6 +129,11 @@
         { key: 'repeat_window_hours',  label: 'Repeat window (h)', min: 0, max: 168, step: 0.5,  desc: 'Hours to suppress recently played tracks (0 = favourites may recur).' },
         { key: 'proven_mu_min',        label: 'Proven μ min',      min: 0, max: 1,   step: 0.01, desc: 'Min predicted engagement (μ) for a track to count as proven.' },
         { key: 'proven_sigma_max',     label: 'Proven σ max',      min: 0, max: 1,   step: 0.01, desc: 'Max uncertainty (σ) for a track to count as proven.' },
+        /* Radio-regime levers (single-user / no-crowd) — tune the radio path + shared reranker. */
+        { key: 'proven_recall_mult',   label: 'Proven recall ×',   min: 0, max: 5,   step: 0.05, desc: 'Radio: weight of the proven ∩ seed-neighbourhood recall source (higher = more of your known tracks).' },
+        { key: 'ranker_blend',         label: 'Retention blend',   min: 0, max: 1,   step: 0.05, desc: 'Radio: ranker (completion) vs retrieval weight; higher = more retention-driven.' },
+        { key: 'familiarity_weight',   label: 'Familiarity boost', min: 0, max: 5,   step: 0.05, desc: "Up-ranks tracks you've played (the familiar-end mirror of novelty)." },
+        { key: 'cooldown_alpha',       label: 'Repeat cooldown',   min: 0, max: 1,   step: 0.05, desc: "Radio: demote recently/often-served tracks so favourites don't repeat." },
     ];
     /* Candidate sources eligible for a per-preset weight multiplier. */
     const MODE_SOURCE_KEYS = ['content', 'content_profile', 'cf', 'session_skipgram', 'lastfm_similar', 'sasrec', 'popular', 'artist_recall'];
@@ -139,6 +144,8 @@
         { key: 'exploration_fraction', label: 'Exploration slots', max: 0.5 },
         { key: 'freshness_boost', label: 'Freshness boost', max: 1 },
         { key: 'novelty_strength', label: 'Novelty strength', max: 1 },
+        { key: 'proven_recall_mult', label: 'Proven recall × (radio)', max: 5 },
+        { key: 'ranker_blend', label: 'Retention blend (radio)', max: 1 },
     ];
 
     function modesPathDirty(ctx, path) {
