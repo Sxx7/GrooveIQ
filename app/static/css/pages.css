@@ -5222,14 +5222,34 @@
     margin-top: 2px;
 }
 
-/* ── Explore → Radio: discovery posture (Comfort ↔ Adventurous) ────── */
+/* ── Explore → Radio: discovery posture — 4-stop preset picker ─────── */
 .radio-disc-field { gap: 6px; }
-.radio-disc-track { padding: 2px 0; }
-.radio-disc-slider {
-    width: 100%;
-    margin: 0;
-    accent-color: var(--accent);
+.radio-posture-seg {
+    display: flex;
+    gap: 2px;
+    padding: 3px;
+    background: var(--paper);
+    border-radius: 7px;
+}
+.radio-posture-opt {
+    flex: 1 1 0;
+    border: 0;
+    background: transparent;
+    padding: 6px 8px;
+    font-family: inherit;
+    font-size: 11.5px;
+    font-weight: 500;
+    color: var(--ink-3);
     cursor: pointer;
+    border-radius: 5px;
+    white-space: nowrap;
+    transition: background 0.12s, color 0.12s;
+}
+.radio-posture-opt:hover { color: var(--ink-2); }
+.radio-posture-opt.is-active {
+    background: var(--paper-2);
+    color: var(--ink);
+    font-weight: 600;
 }
 .radio-disc-ends {
     display: flex;
@@ -5240,4 +5260,3 @@
     font-family: var(--mono);
     letter-spacing: 0.03em;
 }
-.radio-disc-readout { color: var(--accent); }

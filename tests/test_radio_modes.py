@@ -335,3 +335,126 @@ if _APP_OK:
         monkeypatch.setattr(security, "_key_user_bindings", {security.hash_key(identity): {"someone-else"}})
         resp = await client.get("/v1/radio/owned/next?count=1")
         assert resp.status_code == 403
+
+    # -----------------------------------------------------------------------
+    # Named-preset (mode) posture — the 4-stop picker path
+    # -----------------------------------------------------------------------
+
+    @_requires_app
+    def test_discovery_for_mode_returns_anchor():
+        """A named preset maps to its dial anchor; None falls back to the given value."""
+        assert radio_service.discovery_for_mode("familiar") == 0.0
+        assert radio_service.discovery_for_mode("balanced") == 0.3
+        assert radio_service.discovery_for_mode("discovery") == 0.6
+        assert radio_service.discovery_for_mode("deep_discovery") == 1.0
+        assert radio_service.discovery_for_mode(None, 0.42) == 0.42  # no mode -> fallback
+
+    def _stub_single_track(monkeypatch):
+        monkeypatch.setattr(settings, "RECO_AUDIT_ENABLED", False)
+        monkeypatch.setattr("app.services.faiss_index.get_embedding", lambda tid: _unit(np.ones(64, dtype=np.float32)))
+
+        async def _fake_get_next_tracks(session_id, count, db, *, collect_audit=False):
+            track = {"position": 0, "track_id": "proven0", "source": "radio_drift", "score": 1.0}
+            if collect_audit:
+                return [track], {"candidate_rows": [], "candidates_by_source": {}, "candidates_total": 0}
+            return [track]
+
+        monkeypatch.setattr("app.services.radio.get_next_tracks", _fake_get_next_tracks)
+
+    @_requires_app
+    async def test_start_with_mode_pins_anchor_and_echoes(client, monkeypatch):
+        """POST /radio/start with `mode` pins discovery to that preset's anchor,
+        stores the mode on the session, and echoes the mode back."""
+        await _seed_proven_and_weak()
+        _stub_single_track(monkeypatch)
+
+        resp = await client.post(
+            "/v1/radio/start",
+            json={"user_id": "u", "seed_type": "track", "seed_value": "proven0", "count": 1, "mode": "familiar"},
+        )
+        assert resp.status_code == 201, resp.text
+        body = resp.json()
+        assert body["mode"] == "familiar"
+        assert body["discovery"] == 0.0  # pinned to the familiar anchor
+        s = radio_service.get_session(body["session_id"])
+        assert s.mode == "familiar"
+        assert s.discovery == 0.0
+
+    @_requires_app
+    async def test_mode_overrides_discovery_on_start(client, monkeypatch):
+        """When both are sent, `mode` wins and pins the anchor (not the float)."""
+        await _seed_proven_and_weak()
+        _stub_single_track(monkeypatch)
+
+        resp = await client.post(
+            "/v1/radio/start",
+            json={
+                "user_id": "u", "seed_type": "track", "seed_value": "proven0",
+                "count": 1, "discovery": 0.9, "mode": "familiar",
+            },
+        )
+        assert resp.status_code == 201, resp.text
+        assert resp.json()["mode"] == "familiar"
+        assert resp.json()["discovery"] == 0.0  # mode wins -> familiar anchor, not 0.9
+
+    @_requires_app
+    async def test_next_with_mode_updates_posture(client, monkeypatch):
+        """GET /next?mode= repins the session to that preset's anchor + stores it."""
+        await _seed_proven_and_weak()
+        _stub_single_track(monkeypatch)
+        s = _make_session("m", discovery=0.3, user_id="u")  # starts balanced
+
+        resp = await client.get("/v1/radio/m/next?count=1&mode=deep_discovery")
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["mode"] == "deep_discovery"
+        assert resp.json()["discovery"] == 1.0
+        assert s.mode == "deep_discovery"
+        assert s.discovery == 1.0
+
+    @_requires_app
+    async def test_start_rejects_invalid_mode(client):
+        await _seed_proven_and_weak()
+        resp = await client.post(
+            "/v1/radio/start",
+            json={"user_id": "u", "seed_type": "track", "seed_value": "proven0", "count": 1, "mode": "bogus"},
+        )
+        assert resp.status_code == 422
+
+    @_requires_app
+    async def test_next_rejects_invalid_mode(client):
+        # Query-param validation fires before the handler, so no session needed.
+        assert (await client.get("/v1/radio/whatever/next?mode=bogus")).status_code == 422
+
+    @_requires_app
+    async def test_mode_drives_posture_like_discovery(monkeypatch):
+        """A session set by `mode` resolves the named preset through resolve_dial:
+        deep_discovery excludes the proven set, familiar keeps it — proving the
+        picker actually drives the dial (and pins it exactly, no interpolation)."""
+        await _seed_proven_and_weak()
+        _stub_pool(monkeypatch)
+
+        def _mode_session(sid: str, mode: str) -> radio_service.RadioSession:
+            s = radio_service.RadioSession(
+                session_id=sid,
+                user_id="u",
+                seed_type="track",
+                seed_value="seed",
+                seed_track_ids=["seed"],
+                seed_embedding=_unit(np.ones(64, dtype=np.float32)),
+                drift_embedding=_unit(np.ones(64, dtype=np.float32)),
+                discovery=radio_service.discovery_for_mode(mode),
+                mode=mode,
+            )
+            radio_service.store_session(s)
+            return s
+
+        _mode_session("fam-mode", "familiar")
+        _mode_session("deep-mode", "deep_discovery")
+
+        async with _TestSession() as db:
+            fam_ids = {t["track_id"] for t in await radio_service.get_next_tracks("fam-mode", 50, db)}
+        async with _TestSession() as db:
+            deep_ids = {t["track_id"] for t in await radio_service.get_next_tracks("deep-mode", 50, db)}
+
+        assert set(_PROVEN_IDS) <= fam_ids  # familiar keeps proven favourites
+        assert not (set(_PROVEN_IDS) & deep_ids)  # deep_discovery excludes them

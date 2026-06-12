@@ -104,6 +104,20 @@ def _dial_drift_scale(discovery: float) -> float:
     return max(0.0, 1.0 + _DRIFT_DIAL_GAIN * (discovery - balanced))
 
 
+def discovery_for_mode(mode: str | None, fallback: float = 0.3) -> float:
+    """Dial-anchor position for a named discovery preset (``fallback`` if ``mode`` is None).
+
+    A radio session can be driven either by a continuous ``discovery`` float or by a
+    named preset (``mode``). Pinning the session's ``discovery`` to the mode's anchor
+    keeps every discovery-based path consistent — the drift scale and ``resolve_dial``
+    both read ``s.discovery`` — while ``s.mode`` carries the exact preset so the dial
+    levers apply without interpolation.
+    """
+    if mode is None:
+        return fallback
+    return float(get_config().modes.dial_anchors.get(mode, fallback))
+
+
 # ---------------------------------------------------------------------------
 # Data structures
 # ---------------------------------------------------------------------------
@@ -144,6 +158,10 @@ class RadioSession:
     # balanced, so a session created without a dial value behaves like today.
     # Updatable on each /next call. Sets the baseline that feedback drifts around.
     discovery: float = 0.3
+    # Discovery preset by name (familiar|balanced|discovery|deep_discovery). When
+    # set, it pins `discovery` to that preset's anchor and is passed to resolve_dial
+    # so the dial levers apply exactly (no interpolation). None = use the float.
+    mode: str | None = None
 
     # Context (updatable on each /next call)
     device_type: str | None = None
@@ -246,6 +264,7 @@ async def create_radio_session(
     seed_value: str,
     db: AsyncSession,
     discovery: float = 0.3,
+    mode: str | None = None,
     **context,
 ) -> RadioSession:
     """
@@ -254,6 +273,8 @@ async def create_radio_session(
     seed_type: "track" | "artist" | "playlist"
     seed_value: track_id, artist name, or playlist_id
     discovery: discovery-dial posture (0=familiar … 1=deep discovery, 0.3=balanced).
+    mode: named discovery preset; when set it takes precedence over `discovery` and
+          pins the posture to that preset's anchor.
     """
     from app.services import faiss_index
 
@@ -262,7 +283,8 @@ async def create_radio_session(
         user_id=user_id,
         seed_type=seed_type,
         seed_value=seed_value,
-        discovery=discovery,
+        discovery=discovery_for_mode(mode, discovery),
+        mode=mode,
         device_type=context.get("device_type"),
         output_type=context.get("output_type"),
         location_label=context.get("location_label"),
@@ -461,7 +483,7 @@ async def get_next_tracks(
     # (read pre-override, exactly like the recommend handler). The override is
     # applied around the modes-reading call sites below — the source-weight /
     # novelty filter on the candidate pool and the reranker's acquisition term.
-    dial = resolve_dial(s.discovery, None, get_config().modes)
+    dial = resolve_dial(s.discovery, s.mode, get_config().modes)
 
     # Build exclusion set: already played + disliked in this session
     exclude = set(s.played_set) | s.disliked

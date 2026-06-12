@@ -38,12 +38,13 @@
 
     /* ── Recommendations ───────────────────────────────────────────── */
 
-    /* The discovery-dial anchor stops (must mirror modes_cfg.dial_anchors). */
+    /* The discovery-dial anchor stops (must mirror modes_cfg.dial_anchors).
+     * `mode` is the preset name sent to the API; `value` is the matching anchor. */
     const RECO_DIAL_STOPS = [
-        { value: 0.0, label: 'Familiar' },
-        { value: 0.3, label: 'Balanced' },
-        { value: 0.6, label: 'Discover' },
-        { value: 1.0, label: 'Deep' },
+        { value: 0.0, label: 'Familiar', mode: 'familiar' },
+        { value: 0.3, label: 'Balanced', mode: 'balanced' },
+        { value: 0.6, label: 'Discover', mode: 'discovery' },
+        { value: 1.0, label: 'Deep', mode: 'deep_discovery' },
     ];
     /* Shelf fan-out is fixed so the prewarm limit matches the per-shelf request
      * limit — the SWR mix-cache key includes `limit`, so a mismatch would miss. */
@@ -1496,7 +1497,8 @@
         seedValue: '',
         contextOpen: false,
         ctx: {},
-        discovery: 0.3,   /* Comfort ↔ Adventurous posture (the discovery dial) */
+        discovery: 0.3,   /* anchor mirroring `mode` (kept in sync for display) */
+        mode: 'balanced', /* discovery preset sent to the API (4-stop picker) */
         sessionId: null,
         seedDisplayName: '',
         seedTypeLoaded: '',
@@ -1510,12 +1512,13 @@
         if (!GIQ.state.radio) {
             GIQ.state.radio = {
                 userId: null, seedType: 'track', seedValue: '', contextOpen: false, ctx: {},
-                discovery: 0.3,
+                discovery: 0.3, mode: 'balanced',
                 sessionId: null, seedDisplayName: '', seedTypeLoaded: '',
                 tracks: [], totalServed: 0, sessions: [], feedback: {},
             };
         }
         if (GIQ.state.radio.discovery == null) GIQ.state.radio.discovery = 0.3;
+        if (GIQ.state.radio.mode == null) GIQ.state.radio.mode = 'balanced';
         const state = GIQ.state.radio;
 
         /* Allow deep-link from Artists / others — ?seed_type=artist&seed_value=name. */
@@ -1639,44 +1642,45 @@
         }
         rebuildSeedInput();
 
-        /* Discovery posture — Comfort ↔ Adventurous (maps to the discovery dial).
-         * Sets the radio session's baseline; in-session like/skip feedback still
-         * drifts the taste vector around whatever posture is chosen here. */
+        /* Discovery posture — a 4-stop preset picker (Familiar · Balanced · Discover
+         * · Deep). Sends the preset name as `mode`, so all four dial levers apply
+         * exactly (no interpolation between anchors); in-session like/skip feedback
+         * still drifts the taste vector around the chosen posture. Mirrors the iOS UX. */
         const discField = document.createElement('div');
         discField.className = 'radio-field radio-disc-field';
         discField.innerHTML = '<div class="eyebrow">Posture</div>';
-        const discTrack = document.createElement('div');
-        discTrack.className = 'radio-disc-track';
-        const discSlider = document.createElement('input');
-        discSlider.type = 'range';
-        discSlider.className = 'radio-disc-slider';
-        discSlider.min = '0';
-        discSlider.max = '1';
-        discSlider.step = '0.05';
-        discSlider.value = String(state.discovery != null ? state.discovery : 0.3);
-        discSlider.setAttribute('aria-label', 'Radio discovery posture (comfort to adventurous)');
-        discTrack.appendChild(discSlider);
-        discField.appendChild(discTrack);
+        const postureSeg = document.createElement('div');
+        postureSeg.className = 'radio-posture-seg';
+        postureSeg.setAttribute('role', 'radiogroup');
+        postureSeg.setAttribute('aria-label', 'Radio posture');
+        function syncPosture() {
+            postureSeg.querySelectorAll('.radio-posture-opt').forEach(b => {
+                const on = b.dataset.mode === state.mode;
+                b.classList.toggle('is-active', on);
+                b.setAttribute('aria-checked', on ? 'true' : 'false');
+                b.tabIndex = on ? 0 : -1;
+            });
+        }
+        RECO_DIAL_STOPS.forEach(stop => {
+            const opt = document.createElement('button');
+            opt.type = 'button';
+            opt.className = 'radio-posture-opt';
+            opt.dataset.mode = stop.mode;
+            opt.textContent = stop.label;
+            opt.setAttribute('role', 'radio');
+            opt.addEventListener('click', () => {
+                state.mode = stop.mode;
+                state.discovery = stop.value;  /* keep the anchor in sync for display */
+                syncPosture();
+            });
+            postureSeg.appendChild(opt);
+        });
+        discField.appendChild(postureSeg);
         const discEnds = document.createElement('div');
         discEnds.className = 'radio-disc-ends';
-        discEnds.innerHTML = '<span>Comfort</span><span class="radio-disc-readout mono"></span><span>Adventurous</span>';
+        discEnds.innerHTML = '<span>Comfort</span><span>Adventurous</span>';
         discField.appendChild(discEnds);
-        const discReadout = discEnds.querySelector('.radio-disc-readout');
-        function radioNearestStop(v) {
-            return RECO_DIAL_STOPS.reduce((a, b) =>
-                Math.abs(b.value - v) < Math.abs(a.value - v) ? b : a);
-        }
-        function updateDiscReadout() {
-            const v = state.discovery != null ? state.discovery : 0.3;
-            const near = radioNearestStop(v);
-            const isStop = Math.abs(near.value - v) < 0.001;
-            discReadout.textContent = v.toFixed(2) + ' · ' + (isStop ? '' : '~') + near.label;
-        }
-        discSlider.addEventListener('input', () => {
-            state.discovery = parseFloat(discSlider.value);
-            updateDiscReadout();
-        });
-        updateDiscReadout();
+        syncPosture();
         startBody.appendChild(discField);
 
         /* Advanced context section (collapsible) */
@@ -1857,7 +1861,7 @@
                     seed_type: state.seedType,
                     seed_value: state.seedValue,
                     count: 10,
-                    discovery: state.discovery != null ? state.discovery : 0.3,
+                    mode: state.mode || 'balanced',
                 };
                 Object.keys(state.ctx).forEach(k => {
                     if (state.ctx[k] != null && state.ctx[k] !== '') body[k] = state.ctx[k];
@@ -1913,7 +1917,8 @@
             const npLoading = nowPlaying.querySelector('.radio-loading');
             if (npLoading) npLoading.style.display = 'block';
             try {
-                const data = await GIQ.api.get('/v1/radio/' + encodeURIComponent(state.sessionId) + '/next?count=' + (count || 10));
+                const data = await GIQ.api.get('/v1/radio/' + encodeURIComponent(state.sessionId) + '/next?count=' + (count || 10)
+                    + '&mode=' + encodeURIComponent(state.mode || 'balanced'));
                 state.totalServed = data.total_served || 0;
                 if (append) {
                     state.tracks = state.tracks.concat(data.tracks || []);

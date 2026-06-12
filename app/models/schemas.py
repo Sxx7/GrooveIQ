@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import time
 from enum import Enum
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -661,6 +661,14 @@ class RadioStartRequest(BaseModel):
         le=1.0,
         description="Discovery-dial posture (0=familiar … 1=deep discovery). Default 0.3 = balanced.",
     )
+    mode: Literal["familiar", "balanced", "discovery", "deep_discovery"] | None = Field(
+        None,
+        description=(
+            "Discovery-dial preset by name. When set, takes precedence over `discovery` and pins the "
+            "posture to that preset's anchor — so all four dial levers apply exactly (no interpolation). "
+            "Omit to use the continuous `discovery` float."
+        ),
+    )
     # Optional context (updatable on each /next call)
     device_type: str | None = Field(None, max_length=32)
     output_type: str | None = Field(None, max_length=32)
@@ -718,6 +726,7 @@ class RadioStartResponse(BaseModel):
     seed_value: str
     seed_display_name: str | None = None
     discovery: float = 0.3
+    mode: str | None = None  # resolved discovery preset name, when the session was started by mode
     tracks: list[RadioTrackItem]
 
 
@@ -725,6 +734,7 @@ class RadioNextResponse(BaseModel):
     session_id: str
     total_served: int
     discovery: float = 0.3
+    mode: str | None = None  # active discovery preset name, when set by mode
     tracks: list[RadioTrackItem]
 
 

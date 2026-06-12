@@ -21,6 +21,7 @@ import asyncio
 import logging
 import time
 import uuid
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import or_, select
@@ -115,6 +116,7 @@ async def start_radio(
         seed_value=body.seed_value,
         db=db,
         discovery=body.discovery,
+        mode=body.mode,
         device_type=body.device_type,
         output_type=body.output_type,
         location_label=body.location_label,
@@ -215,6 +217,7 @@ async def start_radio(
         seed_value=session.seed_value,
         seed_display_name=session.seed_display_name,
         discovery=session.discovery,
+        mode=session.mode,
         tracks=[RadioTrackItem(**t) for t in tracks],
     )
 
@@ -235,6 +238,8 @@ async def radio_next(
     count: int = Query(10, ge=1, le=50),
     # Updatable discovery-dial posture (omit to keep the session's current value).
     discovery: float = Query(None, ge=0.0, le=1.0),
+    # Named preset posture — takes precedence over `discovery` when supplied.
+    mode: Literal["familiar", "balanced", "discovery", "deep_discovery"] | None = Query(None),
     # Updatable context
     device_type: str = Query(None),
     output_type: str = Query(None),
@@ -250,9 +255,15 @@ async def radio_next(
 
     check_user_access(_key, s.user_id)
 
-    # Update context / posture if provided.
-    if discovery is not None:
+    # Update context / posture if provided. A named `mode` wins over a raw
+    # `discovery` float and pins the posture to that preset's anchor; a bare
+    # `discovery` reverts the session to the continuous float.
+    if mode is not None:
+        s.mode = mode
+        s.discovery = radio_service.discovery_for_mode(mode, s.discovery)
+    elif discovery is not None:
         s.discovery = discovery
+        s.mode = None
     if device_type is not None:
         s.device_type = device_type
     if output_type is not None:
@@ -338,6 +349,7 @@ async def radio_next(
         session_id=session_id,
         total_served=s.total_served,
         discovery=s.discovery,
+        mode=s.mode,
         tracks=[RadioTrackItem(**t) for t in tracks],
     )
 
