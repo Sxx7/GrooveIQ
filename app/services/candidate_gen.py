@@ -27,6 +27,12 @@ from app.services.algorithm_config import get_config
 
 logger = logging.getLogger(__name__)
 
+# A track counts as "explicitly known" (excluded at the discovery end) when the
+# user has liked it or played it at least this many times — independent of the
+# confidence model's mu/sigma "proven" set, so liked-but-thinly-played tracks
+# can't leak into Discover through the confidence gap (F2).
+_KNOWN_MIN_PLAYS = 3
+
 
 def _get_user_top_track_ids(taste_profile: dict, limit: int = 20) -> list[str]:
     """Extract top track IDs from a user's taste profile."""
@@ -261,7 +267,12 @@ async def _get_candidates_impl(
     # Source 2: Collaborative filtering.
     cf_candidates: list[dict[str, Any]] = []
     if collab_filter.is_ready():
-        raw = collab_filter.get_cf_candidates(user_id, k=100)
+        # Discovery/deep presets filter the user's already-liked items out of CF so
+        # it can't re-inject known tracks into a Discover Mix (F2); familiar/balanced
+        # keep them (degenerate single-user CF *is* the familiar mix). Gated on the
+        # active preset's novelty_filter, which is on only for discovery/deep.
+        filter_liked = get_config().modes.active.novelty_filter
+        raw = collab_filter.get_cf_candidates(user_id, k=100, filter_liked=filter_liked)
         cf_candidates = [
             {"track_id": tid, "score": score * cfg.cf, "source": "cf"} for tid, score in raw if tid not in exclude
         ]
@@ -412,6 +423,21 @@ async def apply_novelty_filter(
 
     sigma_bar = preset.proven_sigma_max * preset.novelty_strength
     to_exclude = {tid for tid, cs in conf.items() if cs.mu >= preset.proven_mu_min and cs.sigma <= sigma_bar}
+
+    # Deterministic F2 fix: also exclude the user's *explicit* known set — tracks
+    # they've liked or played >= _KNOWN_MIN_PLAYS — not just the confidence-model
+    # "proven" (mu/sigma) set above. A liked-but-thinly-played track has high
+    # sigma, so the mu/sigma gate misses it and it leaks into Discover; this one
+    # extra query closes that gap. The starvation floor below still re-admits the
+    # least-proven of these if the pool would otherwise starve.
+    known_result = await session.execute(
+        select(TrackInteraction.track_id).where(
+            TrackInteraction.user_id == user_id,
+            TrackInteraction.track_id.in_(cand_ids),
+            (TrackInteraction.like_count > 0) | (TrackInteraction.play_count >= _KNOWN_MIN_PLAYS),
+        )
+    )
+    to_exclude |= {row[0] for row in known_result.all()}
     if not to_exclude:
         return merged
 

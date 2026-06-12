@@ -218,12 +218,18 @@ def load_latest() -> bool:
     return True
 
 
-def get_cf_candidates(user_id: str, k: int = 200) -> list[tuple[str, float]]:
+def get_cf_candidates(user_id: str, k: int = 200, filter_liked: bool = False) -> list[tuple[str, float]]:
     """
     Recommend tracks for a user via collaborative filtering.
 
     Returns list of (track_id, score) tuples.
     Empty list if user is unknown or model not trained.
+
+    ``filter_liked`` drops items the user has already interacted with from the
+    result. Off by default — the familiar/balanced path *wants* CF's own
+    favourites back (in a degenerate single-user matrix that's the working
+    "familiar mix"). The discovery/deep presets flip it on so CF stops
+    re-injecting known tracks into a Discover Mix (F2).
     """
     with _lock:
         model = _model
@@ -241,7 +247,7 @@ def get_cf_candidates(user_id: str, k: int = 200) -> list[tuple[str, float]]:
         user_idx,
         user_items,
         N=k,
-        filter_already_liked_items=False,
+        filter_already_liked_items=filter_liked,
     )
 
     results: list[tuple[str, float]] = []

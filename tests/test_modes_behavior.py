@@ -238,3 +238,51 @@ async def test_novelty_filter_excludes_proven_tracks():
         # Proven tracks are excluded; the non-proven pool survives (above the floor).
         assert not (set(proven_ids) & filtered)
         assert set(new_ids) <= filtered
+
+
+async def test_novelty_filter_excludes_liked_but_thinly_played():
+    """F2: a liked-but-thinly-played track is kept under familiar but excluded at
+    the discovery end.
+
+    Such a track has high sigma (played once), so the confidence-model mu/sigma
+    "proven" gate misses it and it used to leak into Discover. The explicit
+    known-set union (like_count > 0) now excludes it deterministically — without
+    touching familiar, which has no novelty filter.
+    """
+    async with _Session() as session:
+        # The leak vector: liked once, played once -> unproven by mu/sigma, yet known.
+        session.add(
+            TrackFeatures(
+                track_id="liked",
+                file_path="/music/liked/liked.mp3",
+                duration=210.0,
+                analyzed_at=_NOW,
+                analysis_version="1",
+            )
+        )
+        session.add(
+            TrackInteraction(
+                user_id="u",
+                track_id="liked",
+                play_count=1,
+                like_count=1,
+                full_listen_count=0,
+                early_skip_count=0,
+                avg_completion=0.30,
+                satisfaction_score=0.20,
+                last_played_at=_TEN_DAYS_AGO,
+                updated_at=_NOW,
+            )
+        )
+        # Enough non-proven, non-liked filler to keep the pool above the floor.
+        for i in range(14):
+            await _add_track(session, f"weak{i}", artist=f"wa{i}", played=True, proven=False)
+        await session.commit()
+
+        with apply_overrides(_preset_override("familiar")):
+            fam = {c["track_id"] for c in await candidate_gen.get_candidates("u", session=session)}
+        assert "liked" in fam  # familiar has no novelty filter -> known track kept
+
+        with apply_overrides(_preset_override("discovery")):
+            disc = {c["track_id"] for c in await candidate_gen.get_candidates("u", session=session)}
+        assert "liked" not in disc  # discovery -> excluded by the explicit known set
