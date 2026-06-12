@@ -285,6 +285,24 @@ def is_ready() -> bool:
         return _model is not None
 
 
+# Minimum distinct users before cross-user CF is meaningful. Below this the ALS
+# factors collapse to per-user popularity (seed-unaware), so the CF source is a
+# noise/leak vector rather than signal — see docs/RECO_ALGORITHM_AUDIT.md §8.5.
+# The gate auto-upgrades CF as the instance grows past a real crowd.
+CF_MIN_USERS = 8
+
+
+def trained_user_count() -> int:
+    """Number of distinct users the loaded CF model was trained on (0 if none)."""
+    with _lock:
+        return len(_idx_to_user)
+
+
+def has_crowd() -> bool:
+    """True when the CF model has enough users for cross-user signal to be meaningful."""
+    return trained_user_count() >= CF_MIN_USERS
+
+
 def model_stats() -> dict:
     """Return basic stats about the trained model."""
     with _lock:

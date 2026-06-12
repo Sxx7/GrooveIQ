@@ -231,6 +231,50 @@ class PresetConfig(BaseModel):
     proven_sigma_max: float = Field(
         0.3, ge=0, le=1, description="Maximum uncertainty (sigma) for a track to count as proven"
     )
+    # --- Radio-regime levers (single-user / no-crowd). Read off ``modes.active`` ---
+    # These tune the *radio* path (radio.get_next_tracks) and the shared reranker.
+    # All default to a no-op so a config that omits them (e.g. the persisted v4)
+    # and the bare ``active`` preset reproduce today's behaviour exactly.
+    proven_recall_mult: float = Field(
+        0.0,
+        ge=0,
+        le=5,
+        description=(
+            "Radio: weight of the proven-set ∩ seed-neighbourhood recall source (0 = off). "
+            "Higher toward the familiar end so radio surfaces the user's known/high-completion "
+            "tracks that are also acoustically near the seed. Crowd-free (no cross-user CF)."
+        ),
+    )
+    ranker_blend: float = Field(
+        0.6,
+        ge=0,
+        le=1,
+        description=(
+            "Radio: weight of the LightGBM ranker (retention/completion) score in the radio blend; "
+            "retrieval similarity gets (1 - this). 0.6 reproduces today's hardcoded blend. Higher "
+            "(familiar) makes radio retention-dominant; lower (deep) lets retrieval/novelty lead."
+        ),
+    )
+    familiarity_weight: float = Field(
+        0.0,
+        ge=0,
+        le=5,
+        description=(
+            "Positive familiarity boost added at rerank: + familiarity_weight * min(1, play_count/8). "
+            "The mirror of novelty_weight — actively up-ranks the user's known/proven tracks at the "
+            "familiar end. 0 = off (balanced/discovery/deep), so the default path is byte-for-byte unchanged."
+        ),
+    )
+    cooldown_alpha: float = Field(
+        0.0,
+        ge=0,
+        le=1,
+        description=(
+            "Radio: strength of the graded play/serve-frequency repeat cooldown (0 = off). Demotes "
+            "recently/often-served tracks by up to alpha, floored so favourites cool down and return "
+            "rather than vanish — keeps 'proven' from collapsing into the same few tracks."
+        ),
+    )
     source_weight_mult: dict[str, Annotated[float, Field(ge=0, le=5)]] = Field(
         default_factory=dict,
         description="Per-source candidate-weight multipliers (each 0-5); sources omitted here default to 1.0",
@@ -255,6 +299,10 @@ class ModesConfig(BaseModel):
             repeat_window_hours=0.0,
             proven_mu_min=0.6,
             proven_sigma_max=0.3,
+            proven_recall_mult=1.5,
+            ranker_blend=0.80,
+            familiarity_weight=0.40,
+            cooldown_alpha=0.35,
             source_weight_mult={
                 "content_profile": 1.5,
                 "cf": 1.4,
@@ -264,7 +312,7 @@ class ModesConfig(BaseModel):
                 "popular": 0.5,
             },
         ),
-        description="Play me what I love — proven favourites, no novelty filter, relaxed anti-repetition.",
+        description="Play me what I love — proven favourites, retention-dominant, kept fresh by cooldown.",
     )
     balanced: PresetConfig = Field(
         default_factory=lambda: PresetConfig(
@@ -276,9 +324,15 @@ class ModesConfig(BaseModel):
             repeat_window_hours=2.0,
             proven_mu_min=0.6,
             proven_sigma_max=0.3,
+            # familiarity_weight stays 0 so the un-dialled default /recommend path is
+            # byte-for-byte unchanged; the radio-only levers below tune radio's default.
+            proven_recall_mult=0.8,
+            ranker_blend=0.65,
+            familiarity_weight=0.0,
+            cooldown_alpha=0.40,
             source_weight_mult={},
         ),
-        description="Today's behaviour, unchanged. The default preset.",
+        description="Today's behaviour for /recommend; seed-coherent + proven for radio. The default preset.",
     )
     discovery: PresetConfig = Field(
         default_factory=lambda: PresetConfig(
@@ -292,6 +346,9 @@ class ModesConfig(BaseModel):
             repeat_window_hours=2.0,
             proven_mu_min=0.6,
             proven_sigma_max=0.3,
+            proven_recall_mult=0.3,
+            ranker_blend=0.50,
+            cooldown_alpha=0.25,
             source_weight_mult={
                 "cf": 0.75,
                 "content": 1.3,
@@ -317,6 +374,9 @@ class ModesConfig(BaseModel):
             repeat_window_hours=2.0,
             proven_mu_min=0.6,
             proven_sigma_max=0.3,
+            proven_recall_mult=0.0,
+            ranker_blend=0.40,
+            cooldown_alpha=0.15,
             source_weight_mult={
                 "content": 1.4,
                 "lastfm_similar": 1.8,

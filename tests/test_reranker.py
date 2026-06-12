@@ -136,6 +136,34 @@ class TestReranker:
         # Freshness boost: 0.78 * 1.10 = 0.858 > 0.75
         assert result_map["t10"] > result_map.get("t5", 0)
 
+    async def test_familiarity_boost(self):
+        """At the familiar end, played tracks get a positive uplift (the F1-a mirror)."""
+        from app.models.algorithm_config_schema import get_defaults
+        from app.services.request_config import apply_overrides
+        from app.services.reranker import rerank
+
+        await _setup_tracks_and_interactions()
+        fam = get_defaults().modes.familiar  # familiarity_weight=0.40, freshness_boost=0.0
+        override = {
+            "modes": {"active": fam.model_dump()},
+            "reranker": {
+                "exploration_fraction": fam.exploration_fraction,
+                "freshness_boost": fam.freshness_boost,
+                "repeat_window_hours": fam.repeat_window_hours,
+            },
+        }
+        # t5 is played (play_count=3 -> familiarity 0.375 -> +0.15 at weight 0.40);
+        # t15 is never-played, and familiar's freshness_boost is 0 so it is NOT lifted.
+        ranked = [("t15", 0.55), ("t5", 0.50)]
+
+        async with _TestSession() as session:
+            with apply_overrides(override):
+                result = await rerank(ranked, "user0", session)
+
+        result_map = {tid: score for tid, score in result}
+        assert result_map["t5"] > 0.50  # actually boosted
+        assert result_map["t5"] > result_map["t15"]  # boost flips the order
+
     async def test_skip_suppression(self):
         """Tracks early-skipped >2 times in 24h get demoted."""
         from app.services.reranker import rerank

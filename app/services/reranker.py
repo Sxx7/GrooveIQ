@@ -175,6 +175,33 @@ async def rerank(
                     }
                 )
 
+    # --- Discovery-dial familiarity boost (continuous proven uplift, gated) ---
+    # The positive mirror of the novelty penalty above: at the *familiar* end we
+    # actively up-rank tracks THIS user has played, proportional to play count, so
+    # the proven cluster rises to the top instead of merely "not being excluded".
+    # Crowd-free — it reads the user's own play history, not any CF signal. Gated
+    # on familiarity_weight > 0 (only familiar sets it), so balanced/discovery/deep
+    # and the default path are byte-for-byte unchanged.
+    if preset.familiarity_weight > 0.0:
+        for tid in track_ids:
+            inter = inter_map.get(tid)
+            plays = inter.play_count if inter else 0
+            if plays <= 0:
+                continue
+            familiarity = min(1.0, plays / _NOVELTY_FULL_PLAYS)
+            old = score_map[tid]
+            score_map[tid] = old + preset.familiarity_weight * familiarity
+            if actions is not None:
+                actions.append(
+                    {
+                        "track_id": tid,
+                        "action": "familiarity_boost",
+                        "score_before": round(old, 4),
+                        "score_after": round(score_map[tid], 4),
+                        "familiarity": round(familiarity, 4),
+                    }
+                )
+
     # --- Rule 1: Freshness boost (never-played tracks get score uplift) ---
     for tid in track_ids:
         if tid not in inter_map:

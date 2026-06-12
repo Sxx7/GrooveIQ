@@ -25,7 +25,7 @@ from sqlalchemy import select
 
 from app.core.config import settings
 from app.db.session import AsyncSessionLocal
-from app.models.db import TrackFeatures, User
+from app.models.db import TrackFeatures, TrackInteraction, User
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +36,11 @@ _built_at: int = 0
 
 # How many top tracks per user to query Last.fm for.
 _TOP_TRACKS_PER_USER = 20
+
+# Also seed the cache from up to this many of the user's most-played tracks (the
+# realistic radio-seed universe), so borrowed-CF actually covers radio seeds and
+# not just the top tracks. See docs/RECO_ALGORITHM_AUDIT.md §8.5.
+_MAX_LIBRARY_SEEDS = 500
 # Max similar tracks to fetch per seed from Last.fm.
 _SIMILAR_PER_SEED = 30
 
@@ -113,6 +118,26 @@ async def build_cache() -> dict[str, Any]:
                     row = feat_result.first()
                     if row and row[0] and row[1]:
                         seed_tracks[tid] = (row[0], row[1])
+
+        # Extend coverage beyond top-20: also seed from the most-played tracks (the
+        # realistic radio-seed universe). Without this the borrowed-CF cache only
+        # covers top tracks and radio seeds almost never hit it. Capped + batched.
+        played_result = await session.execute(
+            select(TrackInteraction.track_id)
+            .where(TrackInteraction.play_count > 0)
+            .order_by(TrackInteraction.play_count.desc())
+            .limit(_MAX_LIBRARY_SEEDS)
+        )
+        played_ids = [tid for (tid,) in played_result.all() if tid not in seed_tracks]
+        if played_ids:
+            meta_rows = await session.execute(
+                select(TrackFeatures.track_id, TrackFeatures.artist, TrackFeatures.title).where(
+                    TrackFeatures.track_id.in_(played_ids)
+                )
+            )
+            for tid, artist, title in meta_rows.all():
+                if artist and title and tid not in seed_tracks:
+                    seed_tracks[tid] = (artist, title)
 
         if not seed_tracks:
             logger.info("Last.fm candidates: no seed tracks with metadata.")

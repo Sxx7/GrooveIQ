@@ -30,10 +30,10 @@ from dataclasses import dataclass, field
 from typing import Any
 
 import numpy as np
-from sqlalchemy import or_, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.db import Playlist, PlaylistTrack, TrackFeatures, TrackInteraction
+from app.models.db import ListenEvent, Playlist, PlaylistTrack, TrackFeatures, TrackInteraction
 from app.services.algorithm_config import get_config
 
 logger = logging.getLogger(__name__)
@@ -44,6 +44,22 @@ logger = logging.getLogger(__name__)
 
 _BATCH_OVERFETCH = 5  # multiplier for candidate overfetch
 _ARTIST_MAX_CONSECUTIVE = 2  # max tracks from same artist in a row
+
+# Proven-set thresholds for the radio_proven recall source (single-user regime):
+# a track is "proven" for this user if liked, played enough, or high-satisfaction.
+# Crowd-free — purely the user's own behaviour. Distinct from the confidence
+# model's mu/sigma "proven" (used by the novelty filter).
+_PROVEN_MIN_PLAYS = 3
+_PROVEN_MIN_SATISFACTION = 0.6
+
+# Graded cross-session repeat cooldown (de-rank recently/often-served tracks).
+# A demotion floored so favourites cool down and return rather than vanish; a
+# no-op when there is no recent radio serve history. Strength is dial-driven
+# (PresetConfig.cooldown_alpha). See docs/RECO_ALGORITHM_AUDIT.md §8.
+_COOLDOWN_WINDOW_H = 48.0  # only look back this far for serve history
+_COOLDOWN_HALFLIFE_H = 18.0  # recency decay half-life
+_COOLDOWN_SERVES_N = 3  # serves at which the frequency term saturates
+_COOLDOWN_FLOOR = 0.5  # strongest possible demotion multiplier
 
 # ---------------------------------------------------------------------------
 # Discovery dial (Chunk 7) — radio honours the same posture as /v1/recommend.
@@ -527,7 +543,11 @@ async def get_next_tracks(
             )
 
     # --- Source 6: CF (collaborative filtering) ---
-    if collab_filter.is_ready():
+    # Gated on a real crowd: with too few users the ALS factors collapse to
+    # per-user popularity (seed-unaware), so CF becomes noise/leak rather than
+    # signal. On a single-user instance this is a no-op; it auto-enables once the
+    # instance has enough users. See docs/RECO_ALGORITHM_AUDIT.md §8.5.
+    if collab_filter.is_ready() and collab_filter.has_crowd():
         raw = collab_filter.get_cf_candidates(s.user_id, k=80)
         _add(
             [
@@ -536,6 +556,31 @@ async def get_next_tracks(
                 if tid not in exclude
             ]
         )
+
+    # --- Source 8: Proven recall (proven set ∩ seed neighbourhood) ---
+    # The crowd-free replacement for cross-user CF on small instances: the user's
+    # own high-completion / liked / repeatedly-played tracks that are ALSO
+    # acoustically near the seed. Weighted by the dial's proven_recall_mult (high
+    # at the familiar end, 0 at deep), so 'Familiar' surfaces what the user knows
+    # *that still fits the seed* instead of a seed-unaware global favourite.
+    proven_mult = float(dial.overrides.get("modes", {}).get("active", {}).get("proven_recall_mult", 0.0))
+    if proven_mult > 0.0 and faiss_index.is_ready():
+        anchor_emb = s.drift_embedding if s.drift_embedding is not None else s.seed_embedding
+        if anchor_emb is not None:
+            proven_ids = await _get_proven_set(s.user_id, db)
+            if proven_ids:
+                results = faiss_index.search(anchor_emb, k=overfetch * 2, exclude_ids=exclude)
+                _add(
+                    [
+                        {
+                            "track_id": tid,
+                            "score": score * radio_cfg.source_seed * proven_mult,
+                            "source": "radio_proven",
+                        }
+                        for tid, score in results
+                        if tid in proven_ids
+                    ]
+                )
 
     # --- Source 7: Artist recall (same artist tracks for artist seeds) ---
     if s.seed_type == "artist" and s.seed_track_ids:
@@ -570,6 +615,15 @@ async def get_next_tracks(
     if s.liked or s.skipped:
         _apply_session_feedback_boost(candidates, s)
 
+    # --- Graded cross-session repeat cooldown (dial-driven) ---
+    # Demotes tracks recently/often served to this user in radio so a fresh
+    # session off the same seed doesn't re-serve the same cluster. Floored, so a
+    # beloved track cools down and returns rather than being banned. No-op when
+    # cooldown_alpha == 0 or there is no recent radio serve history.
+    cooldown_alpha = float(dial.overrides.get("modes", {}).get("active", {}).get("cooldown_alpha", 0.0))
+    if cooldown_alpha > 0.0:
+        await _apply_repeat_cooldown(candidates, s.user_id, db, cooldown_alpha)
+
     # Sort and trim candidates
     candidates.sort(key=lambda c: c["score"], reverse=True)
     candidates = candidates[:overfetch]
@@ -595,7 +649,14 @@ async def get_next_tracks(
     # (fallback mode), satisfaction_score is 0.0 for unplayed tracks, which
     # kills all differentiation.  Blending preserves the FAISS similarity
     # ordering while still respecting any ranker signal that exists.
-    scored = [(tid, ranker_score * 0.6 + retrieval_scores.get(tid, 0.0) * 0.4) for tid, ranker_score in scored]
+    #
+    # The blend weight is dial-driven (PresetConfig.ranker_blend on the resolved
+    # preset, read off the whitelisted override): familiar pushes it up so the
+    # retention/completion ranker dominates and the user's proven tracks (which
+    # carry real satisfaction labels) float up, while unproven tracks score ~0;
+    # deep pushes it down so retrieval/novelty leads. Default 0.6 == today.
+    blend = float(dial.overrides.get("modes", {}).get("active", {}).get("ranker_blend", 0.6))
+    scored = [(tid, ranker_score * blend + retrieval_scores.get(tid, 0.0) * (1.0 - blend)) for tid, ranker_score in scored]
     scored.sort(key=lambda x: x[1], reverse=True)
 
     # Capture pre-rerank ordering for the audit before reranking shuffles it.
@@ -616,7 +677,7 @@ async def get_next_tracks(
     rerank_actions = get_last_rerank_actions() if collect_audit else []
 
     # Additional radio-specific filtering: enforce no consecutive same-artist
-    reranked = _enforce_no_consecutive_artist(reranked, db, s)
+    reranked = await _enforce_no_consecutive_artist(reranked, db, s)
 
     final_score_by_tid = {tid: float(score) for tid, score in reranked}
     final_pos_by_tid = {tid: i for i, (tid, _) in enumerate(reranked)}
@@ -735,6 +796,74 @@ async def get_next_tracks(
     return tracks, audit_data
 
 
+async def _get_proven_set(user_id: str, db: AsyncSession) -> set[str]:
+    """The user's proven track_ids: liked, played >= _PROVEN_MIN_PLAYS, or high satisfaction.
+
+    Crowd-free "known/loved" set for the radio_proven recall source — distinct from
+    the confidence model's mu/sigma "proven" that the novelty filter uses.
+    """
+    result = await db.execute(
+        select(TrackInteraction.track_id).where(
+            TrackInteraction.user_id == user_id,
+            or_(
+                TrackInteraction.like_count > 0,
+                TrackInteraction.play_count >= _PROVEN_MIN_PLAYS,
+                TrackInteraction.satisfaction_score >= _PROVEN_MIN_SATISFACTION,
+            ),
+        )
+    )
+    return {row[0] for row in result.all()}
+
+
+async def _apply_repeat_cooldown(
+    candidates: list[dict[str, Any]],
+    user_id: str,
+    db: AsyncSession,
+    alpha: float,
+) -> None:
+    """Demote candidates by how recently/often they were served to the user in radio.
+
+    ``penalty = max(_COOLDOWN_FLOOR, 1 - alpha * recency_decay * frequency)`` where
+    recency halves every ``_COOLDOWN_HALFLIFE_H`` and frequency saturates at
+    ``_COOLDOWN_SERVES_N`` serves within ``_COOLDOWN_WINDOW_H``. Reads radio serve
+    history from listen_events; a no-op for candidates with no recent serves.
+    """
+    if not candidates:
+        return
+    now = int(time.time())
+    cutoff = now - int(_COOLDOWN_WINDOW_H * 3600)
+    cand_ids = [c["track_id"] for c in candidates]
+
+    result = await db.execute(
+        select(
+            ListenEvent.track_id,
+            func.count().label("serves"),
+            func.max(ListenEvent.timestamp).label("last_ts"),
+        )
+        .where(
+            ListenEvent.user_id == user_id,
+            ListenEvent.track_id.in_(cand_ids),
+            ListenEvent.timestamp >= cutoff,
+            or_(ListenEvent.context_type == "radio", ListenEvent.surface == "radio"),
+        )
+        .group_by(ListenEvent.track_id)
+    )
+    history = {row.track_id: (int(row.serves), int(row.last_ts)) for row in result.all()}
+    if not history:
+        return
+
+    half_life_s = _COOLDOWN_HALFLIFE_H * 3600.0
+    for c in candidates:
+        hist = history.get(c["track_id"])
+        if not hist:
+            continue
+        serves, last_ts = hist
+        recency = 0.5 ** (max(0, now - last_ts) / half_life_s)
+        frequency = min(1.0, serves / _COOLDOWN_SERVES_N)
+        penalty = max(_COOLDOWN_FLOOR, 1.0 - alpha * recency * frequency)
+        c["score"] *= penalty
+
+
 def _apply_session_feedback_boost(
     candidates: list[dict[str, Any]],
     s: RadioSession,
@@ -772,17 +901,39 @@ def _apply_session_feedback_boost(
                 c["score"] *= max(0.3, 1.0 - (sim - 0.7) * 1.5)  # up to -45% penalty
 
 
-def _enforce_no_consecutive_artist(
+async def _enforce_no_consecutive_artist(
     ranked: list[tuple[str, float]],
     db: AsyncSession,
     s: RadioSession,
 ) -> list[tuple[str, float]]:
     """
-    Reorder to avoid more than _ARTIST_MAX_CONSECUTIVE tracks from the
-    same artist in a row (includes the session's recent history).
+    Reorder to avoid more than _ARTIST_MAX_CONSECUTIVE tracks from the same artist
+    in a row, preserving score order as much as possible (a "spread" reorder).
+
+    Best-effort: tracks whose artist is unknown are treated as distinct so they're
+    never deferred. Score order is otherwise honoured — a track is only pushed back
+    when placing it would exceed the consecutive-artist cap.
     """
-    # This is a best-effort reorder — we don't have artist info cached,
-    # so we use the FAISS-indexed file paths (same approach as reranker).
-    # For now, keep the ranker output as-is — the global reranker already
-    # applies artist diversity. We can refine later if needed.
-    return ranked
+    if len(ranked) <= _ARTIST_MAX_CONSECUTIVE:
+        return ranked
+
+    ids = [tid for tid, _ in ranked]
+    rows = await db.execute(select(TrackFeatures.track_id, TrackFeatures.artist).where(TrackFeatures.track_id.in_(ids)))
+    artist_of = {r.track_id: (r.artist or "") for r in rows.all()}
+
+    remaining = list(ranked)
+    result: list[tuple[str, float]] = []
+    recent_artists: list[str] = []  # artists of the tracks already placed
+    while remaining:
+        pick_idx = 0  # fallback: everyone left is the blocked artist -> take the top
+        for i, (tid, _) in enumerate(remaining):
+            artist = artist_of.get(tid, "")
+            # Block only if the same artist already fills the last N placed slots.
+            if artist and recent_artists[-_ARTIST_MAX_CONSECUTIVE:].count(artist) >= _ARTIST_MAX_CONSECUTIVE:
+                continue
+            pick_idx = i
+            break
+        tid, score = remaining.pop(pick_idx)
+        result.append((tid, score))
+        recent_artists.append(artist_of.get(tid, ""))
+    return result
