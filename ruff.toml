@@ -69,6 +69,9 @@ ignore = [
 "app/core/keygen.py" = [
     "T20",    # print() for CLI output
 ]
+"scripts/*" = [
+    "T20",    # print() for CLI output
+]
 
 [lint.isort]
 known-first-party = ["app"]
