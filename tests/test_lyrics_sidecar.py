@@ -48,10 +48,12 @@ def test_segments_to_lrc_skips_empty(sidecar):
 
 
 def test_music_probe_and_ready(sidecar):
+    # The ASR sidecar mounts /music read-only and gates on READABILITY (it only
+    # reads to transcribe), not writability like the download sidecars.
     d = tempfile.mkdtemp()
     sidecar.OUTPUT_DIR = d
     status = sidecar._music_status()
-    assert status["exists"] and status["writable"]
+    assert status["exists"] and status["readable"]
     assert sidecar._music_ready(status) is True
     # Non-existent dir -> not ready.
     sidecar.OUTPUT_DIR = "/nonexistent/dir/xyz"

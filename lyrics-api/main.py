@@ -20,7 +20,6 @@ Endpoints:
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import logging
 import os
 import subprocess
@@ -127,21 +126,23 @@ def _get_model():
 
 
 # ---------------------------------------------------------------------------
-# /music readiness probe (copied from streamrip-api / acousticbrainz-lookup — #123)
+# /music readiness probe (adapted from streamrip-api / acousticbrainz-lookup — #123)
 # ---------------------------------------------------------------------------
 
 
 def _music_status() -> dict[str, Any]:
-    """Probe the /music bind-mount: existence, entry count, and writability.
+    """Probe the read-only /music bind-mount: existence, entry count, readability.
 
-    Detects the stale-bind-mount failure mode (GitHub issue #123): when the host
-    library dir backing /music is replaced while this long-lived container keeps
-    running, the container holds the old (now empty, root-owned) inode and reads
-    fail — yet a disk-blind /health stays green. The probe turns that silent
-    failure into an unhealthy container.
+    Unlike the download sidecars (which WRITE to /music and gate on
+    writability), the ASR sidecar only READS the library to transcribe by path,
+    so it mounts /music read-only and gauges readiness by READABILITY. The
+    stale-bind-mount failure (GitHub issue #123) — a replaced host dir leaving
+    the container on an old/empty/unreadable inode — then shows up as a missing,
+    unlistable, or (with MUSIC_MIN_ENTRIES set) empty mount rather than a
+    spuriously-unhealthy one caused by the intentional read-only mount.
     """
     path = OUTPUT_DIR
-    out: dict[str, Any] = {"path": path, "exists": False, "entries": None, "writable": False, "error": None}
+    out: dict[str, Any] = {"path": path, "exists": False, "entries": None, "readable": False, "error": None}
     try:
         if not os.path.isdir(path):
             out["error"] = "directory does not exist"
@@ -149,31 +150,20 @@ def _music_status() -> dict[str, Any]:
         out["exists"] = True
         try:
             out["entries"] = len(os.listdir(path))
+            out["readable"] = True
         except OSError as exc:
             out["error"] = f"cannot list: {exc}"
-        probe = os.path.join(path, ".grooveiq_write_probe")
-        try:
-            fd = os.open(probe, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
-            os.close(fd)
-            os.unlink(probe)
-            out["writable"] = True
-        except FileExistsError:
-            with contextlib.suppress(OSError):
-                os.unlink(probe)
-            out["writable"] = True
-        except OSError as exc:
-            if out["error"] is None:
-                out["error"] = f"not writable: {exc}"
     except Exception as exc:  # pragma: no cover - defensive
         out["error"] = str(exc)
     return out
 
 
 def _music_ready(status: dict[str, Any]) -> bool:
-    """Readiness gate for /music: must exist and be writable (the definitive
-    stale-mount signal). When MUSIC_MIN_ENTRIES > 0, also require that many
-    entries."""
-    if not status.get("exists") or not status.get("writable"):
+    """Readiness gate for the read-only /music mount: must exist and be
+    listable (readable). When MUSIC_MIN_ENTRIES > 0, also require that many
+    entries — set it on a library you know is populated to additionally catch a
+    stale mount that became empty."""
+    if not status.get("exists") or not status.get("readable"):
         return False
     if MUSIC_MIN_ENTRIES > 0 and (status.get("entries") or 0) < MUSIC_MIN_ENTRIES:  # noqa: SIM103
         return False
