@@ -24,6 +24,7 @@ from app.models.schemas import (
     TrackFeaturesResponse,
     TrackLookupBatchRequest,
     TrackLookupBatchResponse,
+    TrackLyricsResponse,
 )
 from app.workers.library_scanner import get_scan_status, trigger_scan
 
@@ -617,6 +618,68 @@ async def get_track_features(
         analysis_version=track.analysis_version,
         **_serialize_track_ids(track),
     )
+
+
+@router.get(
+    "/tracks/{track_id}/lyrics",
+    response_model=TrackLyricsResponse,
+    summary="Get lyrics for a track",
+    description="""
+Returns the lyrics resolved for a track by the acquisition cascade
+(embedded tags → LRCLIB → ASR; see the lyrics feature). The response carries
+`source` (embedded | lrclib | asr | instrumental), the display-quality
+`quality` rank, and `is_synced` (true when time-synced LRC is available —
+karaoke-ready).
+
+- **404** when the track is unknown or has no lyrics yet.
+- **200** with `source="instrumental"` (and no text) for instrumentals, so
+  clients can show "instrumental" rather than "no lyrics".
+
+`auto-transcribed` (ASR) lyrics are approximate — clients should label them so
+users don't mistake transcription errors for the real thing.
+""",
+)
+async def get_track_lyrics(
+    track_id: str,
+    session: AsyncSession = Depends(get_session),
+    _key: str = Depends(require_api_key),
+):
+    result = await session.execute(
+        select(TrackFeatures).where(TrackFeatures.track_id == track_id)
+    )
+    track = result.scalar_one_or_none()
+    if track is None:
+        raise HTTPException(status_code=404, detail="Not found.")
+
+    source = track.lyrics_source
+
+    # Confirmed instrumental: 200 with no text so the client shows "instrumental".
+    if source == "instrumental":
+        return TrackLyricsResponse(
+            track_id=track.track_id,
+            source="instrumental",
+            quality=None,
+            is_synced=False,
+            is_explicit=track.is_explicit,
+            fetched_at=track.lyrics_fetched_at,
+        )
+
+    # Real / ASR lyrics with text.
+    if source in ("embedded", "lrclib", "asr") and (track.lyrics_plain or track.lyrics_synced):
+        return TrackLyricsResponse(
+            track_id=track.track_id,
+            source=source,
+            quality=track.lyrics_quality,
+            plain=track.lyrics_plain,
+            synced=track.lyrics_synced,
+            language=track.lyrics_language,
+            is_synced=bool(track.lyrics_synced),
+            is_explicit=track.is_explicit,
+            fetched_at=track.lyrics_fetched_at,
+        )
+
+    # Unresolved, or resolved to "none".
+    raise HTTPException(status_code=404, detail="No lyrics for this track.")
 
 
 @router.get(

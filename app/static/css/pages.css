@@ -5260,3 +5260,59 @@
     font-family: var(--mono);
     letter-spacing: 0.03em;
 }
+
+/* ── Lyrics modal (Explore → Tracks row action) ──────────────────── */
+.lyr-row-btn { white-space: nowrap; }
+.lyr-modal-body { min-height: 80px; }
+.lyr-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-bottom: 12px;
+}
+.lyr-chip {
+    display: inline-block;
+    font-family: var(--mono);
+    font-size: 9px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    padding: 2px 7px;
+    border-radius: 3px;
+    border: 1px solid var(--line-faint);
+    color: var(--ink-2);
+}
+.lyr-chip-real { background: var(--good-soft); color: var(--good); border-color: var(--good-soft); }
+.lyr-chip-synced { background: var(--accent-soft); color: var(--accent); border-color: var(--accent-soft); }
+.lyr-chip-asr { background: var(--warn-soft); color: var(--warn); border-color: var(--warn-soft); }
+.lyr-chip-instr { color: var(--ink-3); }
+.lyr-chip-lang { color: var(--ink-3); }
+.lyr-chip-explicit { background: var(--warn-soft); color: var(--warn); border-color: var(--warn-soft); }
+.lyr-asr-note {
+    font-size: 11px;
+    color: var(--warn);
+    margin-bottom: 10px;
+    font-style: italic;
+}
+.lyr-view {
+    max-height: 52vh;
+    overflow-y: auto;
+    line-height: 1.55;
+    font-size: 13px;
+    color: var(--ink);
+    white-space: pre-wrap;
+}
+.lyr-view-synced .lyr-line { display: flex; gap: 10px; align-items: baseline; }
+.lyr-line { padding: 1px 0; }
+.lyr-ts {
+    font-family: var(--mono);
+    font-size: 10px;
+    color: var(--ink-3);
+    flex: 0 0 auto;
+    min-width: 56px;
+}
+.lyr-text { flex: 1 1 auto; }
+.lyr-empty {
+    color: var(--ink-3);
+    font-style: italic;
+    padding: 12px 0;
+}

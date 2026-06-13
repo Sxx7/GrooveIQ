@@ -596,6 +596,23 @@ async def _upsert_track_features(session: AsyncSession, data: dict) -> None:
         row = TrackFeatures(track_id=track_id, **{k: v for k, v in data.items() if hasattr(TrackFeatures, k)})
         session.add(row)
     else:
+        # Lyrics from the scan are tier-1 (embedded). Honour the cascade's
+        # quality ladder so a re-scan can never DOWNGRADE lyrics the drain
+        # already resolved from a higher-quality source (e.g. embedded_plain=2
+        # must not clobber an existing lrclib_synced=3). New/equal quality wins.
+        if "lyrics_source" in data and existing.lyrics_quality is not None:
+            new_q = data.get("lyrics_quality")
+            if new_q is None or new_q < existing.lyrics_quality:
+                for _lk in (
+                    "lyrics_plain",
+                    "lyrics_synced",
+                    "lyrics_source",
+                    "lyrics_quality",
+                    "lyrics_language",
+                    "lyrics_version",
+                    "lyrics_fetched_at",
+                ):
+                    data.pop(_lk, None)
         for k, v in data.items():
             if hasattr(existing, k) and k != "id":
                 setattr(existing, k, v)

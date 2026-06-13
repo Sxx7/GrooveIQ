@@ -168,6 +168,39 @@ class Settings(BaseSettings):
     )
     CLAP_TOKENIZER_URL: str = "https://huggingface.co/Xenova/larger_clap_music_and_speech/resolve/main/tokenizer.json"
 
+    # ------------------------------------------------------------------
+    # Lyrics acquisition (optional, off by default)
+    #
+    # Lyrics are acquired through a priority cascade — real sources first,
+    # machine transcription only to fill genuine gaps:
+    #   tier 1  embedded tags (USLT/SYLT, Vorbis LYRICS, MP4 ©lyr) — in-scan, ~free
+    #   tier 2  LRCLIB (lrclib.net, free, no key, returns synced LRC)
+    #   tier 3  ASR fallback (faster-whisper) on a GPU-VM sidecar — gated
+    # Display needs real lyrics (tiers 1-2); the algorithm tolerates ASR text.
+    # Everything degrades gracefully: no tag -> LRCLIB -> ASR -> none.
+    # The scan/ranker/recommend paths are unchanged when LYRICS_ENABLED=false.
+    # ------------------------------------------------------------------
+    LYRICS_ENABLED: bool = False  # master switch (drain + scan-time embedded read)
+    LYRICS_LRCLIB_ENABLED: bool = True  # tier-2 online lookups
+    LYRICS_LRCLIB_URL: str = "https://lrclib.net"  # point at a self-hosted mirror later (Phase E)
+    LYRICS_LRCLIB_USER_AGENT: str = ""  # LRCLIB asks for an identifying UA; see lyrics_lrclib_user_agent
+    LYRICS_ASR_ENABLED: bool = False  # tier-3 (needs the GPU sidecar)
+    LYRICS_API_URL: str = ""  # lyrics-api sidecar base URL, e.g. http://<gpu-vm>:8300
+    LYRICS_API_MUSIC_PATH: str = ""  # path-map if the VM's /music mount differs from MUSIC_LIBRARY_PATH
+    LYRICS_API_TIMEOUT_S: float = 600.0  # per-track ASR HTTP timeout (queue + transcribe headroom)
+    LYRICS_ASR_INSTRUMENTAL_MAX: float = 0.5  # skip ASR when instrumentalness >= this (pilot-calibrated)
+    LYRICS_ASR_MODEL: str = "large-v3"  # informational; the sidecar owns the model (LYRICS_MODEL env there)
+    # Drain pacing / retry (env-only; promote to a versioned LyricsConfig + GUI later)
+    LYRICS_DRAIN_MAX_PER_HOUR: int = 0  # 0 = unthrottled ASR; raise to pace a shared GPU VM
+    LYRICS_DRAIN_BATCH_SIZE: int = 100  # tracks examined per tick (cheap tiers; ASR is paced separately)
+    LYRICS_DRAIN_POLL_MINUTES: int = 5  # tick cadence
+    LYRICS_DRAIN_COOLDOWN_HOURS: float = 24.0  # base retry cooldown for no_lyrics/failed rows
+    LYRICS_DRAIN_MAX_ATTEMPTS: int = 3  # then permanently_skipped
+    LYRICS_DRAIN_BACKOFF_MULTIPLIER: float = 2.0  # cooldown * m^(attempt-1), capped at 30 days
+    # Phase D (deferred) — torch-free ONNX lyrics text embedding
+    LYRICS_EMBED_ENABLED: bool = False
+    LYRICS_EMBED_MODEL_DIR: str = "/data/models/lyrics"
+
     # Supported audio extensions (comma-separated)
     AUDIO_EXTENSIONS: str = ".mp3,.flac,.ogg,.m4a,.wav,.aac,.opus,.wv"
 
@@ -417,6 +450,25 @@ class Settings(BaseSettings):
     @property
     def news_subreddits_list(self) -> list[str]:
         return _split_csv(self.NEWS_DEFAULT_SUBREDDITS)
+
+    @property
+    def lyrics_enabled(self) -> bool:
+        return bool(self.LYRICS_ENABLED)
+
+    @property
+    def lyrics_lrclib_enabled(self) -> bool:
+        """Tier-2 LRCLIB lookups are live only when the feature is enabled."""
+        return bool(self.LYRICS_ENABLED and self.LYRICS_LRCLIB_ENABLED)
+
+    @property
+    def lyrics_asr_enabled(self) -> bool:
+        """Tier-3 ASR needs the feature on, the tier enabled, and a sidecar URL."""
+        return bool(self.LYRICS_ENABLED and self.LYRICS_ASR_ENABLED and self.LYRICS_API_URL)
+
+    @property
+    def lyrics_lrclib_user_agent(self) -> str:
+        """LRCLIB asks callers to identify themselves; fall back to a sane default."""
+        return self.LYRICS_LRCLIB_USER_AGENT or "GrooveIQ (+https://github.com/Sxx7/GrooveIQ)"
 
     @property
     def discovery_enabled(self) -> bool:

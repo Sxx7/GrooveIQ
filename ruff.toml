@@ -72,6 +72,9 @@ ignore = [
 "scripts/*" = [
     "T20",    # print() for CLI output
 ]
+"migrations/*" = [
+    "T20",    # print() for migration CLI output
+]
 
 [lint.isort]
 known-first-party = ["app"]

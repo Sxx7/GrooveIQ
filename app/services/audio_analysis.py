@@ -52,6 +52,14 @@ import os
 # by es.TensorflowInputMusiCNN, the Discogs-EffNet training front end.
 ANALYSIS_VERSION = "2.8"
 
+# Lyrics-acquisition pipeline version. Deliberately decoupled from
+# ANALYSIS_VERSION: the lyrics cascade (embedded -> LRCLIB -> ASR; see
+# app/services/lyrics.py) is a completely different cost class, so refreshing
+# lyrics must never trigger a full Essentia re-scan. The drain re-resolves a
+# track when its stored ``lyrics_version`` differs from this constant. Bump
+# this when the cascade logic / sources change in a way that should re-fetch.
+LYRICS_VERSION = "1.0"
+
 # Must match FAISS index dimension (faiss_index._EMBEDDING_DIM).
 EMBEDDING_DIM = 64
 

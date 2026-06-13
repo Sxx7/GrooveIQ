@@ -261,6 +261,21 @@ class TrackFeatures(Base):
     analysis_version = Column(String(16), nullable=True)  # track model version changes
     analysis_error = Column(Text, nullable=True)  # null = success
 
+    # --- Lyrics (optional, off by default; acquired via the cascade in
+    # app/services/lyrics.py: embedded tags -> LRCLIB -> ASR). All nullable and
+    # additive; the scan/ranker/recommend paths are unchanged when LYRICS_ENABLED
+    # is false. lyrics_version is decoupled from analysis_version so refreshing
+    # lyrics never triggers a full Essentia re-scan. ---
+    lyrics_plain = Column(Text, nullable=True)  # newline-joined plain lyrics
+    lyrics_synced = Column(Text, nullable=True)  # LRC, "[mm:ss.xx] line"; null = unsynced
+    lyrics_source = Column(String(16), nullable=True)  # embedded|lrclib|asr|instrumental|none
+    lyrics_quality = Column(Integer, nullable=True)  # display-quality rank (higher = better)
+    lyrics_language = Column(String(8), nullable=True)  # ISO 639-1
+    is_explicit = Column(Boolean, nullable=True)  # profanity-lexicon flag (Phase D)
+    lyrics_embedding = Column(Text, nullable=True)  # base64 float32 ONNX text vector (Phase D)
+    lyrics_version = Column(String(16), nullable=True)  # acquisition pipeline version
+    lyrics_fetched_at = Column(Integer, nullable=True)  # unix ts of last resolution
+
 
 # ---------------------------------------------------------------------------
 # Users
@@ -893,6 +908,55 @@ class LidarrBackfillState(Base):
     missing_cursor_page = Column(Integer, nullable=False, default=1)
     cutoff_cursor_page = Column(Integer, nullable=False, default=1)
     updated_at = Column(Integer, nullable=False, default=lambda: int(time.time()))
+
+
+class LyricsRequest(Base):
+    """
+    Per-track state for the lyrics acquisition drain (app/services/lyrics_drain.py).
+
+    One row per track being resolved through the cascade (embedded -> LRCLIB ->
+    ASR). Mirrors the Lidarr-backfill state machine: ``status`` drives the
+    transitions; ``last_asr_at`` is the sliding-window key for the GPU
+    rate-limiter (only ASR calls are budgeted — embedded/LRCLIB are cheap).
+
+    State machine:
+        queued → searching → complete | instrumental
+                            ↘ no_lyrics → (cooldown) → searching → ...
+                            ↘ no_lyrics → permanently_skipped (after max_attempts)
+                            ↘ failed    → (cooldown) → searching → ...
+                            ↘ search_error (transient — short cooldown, no attempt bump)
+        ASR-deferred rows go back to ``queued`` with a short next_retry_at when
+        the GPU budget for the tick/hour is spent (no attempt bump).
+    """
+
+    __tablename__ = "lyrics_requests"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    track_id = Column(String(128), nullable=False, unique=True, index=True)
+
+    # State machine — see class docstring for transitions.
+    status = Column(String(24), nullable=False, index=True)
+    source_resolved = Column(String(16), nullable=True)  # embedded|lrclib|asr|instrumental|none
+    voiced = Column(Boolean, nullable=True)  # was/could ASR be attempted (gate)
+    # Cheap tiers (embedded + LRCLIB) returned a definitive "no lyrics" — ASR
+    # retries skip them so the GPU drain doesn't re-hammer LRCLIB every tick.
+    cheap_exhausted = Column(Boolean, nullable=True)
+
+    attempt_count = Column(Integer, nullable=False, default=0)
+    last_attempt_at = Column(Integer, nullable=True)
+    # Timestamp of the last *ASR* call for this row. The GPU rate-limit query
+    # (last_asr_at > now - 1h) counts these — precise even across row reuse.
+    last_asr_at = Column(Integer, nullable=True, index=True)
+    next_retry_at = Column(Integer, nullable=True, index=True)
+    last_error = Column(String(1024), nullable=True)
+
+    created_at = Column(Integer, nullable=False, index=True, default=lambda: int(time.time()))
+    updated_at = Column(Integer, nullable=False, default=lambda: int(time.time()))
+
+    __table_args__ = (
+        Index("ix_lyr_status_retry", "status", "next_retry_at"),
+        Index("ix_lyr_created", "created_at"),
+    )
 
 
 class PlaylistTrack(Base):

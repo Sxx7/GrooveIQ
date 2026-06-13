@@ -164,6 +164,20 @@ async def start_scheduler() -> None:
     except Exception as e:
         logger.warning(f"Lidarr backfill scheduler init skipped: {e}")
 
+    # Lyrics acquisition drain — resolves embedded/LRCLIB/ASR lyrics across the
+    # library. Gated on LYRICS_ENABLED; the tick is self-contained (synchronous
+    # resolution + a stale-`searching` reaper), so no separate poll job.
+    if settings.lyrics_enabled:
+        _scheduler.add_job(
+            _lyrics_drain_tick,
+            trigger=IntervalTrigger(minutes=max(1, settings.LYRICS_DRAIN_POLL_MINUTES)),
+            id="lyrics_drain_tick",
+            replace_existing=True,
+            coalesce=True,
+            max_instances=1,
+            misfire_grace_time=300,
+        )
+
     # Last.fm scrobble queue processor (every 60s)
     if settings.lastfm_user_enabled and settings.LASTFM_SCROBBLE_ENABLED:
         _scheduler.add_job(
@@ -567,6 +581,27 @@ async def _lidarr_backfill_poll_status() -> None:
             )
     except Exception:
         logger.error(f"Lidarr backfill poll failed: {traceback.format_exc()}")
+
+
+async def _lyrics_drain_tick() -> None:
+    """Resolve the next batch of tracks through the lyrics cascade."""
+    try:
+        from app.services.lyrics_drain import run_lyrics_tick
+
+        async with AsyncSessionLocal() as session:
+            summary = await run_lyrics_tick(session)
+        skipped = summary.get("skipped") if isinstance(summary, dict) else None
+        if skipped:
+            logger.debug("Lyrics drain tick skipped: %s", skipped)
+        elif isinstance(summary, dict) and summary.get("processed"):
+            logger.info(
+                "Lyrics drain tick: processed=%d asr=%d outcomes=%s",
+                summary.get("processed", 0),
+                summary.get("asr_used", 0),
+                summary.get("outcomes", {}),
+            )
+    except Exception:
+        logger.error(f"Lyrics drain tick failed: {traceback.format_exc()}")
 
 
 def _register_lidarr_backfill_jobs(poll_interval_minutes: int) -> None:

@@ -1,0 +1,43 @@
+# lyrics-api — deploy on the GPU VM (NOT in the main GrooveIQ stack).
+#
+# This sidecar needs an NVIDIA GPU + nvidia-container-toolkit, so it runs on the
+# GPU host, separate from the CPU-only GrooveIQ box. Point GrooveIQ at it with
+#   LYRICS_API_URL=http://<gpu-vm>:8300
+# and (if this host mounts the library at a different path than GrooveIQ's
+# MUSIC_LIBRARY_PATH) set LYRICS_API_MUSIC_PATH on the GrooveIQ side to match
+# the `OUTPUT_DIR`/mount below.
+#
+#   docker compose up -d --build
+services:
+  lyrics-api:
+    build: .
+    image: lyrics-api:latest
+    container_name: lyrics-api
+    restart: unless-stopped
+    ports:
+      - "${LYRICS_API_PORT:-8300}:8300"
+    environment:
+      LYRICS_MODEL: ${LYRICS_MODEL:-large-v3}
+      LYRICS_DEVICE: ${LYRICS_DEVICE:-auto}
+      LYRICS_COMPUTE_TYPE: ${LYRICS_COMPUTE_TYPE:-}
+      LYRICS_BEAM_SIZE: ${LYRICS_BEAM_SIZE:-5}
+      LYRICS_VAD: ${LYRICS_VAD:-true}
+      OUTPUT_DIR: /music
+      MUSIC_MIN_ENTRIES: ${MUSIC_MIN_ENTRIES:-0}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    volumes:
+      # Read-only library mount (transcribe by path). Adjust the host path to
+      # this VM's copy/NFS mount of the library.
+      - ${MUSIC_PATH:-/music}:/music:ro
+      # Persist the auto-downloaded Whisper model across recreates.
+      - lyrics_models:/data/models
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+volumes:
+  lyrics_models:

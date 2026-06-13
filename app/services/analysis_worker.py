@@ -748,7 +748,7 @@ def _analyze_file(
     Returns ``None`` if the file is unchanged (hash + version match).
     Returns a result dict with keys matching ``TrackFeatures`` columns.
     """
-    from app.services.audio_analysis import ANALYSIS_VERSION, compute_file_hash
+    from app.services.audio_analysis import ANALYSIS_VERSION, LYRICS_VERSION, compute_file_hash
 
     # --- Hash-based skip check ---
     if cached is not None:
@@ -786,6 +786,38 @@ def _analyze_file(
                 result[key] = meta[key]
     except Exception as e:
         logger.debug("Metadata read failed for %s: %s", file_path, e)
+
+    # --- Embedded lyrics (tier 1 of the cascade — mutagen, fast, no Essentia).
+    # Gated on LYRICS_ENABLED so the scan is byte-for-byte unchanged otherwise.
+    # The drain (app/services/lyrics.py) re-reads from the file too, so existing
+    # tracks scanned before this still get embedded lyrics without a re-scan. ---
+    try:
+        from app.core.config import settings as _settings
+
+        if _settings.LYRICS_ENABLED:
+            from app.services.metadata_reader import read_embedded_lyrics
+
+            emb = read_embedded_lyrics(file_path)
+            if emb.get("synced"):
+                # Embedded synced is the best possible (q4) — mark resolved so
+                # the drain skips it (nothing can beat it).
+                result["lyrics_plain"] = emb.get("plain")
+                result["lyrics_synced"] = emb.get("synced")
+                result["lyrics_source"] = "embedded"
+                result["lyrics_quality"] = 4
+                result["lyrics_version"] = LYRICS_VERSION
+                result["lyrics_fetched_at"] = int(time.time())
+            elif emb.get("plain"):
+                # Embedded plain (q2) is displayable now, but deliberately NOT
+                # stamped with lyrics_version: the drain reprocesses it to look
+                # for an LRCLIB *synced* upgrade (q3), keeping the plain copy if
+                # none is found.
+                result["lyrics_plain"] = emb.get("plain")
+                result["lyrics_source"] = "embedded"
+                result["lyrics_quality"] = 2
+                result["lyrics_fetched_at"] = int(time.time())
+    except Exception as e:
+        logger.debug("Embedded-lyrics read failed for %s: %s", file_path, e)
 
     try:
         result["file_hash"] = compute_file_hash(file_path)

@@ -435,6 +435,143 @@
         return out;
     }
 
+    /* ── Lyrics modal (Tracks row action) ──────────────────────────── */
+
+    // Map a lyrics source to a chip label + class. ASR is deliberately marked
+    // "auto-transcribed" (amber) so users don't mistake transcription errors
+    // for real lyrics.
+    const _LYRIC_SOURCE_META = {
+        embedded: { label: 'Embedded', cls: 'lyr-chip-real' },
+        lrclib: { label: 'LRCLIB', cls: 'lyr-chip-real' },
+        asr: { label: 'Auto-transcribed', cls: 'lyr-chip-asr' },
+        instrumental: { label: 'Instrumental', cls: 'lyr-chip-instr' },
+    };
+
+    function _lyricsSourceChip(source) {
+        const meta = _LYRIC_SOURCE_META[source] || { label: source || 'unknown', cls: 'lyr-chip-real' };
+        const chip = document.createElement('span');
+        chip.className = 'lyr-chip ' + meta.cls;
+        chip.textContent = meta.label;
+        return chip;
+    }
+
+    // Parse LRC "[mm:ss.xx] text" lines into {ts, text}. Lines without a
+    // timestamp (or metadata-only) are kept as plain text rows.
+    function _parseLrc(lrc) {
+        const out = [];
+        const re = /^((?:\[\d{1,3}:\d{2}(?:[.:]\d{1,3})?\])+)?(.*)$/;
+        (lrc || '').split('\n').forEach((line) => {
+            const m = re.exec(line);
+            const ts = m && m[1] ? m[1].replace(/[[\]]/g, ' ').trim() : '';
+            const text = (m ? m[2] : line).trim();
+            if (text) out.push({ ts: ts, text: text });
+        });
+        return out;
+    }
+
+    function _renderLyricsBody(host, data) {
+        host.innerHTML = '';
+        const meta = document.createElement('div');
+        meta.className = 'lyr-meta';
+        meta.appendChild(_lyricsSourceChip(data.source));
+        if (data.is_synced) {
+            const synced = document.createElement('span');
+            synced.className = 'lyr-chip lyr-chip-synced';
+            synced.textContent = 'Synced';
+            meta.appendChild(synced);
+        }
+        if (data.language) {
+            const lang = document.createElement('span');
+            lang.className = 'lyr-chip lyr-chip-lang';
+            lang.textContent = data.language.toUpperCase();
+            meta.appendChild(lang);
+        }
+        if (data.is_explicit) {
+            const ex = document.createElement('span');
+            ex.className = 'lyr-chip lyr-chip-explicit';
+            ex.textContent = 'Explicit';
+            meta.appendChild(ex);
+        }
+        host.appendChild(meta);
+
+        if (data.source === 'instrumental') {
+            const p = document.createElement('div');
+            p.className = 'lyr-empty';
+            p.textContent = 'Instrumental — no lyrics.';
+            host.appendChild(p);
+            return;
+        }
+
+        if (data.source === 'asr') {
+            const note = document.createElement('div');
+            note.className = 'lyr-asr-note';
+            note.textContent = 'Auto-transcribed by speech recognition — may contain errors.';
+            host.appendChild(note);
+        }
+
+        const view = document.createElement('div');
+        view.className = 'lyr-view' + (data.is_synced ? ' lyr-view-synced' : '');
+        if (data.synced) {
+            _parseLrc(data.synced).forEach((ln) => {
+                const row = document.createElement('div');
+                row.className = 'lyr-line';
+                if (ln.ts) {
+                    const t = document.createElement('span');
+                    t.className = 'lyr-ts';
+                    t.textContent = ln.ts;
+                    row.appendChild(t);
+                }
+                const txt = document.createElement('span');
+                txt.className = 'lyr-text';
+                txt.textContent = ln.text;
+                row.appendChild(txt);
+                view.appendChild(row);
+            });
+        } else {
+            (data.plain || '').split('\n').forEach((line) => {
+                const row = document.createElement('div');
+                row.className = 'lyr-line';
+                row.textContent = line;
+                view.appendChild(row);
+            });
+        }
+        host.appendChild(view);
+    }
+
+    async function _openLyricsModal(track) {
+        const title = (track.title || track.track_id) + (track.artist ? ' — ' + track.artist : '');
+        const body = document.createElement('div');
+        body.className = 'lyr-modal-body';
+        body.innerHTML = '<div class="vc-loading">Loading lyrics…</div>';
+        const handle = GIQ.components.modal({ title: 'Lyrics · ' + title, width: 'md', body: body });
+        try {
+            const data = await GIQ.api.get('/v1/tracks/' + encodeURIComponent(track.track_id) + '/lyrics');
+            _renderLyricsBody(body, data);
+        } catch (e) {
+            body.innerHTML = '';
+            const msg = document.createElement('div');
+            msg.className = 'lyr-empty';
+            msg.textContent = (e && e.status === 404)
+                ? 'No lyrics available for this track yet.'
+                : 'Could not load lyrics: ' + (e && e.message ? e.message : e);
+            body.appendChild(msg);
+        }
+        return handle;
+    }
+
+    function _lyricsRowAction(track) {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'vc-btn vc-btn-sm lyr-row-btn';
+        btn.textContent = '♪ Lyrics';
+        btn.title = 'View lyrics';
+        btn.addEventListener('click', (ev) => {
+            ev.stopPropagation();
+            _openLyricsModal(track);
+        });
+        return btn;
+    }
+
     /* ── Tracks ─────────────────────────────────────────────────────── */
 
     GIQ.pages.explore.tracks = function renderTracks(root) {
@@ -519,6 +656,7 @@
             const table = GIQ.components.trackTable({
                 columns: ['title', 'artist', 'genre', 'bpm', 'key', 'energy', 'dance', 'valence', 'mood', 'duration', 'version', 'id'],
                 rows: s.tracks,
+                rowAction: _lyricsRowAction,
                 sort: { field: s.sortBy, dir: s.sortDir },
                 sortable: ['bpm', 'energy', 'dance', 'valence', 'duration', 'version'],
                 onSort: (field) => {

@@ -94,7 +94,7 @@ async def init_db() -> None:
 
 
 _SAFE_IDENTIFIER = re.compile(r"^[a-z_][a-z0-9_]*$", re.IGNORECASE)
-_SAFE_COL_TYPE = re.compile(r"^(VARCHAR\(\d+\)|INTEGER( DEFAULT \d+)?|TEXT|REAL|BLOB)$", re.IGNORECASE)
+_SAFE_COL_TYPE = re.compile(r"^(VARCHAR\(\d+\)|INTEGER( DEFAULT \d+)?|BOOLEAN|TEXT|REAL|BLOB)$", re.IGNORECASE)
 
 
 async def _apply_column_migrations(conn) -> None:
@@ -160,6 +160,17 @@ async def _apply_column_migrations(conn) -> None:
         # from per-user min-max normalised label, so incremental scoring runs
         # don't squash untouched rows toward zero.
         ("track_interactions", "raw_satisfaction_score", "REAL"),
+        # Lyrics acquisition cascade (migration 017). All nullable + additive;
+        # lyrics_version is decoupled from ANALYSIS_VERSION.
+        ("track_features", "lyrics_plain", "TEXT"),
+        ("track_features", "lyrics_synced", "TEXT"),
+        ("track_features", "lyrics_source", "VARCHAR(16)"),
+        ("track_features", "lyrics_quality", "INTEGER"),
+        ("track_features", "lyrics_language", "VARCHAR(8)"),
+        ("track_features", "is_explicit", "BOOLEAN"),
+        ("track_features", "lyrics_embedding", "TEXT"),
+        ("track_features", "lyrics_version", "VARCHAR(16)"),
+        ("track_features", "lyrics_fetched_at", "INTEGER"),
     ]
     for table, column, col_type in migrations:
         # Validate identifiers to prevent SQL injection via migration list.

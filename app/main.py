@@ -28,6 +28,7 @@ from app.api.routes import (
     integrations,
     lastfm,
     lidarr_backfill,
+    lyrics,
     news,
     playlists,
     radio,
@@ -245,6 +246,7 @@ app.include_router(soulseek.router, prefix="/v1", tags=["soulseek"])
 app.include_router(integrations.router, prefix="/v1", tags=["integrations"])
 app.include_router(news.router, prefix="/v1", tags=["news"])
 app.include_router(lidarr_backfill.router, prefix="/v1", tags=["lidarr-backfill"])
+app.include_router(lyrics.router, prefix="/v1", tags=["lyrics"])
 app.include_router(api_calls.router, prefix="/v1", tags=["api-calls"])
 app.include_router(admin.router, prefix="/v1", tags=["admin"])
 

@@ -270,6 +270,27 @@ class TrackFeaturesResponse(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class TrackLyricsResponse(BaseModel):
+    """Lyrics for one track (GET /v1/tracks/{id}/lyrics).
+
+    ``source`` is one of embedded|lrclib|asr|instrumental. ``quality`` is the
+    cascade's display-quality rank (higher = better; null for instrumental).
+    ``is_synced`` is true when time-synced LRC is available (karaoke-ready).
+    For instrumentals the endpoint returns 200 with ``source="instrumental"``
+    and no text, so clients show "instrumental" rather than "no lyrics".
+    """
+
+    track_id: str
+    source: str  # embedded | lrclib | asr | instrumental
+    quality: int | None = None
+    plain: str | None = None
+    synced: str | None = None
+    language: str | None = None
+    is_synced: bool = False
+    is_explicit: bool | None = None
+    fetched_at: int | None = None
+
+
 class TrackLookupBatchRequest(BaseModel):
     """POST /v1/tracks/lookup — batch resolution of one external-id type to
     internal track_id. Pass exactly one of the *_ids fields."""
