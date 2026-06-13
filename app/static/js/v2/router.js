@@ -9,7 +9,7 @@
     const SUBPAGES = {
         explore: [
             'recommendations', 'radio', 'playlists', 'tracks',
-            'text-search', 'music-map', 'charts', 'artists', 'news',
+            'text-search', 'music-map', 'charts', 'artists', 'albums', 'news',
         ],
         actions: [
             'pipeline-ml', 'library', 'discovery', 'charts', 'downloads',
@@ -41,6 +41,7 @@
         'text-search': 'Text Search',
         'music-map': 'Music Map',
         'artists': 'Artists',
+        'albums': 'Albums',
         'news': 'News',
         // Actions
         'pipeline-ml': 'Pipeline & ML',

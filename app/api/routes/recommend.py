@@ -847,176 +847,29 @@ the user's listening history with that artist (if any).
 async def get_recommended_artists(
     user_id: str,
     limit: int = Query(20, ge=1, le=100),
+    mode: str = Query("discover", description="Blend mode: familiar | balanced | discover"),
+    include_discovery: bool = Query(True, description="Include FAISS/Last.fm discovery candidates"),
     session: AsyncSession = Depends(get_session),
     _key: str = Depends(require_api_key),
 ):
     validate_user_id(user_id)
     check_user_access(_key, user_id)
 
-    # --- Verify user & load taste profile ---
+    # --- Verify user exists ---
     user_row = (await session.execute(select(User).where(User.user_id == user_id))).scalar_one_or_none()
     if user_row is None:
         raise HTTPException(status_code=404, detail="User not found.")
 
-    taste = user_row.taste_profile or {}
-    [t["track_id"] for t in taste.get("top_tracks", [])]
+    # --- Algorithm-driven blend: content centroid (FAISS) + ranker roll-up +
+    #     Last.fm + the legacy play-count heuristic, shifted by `mode`. Degrades
+    #     to the heuristic when embeddings and the ranker are both unavailable.
+    #     See app/services/artist_reco.py.
+    from app.services import artist_reco
 
-    # --- Source 1: Local listening (artist aggregation from interactions) ---
-    from sqlalchemy import desc
-    from sqlalchemy import func as sa_func
-
-    # Join interactions with features to get artist + satisfaction data
-    q = (
-        select(
-            TrackFeatures.artist,
-            sa_func.sum(TrackInteraction.play_count).label("plays"),
-            sa_func.sum(TrackInteraction.like_count).label("likes"),
-            sa_func.avg(TrackInteraction.satisfaction_score).label("avg_satisfaction"),
-            sa_func.count(TrackInteraction.track_id).label("track_count"),
-            sa_func.max(TrackInteraction.last_played_at).label("last_played"),
-            sa_func.avg(TrackFeatures.energy).label("avg_energy"),
-            sa_func.avg(TrackFeatures.danceability).label("avg_danceability"),
-            sa_func.avg(TrackFeatures.valence).label("avg_valence"),
-            sa_func.avg(TrackFeatures.bpm).label("avg_bpm"),
-        )
-        .join(TrackFeatures, TrackFeatures.track_id == TrackInteraction.track_id)
-        .where(
-            TrackInteraction.user_id == user_id,
-            TrackFeatures.artist.isnot(None),
-            TrackFeatures.artist != "",
-        )
-        .group_by(TrackFeatures.artist)
-        .having(sa_func.sum(TrackInteraction.play_count) > 0)
-        .order_by(desc("avg_satisfaction"))
-        .limit(200)
+    reco = await artist_reco.recommend_artists(
+        session, user_id, mode=mode, limit=limit, include_discovery=include_discovery
     )
-    rows = (await session.execute(q)).all()
-
-    # Build artist dict: normalized_name -> data
-    import time as _time
-
-    now = _time.time()
-    artist_map = {}
-    for r in rows:
-        name = r.artist.strip()
-        if not name:
-            continue
-        norm = name.lower()
-        # Recency factor: more recent = higher boost
-        recency = 1.0
-        if r.last_played:
-            days_ago = (now - r.last_played) / 86400
-            import math
-
-            recency = math.exp(-days_ago / 60)  # 60-day half-life
-
-        score = (r.avg_satisfaction or 0) * 0.5 + min((r.plays or 0) / 50, 1.0) * 0.3 + recency * 0.2
-        artist_map[norm] = {
-            "name": name,
-            "score": round(score, 4),
-            "source": "listening",
-            "plays": r.plays or 0,
-            "likes": r.likes or 0,
-            "track_count": r.track_count or 0,
-            "avg_satisfaction": round(r.avg_satisfaction or 0, 4),
-            "last_played": r.last_played,
-            "audio": {
-                "energy": round(r.avg_energy, 3) if r.avg_energy is not None else None,
-                "danceability": round(r.avg_danceability, 3) if r.avg_danceability is not None else None,
-                "valence": round(r.avg_valence, 3) if r.avg_valence is not None else None,
-                "bpm": round(r.avg_bpm, 1) if r.avg_bpm is not None else None,
-            },
-            "in_library": True,
-        }
-
-    # --- Source 2: Last.fm similar artists ---
-    if settings.LASTFM_API_KEY:
-        from app.services.discovery import LastFmClient as DiscoveryLastFm
-
-        # Pick top seed artists (top by score from local listening)
-        seed_artists = sorted(artist_map.values(), key=lambda a: a["score"], reverse=True)[:8]
-        if seed_artists:
-            lfm = DiscoveryLastFm(settings.LASTFM_API_KEY)
-            try:
-                import asyncio
-
-                tasks = [lfm.get_similar_artists(a["name"], limit=15) for a in seed_artists]
-                results = await asyncio.gather(*tasks, return_exceptions=True)
-                for seed_idx, result in enumerate(results):
-                    if isinstance(result, Exception):
-                        continue
-                    seed_name = seed_artists[seed_idx]["name"]
-                    for sim in result:
-                        sim_name = sim.get("name", "").strip()
-                        if not sim_name:
-                            continue
-                        sim_norm = sim_name.lower()
-                        match_score = float(sim.get("match", 0))
-                        # If already known from listening, boost; don't replace
-                        if sim_norm in artist_map:
-                            existing = artist_map[sim_norm]
-                            existing["score"] = round(existing["score"] + match_score * 0.15, 4)
-                            if "similar_to" not in existing:
-                                existing["similar_to"] = []
-                            existing["similar_to"].append(seed_name)
-                            continue
-                        # New artist discovery
-                        if sim_norm not in artist_map:
-                            artist_map[sim_norm] = {
-                                "name": sim_name,
-                                "score": round(match_score * 0.6, 4),
-                                "source": "lastfm_similar",
-                                "similar_to": [seed_name],
-                                "mbid": sim.get("mbid"),
-                                "in_library": False,
-                                "plays": 0,
-                                "likes": 0,
-                                "track_count": 0,
-                            }
-            finally:
-                await lfm.close()
-
-    # --- Source 3: Last.fm top artists (from cached profile) ---
-    lastfm_top = taste.get("lastfm_top_artists", [])
-    for entry in lastfm_top:
-        name = entry.get("name", "").strip()
-        if not name:
-            continue
-        norm = name.lower()
-        if norm in artist_map:
-            # Already present — tag it
-            if artist_map[norm].get("source") != "listening":
-                artist_map[norm]["lastfm_playcount"] = entry.get("playcount", 0)
-            continue
-        artist_map[norm] = {
-            "name": name,
-            "score": round(min((entry.get("playcount", 0) or 0) / 500, 1.0) * 0.4, 4),
-            "source": "lastfm_top",
-            "lastfm_playcount": entry.get("playcount", 0),
-            "in_library": False,
-            "plays": 0,
-            "likes": 0,
-            "track_count": 0,
-        }
-
-    # --- Check library presence for non-listening artists ---
-    non_library = [n for n, a in artist_map.items() if not a.get("in_library")]
-    if non_library:
-        # Batch check which of these artists have tracks in the library
-        lib_q = (
-            select(TrackFeatures.artist, sa_func.count().label("cnt"))
-            .where(TrackFeatures.artist.isnot(None))
-            .group_by(TrackFeatures.artist)
-        )
-        lib_rows = (await session.execute(lib_q)).all()
-        lib_norm = {r.artist.strip().lower(): r.cnt for r in lib_rows if r.artist}
-        for norm, a in artist_map.items():
-            if not a.get("in_library") and norm in lib_norm:
-                a["in_library"] = True
-                a["track_count"] = lib_norm[norm]
-
-    # --- Rank and return ---
-    ranked = sorted(artist_map.values(), key=lambda a: a["score"], reverse=True)[:limit]
+    ranked = reco["artists"]
 
     # --- Batch-fetch artist images from cover_art_cache ---
     import re
@@ -1120,8 +973,84 @@ async def get_recommended_artists(
 
     return {
         "user_id": user_id,
+        "mode": reco["mode"],
+        "generated_at": reco["generated_at"],
         "total": len(ranked),
         "artists": ranked,
+    }
+
+
+@router.get(
+    "/recommend/{user_id}/albums",
+    summary="Get recommended albums for a user",
+    description="""
+Returns a ranked list of in-library albums for the given user, scored by
+blending the track ranker (rolled up to album level), library coverage, a
+"rediscover" freshness boost, and audio coherence with the user's taste.
+
+Albums are grouped by ``(album_artist or artist, album)``. This is a
+library-only surface — discovery / acquire handles are not wired in this pass
+(``acquire`` is always null).
+
+Modes: **familiar** (proven, coverage-led), **balanced**, **discover**
+(audio-coherence-led). Each album carries ``sources``/``reasons``/``signals``
+for "Because you listen to …"-style badges.
+""",
+)
+async def get_recommended_albums(
+    user_id: str,
+    limit: int = Query(20, ge=1, le=100),
+    mode: str = Query("discover", description="Blend mode: familiar | balanced | discover"),
+    session: AsyncSession = Depends(get_session),
+    _key: str = Depends(require_api_key),
+):
+    validate_user_id(user_id)
+    check_user_access(_key, user_id)
+
+    user_row = (await session.execute(select(User.user_id).where(User.user_id == user_id))).scalar_one_or_none()
+    if user_row is None:
+        raise HTTPException(status_code=404, detail="User not found.")
+
+    from app.services import album_reco
+
+    reco = await album_reco.recommend_albums(session, user_id, mode=mode, limit=limit)
+    albums = reco["albums"]
+
+    # --- Resolve cover art for the returned albums (capped fan-out across
+    #     fresh sessions, mirroring the artists handler). resolve_cover_art
+    #     reads the same cover_art_cache first, so warm entries skip upstream.
+    _ALBUM_COVER_RESOLVE_CAP = 12
+    cover_tasks = [
+        (i, a["album_artist"], a["album"])
+        for i, a in enumerate(albums)
+        if a.get("album_artist") and a.get("album")
+    ][:_ALBUM_COVER_RESOLVE_CAP]
+    if cover_tasks:
+        import asyncio
+
+        from app.db.session import AsyncSessionLocal
+        from app.services.cover_art import resolve_cover_art
+
+        async def _resolve_album_cover(idx: int, artist: str, album: str) -> tuple[int, str | None]:
+            try:
+                async with AsyncSessionLocal() as own_session:
+                    url = await resolve_cover_art(own_session, artist, album)
+                    await own_session.commit()
+            except Exception:
+                url = None
+            return idx, url
+
+        results = await asyncio.gather(*[_resolve_album_cover(i, ar, al) for i, ar, al in cover_tasks])
+        for idx, url in results:
+            if url:
+                albums[idx]["cover_url"] = url
+
+    return {
+        "user_id": user_id,
+        "mode": reco["mode"],
+        "generated_at": reco["generated_at"],
+        "total": len(albums),
+        "albums": albums,
     }
 
 

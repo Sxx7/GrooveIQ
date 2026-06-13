@@ -418,6 +418,65 @@ class ModesConfig(BaseModel):
         return v
 
 
+class ArtistRecoConfig(BaseModel):
+    """Artist recommendation blend weights (GET /v1/recommend/{user}/artists).
+
+    The four w_* terms are blended per candidate then shifted by the request
+    ``mode`` (familiar | balanced | discover). Reads per-call via get_config();
+    no model is trained.
+    """
+
+    w_content: float = Field(
+        0.35, ge=0, le=1, description="Weight of the audio-centroid cosine (does this artist *sound* like your taste)"
+    )
+    w_ranker: float = Field(
+        0.35, ge=0, le=1, description="Weight of the track-ranker roll-up (top-k mean of the artist's learned track scores)"
+    )
+    w_lastfm: float = Field(0.20, ge=0, le=1, description="Weight of the Last.fm similar/top signal")
+    w_history: float = Field(
+        0.10, ge=0, le=1, description="Weight of the legacy play-count/recency/satisfaction heuristic, as one input"
+    )
+    rollup_top_k: int = Field(
+        5, ge=1, le=50, description="How many of an artist's top track scores are averaged for the ranker roll-up"
+    )
+    discovery_faiss_k: int = Field(
+        200, ge=10, le=2000, description="Neighbour tracks pulled from the taste centroid for FAISS-based discovery"
+    )
+    content_reason_threshold: float = Field(
+        0.6, ge=0, le=1, description="content_score above this emits the 'sounds like your taste' reason"
+    )
+    ranker_reason_threshold: float = Field(
+        0.6, ge=0, le=1, description="ranker_rollup above this emits the 'you rate their tracks highly' reason"
+    )
+
+
+class AlbumRecoConfig(BaseModel):
+    """Album recommendation blend weights (GET /v1/recommend/{user}/albums).
+
+    Library-only roll-up surface: albums are grouped by (album_artist or
+    artist, album) and scored by a ranker roll-up plus coverage, freshness, and
+    audio coherence. Shifted by the request ``mode``. No model is trained.
+    """
+
+    w_content: float = Field(0.25, ge=0, le=1, description="Weight of the album audio-centroid cosine vs taste")
+    w_ranker: float = Field(0.45, ge=0, le=1, description="Weight of the track-ranker roll-up over the album's tracks")
+    w_coverage: float = Field(
+        0.15, ge=0, le=1, description="Weight of library coverage (owned tracks / total album tracks)"
+    )
+    w_fresh: float = Field(
+        0.15, ge=0, le=1, description="Weight of the 'rediscover' freshness signal (boost for long-unplayed albums)"
+    )
+    fresh_halflife_days: float = Field(
+        60.0, ge=1, le=365, description="Half-life (days) of the freshness curve; longer = slower rediscover ramp"
+    )
+    min_album_tracks: int = Field(
+        3, ge=1, le=50, description="Ignore albums with fewer owned tracks than this (filters singles-as-albums)"
+    )
+    rollup_top_k: int = Field(
+        10, ge=1, le=50, description="Cap on how many of an album's top track scores are averaged for the roll-up"
+    )
+
+
 # ---------------------------------------------------------------------------
 # Top-level config
 # ---------------------------------------------------------------------------
@@ -439,6 +498,8 @@ class AlgorithmConfigData(BaseModel):
     radio: RadioConfig = Field(default_factory=RadioConfig)
     session_embeddings: SessionEmbeddingsConfig = Field(default_factory=SessionEmbeddingsConfig)
     modes: ModesConfig = Field(default_factory=ModesConfig)
+    artist_reco: ArtistRecoConfig = Field(default_factory=ArtistRecoConfig)
+    album_reco: AlbumRecoConfig = Field(default_factory=AlbumRecoConfig)
 
 
 # ---------------------------------------------------------------------------
@@ -527,6 +588,26 @@ CONFIG_GROUPS: list[dict[str, Any]] = [
             "Per-preset definitions for the discovery dial (familiar → deep discovery): acquisition "
             "(kappa/lambda), novelty filter, proven thresholds, exploration/freshness, and per-source "
             "weight multipliers. 'balanced' is calibrated to reproduce today's default behaviour."
+        ),
+        "retrain_required": False,
+    },
+    {
+        "key": "artist_reco",
+        "label": "Artist Recommendations",
+        "description": (
+            "Blend weights for the artist recommender (content centroid, track-ranker roll-up, Last.fm, "
+            "and the legacy heuristic). Shifted at serving time by the request mode (familiar/balanced/discover). "
+            "No model is trained — this is a read-only aggregation of existing track signals."
+        ),
+        "retrain_required": False,
+    },
+    {
+        "key": "album_reco",
+        "label": "Album Recommendations",
+        "description": (
+            "Blend weights for the library-only album recommender: track-ranker roll-up, coverage, "
+            "rediscover freshness, and audio coherence vs your taste. "
+            "No model is trained — this is a read-only aggregation of existing track signals."
         ),
         "retrain_required": False,
     },

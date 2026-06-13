@@ -2590,6 +2590,7 @@
 
     const ARTISTS_SOURCES = [
         ['listening', 'Listening history'],
+        ['taste_centroid', 'Discovery'],
         ['lastfm_similar', 'Last.fm similar'],
         ['lastfm_top', 'Last.fm top'],
     ];
@@ -3008,6 +3009,210 @@
             row.appendChild(lidarrBtn);
         }
         return row;
+    }
+
+    /* ── Albums ─────────────────────────────────────────────────────── */
+
+    const ALBUM_MODES = [
+        ['discover', 'Discover'],
+        ['balanced', 'Balanced'],
+        ['familiar', 'Familiar'],
+    ];
+
+    GIQ.pages.explore.albums = function renderAlbums(root, params) {
+        if (!GIQ.state.albums) {
+            GIQ.state.albums = { userId: null, mode: 'discover', result: null, loading: false };
+        }
+        const s = GIQ.state.albums;
+        if (params && params.user) s.userId = params.user;
+
+        const right = document.createElement('div');
+        right.className = 'artists-header-controls';
+        const userSel = _userSelect(s.userId, (val) => {
+            s.userId = val || null;
+            if (s.userId) {
+                const next = '#/explore/albums?user=' + encodeURIComponent(s.userId);
+                if (window.location.hash !== next) history.replaceState(null, '', next);
+                load();
+            }
+        });
+        right.appendChild(userSel);
+        root.appendChild(GIQ.components.pageHeader({
+            eyebrow: 'EXPLORE',
+            title: 'Albums',
+            right: right,
+        }));
+
+        const body = document.createElement('div');
+        body.className = 'artists-body';
+        root.appendChild(body);
+
+        /* Mode segmented toggle (familiar ↔ discover) */
+        const toggleBar = document.createElement('div');
+        toggleBar.className = 'artists-source-toggle';
+        ALBUM_MODES.forEach(([val, label]) => {
+            const b = document.createElement('button');
+            b.type = 'button';
+            b.className = 'artists-source-btn' + (s.mode === val ? ' is-active' : '');
+            b.textContent = label;
+            b.dataset.value = val;
+            b.addEventListener('click', () => {
+                if (s.mode === val) return;
+                s.mode = val;
+                Array.from(toggleBar.children).forEach(c => c.classList.toggle('is-active', c.dataset.value === val));
+                load();
+            });
+            toggleBar.appendChild(b);
+        });
+        body.appendChild(toggleBar);
+
+        const status = document.createElement('div');
+        status.className = 'artists-status mono muted';
+        body.appendChild(status);
+
+        const grid = document.createElement('div');
+        grid.className = 'artists-grid';
+        body.appendChild(grid);
+
+        async function load() {
+            if (!s.userId) {
+                status.textContent = '';
+                grid.innerHTML = '<div class="reco-empty">Pick a user above to see recommended albums.</div>';
+                return;
+            }
+            s.loading = true;
+            status.textContent = 'Loading…';
+            grid.innerHTML = '<div class="vc-loading">Loading recommended albums…</div>';
+            try {
+                const data = await GIQ.api.get('/v1/recommend/'
+                    + encodeURIComponent(s.userId) + '/albums?limit=50&mode=' + encodeURIComponent(s.mode));
+                s.result = data;
+                s.loading = false;
+                renderGrid();
+            } catch (e) {
+                s.loading = false;
+                grid.innerHTML = '<div class="reco-error">Failed to load albums: ' + GIQ.fmt.esc(e.message) + '</div>';
+                status.textContent = '';
+            }
+        }
+
+        function renderGrid() {
+            const r = s.result;
+            grid.innerHTML = '';
+            if (!r) return;
+            const all = r.albums || [];
+            status.textContent = all.length + ' albums · mode: ' + (r.mode || s.mode);
+            if (!all.length) {
+                grid.innerHTML = '<div class="reco-empty">No albums yet. '
+                    + 'Albums are rolled up from your analysed library — scan a library with album tags and let the pipeline run.</div>';
+                return;
+            }
+            all.forEach(a => grid.appendChild(_albumCard(a, s.userId)));
+        }
+
+        load();
+        return function cleanup() { /* state persists */ };
+    };
+
+    function _albumCard(a, userId) {
+        const card = document.createElement('div');
+        card.className = 'artist-card album-card';
+
+        const cover = document.createElement('div');
+        cover.className = 'artist-card-cover';
+        const fallbackLetter = (a.album || '').charAt(0).toUpperCase() || '?';
+        const useEmptyFallback = () => {
+            cover.innerHTML = '';
+            cover.classList.add('artist-card-cover-empty');
+            cover.textContent = fallbackLetter;
+        };
+        if (a.cover_url) {
+            const img = document.createElement('img');
+            img.src = a.cover_url; img.alt = ''; img.loading = 'lazy';
+            img.addEventListener('error', useEmptyFallback);
+            cover.appendChild(img);
+        } else {
+            useEmptyFallback();
+        }
+        card.appendChild(cover);
+
+        const inner = document.createElement('div');
+        inner.className = 'artist-card-inner';
+        card.appendChild(inner);
+
+        const name = document.createElement('div');
+        name.className = 'artist-card-name';
+        name.textContent = a.album || '—';
+        inner.appendChild(name);
+
+        if (a.album_artist) {
+            const artist = document.createElement('div');
+            artist.className = 'artist-card-stats muted';
+            artist.textContent = a.album_artist;
+            inner.appendChild(artist);
+        }
+
+        const audio = a.audio_profile || {};
+        const audioParts = [];
+        if (audio.bpm != null) audioParts.push('BPM ' + Math.round(audio.bpm));
+        if (audio.energy != null) audioParts.push('energy ' + audio.energy.toFixed(2));
+        if (audio.valence != null) audioParts.push('valence ' + audio.valence.toFixed(2));
+        if (audioParts.length) {
+            const stats = document.createElement('div');
+            stats.className = 'artist-card-stats mono muted';
+            stats.textContent = audioParts.join(' · ');
+            inner.appendChild(stats);
+        }
+
+        const presence = document.createElement('div');
+        presence.className = 'artist-card-presence';
+        const pct = Math.round((a.completeness != null ? a.completeness : 0) * 100);
+        presence.innerHTML = '<span class="artist-presence-chip in-lib">✓ ' + (a.library_track_count || 0) + ' tracks</span>'
+            + ' <span class="mono muted">' + pct + '% complete · score '
+            + (a.score != null ? a.score.toFixed(2) : '—') + '</span>';
+        inner.appendChild(presence);
+
+        if (a.reasons && a.reasons.length) {
+            const reasons = document.createElement('div');
+            reasons.className = 'album-card-reasons';
+            a.reasons.slice(0, 3).forEach(rx => {
+                const chip = document.createElement('span');
+                chip.className = 'rd-source-chip';
+                chip.textContent = rx;
+                reasons.appendChild(chip);
+            });
+            inner.appendChild(reasons);
+        }
+
+        const reps = a.representative_tracks || [];
+        if (reps.length) {
+            const ttList = document.createElement('div');
+            ttList.className = 'artist-card-tt-list';
+            reps.slice(0, 5).forEach(t => {
+                const row = document.createElement('div');
+                row.className = 'artist-card-tt-row mono';
+                row.innerHTML = '<span class="artist-card-tt-title">' + GIQ.fmt.esc(t.title || '—') + '</span>';
+                ttList.appendChild(row);
+            });
+            inner.appendChild(ttList);
+        }
+
+        /* Radio seeded from the album's top representative track */
+        const top = reps[0];
+        if (top && top.track_id) {
+            const radioBtn = document.createElement('button');
+            radioBtn.type = 'button';
+            radioBtn.className = 'vc-btn vc-btn-sm';
+            radioBtn.textContent = '▶ Radio';
+            radioBtn.addEventListener('click', () => {
+                const p = { seed_type: 'track', seed_value: top.track_id };
+                if (userId) p.user = userId;
+                GIQ.router.navigate('explore', 'radio', p);
+            });
+            inner.appendChild(radioBtn);
+        }
+
+        return card;
     }
 
     /* ── News ───────────────────────────────────────────────────────── */
