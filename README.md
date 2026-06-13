@@ -24,6 +24,7 @@ No cloud. No tracking. Runs on your hardware.
 - **Algorithm tuning** — 78 pipeline weights/thresholds configurable via REST API with versioning, rollback, and export/import
 - **Web dashboard** — real-time pipeline visualization, recommendation debugger, algorithm tuning GUI, system health panels
 - **Music discovery** — Last.fm similar artists auto-added to Lidarr, optional AcousticBrainz lookup (29.5M tracks)
+- **Lyrics** — read-along/karaoke + algorithm signal via a cascade: embedded tags → LRCLIB → optional GPU ASR sidecar (faster-whisper), instrumental-gated
 - **Integration health** — live connectivity probes for all external services
 
 ## Quick start
@@ -172,6 +173,7 @@ All settings via environment variables or `.env` file. See [`.env.example`](.env
 | News feed | `NEWS_ENABLED=true` (optional: `NEWS_INTERVAL_MINUTES`, `NEWS_DEFAULT_SUBREDDITS`) |
 | AcousticBrainz lookup | `AB_LOOKUP_URL`, `AB_LOOKUP_ENABLED=true` (separate container) |
 | CLAP text-to-music search | `CLAP_ENABLED=true` (~395 MB ONNX models auto-download on first start; persisted in the `grooveiq_data` volume) |
+| Lyrics (read-along + ASR) | `LYRICS_ENABLED=true` (+ `LYRICS_LRCLIB_ENABLED=true`); optional GPU ASR via `LYRICS_ASR_ENABLED=true` + `LYRICS_API_URL` (separate [`lyrics-api`](lyrics-api/README.md) container) |
 
 ## Database
 
@@ -246,6 +248,48 @@ Use the matching compose override:
 ```bash
 docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d
 ```
+
+## Lyrics (read-along + ASR)
+
+GrooveIQ acquires lyrics through a priority **cascade**, preferring real sources over
+machine transcription:
+
+1. **Embedded tags** (USLT/SYLT, Vorbis `LYRICS`, MP4 `©lyr`) — read for free during the library scan.
+2. **[LRCLIB](https://lrclib.net)** — free, no API key, returns time-synced LRC.
+3. **ASR** (optional) — [faster-whisper](lyrics-api/README.md) transcription for voiced tracks that tiers 1–2 miss.
+
+Lyrics power both read-along/karaoke display (`GET /v1/tracks/{id}/lyrics`, shown in the
+dashboard's Tracks view) and — later — algorithm signals. ASR results are tagged
+`auto-transcribed` and ranked below real sources, and **instrumentals are gated out**
+(no hallucinated lyrics).
+
+### Tiers 1–2 (no GPU)
+
+```ini
+LYRICS_ENABLED=true
+LYRICS_LRCLIB_ENABLED=true
+```
+That's it — embedded tags land during scans and a background drain fills in LRCLIB matches.
+
+### Tier 3 — ASR on a separate GPU host
+
+ASR runs as a standalone **[`lyrics-api`](lyrics-api/README.md)** container on a machine
+with an NVIDIA GPU — **not** in the main `docker-compose.yml`. This keeps the GrooveIQ
+image GPU/PyTorch-free; GrooveIQ just calls it over HTTP. Typical topology: GrooveIQ on a
+CPU box, `lyrics-api` on your Plex/GPU box (which already has the library mounted).
+
+1. Deploy the sidecar on the GPU host — see **[`lyrics-api/README.md`](lyrics-api/README.md)**.
+2. Point GrooveIQ at it:
+   ```ini
+   LYRICS_ASR_ENABLED=true
+   LYRICS_API_URL=http://gpu-host:8300     # use the IP if the container can't resolve the hostname
+   # LYRICS_API_MUSIC_PATH=                # only if the sidecar mounts the library at a different path
+   ```
+
+**Mount the library at the same path on both** (e.g. `/music`) so GrooveIQ's stored
+`file_path`s resolve inside the sidecar; otherwise set `LYRICS_API_MUSIC_PATH`. Pace the
+shared GPU with `LYRICS_DRAIN_MAX_PER_HOUR` (`0` = unthrottled). Full env reference and
+troubleshooting: [`lyrics-api/README.md`](lyrics-api/README.md).
 
 ## API reference
 
