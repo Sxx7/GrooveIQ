@@ -3794,6 +3794,8 @@
         { key: 'slskd', label: 'Soulseek (slskd)', icon: '∴', desc: 'Peer-to-peer music downloads via the Soulseek network.' },
         { key: 'lastfm', label: 'Last.fm', icon: '♫', desc: 'Scrobbling, taste enrichment, similar tracks, and charts.' },
         { key: 'acousticbrainz_lookup', label: 'AcousticBrainz Lookup', icon: '∇', desc: 'Audio-feature similarity search across 29.5M tracks.' },
+        { key: 'lyrics_api', label: 'lyrics-api', icon: '♪', desc: 'GPU ASR sidecar (faster-whisper) — tier 3 of the lyrics cascade.' },
+        { key: 'lrclib', label: 'LRCLIB', icon: '≣', desc: 'Free community synced-lyrics API — tier 2 of the lyrics cascade.' },
     ];
 
     function renderIntegrations(root) {

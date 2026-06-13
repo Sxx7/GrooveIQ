@@ -247,6 +247,75 @@ async def _check_media_server() -> dict[str, Any]:
     return entry
 
 
+async def _check_lyrics_api() -> dict[str, Any]:
+    """The GPU ASR sidecar (faster-whisper). Reads the body even on a non-2xx,
+    since the sidecar returns 503 when its read-only /music mount is broken
+    (issue #123 style) — that's 'reachable but unhealthy', not 'unreachable'."""
+    url = settings.LYRICS_API_URL
+    if not settings.lyrics_asr_enabled or not url:
+        return {"configured": False}
+    try:
+        async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
+            resp = await client.get(f"{url.rstrip('/')}/health")
+        try:
+            data = resp.json()
+        except Exception:
+            data = {}
+        ready = bool(data.get("ready"))
+        entry: dict[str, Any] = {
+            "configured": True,
+            "connected": resp.status_code == 200 and ready,
+        }
+        if data.get("model"):
+            entry["version"] = data["model"]  # surfaced as the card's version chip
+        if data:
+            music = data.get("music") if isinstance(data.get("music"), dict) else {}
+            entry["details"] = {
+                "device": data.get("device"),
+                "ready": ready,
+                "music_readable": music.get("readable"),
+                "music_entries": music.get("entries"),
+            }
+        if not entry["connected"]:
+            entry["error"] = _sanitize_error(
+                str(data.get("error") or f"HTTP {resp.status_code}, ready={ready}")
+            )
+        return entry
+    except httpx.TimeoutException:
+        return {"configured": True, "connected": False, "error": "Connection timed out"}
+    except httpx.ConnectError as exc:
+        return {"configured": True, "connected": False, "error": _sanitize_error(f"Connection refused or DNS failure: {exc}")}
+    except Exception as exc:
+        return {"configured": True, "connected": False, "error": _sanitize_error(str(exc))}
+
+
+async def _check_lrclib() -> dict[str, Any]:
+    """LRCLIB (tier 2 of the lyrics cascade) — an external community API with no
+    /health endpoint. A cheap /api/search verifies DNS + TLS + HTTP end to end,
+    which is exactly the path that throws 'network error' in the drain when it's
+    intermittently slow/unreachable."""
+    if not settings.lyrics_lrclib_enabled:
+        return {"configured": False}
+    url = (settings.LYRICS_LRCLIB_URL or "").rstrip("/")
+    try:
+        async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
+            resp = await client.get(
+                f"{url}/api/search",
+                params={"q": "test"},
+                headers={"User-Agent": settings.lyrics_lrclib_user_agent},
+            )
+        entry: dict[str, Any] = {"configured": True, "connected": resp.status_code == 200}
+        if resp.status_code != 200:
+            entry["error"] = f"HTTP {resp.status_code}"
+        return entry
+    except httpx.TimeoutException:
+        return {"configured": True, "connected": False, "error": "Connection timed out"}
+    except httpx.ConnectError as exc:
+        return {"configured": True, "connected": False, "error": _sanitize_error(f"Connection refused or DNS failure: {exc}")}
+    except Exception as exc:
+        return {"configured": True, "connected": False, "error": _sanitize_error(str(exc))}
+
+
 @router.get("/integrations/status", summary="Integration connectivity status")
 async def integrations_status(
     _key: str = Depends(require_api_key),
@@ -261,6 +330,8 @@ async def integrations_status(
         _check_acousticbrainz(),
         _check_lastfm(),
         _check_media_server(),
+        _check_lyrics_api(),
+        _check_lrclib(),
     )
 
     return {
@@ -273,5 +344,7 @@ async def integrations_status(
             "acousticbrainz_lookup": results[4],
             "lastfm": results[5],
             "media_server": results[6],
+            "lyrics_api": results[7],
+            "lrclib": results[8],
         },
     }

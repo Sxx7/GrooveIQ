@@ -67,6 +67,16 @@ class LrclibOutcome:
     error: str | None = None
 
 
+def _exc_str(exc: Exception) -> str:
+    """Stringify an exception so the message is never blank. httpx timeout
+    exceptions (ConnectTimeout/ReadTimeout) stringify to '' — that's why the
+    drain showed the unhelpful 'lrclib: network error: ' with nothing after it.
+    Fall back to the class name so an operator can tell a timeout from a
+    connection refusal / DNS failure."""
+    msg = str(exc).strip()
+    return f"{type(exc).__name__}: {msg}" if msg else type(exc).__name__
+
+
 def _clean(text) -> str | None:
     if not text:
         return None
@@ -157,7 +167,7 @@ class LrclibClient:
             await self._throttle()
             resp = await self._client.get(f"{self._base_url}/api/get", params=params)
         except (httpx.TimeoutException, httpx.RequestError) as exc:
-            return LrclibOutcome(ok=False, result=LrclibResult(), error=f"network error: {exc}")
+            return LrclibOutcome(ok=False, result=LrclibResult(), error=f"network error: {_exc_str(exc)}")
 
         if resp.status_code == 200:
             try:
@@ -186,7 +196,7 @@ class LrclibClient:
             await self._throttle()
             resp = await self._client.get(f"{self._base_url}/api/search", params=params)
         except (httpx.TimeoutException, httpx.RequestError) as exc:
-            return LrclibOutcome(ok=False, result=LrclibResult(), error=f"network error: {exc}")
+            return LrclibOutcome(ok=False, result=LrclibResult(), error=f"network error: {_exc_str(exc)}")
 
         if resp.status_code == 429:
             return LrclibOutcome(ok=False, result=LrclibResult(), error="rate_limited (429)")

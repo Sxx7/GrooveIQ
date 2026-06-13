@@ -25,6 +25,14 @@ from app.core.config import settings
 logger = logging.getLogger(__name__)
 
 
+def _exc_str(exc: Exception) -> str:
+    """Stringify an exception so the message is never blank — httpx timeout
+    exceptions stringify to '', which would otherwise produce a bare
+    'network error: ' with no cause. Falls back to the class name."""
+    msg = str(exc).strip()
+    return f"{type(exc).__name__}: {msg}" if msg else type(exc).__name__
+
+
 @dataclass
 class AsrResult:
     """Outcome of one transcription request.
@@ -90,7 +98,7 @@ class LyricsAsrClient:
         try:
             resp = await self._client.post(f"{self._base_url}/transcribe", json=payload)
         except (httpx.TimeoutException, httpx.RequestError) as exc:
-            return AsrResult(ok=False, error=f"network error: {exc}")
+            return AsrResult(ok=False, error=f"network error: {_exc_str(exc)}")
 
         if resp.status_code != 200:
             detail = ""
