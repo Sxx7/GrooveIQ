@@ -190,6 +190,13 @@ class Settings(BaseSettings):
     LYRICS_API_TIMEOUT_S: float = 600.0  # per-track ASR HTTP timeout (queue + transcribe headroom)
     LYRICS_ASR_INSTRUMENTAL_MAX: float = 0.5  # skip ASR when instrumentalness >= this (pilot-calibrated)
     LYRICS_ASR_MODEL: str = "large-v3"  # informational; the sidecar owns the model (LYRICS_MODEL env there)
+    # Silero VAD is trained on *speech* and over-filters *sung* vocals — the
+    # pilot measured ~50% recall loss on clearly-vocal tracks with it on. The
+    # instrumentalness gate above already blocks ASR on instrumentals (the
+    # pilot saw 0% hallucination), so VAD is off by default; set true to trade
+    # recall for extra hallucination safety on voiced tracks with long
+    # instrumental passages.
+    LYRICS_ASR_VAD: bool = False
     # Drain pacing / retry (env-only; promote to a versioned LyricsConfig + GUI later)
     LYRICS_DRAIN_MAX_PER_HOUR: int = 0  # 0 = unthrottled ASR; raise to pace a shared GPU VM
     LYRICS_DRAIN_BATCH_SIZE: int = 100  # tracks examined per tick (cheap tiers; ASR is paced separately)

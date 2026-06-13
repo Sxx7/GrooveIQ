@@ -82,7 +82,11 @@ class LyricsAsrClient:
         """Transcribe one file by path. Never raises — failures map to ok=False."""
         if not self._base_url:
             return AsrResult(ok=False, error="LYRICS_API_URL not configured")
-        payload = {"path": self._map_path(file_path), "vad": True, "word_timestamps": False}
+        payload = {
+            "path": self._map_path(file_path),
+            "vad": bool(settings.LYRICS_ASR_VAD),
+            "word_timestamps": False,
+        }
         try:
             resp = await self._client.post(f"{self._base_url}/transcribe", json=payload)
         except (httpx.TimeoutException, httpx.RequestError) as exc:
