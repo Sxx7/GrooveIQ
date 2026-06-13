@@ -291,21 +291,25 @@ async def _check_lyrics_api() -> dict[str, Any]:
 
 async def _check_lrclib() -> dict[str, Any]:
     """LRCLIB (tier 2 of the lyrics cascade) — an external community API with no
-    /health endpoint. A cheap /api/search verifies DNS + TLS + HTTP end to end,
-    which is exactly the path that throws 'network error' in the drain when it's
-    intermittently slow/unreachable."""
+    /health endpoint. We hit the *fast keyed* /api/get (not the heavy /api/search
+    full-text scan, which can take >5 s and would falsely read as down): a 404 for
+    a bogus track still proves DNS + TLS + HTTP work — exactly the path that throws
+    'network error' in the drain. Only a timeout / connection failure is unhealthy.
+    A roomier timeout matches the drain's own tolerance for a slow free service."""
     if not settings.lyrics_lrclib_enabled:
         return {"configured": False}
     url = (settings.LYRICS_LRCLIB_URL or "").rstrip("/")
     try:
-        async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
+        async with httpx.AsyncClient(timeout=10.0) as client:
             resp = await client.get(
-                f"{url}/api/search",
-                params={"q": "test"},
+                f"{url}/api/get",
+                params={"artist_name": "GrooveIQ healthcheck", "track_name": "ping"},
                 headers={"User-Agent": settings.lyrics_lrclib_user_agent},
             )
-        entry: dict[str, Any] = {"configured": True, "connected": resp.status_code == 200}
-        if resp.status_code != 200:
+        # Any HTTP response (incl. 404 "no such track") means lrclib is reachable.
+        reachable = resp.status_code in (200, 404)
+        entry: dict[str, Any] = {"configured": True, "connected": reachable}
+        if not reachable:
             entry["error"] = f"HTTP {resp.status_code}"
         return entry
     except httpx.TimeoutException:
