@@ -17,6 +17,7 @@
     GIQ.pages.monitor.integrations = renderIntegrations;
     GIQ.pages.monitor.downloads = renderDownloadsMonitor;
     GIQ.pages.monitor['lidarr-backfill'] = renderLidarrBackfillMonitor;
+    GIQ.pages.monitor.lyrics = renderLyricsMonitor;
     GIQ.pages.monitor.discovery = renderDiscoveryMonitor;
     GIQ.pages.monitor.charts = renderChartsMonitor;
 
@@ -4712,6 +4713,498 @@
                 sub: 'derived from picked_service across recent attempts',
                 children: body,
             }));
+        }
+
+        return () => { if (pollTimer) clearInterval(pollTimer); };
+    }
+
+    /* =====================================================================
+     * Monitor → Lyrics
+     * Read + control surface for the lyrics acquisition drain
+     * (app/services/lyrics_drain.py). Mirrors the Lidarr Backfill stats panel
+     * (coverage headline + stat tiles + breakdown bars) and the Actions →
+     * Discovery queue controls (filter chips, per-row Retry/Skip/Delete, bulk
+     * reset-by-scope, Run-tick-now). Polls GET /v1/lyrics/stats +
+     * /v1/lyrics/requests every 10s while visible. All /v1/lyrics/* routes are
+     * admin-gated, so a non-admin key degrades to an explanatory message.
+     * ===================================================================== */
+
+    function renderLyricsMonitor(root) {
+        const esc = GIQ.fmt.esc;
+        const timeAgo = GIQ.fmt.timeAgo;
+
+        const LABELS = {
+            embedded: 'Embedded', lrclib: 'LRCLIB', asr: 'ASR',
+            instrumental: 'Instrumental', unresolved: 'Unresolved', complete: 'Complete',
+            queued: 'Queued', searching: 'Searching', no_lyrics: 'No lyrics',
+            search_error: 'Search error', failed: 'Failed', permanently_skipped: 'Skipped',
+            all: 'all',
+        };
+        function prettyLabel(s) {
+            if (LABELS[s]) return LABELS[s];
+            return String(s || '').replace(/_/g, ' ').replace(/^\w/, c => c.toUpperCase());
+        }
+
+        const state = {
+            stats: null,
+            requests: [],
+            statusFilter: '',
+            offset: 0,
+            limit: 50,
+            checkedAt: null,
+            fatal: null,        // set on a hard error (403) → stop polling
+        };
+        let pollTimer = null;
+        let inFlight = false;
+
+        const liveBadge = document.createElement('div');
+        liveBadge.className = 'op-live-pill';
+        liveBadge.innerHTML = '<span class="op-live-dot pulse"></span><span class="mono">live</span>'
+            + '<span class="op-last-checked mono muted">last checked · —</span>';
+
+        root.appendChild(GIQ.components.pageHeader({
+            eyebrow: 'MONITOR',
+            title: 'Lyrics Backfill',
+            right: liveBadge,
+        }));
+
+        root.appendChild(GIQ.components.relatedRail({
+            label: 'related →',
+            links: [
+                { prefix: 'Explore', label: 'Browse track lyrics', href: '#/explore/tracks' },
+            ],
+        }));
+
+        const body = document.createElement('div');
+        body.className = 'op-page-body';
+        root.appendChild(body);
+
+        const coverageHost = document.createElement('div');
+        body.appendChild(coverageHost);
+
+        const statsHost = document.createElement('div');
+        statsHost.className = 'lbf-stats-grid';
+        body.appendChild(statsHost);
+
+        const breakdownHost = document.createElement('div');
+        breakdownHost.className = 'lyr-breakdown';
+        body.appendChild(breakdownHost);
+
+        // ---- Queue section (filter chips + bulk reset + table) ----------
+        const queueSection = document.createElement('section');
+        queueSection.className = 'lbf-queue-section';
+        body.appendChild(queueSection);
+
+        const qHead = document.createElement('div');
+        qHead.className = 'lbf-queue-head';
+        const qTitle = document.createElement('div');
+        qTitle.className = 'lbf-queue-title';
+        qTitle.textContent = 'Acquisition queue';
+        qHead.appendChild(qTitle);
+        const qBtns = document.createElement('div');
+        qBtns.className = 'lbf-queue-btns';
+        const runNowBtn = document.createElement('button');
+        runNowBtn.type = 'button';
+        runNowBtn.className = 'vc-btn vc-btn-primary';
+        runNowBtn.textContent = '▶ Run tick now';
+        runNowBtn.addEventListener('click', runTick);
+        qBtns.appendChild(runNowBtn);
+        qHead.appendChild(qBtns);
+        queueSection.appendChild(qHead);
+
+        const chipsBar = document.createElement('div');
+        chipsBar.className = 'lbf-queue-chips';
+        queueSection.appendChild(chipsBar);
+
+        const bulkBar = document.createElement('div');
+        bulkBar.className = 'lbf-queue-bulk';
+        [
+            { scope: 'no_lyrics', label: 'Reset no-lyrics' },
+            { scope: 'search_error', label: 'Reset search errors' },
+            { scope: 'failed', label: 'Reset failed' },
+            { scope: 'instrumental', label: 'Reset instrumental' },
+            { scope: 'permanently_skipped', label: 'Reset skipped' },
+            { scope: 'all', label: 'Reset all' },
+        ].forEach(b => {
+            const btn = document.createElement('button');
+            btn.type = 'button';
+            btn.className = 'vc-btn';
+            btn.textContent = b.label;
+            btn.addEventListener('click', () => bulkReset(b.scope));
+            bulkBar.appendChild(btn);
+        });
+        queueSection.appendChild(bulkBar);
+
+        const tableHost = document.createElement('div');
+        tableHost.className = 'lbf-queue-table-host';
+        queueSection.appendChild(tableHost);
+
+        // Filter chips: All + one per drain status. Counts from stats.by_status.
+        const FILTER_OPTS = [
+            { key: '', label: 'All' },
+            { key: 'queued', label: 'Queued' },
+            { key: 'searching', label: 'Searching' },
+            { key: 'complete', label: 'Complete' },
+            { key: 'instrumental', label: 'Instrumental' },
+            { key: 'no_lyrics', label: 'No lyrics' },
+            { key: 'search_error', label: 'Search error' },
+            { key: 'failed', label: 'Failed' },
+            { key: 'permanently_skipped', label: 'Skipped' },
+        ];
+
+        renderChips();
+        if (!GIQ.state.apiKey) {
+            coverageHost.innerHTML = '<div class="empty-row wine">Connect an API key to load lyrics drain stats.</div>';
+        } else {
+            load();
+            pollTimer = setInterval(load, 10000);
+        }
+
+        function load() {
+            if (inFlight || state.fatal) return Promise.resolve();
+            inFlight = true;
+            return Promise.all([
+                GIQ.api.get('/v1/lyrics/stats').catch(e => ({ __err: e })),
+                fetchRequests().catch(e => ({ __err: e })),
+            ]).then(([stats, reqs]) => {
+                inFlight = false;
+                if (stats && stats.__err) { handleLoadError(stats.__err); return; }
+                state.stats = stats || {};
+                if (!(reqs && reqs.__err)) state.requests = reqs || [];
+                state.checkedAt = Math.floor(Date.now() / 1000);
+                liveBadge.querySelector('.op-last-checked').textContent =
+                    'last checked · ' + timeAgo(state.checkedAt);
+                renderCoverage();
+                renderStats();
+                renderBreakdown();
+                renderChips();
+                renderTable();
+            }).catch(() => { inFlight = false; });
+        }
+
+        function fetchRequests() {
+            const url = '/v1/lyrics/requests?limit=' + state.limit + '&offset=' + state.offset
+                + (state.statusFilter ? '&status=' + encodeURIComponent(state.statusFilter) : '');
+            return GIQ.api.get(url).then(r => (r && Array.isArray(r.requests)) ? r.requests : []);
+        }
+
+        // Refresh just the queue (chip click / pagination) without waiting for
+        // the 10s tick. Stats-derived chip counts refresh on the next tick.
+        function reloadQueueOnly() {
+            tableHost.innerHTML = '<div class="actions-loading">Loading queue…</div>';
+            fetchRequests()
+                .then(rows => { state.requests = rows; renderTable(); })
+                .catch(e => { tableHost.innerHTML = '<div class="empty-row wine">Failed to load queue: ' + esc(e.message) + '</div>'; });
+        }
+
+        function handleLoadError(err) {
+            if (err && err.status === 403) {
+                state.fatal = '403';
+                if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+                coverageHost.innerHTML = '<div class="empty-row wine">The lyrics drain endpoints are admin-gated. '
+                    + 'Connect an admin API key to view backfill progress.</div>';
+                statsHost.innerHTML = '';
+                breakdownHost.innerHTML = '';
+                tableHost.innerHTML = '';
+                chipsBar.innerHTML = '';
+                return;
+            }
+            GIQ.toast('Lyrics stats refresh failed: ' + (err && err.message ? err.message : 'unknown'), 'error');
+        }
+
+        function renderCoverage() {
+            coverageHost.innerHTML = '';
+            const st = state.stats || {};
+            const total = st.total_tracks || 0;
+            const resolved = st.resolved || 0;
+            const pct = total > 0 ? (resolved / total * 100) : 0;
+
+            const inner = document.createElement('div');
+            inner.className = 'sh-coverage';
+            const top = document.createElement('div');
+            top.className = 'sh-coverage-top';
+            top.innerHTML = '<div class="sh-coverage-numbers">'
+                + '<span class="sh-coverage-pct">' + pct.toFixed(1) + '%</span>'
+                + '<span class="sh-coverage-meta mono muted">'
+                + GIQ.fmt.fmtNumber(resolved) + ' / ' + GIQ.fmt.fmtNumber(total) + ' tracks resolved'
+                + ' · ' + GIQ.fmt.fmtNumber(st.remaining != null ? st.remaining : Math.max(0, total - resolved)) + ' remaining'
+                + '</span></div>';
+            inner.appendChild(top);
+            const prog = document.createElement('div');
+            prog.className = 'sh-coverage-progress';
+            prog.innerHTML = '<div class="sh-coverage-fill" style="width:' + pct.toFixed(1) + '%"></div>';
+            inner.appendChild(prog);
+
+            coverageHost.appendChild(GIQ.components.panel({
+                title: 'Lyrics coverage',
+                sub: 'tracks resolved at cascade version ' + (st.lyrics_version || '—'),
+                badge: st.enabled === false ? 'PAUSED' : null,
+                children: inner,
+            }));
+        }
+
+        function renderStats() {
+            statsHost.innerHTML = '';
+            const st = state.stats || {};
+            const bs = st.by_status || {};
+            const total = st.total_tracks || 0;
+            const resolved = st.resolved || 0;
+            const pct = total > 0 ? (resolved / total * 100) : 0;
+            const maxph = st.max_per_hour || 0;
+
+            statsHost.appendChild(GIQ.components.statTile({
+                label: 'Resolved', value: GIQ.fmt.fmtNumber(resolved),
+                delta: pct.toFixed(1) + '% of ' + GIQ.fmt.fmtNumber(total), deltaKind: 'good',
+            }));
+            statsHost.appendChild(GIQ.components.statTile({
+                label: 'Remaining',
+                value: GIQ.fmt.fmtNumber(st.remaining != null ? st.remaining : Math.max(0, total - resolved)),
+                delta: 'to resolve', deltaKind: 'flat',
+            }));
+            const active = (bs.queued || 0) + (bs.searching || 0);
+            statsHost.appendChild(GIQ.components.statTile({
+                label: 'In queue', value: GIQ.fmt.fmtNumber(active),
+                delta: (bs.searching || 0) + ' searching now', deltaKind: 'flat',
+            }));
+            let asrDelta;
+            if (st.asr_capacity_remaining == null || maxph <= 0) asrDelta = 'unthrottled';
+            else asrDelta = st.asr_capacity_remaining + ' / ' + maxph + ' left this hr';
+            statsHost.appendChild(GIQ.components.statTile({
+                label: 'ASR · last hour',
+                value: GIQ.fmt.fmtNumber(st.asr_used_last_hour != null ? st.asr_used_last_hour : 0),
+                delta: asrDelta, deltaKind: 'flat',
+            }));
+            let etaTxt = '—';
+            if (st.eta_hours != null) {
+                etaTxt = st.eta_hours >= 24 ? '~' + (st.eta_hours / 24).toFixed(1) + ' d' : '~' + st.eta_hours + ' h';
+            } else if (maxph <= 0) {
+                etaTxt = 'unthrottled';
+            }
+            statsHost.appendChild(GIQ.components.statTile({
+                label: 'ETA', value: etaTxt, delta: 'at current rate', deltaKind: 'flat',
+            }));
+            const status = st.tick_in_progress ? 'running' : (st.enabled === false ? 'paused' : 'idle');
+            statsHost.appendChild(GIQ.components.statTile({
+                label: 'Status', value: status.toUpperCase(),
+                delta: 'last tick · ' + (st.last_tick_at ? timeAgo(st.last_tick_at) : '—'),
+                deltaKind: status === 'running' ? 'good' : status === 'paused' ? 'bad' : 'flat',
+            }));
+        }
+
+        function barList(rows) {
+            const wrap = document.createElement('div');
+            wrap.className = 'bar-list';
+            if (!rows || !rows.length) {
+                wrap.innerHTML = '<div class="empty-row">No data yet.</div>';
+                return wrap;
+            }
+            const max = Math.max(1, rows.reduce((m, r) => Math.max(m, r.value || 0), 0));
+            rows.forEach(r => {
+                const row = document.createElement('div');
+                row.className = 'bar-row';
+                const pct = (r.value || 0) / max * 100;
+                const fillCls = r.muted ? 'bar-fill-muted'
+                    : (r.status === 'failed' || r.status === 'search_error') ? 'bar-fill-wine'
+                        : 'bar-fill-accent';
+                const labelTxt = prettyLabel(r.label) + (r.note ? ' · ' + r.note : '');
+                row.innerHTML = '<span class="bar-label" title="' + esc(labelTxt) + '">' + esc(labelTxt) + '</span>'
+                    + '<span class="bar-track"><span class="bar-fill ' + fillCls + '" style="width:' + pct.toFixed(1) + '%"></span></span>'
+                    + '<span class="bar-count mono">' + GIQ.fmt.fmtNumber(r.value || 0) + '</span>';
+                wrap.appendChild(row);
+            });
+            return wrap;
+        }
+
+        function renderBreakdown() {
+            breakdownHost.innerHTML = '';
+            const st = state.stats || {};
+            const bySource = st.by_source || {};
+            const byStatus = st.by_status || {};
+
+            // by_source keys are granular (embedded_synced, lrclib_plain, asr_synced…).
+            // Roll up into source tiers, keeping the synced/plain split as a note.
+            const tiers = {};
+            Object.keys(bySource).forEach(k => {
+                const count = bySource[k] || 0;
+                const us = k.indexOf('_');
+                const tier = us > 0 ? k.slice(0, us) : k;
+                const variant = us > 0 ? k.slice(us + 1) : '';
+                const t = tiers[tier] || (tiers[tier] = { total: 0, synced: 0, plain: 0 });
+                t.total += count;
+                if (variant === 'synced') t.synced += count;
+                else if (variant === 'plain') t.plain += count;
+            });
+            const srcRows = [];
+            ['embedded', 'lrclib', 'asr'].forEach(tier => {
+                if (!tiers[tier]) return;
+                const t = tiers[tier];
+                const sub = [];
+                if (t.synced) sub.push(t.synced + ' synced');
+                if (t.plain) sub.push(t.plain + ' plain');
+                srcRows.push({ label: tier, value: t.total, note: sub.join(' · ') });
+                delete tiers[tier];
+            });
+            // Any unexpected source tiers (forward-compat): show them too.
+            Object.keys(tiers).forEach(tier => srcRows.push({ label: tier, value: tiers[tier].total }));
+            if (byStatus.instrumental) srcRows.push({ label: 'instrumental', value: byStatus.instrumental, muted: true });
+            const remaining = st.remaining != null ? st.remaining : 0;
+            if (remaining) srcRows.push({ label: 'unresolved', value: remaining, muted: true });
+
+            breakdownHost.appendChild(GIQ.components.panel({
+                title: 'By source',
+                sub: 'what the listener actually sees',
+                children: barList(srcRows),
+            }));
+
+            const STATUS_ORDER = ['complete', 'instrumental', 'queued', 'searching',
+                'no_lyrics', 'search_error', 'failed', 'permanently_skipped'];
+            const statusRows = [];
+            STATUS_ORDER.forEach(s => { if (byStatus[s] != null) statusRows.push({ label: s, value: byStatus[s], status: s }); });
+            Object.keys(byStatus).forEach(s => {
+                if (STATUS_ORDER.indexOf(s) === -1) statusRows.push({ label: s, value: byStatus[s], status: s });
+            });
+            breakdownHost.appendChild(GIQ.components.panel({
+                title: 'Queue by status',
+                sub: 'drain state machine',
+                children: barList(statusRows),
+            }));
+        }
+
+        function renderChips() {
+            chipsBar.innerHTML = '';
+            const bs = (state.stats && state.stats.by_status) || {};
+            FILTER_OPTS.forEach(opt => {
+                const chip = document.createElement('button');
+                chip.type = 'button';
+                chip.className = 'lbf-chip' + (opt.key === state.statusFilter ? ' active' : '');
+                const count = opt.key === ''
+                    ? Object.keys(bs).reduce((a, k) => a + (bs[k] || 0), 0)
+                    : (bs[opt.key] || 0);
+                chip.innerHTML = esc(opt.label) + ' <span class="lbf-chip-count mono">' + count + '</span>';
+                chip.addEventListener('click', () => {
+                    state.statusFilter = opt.key;
+                    state.offset = 0;
+                    renderChips();
+                    reloadQueueOnly();
+                });
+                chipsBar.appendChild(chip);
+            });
+        }
+
+        function renderTable() {
+            tableHost.innerHTML = '';
+            const rows = state.requests || [];
+            if (!rows.length) {
+                tableHost.innerHTML = '<div class="empty-row">No rows'
+                    + (state.statusFilter ? ' with status “' + esc(prettyLabel(state.statusFilter)) + '”' : ' in the queue')
+                    + '.</div>';
+                renderPager();
+                return;
+            }
+            const tbl = document.createElement('table');
+            tbl.className = 'lbf-queue-table';
+            tbl.innerHTML = '<thead><tr>'
+                + '<th>State</th><th>Track</th><th>Source</th><th>Voiced</th>'
+                + '<th class="num">Att.</th><th>Last error</th><th>Next retry</th><th></th>'
+                + '</tr></thead>';
+            const tb = document.createElement('tbody');
+            rows.forEach(r => {
+                const tr = document.createElement('tr');
+                const chip = '<span class="lbf-state-chip lbf-state-' + esc(r.status) + '">' + esc(r.status) + '</span>';
+                const voiced = r.voiced === true ? 'yes' : r.voiced === false ? 'no' : '—';
+                tr.innerHTML = '<td>' + chip + '</td>'
+                    + '<td class="mono ud-truncate" style="max-width:220px" title="' + esc(r.track_id || '') + '">' + esc(r.track_id || '—') + '</td>'
+                    + '<td class="mono">' + esc(r.source_resolved || '—') + '</td>'
+                    + '<td class="mono">' + voiced + '</td>'
+                    + '<td class="num mono">' + (r.attempt_count || 0) + '</td>'
+                    + '<td class="mono ud-truncate" style="max-width:220px" title="' + esc(r.last_error || '') + '">' + esc(r.last_error || '—') + '</td>'
+                    + '<td class="mono">' + (r.next_retry_at ? esc(timeAgo(r.next_retry_at)) : '—') + '</td>';
+                const td = document.createElement('td');
+                td.className = 'lbf-row-actions';
+                if (['failed', 'no_lyrics', 'search_error', 'instrumental', 'permanently_skipped'].indexOf(r.status) !== -1) {
+                    td.appendChild(iconBtn('Retry', () => rowAction(r.id, 'retry')));
+                }
+                if (r.status !== 'permanently_skipped' && r.status !== 'complete') {
+                    td.appendChild(iconBtn('Skip', () => rowAction(r.id, 'skip')));
+                }
+                td.appendChild(iconBtn('Delete', () => rowAction(r.id, 'delete')));
+                tr.appendChild(td);
+                tb.appendChild(tr);
+            });
+            tbl.appendChild(tb);
+            tableHost.appendChild(tbl);
+            renderPager();
+        }
+
+        function renderPager() {
+            const pag = document.createElement('div');
+            pag.className = 'ud-pagination';
+            const start = state.requests.length ? state.offset + 1 : 0;
+            const end = state.offset + state.requests.length;
+            pag.innerHTML = '<span class="muted mono">showing ' + start + '–' + end + '</span>';
+            const grp = document.createElement('div');
+            grp.className = 'ud-pag-btns';
+            const prev = document.createElement('button');
+            prev.type = 'button'; prev.className = 'vc-btn vc-btn-sm';
+            prev.textContent = '← Prev';
+            prev.disabled = state.offset === 0;
+            prev.addEventListener('click', () => { state.offset = Math.max(0, state.offset - state.limit); reloadQueueOnly(); });
+            const next = document.createElement('button');
+            next.type = 'button'; next.className = 'vc-btn vc-btn-sm';
+            next.textContent = 'Next →';
+            next.disabled = state.requests.length < state.limit;
+            next.addEventListener('click', () => { state.offset += state.limit; reloadQueueOnly(); });
+            grp.appendChild(prev); grp.appendChild(next);
+            pag.appendChild(grp);
+            tableHost.appendChild(pag);
+        }
+
+        function iconBtn(label, onClick) {
+            const b = document.createElement('button');
+            b.type = 'button';
+            b.className = 'vc-btn vc-btn-ghost-sm';
+            b.textContent = label;
+            b.addEventListener('click', onClick);
+            return b;
+        }
+
+        function rowAction(id, action) {
+            let p;
+            if (action === 'retry') p = GIQ.api.post('/v1/lyrics/requests/' + id + '/retry', {});
+            else if (action === 'skip') p = GIQ.api.post('/v1/lyrics/requests/' + id + '/skip', {});
+            else if (action === 'delete') {
+                if (!window.confirm('Delete this lyrics queue row? It will be re-picked on the next drain tick if the track still lacks lyrics.')) return;
+                p = GIQ.api.del('/v1/lyrics/requests/' + id);
+            } else return;
+            p.then(() => { GIQ.toast('Row ' + action + ' applied.', 'success'); load(); })
+                .catch(e => GIQ.toast('Action failed: ' + e.message, 'error'));
+        }
+
+        function bulkReset(scope) {
+            const msg = scope === 'all'
+                ? 'Re-queue ALL non-complete rows (no-lyrics, failed, search errors, instrumental, skipped)? Each is re-checked from the cheapest tier up.'
+                : 'Re-queue all “' + prettyLabel(scope) + '” rows? Each is re-checked from the cheapest tier up.';
+            if (!window.confirm(msg)) return;
+            GIQ.api.post('/v1/lyrics/requests/reset', { scope })
+                .then(res => { GIQ.toast('Re-queued ' + (res && res.reset != null ? res.reset : 0) + ' row(s).', 'success'); load(); })
+                .catch(e => GIQ.toast('Bulk reset failed: ' + e.message, 'error'));
+        }
+
+        function runTick() {
+            const orig = runNowBtn.textContent;
+            runNowBtn.disabled = true;
+            runNowBtn.textContent = 'Running…';
+            GIQ.api.post('/v1/lyrics/run', {})
+                .then(res => {
+                    if (res && res.skipped) {
+                        GIQ.toast('Tick skipped · ' + res.skipped + '.', 'info');
+                    } else {
+                        GIQ.toast('Lyrics tick done · ' + (res && res.processed != null ? res.processed : 0) + ' processed.', 'success');
+                    }
+                    load();
+                })
+                .catch(e => GIQ.toast('Run failed: ' + e.message, 'error'))
+                .finally(() => { runNowBtn.disabled = false; runNowBtn.textContent = orig; });
         }
 
         return () => { if (pollTimer) clearInterval(pollTimer); };

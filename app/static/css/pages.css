@@ -744,10 +744,45 @@
     border-color: rgba(212, 160, 92, 0.40);
     color: #b07d34;
 }
+/* Lyrics drain shares the .lbf-state-chip vocabulary; these cover the
+   lyrics-only states (Monitor → Lyrics). `instrumental` is informational
+   (the track has no vocals), not a failure, so it reads neutral, not wine. */
+.lbf-state-chip.lbf-state-searching {
+    background: rgba(168, 135, 206, 0.18);
+    border-color: rgba(168, 135, 206, 0.4);
+    color: var(--accent);
+}
+.lbf-state-chip.lbf-state-queued {
+    background: rgba(168, 135, 206, 0.08);
+    border-color: rgba(168, 135, 206, 0.24);
+    color: var(--accent);
+    opacity: 0.85;
+}
+.lbf-state-chip.lbf-state-instrumental {
+    background: var(--line-faint);
+    border-color: var(--line-soft);
+    color: var(--ink-3);
+}
+.lbf-state-chip.lbf-state-no_lyrics {
+    background: rgba(156, 82, 109, 0.10);
+    border-color: rgba(156, 82, 109, 0.24);
+    color: var(--wine);
+    opacity: 0.85;
+}
 .lbf-row-actions {
     display: flex;
     gap: 4px;
     justify-content: flex-end;
+}
+
+/* ── Monitor → Lyrics: two-up source/status breakdown ────────────── */
+.lyr-breakdown {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 14px;
+}
+@media (max-width: 720px) {
+    .lyr-breakdown { grid-template-columns: 1fr; }
 }
 
 /* ── Downloads: multi-agent search panel + results ───────────────── */

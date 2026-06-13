@@ -16,11 +16,14 @@
 - Storage + migration `017` (verified on **PostgreSQL**), the cascade, all 3 tiers, the drain + admin routes, the `lyrics-api` GPU sidecar, the per-track display modal, and a test suite (47 new tests, full suite green, ruff clean).
 - Pilot run; owner decisions locked (§4).
 
+**Done since (2026-06-13, working tree on `dev` — NOT yet committed):**
+- **Dashboard live progress panel** (§5.1) — built + browser-verified. New **Monitor → Lyrics** sub-page (`#/monitor/lyrics`): coverage % headline + bar, six stat tiles (resolved / remaining / in-queue / ASR-last-hour / ETA / status), by-source (rolled up embedded/lrclib/asr + synced/plain split) and by-status breakdown bars, and a filterable queue table with per-row Retry/Skip/Delete, bulk reset-by-scope, and Run-tick-now. Polls `GET /v1/lyrics/{stats,requests}` every 10 s; admin-403 degrades to an explanatory message. Files: `app/static/js/v2/monitor.js` (`renderLyricsMonitor`), `app/static/js/v2/router.js` (route + label), `app/static/css/pages.css` (`.lyr-breakdown` + 4 lyrics-only `.lbf-state-chip` colors).
+- **Static cache fix** — `add_security_headers` (`app/main.py`) now sets `Cache-Control: no-cache` on `/static/*` + `/dashboard` (paired with StaticFiles' ETag → 304 when unchanged). Kills the "hard-refresh to see new JS/CSS after a deploy" footgun noted below; `/v1/*` stays `no-store, private`.
+
 **NOT done — pick up here:**
-1. **Dashboard live *progress* panel** (§5.1) — the per-track modal exists, but there is **no backfill-progress view** (coverage %, by-source/by-status, ETA, queue, controls). This is the immediate next task.
-2. **Phase D** — lyric-aware ranker features (§5.2). A `[RETRAIN]` change. Deferred.
-3. **Promote to real prod** — `<prod-host>` currently runs `dev` (a snapshot was taken for rollback). Fast-forward `dev → main` + redeploy when satisfied (§3.3).
-4. **Phase E** — optional self-hosted LRCLIB mirror (unchanged from the original design; defer).
+1. **Phase D** — lyric-aware ranker features (§5.2). A `[RETRAIN]` change. Deferred.
+2. **Promote to real prod** — `<prod-host>` currently runs `dev` (a snapshot was taken for rollback). Fast-forward `dev → main` + redeploy when satisfied (§3.3).
+3. **Phase E** — optional self-hosted LRCLIB mirror (unchanged from the original design; defer).
 
 **Corrections to the original design (confirmed live):**
 - Library is **~152k tracks** (not 67k). GPU is an **RTX A4000 16 GB** (not RTX 4000 8 GB) — `large-v3` is comfortable.
@@ -139,7 +142,9 @@ Pilot = 28 tracks (20 voiced + 8 instrumental) POSTed straight to the sidecar (`
 
 ## 5. Remaining work
 
-### 5.1 Dashboard live progress panel  ·  **NEXT TASK**
+### 5.1 Dashboard live progress panel  ·  **DONE (built + verified, uncommitted)**
+
+> Implemented as **Monitor → Lyrics** — see "Done since" in §0. The spec below is retained as the build record. No backend stats tweak was needed (the panel rolls up `by_source` client-side); the optional `Cache-Control` fix in the §5.1 reminder *was* applied.
 
 A backfill-progress view (the read+control side of the drain, mirroring the existing **Lidarr Backfill** sub-tab). The data already exists at `GET /v1/lyrics/stats` and `GET /v1/lyrics/requests`; this is frontend-only plus (optionally) one stats tweak.
 

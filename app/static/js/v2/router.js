@@ -17,7 +17,7 @@
         monitor: [
             'overview', 'pipeline', 'models', 'system-health', 'recs-debug',
             'user-diagnostics', 'integrations', 'downloads', 'lidarr-backfill',
-            'discovery', 'charts',
+            'lyrics', 'discovery', 'charts',
         ],
         settings: [
             'algorithm', 'download-routing', 'lidarr-backfill',
@@ -57,6 +57,7 @@
         'user-diagnostics': 'User Diagnostics',
         'integrations': 'Integrations',
         'lidarr-backfill': 'Lidarr Backfill',
+        'lyrics': 'Lyrics',
         // Settings
         'algorithm': 'Algorithm',
         'download-routing': 'Download Routing',

@@ -184,6 +184,12 @@ async def add_security_headers(request: Request, call_next):
     # Prevent caches from storing sensitive API responses.
     if request.url.path.startswith("/v1/"):
         response.headers["Cache-Control"] = "no-store, private"
+    # Dashboard HTML/JS/CSS carry no content hash in their URLs, so tell the
+    # browser to revalidate before reuse. Paired with StaticFiles' ETag this is
+    # a cheap 304 when unchanged, but picks up new assets immediately after a
+    # deploy — no more "hard-refresh to see the change" footgun.
+    elif request.url.path.startswith("/static/") or request.url.path == "/dashboard":
+        response.headers["Cache-Control"] = "no-cache"
     # HSTS: instruct browsers to only use HTTPS.  The reverse proxy should
     # handle TLS termination, but this header ensures browsers remember.
     response.headers["Strict-Transport-Security"] = "max-age=63072000; includeSubDomains"
