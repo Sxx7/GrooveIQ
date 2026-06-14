@@ -412,8 +412,31 @@ class TestEndToEndRecommendation:
         await _create_users_and_events()
         await _run_pipeline()
 
-        # Generate some impressions first.
-        await client.get("/v1/recommend/metal_fan?limit=5")
+        # Fetch a served list. Since commit c2318b9 the server no longer writes
+        # reco_impression events itself: an impression means a track *actually
+        # shown* to the user, which only the client knows, so the client fires
+        # them for the tiles it renders. Simulate that here so the
+        # impression-to-stream stats have something to count.
+        served = (await client.get("/v1/recommend/metal_fan?limit=5")).json()
+        request_id = served["request_id"]
+        shown = served["tracks"][:5]
+        assert shown, "recommend should return tracks to fire impressions for"
+
+        now = _now()
+        async with _TestSession() as session:
+            for pos, track in enumerate(shown):
+                session.add(
+                    ListenEvent(
+                        user_id="metal_fan",
+                        track_id=track["track_id"],
+                        event_type="reco_impression",
+                        surface="home",
+                        position=pos,
+                        request_id=request_id,
+                        timestamp=now,
+                    )
+                )
+            await session.commit()
 
         resp = await client.get("/v1/stats/model")
         assert resp.status_code == 200
@@ -422,7 +445,7 @@ class TestEndToEndRecommendation:
         assert "ranker" in data
         assert data["ranker"]["trained"] is True
         assert "impressions" in data
-        assert data["impressions"]["impressions"] >= 5
+        assert data["impressions"]["impressions"] >= len(shown)
 
     async def test_empty_user_gets_graceful_response(self, client: AsyncClient):
         """A user with no history should get a reason, not an error."""
