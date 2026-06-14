@@ -75,7 +75,7 @@ class LyricsAsrClient:
         src = (settings.MUSIC_LIBRARY_PATH or "").rstrip("/")
         dst = (settings.LYRICS_API_MUSIC_PATH or "").rstrip("/")
         if dst and src and (file_path == src or file_path.startswith(src + "/")):
-            return dst + file_path[len(src):]
+            return dst + file_path[len(src) :]
         return file_path
 
     async def health_check(self) -> dict[str, Any]:

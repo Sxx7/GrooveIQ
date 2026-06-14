@@ -34,10 +34,16 @@ async def db_session() -> AsyncGenerator[AsyncSession, None]:
     Session = async_sessionmaker(engine, expire_on_commit=False)
     async with Session() as session:
         for i in range(6):
-            session.add(TrackFeatures(
-                track_id=f"t{i}", file_path=f"/m/{i}.flac", artist="A", title=f"T{i}",
-                duration=180.0, instrumentalness=0.1,
-            ))
+            session.add(
+                TrackFeatures(
+                    track_id=f"t{i}",
+                    file_path=f"/m/{i}.flac",
+                    artist="A",
+                    title=f"T{i}",
+                    duration=180.0,
+                    instrumentalness=0.1,
+                )
+            )
         await session.commit()
     async with Session() as session:
         yield session
@@ -60,6 +66,7 @@ def _enable(monkeypatch):
 def _scripted_resolve(script):
     async def fake(track, **kw):
         return script[track.track_id]
+
     return fake
 
 
@@ -98,7 +105,9 @@ async def test_tick_resolves_and_persists(db_session, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_no_lyrics_exhausts_to_permanently_skipped(db_session, monkeypatch):
-    script = {f"t{i}": LyricsResolution(outcome=OUTCOME_NO_LYRICS, source="none", cheap_exhausted=True) for i in range(6)}
+    script = {
+        f"t{i}": LyricsResolution(outcome=OUTCOME_NO_LYRICS, source="none", cheap_exhausted=True) for i in range(6)
+    }
     monkeypatch.setattr(drain, "resolve_lyrics", _scripted_resolve(script))
 
     await drain.run_lyrics_tick(db_session)  # attempt 1 -> no_lyrics
@@ -137,8 +146,9 @@ async def test_asr_budget_caps_and_defers(db_session, monkeypatch):
 
     async def fake(track, *, lrclib_client=None, asr_client=None, allow_asr=True, skip_cheap_tiers=False):
         if allow_asr:
-            return LyricsResolution(outcome=OUTCOME_FOUND, source="asr", quality=0, synced="[00:01]x",
-                                    asr_used=True, cheap_exhausted=True)
+            return LyricsResolution(
+                outcome=OUTCOME_FOUND, source="asr", quality=0, synced="[00:01]x", asr_used=True, cheap_exhausted=True
+            )
         return LyricsResolution(outcome=OUTCOME_ASR_DEFERRED, cheap_exhausted=True)
 
     monkeypatch.setattr(drain, "resolve_lyrics", fake)
@@ -154,7 +164,9 @@ async def test_asr_budget_caps_and_defers(db_session, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_reset_state_requeues_and_clears_cheap_exhausted(db_session, monkeypatch):
-    script = {f"t{i}": LyricsResolution(outcome=OUTCOME_NO_LYRICS, source="none", cheap_exhausted=True) for i in range(6)}
+    script = {
+        f"t{i}": LyricsResolution(outcome=OUTCOME_NO_LYRICS, source="none", cheap_exhausted=True) for i in range(6)
+    }
     monkeypatch.setattr(drain, "resolve_lyrics", _scripted_resolve(script))
     await drain.run_lyrics_tick(db_session)
     n = await drain.reset_state(db_session, "no_lyrics")

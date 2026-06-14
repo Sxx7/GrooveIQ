@@ -218,10 +218,28 @@ async def _seed_content_vs_history(s) -> None:
     rng = np.random.RandomState(7)
     base = rng.randn(64).astype(np.float32)
     s.add(User(user_id="alice", taste_profile={"top_tracks": [{"track_id": "tb", "score": 1.0}]}))
-    s.add(TrackFeatures(track_id="tb", file_path="/m/tb.mp3", artist="NearTaste", title="tb",
-                        embedding=_emb_vec(base), analyzed_at=_now(), analysis_version="1"))
-    s.add(TrackFeatures(track_id="ta", file_path="/m/ta.mp3", artist="FarPlayed", title="ta",
-                        embedding=_emb_vec(-base), analyzed_at=_now(), analysis_version="1"))
+    s.add(
+        TrackFeatures(
+            track_id="tb",
+            file_path="/m/tb.mp3",
+            artist="NearTaste",
+            title="tb",
+            embedding=_emb_vec(base),
+            analyzed_at=_now(),
+            analysis_version="1",
+        )
+    )
+    s.add(
+        TrackFeatures(
+            track_id="ta",
+            file_path="/m/ta.mp3",
+            artist="FarPlayed",
+            title="ta",
+            embedding=_emb_vec(-base),
+            analyzed_at=_now(),
+            analysis_version="1",
+        )
+    )
     await _add_interaction(s, "alice", "ta", play_count=50, like_count=2, satisfaction=0.9)
 
 
@@ -246,6 +264,7 @@ async def test_ranker_failure_with_faiss(monkeypatch):
         await _add_interaction(s, "alice", "a1", play_count=5, satisfaction=0.8)
         await s.commit()
     from app.services.faiss_index import build_index
+
     await build_index()
 
     async def boom(*a, **k):
@@ -285,6 +304,7 @@ async def test_mode_shifting_flips_ordering(monkeypatch):
         await _seed_content_vs_history(s)
         await s.commit()
     from app.services.faiss_index import build_index
+
     await build_index()
     monkeypatch.setattr("app.services.ranker.score_candidates", _ranker_stub({"ta": 0.9, "tb": 0.0}))
 
@@ -307,6 +327,7 @@ async def test_config_weights_drive_ranking(monkeypatch):
         await _seed_content_vs_history(s)
         await s.commit()
     from app.services.faiss_index import build_index
+
     await build_index()
     monkeypatch.setattr("app.services.ranker.score_candidates", _ranker_stub({"ta": 0.9, "tb": 0.0}))
 

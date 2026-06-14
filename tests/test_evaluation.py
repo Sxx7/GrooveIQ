@@ -280,12 +280,30 @@ class TestImpressionSurfaceExclusion:
         async with _TestSession() as session:
             session.add_all(
                 [
-                    ListenEvent(user_id="u", track_id="r0", event_type="reco_impression",
-                                surface="radio", request_id="rq-radio", timestamp=now),
-                    ListenEvent(user_id="u", track_id="n0", event_type="reco_impression",
-                                surface=None, request_id="rq-null", timestamp=now),
-                    ListenEvent(user_id="u", track_id="s0", event_type="reco_impression",
-                                surface="recommend_api", request_id="rq-srv", timestamp=now),
+                    ListenEvent(
+                        user_id="u",
+                        track_id="r0",
+                        event_type="reco_impression",
+                        surface="radio",
+                        request_id="rq-radio",
+                        timestamp=now,
+                    ),
+                    ListenEvent(
+                        user_id="u",
+                        track_id="n0",
+                        event_type="reco_impression",
+                        surface=None,
+                        request_id="rq-null",
+                        timestamp=now,
+                    ),
+                    ListenEvent(
+                        user_id="u",
+                        track_id="s0",
+                        event_type="reco_impression",
+                        surface="recommend_api",
+                        request_id="rq-srv",
+                        timestamp=now,
+                    ),
                 ]
             )
             await session.commit()
@@ -302,16 +320,35 @@ class TestImpressionSurfaceExclusion:
             session.add_all(
                 [
                     # Shown only via recommend_api, never played → must NOT be a negative.
-                    ListenEvent(user_id="u", track_id="server_only", event_type="reco_impression",
-                                surface="recommend_api", request_id="rq1", timestamp=now),
+                    ListenEvent(
+                        user_id="u",
+                        track_id="server_only",
+                        event_type="reco_impression",
+                        surface="recommend_api",
+                        request_id="rq1",
+                        timestamp=now,
+                    ),
                     # Genuinely shown (client), never played → SHOULD be a negative.
-                    ListenEvent(user_id="u", track_id="client_shown", event_type="reco_impression",
-                                surface="library:in_this_mix", request_id="rq2", timestamp=now),
+                    ListenEvent(
+                        user_id="u",
+                        track_id="client_shown",
+                        event_type="reco_impression",
+                        surface="library:in_this_mix",
+                        request_id="rq2",
+                        timestamp=now,
+                    ),
                     # Shown (client) AND played → not a negative.
-                    ListenEvent(user_id="u", track_id="played", event_type="reco_impression",
-                                surface="discover:discover_mix", request_id="rq3", timestamp=now),
-                    ListenEvent(user_id="u", track_id="played", event_type="play_start",
-                                request_id="rq3", timestamp=now + 1),
+                    ListenEvent(
+                        user_id="u",
+                        track_id="played",
+                        event_type="reco_impression",
+                        surface="discover:discover_mix",
+                        request_id="rq3",
+                        timestamp=now,
+                    ),
+                    ListenEvent(
+                        user_id="u", track_id="played", event_type="play_start", request_id="rq3", timestamp=now + 1
+                    ),
                 ]
             )
             await session.commit()
@@ -330,11 +367,25 @@ class TestImpressionSurfaceExclusion:
             session.add_all(
                 [
                     # recommend_api rank (10) must be ignored...
-                    ListenEvent(user_id="u", track_id="t", event_type="reco_impression",
-                                surface="recommend_api", position=10, request_id="rq1", timestamp=now),
+                    ListenEvent(
+                        user_id="u",
+                        track_id="t",
+                        event_type="reco_impression",
+                        surface="recommend_api",
+                        position=10,
+                        request_id="rq1",
+                        timestamp=now,
+                    ),
                     # ...only the real shown position (2) should remain.
-                    ListenEvent(user_id="u", track_id="t", event_type="reco_impression",
-                                surface="library:in_this_mix", position=2, request_id="rq2", timestamp=now),
+                    ListenEvent(
+                        user_id="u",
+                        track_id="t",
+                        event_type="reco_impression",
+                        surface="library:in_this_mix",
+                        position=2,
+                        request_id="rq2",
+                        timestamp=now,
+                    ),
                 ]
             )
             await session.commit()

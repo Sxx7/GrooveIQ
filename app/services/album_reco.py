@@ -254,9 +254,7 @@ async def _group_albums(session: AsyncSession) -> dict[tuple[str, str], dict[str
             albums[key] = rec
             accum[key] = {"energy": [], "valence": [], "danceability": [], "bpm": []}
         rec["track_ids"].append(r.track_id)
-        rec["tracks"].append(
-            {"track_id": r.track_id, "title": r.title, "media_server_id": r.media_server_id}
-        )
+        rec["tracks"].append({"track_id": r.track_id, "title": r.title, "media_server_id": r.media_server_id})
         if r.track_number and r.track_number > rec["max_track_number"]:
             rec["max_track_number"] = r.track_number
         for field in ("energy", "valence", "danceability", "bpm"):
@@ -313,6 +311,7 @@ async def _score_album_tracks(
     while ``discover`` rides ``content``/``freshness`` rather than the ranker, so
     the cap costs little where it bites. The cap bounds per-request latency
     (``build_features`` runs inside ``score_candidates``)."""
+
     # Order albums by total play count (favourites first) and accumulate tracks.
     def _album_plays(rec: dict[str, Any]) -> int:
         return sum(interactions.get(t, {}).get("play_count", 0) for t in rec["track_ids"])
@@ -360,7 +359,4 @@ def _representative_tracks(
         return interactions.get(tid, {}).get("satisfaction", 0.0)
 
     ordered = sorted(alb["tracks"], key=_key, reverse=True)[:_REPRESENTATIVE_LIMIT]
-    return [
-        {"track_id": t["track_id"], "title": t["title"], "media_server_id": t["media_server_id"]}
-        for t in ordered
-    ]
+    return [{"track_id": t["track_id"], "title": t["title"], "media_server_id": t["media_server_id"]} for t in ordered]

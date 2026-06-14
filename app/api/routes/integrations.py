@@ -277,14 +277,16 @@ async def _check_lyrics_api() -> dict[str, Any]:
                 "music_entries": music.get("entries"),
             }
         if not entry["connected"]:
-            entry["error"] = _sanitize_error(
-                str(data.get("error") or f"HTTP {resp.status_code}, ready={ready}")
-            )
+            entry["error"] = _sanitize_error(str(data.get("error") or f"HTTP {resp.status_code}, ready={ready}"))
         return entry
     except httpx.TimeoutException:
         return {"configured": True, "connected": False, "error": "Connection timed out"}
     except httpx.ConnectError as exc:
-        return {"configured": True, "connected": False, "error": _sanitize_error(f"Connection refused or DNS failure: {exc}")}
+        return {
+            "configured": True,
+            "connected": False,
+            "error": _sanitize_error(f"Connection refused or DNS failure: {exc}"),
+        }
     except Exception as exc:
         return {"configured": True, "connected": False, "error": _sanitize_error(str(exc))}
 
@@ -315,7 +317,11 @@ async def _check_lrclib() -> dict[str, Any]:
     except httpx.TimeoutException:
         return {"configured": True, "connected": False, "error": "Connection timed out"}
     except httpx.ConnectError as exc:
-        return {"configured": True, "connected": False, "error": _sanitize_error(f"Connection refused or DNS failure: {exc}")}
+        return {
+            "configured": True,
+            "connected": False,
+            "error": _sanitize_error(f"Connection refused or DNS failure: {exc}"),
+        }
     except Exception as exc:
         return {"configured": True, "connected": False, "error": _sanitize_error(str(exc))}
 

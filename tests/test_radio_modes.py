@@ -389,8 +389,12 @@ if _APP_OK:
         resp = await client.post(
             "/v1/radio/start",
             json={
-                "user_id": "u", "seed_type": "track", "seed_value": "proven0",
-                "count": 1, "discovery": 0.9, "mode": "familiar",
+                "user_id": "u",
+                "seed_type": "track",
+                "seed_value": "proven0",
+                "count": 1,
+                "discovery": 0.9,
+                "mode": "familiar",
             },
         )
         assert resp.status_code == 201, resp.text

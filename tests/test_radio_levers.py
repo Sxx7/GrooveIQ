@@ -44,9 +44,7 @@ async def test_repeat_cooldown_demotes_recently_served():
     async with _Session() as session:
         for _ in range(5):  # 'hot' served 5x ~10 min ago
             session.add(
-                ListenEvent(
-                    user_id="u", track_id="hot", event_type="impression", surface="radio", timestamp=now - 600
-                )
+                ListenEvent(user_id="u", track_id="hot", event_type="impression", surface="radio", timestamp=now - 600)
             )
         await session.commit()
 
@@ -77,9 +75,7 @@ async def test_repeat_cooldown_ignores_non_radio_serves():
     async with _Session() as session:
         for _ in range(5):
             session.add(
-                ListenEvent(
-                    user_id="u", track_id="hot", event_type="impression", surface="home", timestamp=now - 600
-                )
+                ListenEvent(user_id="u", track_id="hot", event_type="impression", surface="home", timestamp=now - 600)
             )
         await session.commit()
     candidates = [{"track_id": "hot", "score": 1.0, "source": "radio_drift"}]

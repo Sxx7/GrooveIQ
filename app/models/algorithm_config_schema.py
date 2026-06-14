@@ -430,7 +430,10 @@ class ArtistRecoConfig(BaseModel):
         0.35, ge=0, le=1, description="Weight of the audio-centroid cosine (does this artist *sound* like your taste)"
     )
     w_ranker: float = Field(
-        0.35, ge=0, le=1, description="Weight of the track-ranker roll-up (top-k mean of the artist's learned track scores)"
+        0.35,
+        ge=0,
+        le=1,
+        description="Weight of the track-ranker roll-up (top-k mean of the artist's learned track scores)",
     )
     w_lastfm: float = Field(0.20, ge=0, le=1, description="Weight of the Last.fm similar/top signal")
     w_history: float = Field(

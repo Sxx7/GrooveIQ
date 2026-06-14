@@ -1021,9 +1021,7 @@ async def get_recommended_albums(
     #     reads the same cover_art_cache first, so warm entries skip upstream.
     _ALBUM_COVER_RESOLVE_CAP = 12
     cover_tasks = [
-        (i, a["album_artist"], a["album"])
-        for i, a in enumerate(albums)
-        if a.get("album_artist") and a.get("album")
+        (i, a["album_artist"], a["album"]) for i, a in enumerate(albums) if a.get("album_artist") and a.get("album")
     ][:_ALBUM_COVER_RESOLVE_CAP]
     if cover_tasks:
         import asyncio

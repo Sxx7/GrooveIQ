@@ -477,18 +477,14 @@ async def list_requests(
 async def get_stats(session: AsyncSession) -> dict[str, Any]:
     """Queue counts by status, library coverage, capacity, and a rough ETA."""
     # Counts by queue status.
-    rows = await session.execute(
-        select(LyricsRequest.status, func.count()).group_by(LyricsRequest.status)
-    )
+    rows = await session.execute(select(LyricsRequest.status, func.count()).group_by(LyricsRequest.status))
     by_status = {status: count for status, count in rows.all()}
 
     total_tracks = await session.scalar(select(func.count()).select_from(TrackFeatures)) or 0
     # Resolved at the current cascade version (any displayable / terminal source).
     resolved = (
         await session.scalar(
-            select(func.count())
-            .select_from(TrackFeatures)
-            .where(TrackFeatures.lyrics_version == LYRICS_VERSION)
+            select(func.count()).select_from(TrackFeatures).where(TrackFeatures.lyrics_version == LYRICS_VERSION)
         )
         or 0
     )

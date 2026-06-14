@@ -512,7 +512,5 @@ async def _build_artist_index(
 
 
 async def _interacted_track_ids(session: AsyncSession, user_id: str) -> set[str]:
-    rows = (
-        await session.execute(select(TrackInteraction.track_id).where(TrackInteraction.user_id == user_id))
-    ).all()
+    rows = (await session.execute(select(TrackInteraction.track_id).where(TrackInteraction.user_id == user_id))).all()
     return {r.track_id for r in rows}

@@ -644,9 +644,7 @@ async def get_track_lyrics(
     session: AsyncSession = Depends(get_session),
     _key: str = Depends(require_api_key),
 ):
-    result = await session.execute(
-        select(TrackFeatures).where(TrackFeatures.track_id == track_id)
-    )
+    result = await session.execute(select(TrackFeatures).where(TrackFeatures.track_id == track_id))
     track = result.scalar_one_or_none()
     if track is None:
         raise HTTPException(status_code=404, detail="Not found.")

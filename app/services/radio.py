@@ -684,7 +684,9 @@ async def get_next_tracks(
     # carry real satisfaction labels) float up, while unproven tracks score ~0;
     # deep pushes it down so retrieval/novelty leads. Default 0.6 == today.
     blend = float(dial.overrides.get("modes", {}).get("active", {}).get("ranker_blend", 0.6))
-    scored = [(tid, ranker_score * blend + retrieval_scores.get(tid, 0.0) * (1.0 - blend)) for tid, ranker_score in scored]
+    scored = [
+        (tid, ranker_score * blend + retrieval_scores.get(tid, 0.0) * (1.0 - blend)) for tid, ranker_score in scored
+    ]
     scored.sort(key=lambda x: x[1], reverse=True)
 
     # Capture pre-rerank ordering for the audit before reranking shuffles it.

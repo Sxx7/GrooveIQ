@@ -196,7 +196,8 @@ def _enable_lyrics(monkeypatch):
 
 def _set_embedded(monkeypatch, plain=None, synced=None):
     monkeypatch.setattr(
-        lyr, "read_embedded_lyrics",
+        lyr,
+        "read_embedded_lyrics",
         lambda fp: {"plain": plain, "synced": synced, "source": "embedded" if (plain or synced) else None},
     )
 
@@ -312,15 +313,29 @@ async def lyrics_client():
         await conn.run_sync(Base.metadata.create_all)
     app.dependency_overrides[get_session] = _override_session
     async with _Session() as s:
-        s.add(TrackFeatures(
-            track_id="lyr_real", file_path="/m/a.flac", title="Real", artist="A",
-            lyrics_source="lrclib", lyrics_quality=3, lyrics_plain="hi", lyrics_synced="[00:01]hi",
-            lyrics_language="en", lyrics_fetched_at=int(time.time()),
-        ))
-        s.add(TrackFeatures(
-            track_id="lyr_instr", file_path="/m/b.flac", title="Instr", artist="A",
-            lyrics_source="instrumental",
-        ))
+        s.add(
+            TrackFeatures(
+                track_id="lyr_real",
+                file_path="/m/a.flac",
+                title="Real",
+                artist="A",
+                lyrics_source="lrclib",
+                lyrics_quality=3,
+                lyrics_plain="hi",
+                lyrics_synced="[00:01]hi",
+                lyrics_language="en",
+                lyrics_fetched_at=int(time.time()),
+            )
+        )
+        s.add(
+            TrackFeatures(
+                track_id="lyr_instr",
+                file_path="/m/b.flac",
+                title="Instr",
+                artist="A",
+                lyrics_source="instrumental",
+            )
+        )
         s.add(TrackFeatures(track_id="lyr_none", file_path="/m/c.flac", title="None", artist="A"))
         await s.commit()
     headers = {"Authorization": f"Bearer {settings.api_keys_list[0]}"} if settings.api_keys_list else {}
