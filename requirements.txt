@@ -64,13 +64,13 @@ tokenizers>=0.15
 transformers>=5.0,<6
 
 # Candidate generation (Phase 4)
-faiss-cpu>=1.14.2
+faiss-cpu>=1.14.3
 implicit>=0.7.3
 scipy>=1.17.1
 
 # Ranking model (Phase 4)
 lightgbm>=4.6.0
-scikit-learn>=1.8.0
+scikit-learn>=1.9.0
 
 # Session skip-gram embeddings
 gensim>=4.4.0
