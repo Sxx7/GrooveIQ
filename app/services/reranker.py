@@ -202,6 +202,29 @@ async def rerank(
                     }
                 )
 
+    # --- Recently-engaged resurfacing boost (cross-surface "special track", capped at one) ---
+    # A track the user just replayed / seeked-back / finished / liked earns time-decayed heat
+    # (app.services.resurfacing). Boost only the single hottest such candidate so it resurfaces
+    # across radio / Discover / Library without flooding one batch — like a single inserted rec.
+    # Reads the inter_map already loaded above; gated on cfg.recently_engaged_boost (0 = off).
+    if cfg.recently_engaged_boost > 0.0 and inter_map:
+        from app.services.resurfacing import engagement_heat
+
+        tid, heat = max(((t, engagement_heat(i, now)) for t, i in inter_map.items()), key=lambda x: x[1])
+        if heat > 0.0:
+            old = score_map[tid]
+            score_map[tid] = old + cfg.recently_engaged_boost * heat
+            if actions is not None:
+                actions.append(
+                    {
+                        "track_id": tid,
+                        "action": "recently_engaged_boost",
+                        "score_before": round(old, 4),
+                        "score_after": round(score_map[tid], 4),
+                        "heat": round(heat, 4),
+                    }
+                )
+
     # --- Rule 1: Freshness boost (never-played tracks get score uplift) ---
     for tid in track_ids:
         if tid not in inter_map:

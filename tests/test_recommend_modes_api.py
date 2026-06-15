@@ -99,10 +99,24 @@ def test_interpolated_midpoint_sits_between_anchors():
     cfg = _cfg()
     res = resolve_dial(0.45, None, cfg)  # between balanced (0.3) and discovery (0.6)
     assert res.preset is None
-    k = res.overrides["modes"]["active"]["kappa"]
-    assert cfg.balanced.kappa < k < cfg.discovery.kappa
-    # novelty_filter engages smoothly as soon as any proven slice is excluded.
-    assert res.overrides["modes"]["active"]["novelty_filter"] is True
+    # exploration_fraction differs between the two anchors, so the midpoint sits strictly between
+    # them (interpolation works regardless of which anchor is larger).
+    ef = res.overrides["modes"]["active"]["exploration_fraction"]
+    lo, hi = sorted((cfg.balanced.exploration_fraction, cfg.discovery.exploration_fraction))
+    assert lo < ef < hi
+    # novelty_filter stays off across the balanced→discovery span (Discover keeps favourites).
+    assert res.overrides["modes"]["active"]["novelty_filter"] is False
+
+
+def test_interpolated_midpoint_lerps_two_axis_levers():
+    """The two-axis radio levers interpolate between anchors instead of collapsing to defaults."""
+    cfg = _cfg()
+    res = resolve_dial(0.45, None, cfg)  # between balanced (0.3) and discovery (0.6)
+    active = res.overrides["modes"]["active"]
+    lo, hi = sorted((cfg.balanced.seed_anchor_weight, cfg.discovery.seed_anchor_weight))
+    assert lo <= active["seed_anchor_weight"] <= hi
+    # require_interaction follows the interpolated semi-known fraction (Discover floor).
+    assert active["require_interaction"] == (active["semiknown_fraction"] > 0.0)
 
 
 def test_unknown_mode_raises():

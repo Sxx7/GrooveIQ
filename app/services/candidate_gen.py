@@ -17,7 +17,7 @@ import logging
 import time
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.session import AsyncSessionLocal
@@ -38,6 +38,51 @@ def _get_user_top_track_ids(taste_profile: dict, limit: int = 20) -> list[str]:
     """Extract top track IDs from a user's taste profile."""
     top_tracks = taste_profile.get("top_tracks", [])
     return [t["track_id"] for t in top_tracks[:limit] if "track_id" in t]
+
+
+# A track is "semi-known" — the tier between proven and brand-new — when the
+# user has *sampled* it (played 1-2 times) and never rejected it (no skip, no
+# dislike, not liked) and it hasn't crossed into "proven" (satisfaction below the
+# bar). These are the "appeared before, didn't skip, not a favourite yet" tracks
+# that the Discover posture mixes in (~30%) alongside proven favourites. Defined
+# on interaction counts alone (not reco_impression rows) so the tier can't starve
+# on impression-logging gaps. Crowd-free — purely this user's own light play.
+_SEMIKNOWN_MAX_SATISFACTION = 0.6  # at/above this a track is "proven" (mirrors radio._PROVEN_MIN_SATISFACTION)
+
+
+async def get_semiknown_track_ids(
+    user_id: str,
+    session: AsyncSession,
+    *,
+    limit: int = 200,
+) -> list[str]:
+    """The user's *semi-known* track_ids, most-recently-sampled first.
+
+    Semi-known = played at least once but fewer than ``_KNOWN_MIN_PLAYS`` times,
+    never skipped or disliked, not liked, and below the proven satisfaction bar.
+    The "tracks that appeared before and the user didn't skip" tier — the 30%
+    slice the Discover posture mixes in alongside proven favourites. Distinct from
+    the proven set (radio ``_get_proven_set``) and the brand-new tail (which has no
+    interaction row at all).
+    """
+    result = await session.execute(
+        select(TrackInteraction.track_id)
+        .where(
+            TrackInteraction.user_id == user_id,
+            TrackInteraction.play_count >= 1,
+            TrackInteraction.play_count < _KNOWN_MIN_PLAYS,
+            TrackInteraction.skip_count == 0,
+            TrackInteraction.dislike_count == 0,
+            TrackInteraction.like_count == 0,
+            or_(
+                TrackInteraction.satisfaction_score.is_(None),
+                TrackInteraction.satisfaction_score < _SEMIKNOWN_MAX_SATISFACTION,
+            ),
+        )
+        .order_by(TrackInteraction.last_played_at.desc())
+        .limit(limit)
+    )
+    return [row[0] for row in result.all()]
 
 
 async def get_content_candidates(

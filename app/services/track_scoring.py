@@ -357,7 +357,10 @@ def _compute_delta(events: list) -> dict:
             like_count += 1
         elif et == "dislike":
             dislike_count += 1
-        elif et == "repeat":
+        elif et in ("repeat", "replay"):
+            # "replay" = the client detected the user played the same track again back-to-back
+            # (a strong positive intent signal that feeds the resurfacing heat); "repeat" is the
+            # repeat-mode toggle. Both count toward repeat_count.
             repeat_count += 1
         elif et == "playlist_add":
             playlist_add_count += 1

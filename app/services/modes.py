@@ -62,6 +62,11 @@ _NUMERIC_FIELDS: tuple[str, ...] = (
     "repeat_window_hours",
     "proven_mu_min",
     "proven_sigma_max",
+    # Two-axis radio levers — interpolate so a continuous `discovery` float gives a smooth,
+    # monotonic anchoring/novelty sweep. Named modes use the literal preset (no interpolation),
+    # so they are unaffected; this only fills the gap for fractional dial values.
+    "seed_anchor_weight",
+    "semiknown_fraction",
 )
 
 
@@ -117,6 +122,9 @@ def _lerp_preset(a: PresetConfig, b: PresetConfig, t: float) -> PresetConfig:
         k: _lerp(a.source_weight_mult.get(k, 1.0), b.source_weight_mult.get(k, 1.0), t) for k in keys
     }
     values["novelty_filter"] = values["novelty_strength"] > 0.0
+    # require_interaction (the Discover brand-new floor) follows the semi-known quota, mirroring
+    # how novelty_filter follows novelty_strength — on wherever a semi-known slice is requested.
+    values["require_interaction"] = values["semiknown_fraction"] > 0.0
     # PresetConfig validates every field's range; a convex combination of two
     # in-range anchors is in range, so this never raises.
     return PresetConfig(**values)
@@ -270,6 +278,8 @@ def derive_reasons(sources: list[str], actions: list[dict]) -> list[str]:
             add("proven_favourite" if action.get("is_proven") else "exploring")
         elif kind == "freshness_boost":
             add("new_to_you")
+        elif kind == "recently_engaged_boost":
+            add("keep_listening")
 
     for source in sources:
         add(_SOURCE_REASONS.get(source))

@@ -145,6 +145,8 @@ class RadioSession:
     # Embeddings
     seed_embedding: np.ndarray | None = None  # anchor point (never changes)
     drift_embedding: np.ndarray | None = None  # shifts with feedback
+    profile_embedding: np.ndarray | None = None  # user's taste centroid (set once at creation)
+    seed_anchor_weight: float = 0.5  # Anchoring axis: high = hug the seed (familiar), low = roam taste
 
     # Session state
     played: list[str] = field(default_factory=list)  # ordered play history
@@ -343,9 +345,19 @@ async def create_radio_session(
         if session.seed_track_ids:
             session.seed_embedding = faiss_index.get_centroid(session.seed_track_ids)
 
-    # Initialize drift embedding to match seed
+    # Anchoring (two-axis dial): cache the user's taste centroid + the resolved preset's
+    # seed_anchor_weight, then seed the drift embedding as a blend of seed and taste centroid.
+    # Familiar hugs the seed; balanced/discovery/deep roam toward the user's favourites so a
+    # random seed quickly falls back to what the user knows and likes.
+    from app.services.modes import resolve_dial as _resolve_dial
+
+    _active = (
+        _resolve_dial(session.discovery, session.mode, get_config().modes).overrides.get("modes", {}).get("active", {})
+    )
+    session.seed_anchor_weight = float(_active.get("seed_anchor_weight", 0.5))
     if session.seed_embedding is not None:
-        session.drift_embedding = session.seed_embedding.copy()
+        session.profile_embedding = await _get_profile_centroid(user_id, db)
+        session.drift_embedding = _blend_anchor(session)
 
     store_session(session)
     return session
@@ -418,31 +430,26 @@ def _update_drift_embedding(s: RadioSession) -> None:
         elif fb.action == "skip":
             repel_vecs.append((emb, recency * radio_cfg.feedback_skip_weight))
 
-    if not attract_vecs and not repel_vecs:
-        return
-
-    # Start from seed
+    # Drift base = the anchor blend (seed ↔ taste centroid). Feedback nudges it from there.
+    # Always recomputed so a mid-session dial change (anchor) takes effect even with no feedback.
     radio_cfg = get_config().radio
-    drift = s.seed_embedding.copy().astype(np.float64)
+    base = _blend_anchor(s)
+    if base is None:
+        return
+    drift = base.astype(np.float64)
 
-    # Discovery dial sets the baseline drift magnitude: familiar hugs the seed
-    # (small steps), deep-discovery roams (large steps). Feedback still moves the
-    # vector at every posture — the dial only scales how far each signal pushes.
-    drift_scale = _dial_drift_scale(s.discovery)
+    if attract_vecs or repel_vecs:
+        # Discovery dial sets the baseline drift magnitude: familiar hugs the seed (small steps),
+        # deep-discovery roams (large steps). Feedback still moves the vector at every posture.
+        drift_scale = _dial_drift_scale(s.discovery)
+        for vec, weight in attract_vecs:
+            drift += vec.astype(np.float64) * weight * radio_cfg.feedback_weight * drift_scale
+        for vec, weight in repel_vecs:
+            drift -= vec.astype(np.float64) * weight * radio_cfg.feedback_weight * 0.5 * drift_scale
 
-    # Pull toward liked tracks
-    for vec, weight in attract_vecs:
-        drift += vec.astype(np.float64) * weight * radio_cfg.feedback_weight * drift_scale
-
-    # Push away from skipped/disliked tracks
-    for vec, weight in repel_vecs:
-        drift -= vec.astype(np.float64) * weight * radio_cfg.feedback_weight * 0.5 * drift_scale
-
-    # Normalize
+    # Normalize (fall back to the un-nudged base if feedback cancelled the vector out)
     norm = np.linalg.norm(drift)
-    if norm > 1e-9:
-        drift = (drift / norm).astype(np.float32)
-        s.drift_embedding = drift
+    s.drift_embedding = (drift / norm).astype(np.float32) if norm > 1e-9 else base
 
 
 # ---------------------------------------------------------------------------
@@ -469,7 +476,7 @@ async def get_next_tracks(
         positions, reranker actions, feature vectors)
       - ``candidates_by_source``: count by source
     """
-    from app.services import candidate_gen, collab_filter, faiss_index, lastfm_candidates, session_embeddings
+    from app.services import candidate_gen, collab_filter, faiss_index, lastfm_candidates, resurfacing, session_embeddings
     from app.services.modes import resolve_dial
     from app.services.ranker import score_candidates
     from app.services.request_config import apply_overrides
@@ -484,6 +491,12 @@ async def get_next_tracks(
     # applied around the modes-reading call sites below — the source-weight /
     # novelty filter on the candidate pool and the reranker's acquisition term.
     dial = resolve_dial(s.discovery, s.mode, get_config().modes)
+    active_levers = dial.overrides.get("modes", {}).get("active", {})
+
+    # Refresh the anchoring posture for this batch (the dial can change mid-session) and rebuild
+    # the drift embedding as the anchor blend (seed ↔ taste centroid) plus any in-session feedback.
+    s.seed_anchor_weight = float(active_levers.get("seed_anchor_weight", 0.5))
+    _update_drift_embedding(s)
 
     # Build exclusion set: already played + disliked in this session
     exclude = set(s.played_set) | s.disliked
@@ -532,7 +545,7 @@ async def get_next_tracks(
         results = faiss_index.search(s.seed_embedding, k=overfetch // 2, exclude_ids=exclude)
         _add(
             [
-                {"track_id": tid, "score": score * radio_cfg.source_seed, "source": "radio_seed"}
+                {"track_id": tid, "score": score * radio_cfg.source_seed * s.seed_anchor_weight, "source": "radio_seed"}
                 for tid, score in results
             ]
         )
@@ -543,7 +556,11 @@ async def get_next_tracks(
             results = faiss_index.search_by_track_id(seed_tid, k=50, exclude_ids=exclude)
             _add(
                 [
-                    {"track_id": tid, "score": score * radio_cfg.source_content, "source": "radio_content"}
+                    {
+                        "track_id": tid,
+                        "score": score * radio_cfg.source_content * s.seed_anchor_weight,
+                        "source": "radio_content",
+                    }
                     for tid, score in results
                 ]
             )
@@ -621,6 +638,35 @@ async def get_next_tracks(
             ]
         )
 
+    # --- Source 9: Semi-known injection (the Discover ~30% slice) ---
+    # When the posture sets a semi-known quota (Discover), inject the user's semi-known tracks —
+    # sampled before, never skipped, not yet proven — so the selection quota has material to draw
+    # on even when similarity retrieval didn't surface them. No-op for the other postures.
+    semiknown_frac = float(active_levers.get("semiknown_fraction", 0.0))
+    semiknown_ids: list[str] = []
+    if semiknown_frac > 0.0:
+        semiknown_ids = await candidate_gen.get_semiknown_track_ids(s.user_id, db, limit=overfetch)
+        _add(
+            [
+                {"track_id": tid, "score": radio_cfg.source_content, "source": "radio_semiknown"}
+                for tid in semiknown_ids
+            ]
+        )
+
+    # --- Source 10: Recently-engaged resurfacing (the cross-surface special track) ---
+    # Inject the user's currently-"hot" tracks (just replayed / seeked-back / finished / liked)
+    # so a special track keeps reappearing across radio sessions regardless of posture. The
+    # reranker then lifts the single hottest one. Tracks already served this session are excluded
+    # by `_add`'s seen-set, so it surfaces in a *later* batch, not back-to-back.
+    resurface = await resurfacing.get_resurfacing_tracks(s.user_id, db, limit=5)
+    if resurface:
+        _add(
+            [
+                {"track_id": tid, "score": radio_cfg.source_drift * heat, "source": "radio_resurface"}
+                for tid, heat in resurface
+            ]
+        )
+
     # --- Discovery dial: per-source weight tilt + proven-novelty filter ---
     # Both are gated so the default (balanced) posture is a no-op. The dial's
     # interpolated per-source multipliers (keyed by recommend-source name) are
@@ -635,6 +681,10 @@ async def get_next_tracks(
                     c["score"] *= active.source_weight_mult.get(key, 1.0)
         if active.novelty_filter:
             candidates = await candidate_gen.apply_novelty_filter(candidates, s.user_id, db, active)
+
+    # --- Discover floor: drop brand-new (zero-play) tracks (no-starve guarded) ---
+    if bool(active_levers.get("require_interaction", False)):
+        candidates = await _filter_require_interaction(candidates, s.user_id, db, min_keep=count)
 
     if not candidates:
         return []
@@ -712,8 +762,12 @@ async def get_next_tracks(
     final_score_by_tid = {tid: float(score) for tid, score in reranked}
     final_pos_by_tid = {tid: i for i, (tid, _) in enumerate(reranked)}
 
-    # Take the requested count
-    final = reranked[:count]
+    # Take the requested count — honouring the Discover semi-known quota when set so the batch
+    # is ~(1-frac) proven/known + ~frac sampled-but-uncommitted tracks.
+    if semiknown_frac > 0.0 and semiknown_ids:
+        final = _apply_semiknown_quota(reranked, set(semiknown_ids), count, semiknown_frac)
+    else:
+        final = reranked[:count]
     shown_tids: set[str] = {tid for tid, _ in final}
 
     # Fetch track metadata
@@ -843,6 +897,105 @@ async def _get_proven_set(user_id: str, db: AsyncSession) -> set[str]:
         )
     )
     return {row[0] for row in result.all()}
+
+
+def _blend_anchor(s: RadioSession) -> np.ndarray | None:
+    """The drift *base*: ``anchor*seed + (1-anchor)*taste_centroid``, L2-normalised.
+
+    High ``seed_anchor_weight`` (familiar) hugs the seed; low (balanced / discovery / deep) pulls
+    toward the user's taste centroid so a random seed quickly falls back to the user's favourites.
+    Falls back to the pure seed when there is no taste centroid (cold start).
+    """
+    seed = s.seed_embedding
+    if seed is None:
+        return None
+    if s.profile_embedding is None:
+        return seed.copy()
+    a = float(s.seed_anchor_weight)
+    blended = a * seed.astype(np.float64) + (1.0 - a) * s.profile_embedding.astype(np.float64)
+    norm = np.linalg.norm(blended)
+    if norm < 1e-9:
+        return seed.copy()
+    return (blended / norm).astype(np.float32)
+
+
+async def _get_profile_centroid(user_id: str, db: AsyncSession) -> np.ndarray | None:
+    """The user's taste centroid: the FAISS centroid of their top tracks (by satisfaction),
+    falling back to their proven set. ``None`` if neither is available or FAISS isn't ready —
+    the anchor blend then degrades to the pure seed (cold-start safe).
+    """
+    from app.models.db import User
+    from app.services import faiss_index
+
+    if not faiss_index.is_ready():
+        return None
+
+    row = await db.execute(select(User.taste_profile).where(User.user_id == user_id))
+    profile = row.scalar_one_or_none()
+    top_ids: list[str] = []
+    if isinstance(profile, dict):
+        top_ids = [t["track_id"] for t in profile.get("top_tracks", []) if isinstance(t, dict) and "track_id" in t]
+    if not top_ids:
+        top_ids = list(await _get_proven_set(user_id, db))
+    if not top_ids:
+        return None
+    return faiss_index.get_centroid(top_ids)
+
+
+async def _filter_require_interaction(
+    candidates: list[dict[str, Any]],
+    user_id: str,
+    db: AsyncSession,
+    *,
+    min_keep: int,
+) -> list[dict[str, Any]]:
+    """Drop brand-new (zero-play) candidates — the Discover floor. If that would leave fewer than
+    ``min_keep`` candidates (sparse library / cold start) keep the original pool so radio never
+    starves on a thin interaction history.
+    """
+    if not candidates:
+        return candidates
+    cand_ids = [c["track_id"] for c in candidates]
+    result = await db.execute(
+        select(TrackInteraction.track_id).where(
+            TrackInteraction.user_id == user_id,
+            TrackInteraction.track_id.in_(cand_ids),
+            TrackInteraction.play_count >= 1,
+        )
+    )
+    interacted = {row[0] for row in result.all()}
+    kept = [c for c in candidates if c["track_id"] in interacted]
+    return kept if len(kept) >= min_keep else candidates
+
+
+def _apply_semiknown_quota(
+    reranked: list[tuple[str, float]],
+    semiknown_ids: set[str],
+    count: int,
+    frac: float,
+) -> list[tuple[str, float]]:
+    """Select ``count`` tracks from the reranked list honouring a semi-known quota.
+
+    Targets ~``frac`` of the slots from the semi-known tier and the rest from proven/known/other,
+    preserving score order within each tier and backfilling a short tier from the other, then
+    re-sorting by score so the slice is spread by merit rather than clumped.
+    """
+    if frac <= 0.0 or not semiknown_ids:
+        return reranked[:count]
+    target_semi = min(count, round(count * frac))
+    target_other = count - target_semi
+    semi = [(t, sc) for t, sc in reranked if t in semiknown_ids]
+    other = [(t, sc) for t, sc in reranked if t not in semiknown_ids]
+    chosen_semi = semi[:target_semi]
+    chosen_other = other[:target_other]
+    if len(chosen_semi) < target_semi:
+        chosen_other += other[target_other : target_other + (target_semi - len(chosen_semi))]
+    if len(chosen_other) < target_other:
+        chosen_semi += semi[target_semi : target_semi + (target_other - len(chosen_other))]
+    chosen_ids = {t for t, _ in chosen_semi} | {t for t, _ in chosen_other}
+    # Preserve the input ordering (already artist-spaced / continuity-smoothed by the caller)
+    # rather than re-sorting by score, which would clump same-artist runs back together.
+    return [pair for pair in reranked if pair[0] in chosen_ids][:count]
 
 
 async def _apply_repeat_cooldown(

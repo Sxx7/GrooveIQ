@@ -38,6 +38,7 @@ class EventType(str, Enum):
     SEEK_BACK = "seek_back"  # user scrubbed backward (value = seconds jumped back)
     SEEK_FORWARD = "seek_forward"  # user scrubbed forward (value = seconds skipped)
     REPEAT = "repeat"  # user hit repeat on a single track
+    REPLAY = "replay"  # user played the same track again back-to-back (a strong re-listen signal)
     VOLUME_UP = "volume_up"  # significant volume increase during track
     VOLUME_DOWN = "volume_down"  # significant volume decrease
 

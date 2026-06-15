@@ -12,7 +12,7 @@ import logging
 import time
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Path, Query
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -744,6 +744,81 @@ async def list_mixes(
             }
         )
     return {"user_id": user_id, "mixes": mixes}
+
+
+@router.get(
+    "/users/{user_id}/resurfacing",
+    summary="Tracks the user has recently engaged with (the resurfacing 'Keep listening' card)",
+    description=(
+        "Returns the user's currently-'hot' tracks — ones they just replayed, seeked back into, "
+        "finished, or liked — each with a decayed `heat` score. Powers a cross-client 'Keep "
+        "listening' card so a special track the user is getting into keeps reappearing until it "
+        "either becomes a proven favourite or fades. Honours `POST .../suppress`."
+    ),
+)
+async def get_resurfacing(
+    user_id: str,
+    limit: int = Query(20, ge=1, le=50),
+    session: AsyncSession = Depends(get_session),
+    _key: str = Depends(require_api_key),
+):
+    from app.services import resurfacing
+
+    validate_user_id(user_id)
+    check_user_access(_key, user_id)
+
+    result = await session.execute(select(User.user_id).where(User.user_id == user_id))
+    if result.scalar_one_or_none() is None:
+        raise HTTPException(status_code=404, detail="Not found.")
+
+    hot = await resurfacing.get_resurfacing_tracks(user_id, session, limit=limit)
+    if not hot:
+        return {"user_id": user_id, "tracks": []}
+
+    feat_result = await session.execute(
+        select(TrackFeatures).where(TrackFeatures.track_id.in_([tid for tid, _ in hot]))
+    )
+    feat_map = {t.track_id: t for t in feat_result.scalars().all()}
+
+    tracks = []
+    for position, (tid, heat) in enumerate(hot):
+        tf = feat_map.get(tid)
+        row = {"position": position, "track_id": tid, "heat": round(heat, 4), "reason": "keep_listening"}
+        if tf:
+            row.update(
+                {
+                    "title": tf.title,
+                    "artist": tf.artist,
+                    "album": tf.album,
+                    "duration": tf.duration,
+                    "media_server_id": tf.media_server_id,
+                }
+            )
+        tracks.append(row)
+    return {"user_id": user_id, "tracks": tracks}
+
+
+@router.post(
+    "/users/{user_id}/tracks/{track_id}/suppress",
+    summary="Stop resurfacing a track (the dismiss action)",
+    description=(
+        "Suppresses a track from the resurfacing 'Keep listening' surface. Recorded as a "
+        "`suppress` event; the heat loop hides the track until the user engages with it again."
+    ),
+)
+async def suppress_track(
+    user_id: str,
+    track_id: str = Path(..., max_length=128),
+    session: AsyncSession = Depends(get_session),
+    _key: str = Depends(require_api_key),
+):
+    validate_user_id(user_id)
+    check_user_access(_key, user_id)
+    session.add(
+        ListenEvent(user_id=user_id, track_id=track_id, event_type="suppress", timestamp=int(time.time()))
+    )
+    await session.commit()
+    return {"status": "suppressed", "user_id": user_id, "track_id": track_id}
 
 
 @router.get(

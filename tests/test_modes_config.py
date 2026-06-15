@@ -53,17 +53,25 @@ def test_familiar_posture_is_exploitation():
     assert familiar.repeat_window_hours == 0.0
 
 
-def test_discovery_presets_enable_novelty_and_rising_exploration():
+def test_discovery_keeps_favourites_deep_enables_novelty():
     modes = get_defaults().modes
-    assert modes.discovery.novelty_filter is True
+    # Deep is the only "exclude my proven set" posture. Discover keeps favourites
+    # (~70%) and mixes in a ~30% semi-known slice instead, excluding only brand-new.
     assert modes.deep_discovery.novelty_filter is True
-    # The dial monotonically increases exploration and the acquisition coefficient.
+    assert modes.discovery.novelty_filter is False
+    assert modes.discovery.semiknown_fraction > 0.0
+    assert modes.discovery.require_interaction is True  # Discover excludes the never-heard tail
+    assert modes.deep_discovery.require_interaction is False  # Deep admits brand-new tracks
+    # Deep is the most exploratory posture.
+    assert modes.deep_discovery.exploration_fraction >= modes.balanced.exploration_fraction
+    assert modes.deep_discovery.kappa >= modes.discovery.kappa
+    # Anchoring axis: familiar hugs the seed; balanced/discovery/deep roam (monotonically looser).
+    assert modes.familiar.seed_anchor_weight > modes.balanced.seed_anchor_weight
     assert (
-        modes.deep_discovery.exploration_fraction
-        >= modes.discovery.exploration_fraction
-        >= modes.balanced.exploration_fraction
+        modes.balanced.seed_anchor_weight
+        >= modes.discovery.seed_anchor_weight
+        >= modes.deep_discovery.seed_anchor_weight
     )
-    assert modes.deep_discovery.kappa >= modes.discovery.kappa >= modes.balanced.kappa
 
 
 def test_dial_anchors_span_unit_interval_in_order():

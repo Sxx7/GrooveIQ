@@ -75,6 +75,17 @@ class RerankerConfig(BaseModel):
     min_duration_car: float = Field(
         90.0, ge=0, le=600, description="Minimum track duration (seconds) in car/speaker mode"
     )
+    recently_engaged_boost: float = Field(
+        0.25,
+        ge=0,
+        le=5,
+        description=(
+            "Cross-surface resurfacing: additive score boost on the single hottest recently-engaged "
+            "candidate (+ boost * heat, see app.services.resurfacing), so a track the user just "
+            "replayed / seeked-back / finished / liked keeps reappearing across radio, Discover and "
+            "Library. Capped at one track per batch — like a single inserted rec. 0 = off."
+        ),
+    )
 
 
 class CandidateSourceConfig(BaseModel):
@@ -275,6 +286,37 @@ class PresetConfig(BaseModel):
             "rather than vanish — keeps 'proven' from collapsing into the same few tracks."
         ),
     )
+    seed_anchor_weight: float = Field(
+        0.5,
+        ge=0,
+        le=1,
+        description=(
+            "Radio anchoring (the 'Anchoring' axis): how tightly the next track sticks to the origin "
+            "seed vs. roams the user's broad taste. High (familiar) hugs the seed; low (balanced / "
+            "discovery / deep) roams the taste centroid so a random seed quickly falls back to the "
+            "user's favourites. Blends the drift embedding: drift = anchor*seed + (1-anchor)*taste_centroid "
+            "(+ feedback). Radio-only; the /recommend reranker ignores it."
+        ),
+    )
+    semiknown_fraction: float = Field(
+        0.0,
+        ge=0,
+        le=1,
+        description=(
+            "Discover quota: target fraction of radio slots filled from the SEMI-KNOWN tier (sampled "
+            "before, never skipped, not yet proven). 0 = off (familiar / balanced / deep). The Discover "
+            "posture sets ~0.3 so a mix is ~70% proven/known + ~30% sampled, never brand-new. Radio-only."
+        ),
+    )
+    require_interaction: bool = Field(
+        False,
+        description=(
+            "Discover floor: when true, exclude brand-new (zero-interaction) tracks from the radio pool "
+            "so Discover stays 'proven + sampled', never 0-interaction. Off for Deep (admits the "
+            "never-heard tail) and for familiar / balanced (whose ranking already favours the known). "
+            "Radio-only."
+        ),
+    )
     source_weight_mult: dict[str, Annotated[float, Field(ge=0, le=5)]] = Field(
         default_factory=dict,
         description="Per-source candidate-weight multipliers (each 0-5); sources omitted here default to 1.0",
@@ -303,6 +345,7 @@ class ModesConfig(BaseModel):
             ranker_blend=0.80,
             familiarity_weight=0.40,
             cooldown_alpha=0.35,
+            seed_anchor_weight=0.85,
             source_weight_mult={
                 "content_profile": 1.5,
                 "cf": 1.4,
@@ -324,43 +367,50 @@ class ModesConfig(BaseModel):
             repeat_window_hours=2.0,
             proven_mu_min=0.6,
             proven_sigma_max=0.3,
-            # familiarity_weight stays 0 so the un-dialled default /recommend path is
-            # byte-for-byte unchanged; the radio-only levers below tune radio's default.
-            proven_recall_mult=0.8,
+            # Balanced now actively surfaces the user's proven favourites (familiarity_weight > 0)
+            # and roams away from the seed (low seed_anchor_weight) — "play my favourites regardless
+            # of where I started", the YouTube-Music fallback. The old byte-for-byte-with-legacy
+            # invariant for the un-dialled /recommend path was deliberately dropped.
+            proven_recall_mult=1.0,
             ranker_blend=0.65,
-            familiarity_weight=0.0,
+            familiarity_weight=0.30,
             cooldown_alpha=0.40,
+            seed_anchor_weight=0.25,
             source_weight_mult={},
         ),
-        description="Today's behaviour for /recommend; seed-coherent + proven for radio. The default preset.",
+        description="Play my proven favourites, regardless of where the radio started. The default preset.",
     )
     discovery: PresetConfig = Field(
         default_factory=lambda: PresetConfig(
-            kappa=0.35,
-            lambda_proven=0.5,
-            exploration_fraction=0.30,
-            freshness_boost=0.20,
-            novelty_filter=True,
-            novelty_strength=0.75,
-            novelty_weight=0.25,
+            # The user's "Discover": ~70% proven/known + ~30% semi-known (sampled before, not
+            # skipped), NEVER brand-new — a gentler step than the old "mostly new" discovery. So:
+            # no proven-set novelty exclusion (keep favourites), a mild proven uplift, roam off the
+            # seed, exclude the zero-interaction tail, and fill ~30% of slots from the semi-known tier.
+            kappa=0.0,
+            lambda_proven=0.0,
+            exploration_fraction=0.10,
+            freshness_boost=0.05,
+            novelty_filter=False,
+            novelty_strength=0.0,
+            novelty_weight=0.0,
             repeat_window_hours=2.0,
             proven_mu_min=0.6,
             proven_sigma_max=0.3,
-            proven_recall_mult=0.3,
-            ranker_blend=0.50,
-            cooldown_alpha=0.25,
+            proven_recall_mult=0.6,
+            ranker_blend=0.60,
+            familiarity_weight=0.20,
+            cooldown_alpha=0.30,
+            seed_anchor_weight=0.20,
+            semiknown_fraction=0.30,
+            require_interaction=True,
             source_weight_mult={
+                "content": 1.2,
+                "lastfm_similar": 1.1,
                 "cf": 0.75,
-                "content": 1.3,
-                "lastfm_similar": 1.6,
-                "sasrec": 1.5,
-                "session_skipgram": 1.2,
-                "content_profile": 0.8,
-                "popular": 0.7,
-                "artist_recall": 0.6,
+                "popular": 0.6,
             },
         ),
-        description="Mostly new, anchored to my taste.",
+        description="Mostly my favourites, with a 30% slice of tracks I sampled before and didn't skip.",
     )
     deep_discovery: PresetConfig = Field(
         default_factory=lambda: PresetConfig(
@@ -377,6 +427,7 @@ class ModesConfig(BaseModel):
             proven_recall_mult=0.0,
             ranker_blend=0.40,
             cooldown_alpha=0.15,
+            seed_anchor_weight=0.15,
             source_weight_mult={
                 "content": 1.4,
                 "lastfm_similar": 1.8,

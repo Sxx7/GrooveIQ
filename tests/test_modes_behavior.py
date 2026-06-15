@@ -108,8 +108,10 @@ async def _add_track(session, tid: str, *, artist: str, played: bool, proven: bo
 # ---------------------------------------------------------------------------
 
 
-async def test_balanced_is_byte_for_byte_and_skips_confidence(monkeypatch):
-    """Default == balanced override, and confidence is never computed for balanced."""
+async def test_balanced_skips_confidence_but_boosts_proven(monkeypatch):
+    """Balanced never computes confidence (kappa/lambda_proven gated off), but it is no longer
+    byte-for-byte with the un-dialled path: familiarity_weight > 0 now lifts the user's proven
+    tracks (the deliberately-dropped legacy invariant)."""
     async with _Session() as session:
         for i in range(8):
             await _add_track(session, f"p{i}", artist=f"a{i}", played=True, proven=True)
@@ -132,9 +134,12 @@ async def test_balanced_is_byte_for_byte_and_skips_confidence(monkeypatch):
 
         with apply_overrides(_preset_override("balanced")):
             balanced = await reranker.rerank(ranked, "u", session, rng=random.Random(42))
-        assert calls["n"] == 0  # balanced is gated off -> still no confidence
+        assert calls["n"] == 0  # balanced is still gated off -> no confidence computed
 
-        assert balanced == baseline  # byte-for-byte
+        # No longer byte-for-byte: the familiarity boost lifts at least one proven/played track.
+        assert balanced != baseline
+        base_scores = dict(baseline)
+        assert any(score > base_scores[tid] for tid, score in balanced)
 
 
 async def test_deep_discovery_demotes_proven_and_lifts_unheard():
@@ -241,13 +246,14 @@ async def test_novelty_filter_excludes_proven_tracks():
 
 
 async def test_novelty_filter_excludes_liked_but_thinly_played():
-    """F2: a liked-but-thinly-played track is kept under familiar but excluded at
-    the discovery end.
+    """F2: a liked-but-thinly-played track is kept under familiar/discovery but excluded
+    under deep_discovery — the only proven-set-excluding posture after Discover was
+    redefined to keep favourites (~70%) and mix in a semi-known slice.
 
     Such a track has high sigma (played once), so the confidence-model mu/sigma
-    "proven" gate misses it and it used to leak into Discover. The explicit
-    known-set union (like_count > 0) now excludes it deterministically — without
-    touching familiar, which has no novelty filter.
+    "proven" gate misses it. The explicit known-set union (like_count > 0) excludes it
+    deterministically at the deep end — without touching familiar or the new Discover,
+    which both keep the user's favourites.
     """
     async with _Session() as session:
         # The leak vector: liked once, played once -> unproven by mu/sigma, yet known.
@@ -285,4 +291,8 @@ async def test_novelty_filter_excludes_liked_but_thinly_played():
 
         with apply_overrides(_preset_override("discovery")):
             disc = {c["track_id"] for c in await candidate_gen.get_candidates("u", session=session)}
-        assert "liked" not in disc  # discovery -> excluded by the explicit known set
+        assert "liked" in disc  # Discover now keeps favourites (~70%) — no proven-set exclusion
+
+        with apply_overrides(_preset_override("deep_discovery")):
+            deep = {c["track_id"] for c in await candidate_gen.get_candidates("u", session=session)}
+        assert "liked" not in deep  # Deep is the proven-set-excluding posture (novelty filter on)
