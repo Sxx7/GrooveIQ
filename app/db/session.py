@@ -160,6 +160,10 @@ async def _apply_column_migrations(conn) -> None:
         # from per-user min-max normalised label, so incremental scoring runs
         # don't squash untouched rows toward zero.
         ("track_interactions", "raw_satisfaction_score", "REAL"),
+        # Deliberate-search nominator for the resurfacing candidate card (migration
+        # 018): full listens that originated from a search. Subset of full_listen_count;
+        # DEFAULT 0 backfills existing rows.
+        ("track_interactions", "search_play_count", "INTEGER DEFAULT 0"),
         # Lyrics acquisition cascade (migration 017). All nullable + additive;
         # lyrics_version is decoupled from ANALYSIS_VERSION.
         ("track_features", "lyrics_plain", "TEXT"),

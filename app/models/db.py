@@ -464,6 +464,13 @@ class TrackInteraction(Base):
     mid_skip_count = Column(Integer, nullable=False, default=0)  # 2s ≤ dwell < 30s
     full_listen_count = Column(Integer, nullable=False, default=0)  # dwell ≥ 30s or completion ≥ 0.8
 
+    # Deliberate-discovery nominator for the resurfacing "Special tracks" (candidate)
+    # card: full listens that originated from a search (context_type/surface == "search").
+    # A searched-and-fully-played track is a strong but ambiguous intent signal (maybe a
+    # friend's rec the user won't actually keep), so it goes onto the card for verification
+    # rather than being trusted outright. Strict subset of full_listen_count.
+    search_play_count = Column(Integer, nullable=False, default=0)
+
     # Seek intensity
     total_seekfwd = Column(Integer, nullable=False, default=0)
     total_seekbk = Column(Integer, nullable=False, default=0)

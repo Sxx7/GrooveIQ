@@ -1,8 +1,9 @@
 """GrooveIQ – Recently-engaged "resurfacing" heat (the cross-surface special-track loop).
 
-A track the user has *just engaged with* — replayed, seeked back into, finished, or liked —
-earns a short-lived, time-decayed "heat" so it keeps resurfacing across radio, Discover and
-Library for a while (the "special track that keeps coming back"). Heat fades if the user stops
+A track the user has *just engaged with* — replayed, seeked back into, finished, liked, or
+deliberately searched out and played in full — earns a short-lived, time-decayed "heat" so it
+keeps resurfacing across radio, Discover and Library for a while (the "special track that keeps
+coming back"). Heat fades if the user stops
 engaging, and a track that keeps earning it eventually crosses into the proven set (graduation)
 — so the loop is self-limiting. Crowd-free: purely this user's own recent behaviour. Any client
 sees the same set, because the heat is computed server-side from the shared interaction store.
@@ -83,8 +84,11 @@ def engagement_heat(inter: TrackInteraction, now: int) -> float:
 
 def _is_candidate_triggered(inter) -> bool:
     """Whether a track is eligible for the Special-tracks tryout at all — it must have been
-    nominated by the candidate signal itself: a seek-back or a back-to-back replay."""
-    return inter.total_seekbk > 0 or inter.repeat_count > 0
+    nominated by the candidate signal itself: a seek-back, a back-to-back replay, or a
+    deliberately-searched track the user listened to in full. Search is a strong but
+    ambiguous intent signal (the user went looking for it — but maybe on a friend's rec they
+    won't actually keep), so a searched full-listen earns a tryout, not instant trust."""
+    return inter.total_seekbk > 0 or inter.repeat_count > 0 or (getattr(inter, "search_play_count", 0) or 0) > 0
 
 
 def _is_confirmed(inter, confirmed_via_card: set[str]) -> bool:
@@ -204,7 +208,7 @@ async def get_resurfacing_tracks(
       * ``"confirmed"`` — the *Keep listening* card: hot tracks the user has embraced (played
         from the Special card, liked, or returned to ≥2×).
       * ``"candidate"`` — the *Special tracks* card: hot tracks nominated by a seek-back / replay
-        that are not yet confirmed and not yet dropped by the ignore-gate.
+        / searched full-listen that are not yet confirmed and not yet dropped by the ignore-gate.
 
     ``apply_ignore_gate`` additionally drops still-unconfirmed candidates the user keeps ignoring
     on the Special card (even at ``stage=None``), so cross-surface spread — e.g. radio's
@@ -222,6 +226,9 @@ async def get_resurfacing_tracks(
                 TrackInteraction.total_seekbk > 0,
                 TrackInteraction.like_count > 0,
                 TrackInteraction.full_listen_count > 0,
+                # Searched-and-fully-played candidates (a strict subset of full_listen_count
+                # today, but kept explicit so the nominator survives a looser search bar).
+                TrackInteraction.search_play_count > 0,
             ),
         )
     )

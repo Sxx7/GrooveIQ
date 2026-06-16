@@ -269,6 +269,88 @@ class TestTrackScoring:
             assert i.like_count == 1
             assert i.satisfaction_score is not None
 
+    async def test_search_play_count_only_on_searched_full_listens(self):
+        """search_play_count counts full listens sourced from a search (context_type or
+        surface == 'search') and nothing else: not passive full listens, not search skips."""
+        from app.services.track_scoring import run_track_scoring
+
+        now = _now()
+        await _insert_events(
+            [
+                # Searched + full listen (by dwell) → nominates.
+                {
+                    "user_id": "u1",
+                    "track_id": "t_ctx",
+                    "event_type": "play_end",
+                    "timestamp": now,
+                    "value": 1.0,
+                    "dwell_ms": 180_000,
+                    "context_type": "search",
+                },
+                # Searched + full listen (by completion, surface=search, no dwell) → nominates.
+                {
+                    "user_id": "u1",
+                    "track_id": "t_surface",
+                    "event_type": "play_end",
+                    "timestamp": now,
+                    "value": 0.95,
+                    "surface": "search",
+                },
+                # Passive full listen (not searched) → does NOT nominate.
+                {
+                    "user_id": "u1",
+                    "track_id": "t_passive",
+                    "event_type": "play_end",
+                    "timestamp": now,
+                    "value": 1.0,
+                    "dwell_ms": 180_000,
+                },
+                # Searched but early-skipped → does NOT nominate (not a full listen).
+                {
+                    "user_id": "u1",
+                    "track_id": "t_skip",
+                    "event_type": "play_end",
+                    "timestamp": now,
+                    "value": 0.02,
+                    "dwell_ms": 1000,
+                    "context_type": "search",
+                },
+            ]
+        )
+
+        await run_track_scoring()
+
+        async with _TestSession() as session:
+            rows = {i.track_id: i for i in (await session.execute(select(TrackInteraction))).scalars().all()}
+
+        assert rows["t_ctx"].search_play_count == 1
+        assert rows["t_surface"].search_play_count == 1
+        assert rows["t_passive"].search_play_count == 0
+        assert rows["t_passive"].full_listen_count == 1  # still a full listen, just not searched
+        assert rows["t_skip"].search_play_count == 0
+
+    async def test_search_play_count_accumulates_incrementally(self):
+        """A second searched full-listen for the same pair bumps search_play_count via the merge path."""
+        from app.services.track_scoring import run_track_scoring
+
+        now = _now()
+        ev = {
+            "user_id": "u1",
+            "track_id": "t1",
+            "event_type": "play_end",
+            "value": 1.0,
+            "dwell_ms": 180_000,
+            "context_type": "search",
+        }
+        await _insert_events([{**ev, "timestamp": now}])
+        await run_track_scoring()
+        await _insert_events([{**ev, "timestamp": now + 100}])
+        await run_track_scoring()
+
+        async with _TestSession() as session:
+            i = (await session.execute(select(TrackInteraction))).scalars().one()
+            assert i.search_play_count == 2
+
     async def test_early_skip_negative(self):
         """An early-skipped track gets a lower score than a fully listened one."""
         from app.services.track_scoring import run_track_scoring

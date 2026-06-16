@@ -30,6 +30,7 @@ def _inter(**kw) -> SimpleNamespace:
         like_count=0,
         repeat_count=0,
         full_listen_count=0,
+        search_play_count=0,
         total_seekbk=0,
         skip_count=0,
         early_skip_count=0,
@@ -89,6 +90,7 @@ def _row(tid: str, *, played_ago_days: float, **kw) -> TrackInteraction:
         dislike_count=0,
         repeat_count=0,
         full_listen_count=0,
+        search_play_count=0,
         total_seekbk=0,
         early_skip_count=0,
         last_played_at=now - int(played_ago_days * _DAY),
@@ -342,3 +344,67 @@ async def test_apply_ignore_gate_drops_only_unconfirmed_candidate():
 
     assert all_hot == {"dropped", "confirmed", "ungated"}  # without the gate, every hot track
     assert gated == {"confirmed", "ungated"}  # the gate drops only the unconfirmed, over-ignored one
+
+
+# ---------------------------------------------------------------------------
+# Search as a candidate nominator (deliberate-discovery → verify on the card)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_search_full_listen_nominates_candidate_not_passive_full_listen():
+    """A deliberately-searched track played in full is a candidate (verify-me). A *passive*
+    full listen (same engagement, but not searched) is not — it has no deliberate-intent signal.
+    Neither is auto-confirmed: confirmation still needs a play-from-card / like / 2nd return."""
+    async with _Session() as s:
+        s.add_all(
+            [
+                _row("searched", played_ago_days=1, full_listen_count=1, search_play_count=1),
+                _row("passive", played_ago_days=1, full_listen_count=1),  # full listen, but not searched
+            ]
+        )
+        await s.commit()
+
+    async with _Session() as s:
+        cand = {t for t, _ in await get_resurfacing_tracks("u", s, stage="candidate")}
+        conf = {t for t, _ in await get_resurfacing_tracks("u", s, stage="confirmed")}
+        all_hot = {t for t, _ in await get_resurfacing_tracks("u", s)}
+
+    assert cand == {"searched"}  # only the searched full-listen is nominated
+    assert conf == set()  # neither is confirmed yet
+    assert all_hot == {"searched", "passive"}  # both are hot at stage=None (full listens)
+
+
+@pytest.mark.asyncio
+async def test_searched_candidate_dropped_by_ignore_gate():
+    """The 'maybe a friend's rec they don't actually keep' safety valve: a searched candidate
+    shown on the Special card three times without a play is dropped, not endlessly resurfaced."""
+    now = int(time.time())
+    async with _Session() as s:
+        s.add(_row("searched", played_ago_days=1, full_listen_count=1, search_play_count=1))
+        s.add_all([_imp("searched", f"x{i}", now) for i in range(3)])  # 3 shows, no plays → drop
+        await s.commit()
+
+    async with _Session() as s:
+        cand = [t for t, _ in await get_resurfacing_tracks("u", s, stage="candidate")]
+
+    assert "searched" not in cand
+
+
+@pytest.mark.asyncio
+async def test_searched_candidate_confirms_when_played_from_card():
+    """Re-playing a searched candidate from the Special card is the explicit confirm — exactly
+    the 'starts the track again from there → pretty safe it's a good rec' path."""
+    now = int(time.time())
+    async with _Session() as s:
+        s.add(_row("track", played_ago_days=1, full_listen_count=1, search_play_count=1))  # searched candidate
+        s.add(_imp("track", "R", now))  # shown on the Special card under request R
+        s.add(_play("track", "R", now + 1))  # …then played from it → confirm
+        await s.commit()
+
+    async with _Session() as s:
+        cand = [t for t, _ in await get_resurfacing_tracks("u", s, stage="candidate")]
+        conf = [t for t, _ in await get_resurfacing_tracks("u", s, stage="confirmed")]
+
+    assert cand == []  # graduated out of the candidate card
+    assert conf == ["track"]  # now a confirmed favourite

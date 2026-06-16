@@ -198,6 +198,7 @@ async def _process_events(session: AsyncSession, events: Sequence) -> tuple[int,
                 early_skip_count=delta["early_skip_count"],
                 mid_skip_count=delta["mid_skip_count"],
                 full_listen_count=delta["full_listen_count"],
+                search_play_count=delta["search_play_count"],
                 total_seekfwd=delta["total_seekfwd"],
                 total_seekbk=delta["total_seekbk"],
                 first_played_at=delta["first_ts"],
@@ -228,6 +229,7 @@ async def _process_events(session: AsyncSession, events: Sequence) -> tuple[int,
                     early_skip_count=merged["early_skip_count"],
                     mid_skip_count=merged["mid_skip_count"],
                     full_listen_count=merged["full_listen_count"],
+                    search_play_count=merged["search_play_count"],
                     total_seekfwd=merged["total_seekfwd"],
                     total_seekbk=merged["total_seekbk"],
                     first_played_at=merged["first_played_at"],
@@ -277,6 +279,9 @@ def _compute_delta(events: list) -> dict:
     early_skip_count = 0
     mid_skip_count = 0
     full_listen_count = 0
+    # Full listens that originated from a search (deliberate-discovery nominator for the
+    # resurfacing candidate card). Strict subset of full_listen_count.
+    search_play_count = 0
     total_seekfwd = 0
     total_seekbk = 0
     # Context-modulated skip penalty: sum of per-skip weights (replaces flat count * weight).
@@ -306,6 +311,9 @@ def _compute_delta(events: list) -> dict:
             # Classify listen depth.
             dwell = ev.dwell_ms
             ctx = getattr(ev, "context_type", None)
+            # A play sourced from search — the deliberate-discovery signal. Only a *full*
+            # listen of such a play nominates the track to the resurfacing candidate card.
+            is_search = ctx == "search" or getattr(ev, "surface", None) == "search"
             ctx_skip_map = _get_context_skip_weights()
             cfg = _get_scoring_weights()
             skip_w = ctx_skip_map.get(ctx, cfg.w_early_skip) if ctx else cfg.w_early_skip
@@ -321,10 +329,14 @@ def _compute_delta(events: list) -> dict:
                     context_skip_penalty += skip_w * 0.4
                 else:
                     full_listen_count += 1
+                    if is_search:
+                        search_play_count += 1
             elif completion is not None:
                 # No dwell_ms — fall back to completion ratio.
                 if completion >= 0.8:
                     full_listen_count += 1
+                    if is_search:
+                        search_play_count += 1
                 elif completion >= 0.1:
                     mid_skip_count += 1
                     context_skip_penalty += skip_w * 0.4
@@ -387,6 +399,7 @@ def _compute_delta(events: list) -> dict:
         "early_skip_count": early_skip_count,
         "mid_skip_count": mid_skip_count,
         "full_listen_count": full_listen_count,
+        "search_play_count": search_play_count,
         "total_seekfwd": total_seekfwd,
         "total_seekbk": total_seekbk,
         "context_skip_penalty": context_skip_penalty,
@@ -450,6 +463,7 @@ def _merge_interaction(existing: TrackInteraction, delta: dict) -> dict:
     new_early_skip_count = existing.early_skip_count + delta["early_skip_count"]
     new_mid_skip_count = existing.mid_skip_count + delta["mid_skip_count"]
     new_full_listen_count = existing.full_listen_count + delta["full_listen_count"]
+    new_search_play_count = (existing.search_play_count or 0) + delta["search_play_count"]
     new_total_seekfwd = existing.total_seekfwd + delta["total_seekfwd"]
     new_total_seekbk = existing.total_seekbk + delta["total_seekbk"]
 
@@ -515,6 +529,7 @@ def _merge_interaction(existing: TrackInteraction, delta: dict) -> dict:
         "early_skip_count": new_early_skip_count,
         "mid_skip_count": new_mid_skip_count,
         "full_listen_count": new_full_listen_count,
+        "search_play_count": new_search_play_count,
         "total_seekfwd": new_total_seekfwd,
         "total_seekbk": new_total_seekbk,
         "first_played_at": first_played,
