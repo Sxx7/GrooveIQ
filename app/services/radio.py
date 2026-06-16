@@ -476,7 +476,14 @@ async def get_next_tracks(
         positions, reranker actions, feature vectors)
       - ``candidates_by_source``: count by source
     """
-    from app.services import candidate_gen, collab_filter, faiss_index, lastfm_candidates, resurfacing, session_embeddings
+    from app.services import (
+        candidate_gen,
+        collab_filter,
+        faiss_index,
+        lastfm_candidates,
+        resurfacing,
+        session_embeddings,
+    )
     from app.services.modes import resolve_dial
     from app.services.ranker import score_candidates
     from app.services.request_config import apply_overrides
@@ -647,18 +654,17 @@ async def get_next_tracks(
     if semiknown_frac > 0.0:
         semiknown_ids = await candidate_gen.get_semiknown_track_ids(s.user_id, db, limit=overfetch)
         _add(
-            [
-                {"track_id": tid, "score": radio_cfg.source_content, "source": "radio_semiknown"}
-                for tid in semiknown_ids
-            ]
+            [{"track_id": tid, "score": radio_cfg.source_content, "source": "radio_semiknown"} for tid in semiknown_ids]
         )
 
     # --- Source 10: Recently-engaged resurfacing (the cross-surface special track) ---
     # Inject the user's currently-"hot" tracks (just replayed / seeked-back / finished / liked)
     # so a special track keeps reappearing across radio sessions regardless of posture. The
     # reranker then lifts the single hottest one. Tracks already served this session are excluded
-    # by `_add`'s seen-set, so it surfaces in a *later* batch, not back-to-back.
-    resurface = await resurfacing.get_resurfacing_tracks(s.user_id, db, limit=5)
+    # by `_add`'s seen-set, so it surfaces in a *later* batch, not back-to-back. `apply_ignore_gate`
+    # makes this spread honour a drop the user made on the Special card the same way the card does
+    # (suppress is always honoured); otherwise immediate spread would leak a dropped track (#139).
+    resurface = await resurfacing.get_resurfacing_tracks(s.user_id, db, limit=5, apply_ignore_gate=True)
     if resurface:
         _add(
             [

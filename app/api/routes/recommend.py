@@ -748,17 +748,20 @@ async def list_mixes(
 
 @router.get(
     "/users/{user_id}/resurfacing",
-    summary="Tracks the user has recently engaged with (the resurfacing 'Keep listening' card)",
+    summary="Tracks the user has recently engaged with (the resurfacing 'Special tracks' / 'Keep listening' cards)",
     description=(
         "Returns the user's currently-'hot' tracks — ones they just replayed, seeked back into, "
-        "finished, or liked — each with a decayed `heat` score. Powers a cross-client 'Keep "
-        "listening' card so a special track the user is getting into keeps reappearing until it "
-        "either becomes a proven favourite or fades. Honours `POST .../suppress`."
+        "finished, or liked — each with a decayed `heat` score, plus a `request_id` that ties the "
+        "served list to the client's impression/play events. `stage=candidate` fills the 'Special "
+        "tracks' tryout card (seek-back/replay nominees not yet confirmed or dropped); "
+        "`stage=confirmed` (default) fills the 'Keep listening' card (played-from-card, liked, or "
+        "returned-to favourites). Honours `POST .../suppress`."
     ),
 )
 async def get_resurfacing(
     user_id: str,
     limit: int = Query(20, ge=1, le=50),
+    stage: str = Query("confirmed", pattern="^(candidate|confirmed)$"),
     session: AsyncSession = Depends(get_session),
     _key: str = Depends(require_api_key),
 ):
@@ -771,9 +774,14 @@ async def get_resurfacing(
     if result.scalar_one_or_none() is None:
         raise HTTPException(status_code=404, detail="Not found.")
 
-    hot = await resurfacing.get_resurfacing_tracks(user_id, session, limit=limit)
+    # A fresh request_id ties this served list to the client's reco_impression + play events so
+    # the Special-tracks card can confirm a track (played under this id) or drop it (shown under
+    # this id with no play — the ignore-gate). See resurfacing._special_card_signals.
+    request_id = str(uuid.uuid4())
+    reason = "special_track" if stage == "candidate" else "keep_listening"
+    hot = await resurfacing.get_resurfacing_tracks(user_id, session, limit=limit, stage=stage)
     if not hot:
-        return {"user_id": user_id, "tracks": []}
+        return {"user_id": user_id, "request_id": request_id, "stage": stage, "tracks": []}
 
     feat_result = await session.execute(
         select(TrackFeatures).where(TrackFeatures.track_id.in_([tid for tid, _ in hot]))
@@ -783,7 +791,7 @@ async def get_resurfacing(
     tracks = []
     for position, (tid, heat) in enumerate(hot):
         tf = feat_map.get(tid)
-        row = {"position": position, "track_id": tid, "heat": round(heat, 4), "reason": "keep_listening"}
+        row = {"position": position, "track_id": tid, "heat": round(heat, 4), "reason": reason}
         if tf:
             row.update(
                 {
@@ -795,7 +803,7 @@ async def get_resurfacing(
                 }
             )
         tracks.append(row)
-    return {"user_id": user_id, "tracks": tracks}
+    return {"user_id": user_id, "request_id": request_id, "stage": stage, "tracks": tracks}
 
 
 @router.post(
@@ -814,9 +822,7 @@ async def suppress_track(
 ):
     validate_user_id(user_id)
     check_user_access(_key, user_id)
-    session.add(
-        ListenEvent(user_id=user_id, track_id=track_id, event_type="suppress", timestamp=int(time.time()))
-    )
+    session.add(ListenEvent(user_id=user_id, track_id=track_id, event_type="suppress", timestamp=int(time.time())))
     await session.commit()
     return {"status": "suppressed", "user_id": user_id, "track_id": track_id}
 

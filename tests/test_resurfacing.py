@@ -11,7 +11,12 @@ import pytest_asyncio
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.models.db import Base, ListenEvent, TrackInteraction
-from app.services.resurfacing import engagement_heat, engagement_intensity, get_resurfacing_tracks
+from app.services.resurfacing import (
+    SPECIAL_TRACKS_SURFACE,
+    engagement_heat,
+    engagement_intensity,
+    get_resurfacing_tracks,
+)
 
 _engine = create_async_engine("sqlite+aiosqlite:///:memory:", connect_args={"check_same_thread": False})
 _Session = async_sessionmaker(_engine, expire_on_commit=False)
@@ -95,7 +100,6 @@ def _row(tid: str, *, played_ago_days: float, **kw) -> TrackInteraction:
 
 @pytest.mark.asyncio
 async def test_get_resurfacing_ranks_hot_excludes_cold_and_negative():
-    now = int(time.time())
     async with _Session() as s:
         s.add_all(
             [
@@ -159,10 +163,182 @@ async def test_reranker_boosts_hottest_recently_engaged():
         await s.commit()
 
     async with _Session() as s:
-        out = await reranker.rerank(
-            [("cold", 0.60), ("hot", 0.50)], "u", s, collect_actions=True, rng=random.Random(0)
-        )
+        out = await reranker.rerank([("cold", 0.60), ("hot", 0.50)], "u", s, collect_actions=True, rng=random.Random(0))
 
     assert out[0][0] == "hot"  # boost lifted it above the higher-ranked 'cold'
     actions = reranker.get_last_rerank_actions()
     assert any(a["action"] == "recently_engaged_boost" and a["track_id"] == "hot" for a in actions)
+
+
+# ---------------------------------------------------------------------------
+# Two-card candidate→confirmed split + ignore-gate + reranker spread-gating
+# ---------------------------------------------------------------------------
+
+
+def _imp(tid: str, rid: str, ts: int) -> ListenEvent:
+    """A Special-tracks card impression (track shown to the user)."""
+    return ListenEvent(
+        user_id="u",
+        track_id=tid,
+        event_type="reco_impression",
+        surface=SPECIAL_TRACKS_SURFACE,
+        request_id=rid,
+        timestamp=ts,
+    )
+
+
+def _play(tid: str, rid: str, ts: int) -> ListenEvent:
+    """A play under a request_id — confirms a candidate when it matches a card impression."""
+    return ListenEvent(user_id="u", track_id=tid, event_type="play_start", request_id=rid, timestamp=ts)
+
+
+@pytest.mark.asyncio
+async def test_stage_splits_candidates_from_confirmed():
+    """A single seek-back/replay is a candidate; a like or a 2nd repeat/full-listen confirms."""
+    async with _Session() as s:
+        s.add_all(
+            [
+                _row("cand_seek", played_ago_days=1, total_seekbk=1),  # candidate (one seek-back)
+                _row("cand_replay1", played_ago_days=1, repeat_count=1),  # candidate (one replay)
+                _row("conf_like", played_ago_days=1, total_seekbk=1, like_count=1),  # confirmed (liked)
+                _row("conf_replay2", played_ago_days=1, repeat_count=2),  # confirmed (≥2 replays)
+                _row("conf_full2", played_ago_days=1, full_listen_count=2),  # confirmed (≥2 full listens)
+            ]
+        )
+        await s.commit()
+
+    async with _Session() as s:
+        cand = await get_resurfacing_tracks("u", s, stage="candidate")
+        conf = await get_resurfacing_tracks("u", s, stage="confirmed")
+
+    assert {t for t, _ in cand} == {"cand_seek", "cand_replay1"}
+    assert {t for t, _ in conf} == {"conf_like", "conf_replay2", "conf_full2"}
+
+
+@pytest.mark.asyncio
+async def test_played_from_special_card_confirms_candidate():
+    """Playing a candidate from the Special card (a play under the card impression's request_id)
+    is the strong, explicit confirm — it leaves Special and appears under Keep listening."""
+    now = int(time.time())
+    async with _Session() as s:
+        s.add(_row("track", played_ago_days=1, total_seekbk=1))  # would be a candidate
+        s.add(_imp("track", "R", now))  # shown on the Special card under request R
+        s.add(_play("track", "R", now + 1))  # …then played under R → confirm
+        await s.commit()
+
+    async with _Session() as s:
+        cand = await get_resurfacing_tracks("u", s, stage="candidate")
+        conf = await get_resurfacing_tracks("u", s, stage="confirmed")
+
+    assert [t for t, _ in cand] == []  # no longer a candidate
+    assert [t for t, _ in conf] == ["track"]  # graduated to Keep listening
+
+
+@pytest.mark.asyncio
+async def test_ignore_gate_drops_candidate_after_three_unplayed_impressions():
+    now = int(time.time())
+    async with _Session() as s:
+        s.add(_row("ignored", played_ago_days=1, total_seekbk=1))
+        s.add(_row("shown_twice", played_ago_days=1, total_seekbk=1))
+        s.add_all([_imp("ignored", f"i{i}", now) for i in range(3)])  # 3 shows, no plays → drop
+        s.add_all([_imp("shown_twice", f"s{i}", now) for i in range(2)])  # only 2 → still a candidate
+        await s.commit()
+
+    async with _Session() as s:
+        ids = [t for t, _ in await get_resurfacing_tracks("u", s, stage="candidate")]
+
+    assert "ignored" not in ids
+    assert "shown_twice" in ids
+
+
+@pytest.mark.asyncio
+async def test_ignore_gate_resets_after_reengagement():
+    """Impressions predating the track's last engagement don't count — re-engaging forgives them."""
+    now = int(time.time())
+    async with _Session() as s:
+        s.add(_row("reengaged", played_ago_days=0, total_seekbk=1))  # engaged just now
+        s.add_all([_imp("reengaged", f"r{i}", now - 2 * _DAY) for i in range(3)])  # ignored 2 days ago
+        await s.commit()
+
+    async with _Session() as s:
+        ids = [t for t, _ in await get_resurfacing_tracks("u", s, stage="candidate")]
+
+    assert "reengaged" in ids
+
+
+@pytest.mark.asyncio
+async def test_reranker_boost_skips_suppressed():
+    """The cross-surface boost must not keep spreading a track the user dismissed (§D)."""
+    from app.models.db import TrackFeatures
+    from app.services import reranker
+
+    now = int(time.time())
+    async with _Session() as s:
+        s.add_all(
+            [
+                TrackFeatures(track_id="suppressed", file_path="/m/a.mp3", analyzed_at=now, analysis_version="1"),
+                TrackFeatures(track_id="ok", file_path="/m/b.mp3", analyzed_at=now, analysis_version="1"),
+                _row("suppressed", played_ago_days=3 / 24, repeat_count=3),  # hottest, but dismissed
+                _row("ok", played_ago_days=3 / 24, repeat_count=1),  # cooler, boostable
+                ListenEvent(user_id="u", track_id="suppressed", event_type="suppress", timestamp=now),
+            ]
+        )
+        await s.commit()
+
+    async with _Session() as s:
+        await reranker.rerank([("ok", 0.50), ("suppressed", 0.55)], "u", s, collect_actions=True, rng=random.Random(0))
+
+    boost = [a for a in reranker.get_last_rerank_actions() if a["action"] == "recently_engaged_boost"]
+    assert boost and boost[0]["track_id"] == "ok"  # suppressed hottest skipped
+
+
+@pytest.mark.asyncio
+async def test_reranker_boost_skips_ignore_gated_candidate():
+    """An ignore-gated candidate stops spreading cross-surface too (immediate-spread, #139)."""
+    from app.models.db import TrackFeatures
+    from app.services import reranker
+
+    now = int(time.time())
+    async with _Session() as s:
+        s.add_all(
+            [
+                TrackFeatures(track_id="dropped", file_path="/m/a.mp3", analyzed_at=now, analysis_version="1"),
+                TrackFeatures(track_id="ok", file_path="/m/b.mp3", analyzed_at=now, analysis_version="1"),
+                _row("dropped", played_ago_days=3 / 24, total_seekbk=4),  # hottest, but ignore-gated
+                _row("ok", played_ago_days=3 / 24, repeat_count=1),
+            ]
+        )
+        s.add_all([_imp("dropped", f"d{i}", now) for i in range(3)])  # 3 shows, no plays → dropped
+        await s.commit()
+
+    async with _Session() as s:
+        await reranker.rerank([("ok", 0.50), ("dropped", 0.55)], "u", s, collect_actions=True, rng=random.Random(0))
+
+    boost = [a for a in reranker.get_last_rerank_actions() if a["action"] == "recently_engaged_boost"]
+    assert boost and boost[0]["track_id"] == "ok"  # ignore-gated candidate skipped
+
+
+@pytest.mark.asyncio
+async def test_apply_ignore_gate_drops_only_unconfirmed_candidate():
+    """The radio-injection path (stage=None, apply_ignore_gate) keeps confirmed + un-gated hot
+    tracks but drops a still-unconfirmed candidate the user keeps ignoring on the Special card."""
+    now = int(time.time())
+    async with _Session() as s:
+        s.add_all(
+            [
+                _row("dropped", played_ago_days=1, total_seekbk=1),  # candidate, will be ignore-gated
+                _row("confirmed", played_ago_days=1, repeat_count=2),  # confirmed (organic) — kept
+                _row("ungated", played_ago_days=1, total_seekbk=1),  # candidate, only shown twice — kept
+            ]
+        )
+        s.add_all([_imp("dropped", f"d{i}", now) for i in range(3)])  # 3 ignores → dropped
+        s.add_all([_imp("confirmed", f"c{i}", now) for i in range(3)])  # ignored but confirmed → kept
+        s.add_all([_imp("ungated", f"u{i}", now) for i in range(2)])  # under the gate → kept
+        await s.commit()
+
+    async with _Session() as s:
+        all_hot = {t for t, _ in await get_resurfacing_tracks("u", s)}  # stage=None, no gate
+        gated = {t for t, _ in await get_resurfacing_tracks("u", s, apply_ignore_gate=True)}
+
+    assert all_hot == {"dropped", "confirmed", "ungated"}  # without the gate, every hot track
+    assert gated == {"confirmed", "ungated"}  # the gate drops only the unconfirmed, over-ignored one

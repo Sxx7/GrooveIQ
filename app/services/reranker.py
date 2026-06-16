@@ -206,12 +206,15 @@ async def rerank(
     # A track the user just replayed / seeked-back / finished / liked earns time-decayed heat
     # (app.services.resurfacing). Boost only the single hottest such candidate so it resurfaces
     # across radio / Discover / Library without flooding one batch — like a single inserted rec.
-    # Reads the inter_map already loaded above; gated on cfg.recently_engaged_boost (0 = off).
+    # `boostable_heat_target` reuses the inter_map already loaded above but honours suppress + the
+    # Special-card ignore-gate, so the immediate cross-surface spread (GrooveIQ#139) never keeps
+    # boosting a track the user dismissed or repeatedly ignored. Gated on cfg.recently_engaged_boost.
     if cfg.recently_engaged_boost > 0.0 and inter_map:
-        from app.services.resurfacing import engagement_heat
+        from app.services.resurfacing import boostable_heat_target
 
-        tid, heat = max(((t, engagement_heat(i, now)) for t, i in inter_map.items()), key=lambda x: x[1])
-        if heat > 0.0:
+        target = await boostable_heat_target(user_id, session, inter_map, now)
+        if target is not None:
+            tid, heat = target
             old = score_map[tid]
             score_map[tid] = old + cfg.recently_engaged_boost * heat
             if actions is not None:
