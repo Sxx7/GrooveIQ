@@ -659,12 +659,27 @@ async def get_next_tracks(
 
     # --- Source 10: Recently-engaged resurfacing (the cross-surface special track) ---
     # Inject the user's currently-"hot" tracks (just replayed / seeked-back / finished / liked)
-    # so a special track keeps reappearing across radio sessions regardless of posture. The
-    # reranker then lifts the single hottest one. Tracks already served this session are excluded
-    # by `_add`'s seen-set, so it surfaces in a *later* batch, not back-to-back. `apply_ignore_gate`
-    # makes this spread honour a drop the user made on the Special card the same way the card does
-    # (suppress is always honoured); otherwise immediate spread would leak a dropped track (#139).
-    resurface = await resurfacing.get_resurfacing_tracks(s.user_id, db, limit=5, apply_ignore_gate=True)
+    # so a special track keeps reappearing across radio sessions. The reranker then lifts the
+    # single hottest one. Tracks already served this session are excluded by `_add`'s seen-set,
+    # so it surfaces in a *later* batch, not back-to-back. `apply_ignore_gate` makes this spread
+    # honour a drop the user made on the Special card the same way the card does (suppress is
+    # always honoured); otherwise immediate spread would leak a dropped track (#139).
+    #
+    # Posture gate (GrooveIQ#P2): resurfacing the user's proven/hot favourites is a *familiarity*
+    # behaviour, so suppress it on exploratory postures (discovery / deep_discovery) — otherwise a
+    # Discover-launched radio leads with a proven favourite, contradicting the discovery contract.
+    # Keyed on the resolved preset's novelty levers: `novelty_filter` is the live discovery/deep
+    # differentiator and `require_interaction` is the dev/Layer-C discovery floor, so familiar /
+    # balanced (both levers off) keep injecting while discovery / deep do not. The reranker's
+    # recently_engaged_boost twin gates on the same condition (reranker.py).
+    _exploratory_posture = bool(active_levers.get("novelty_filter", False)) or bool(
+        active_levers.get("require_interaction", False)
+    )
+    resurface = (
+        []
+        if _exploratory_posture
+        else await resurfacing.get_resurfacing_tracks(s.user_id, db, limit=5, apply_ignore_gate=True)
+    )
     if resurface:
         _add(
             [

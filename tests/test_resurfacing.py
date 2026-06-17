@@ -172,6 +172,51 @@ async def test_reranker_boosts_hottest_recently_engaged():
     assert any(a["action"] == "recently_engaged_boost" and a["track_id"] == "hot" for a in actions)
 
 
+@pytest.mark.asyncio
+async def test_reranker_boost_suppressed_on_exploratory_posture():
+    """Twin of radio.py's Source-10 resurfacing gate (P2): resurfacing the user's hottest
+    proven track is a *familiarity* behaviour, so an exploratory posture gates it off —
+    otherwise a Discover-launched radio is re-led by a favourite. The gate keys on
+    ``novelty_filter`` OR ``require_interaction`` (discovery has the former live, the latter
+    in the dev/Layer-C config; deep_discovery has novelty_filter), so each lever on its own
+    must suppress the boost. The non-exploratory (default/balanced) case is the positive
+    control in ``test_reranker_boosts_hottest_recently_engaged`` above."""
+    from app.models.algorithm_config_schema import get_defaults
+    from app.models.db import TrackFeatures
+    from app.services import reranker
+    from app.services.request_config import apply_overrides
+
+    now = int(time.time())
+    async with _Session() as s:
+        s.add_all(
+            [
+                TrackFeatures(track_id="hot", file_path="/m/a/hot.mp3", analyzed_at=now, analysis_version="1"),
+                TrackFeatures(track_id="cold", file_path="/m/b/cold.mp3", analyzed_at=now, analysis_version="1"),
+                # 3h ago (recent heat, outside the 2h anti-repetition window), heavily replayed.
+                _row("hot", played_ago_days=3 / 24, repeat_count=3),
+                _row("cold", played_ago_days=3 / 24),  # no engagement signals -> zero heat
+            ]
+        )
+        await s.commit()
+
+    # Built from the neutral default active (kappa=lambda=novelty_weight=familiarity_weight=0)
+    # with ONLY the gate lever flipped on, so the sole behaviour change is the resurfacing
+    # gate — no confidence/faiss path, novelty penalty, or familiarity boost to confound it.
+    for lever in ("novelty_filter", "require_interaction"):
+        active = get_defaults().modes.active.model_dump()
+        active[lever] = True
+        async with _Session() as s:
+            with apply_overrides({"modes": {"active": active}}):
+                out = await reranker.rerank(
+                    [("cold", 0.60), ("hot", 0.50)], "u", s, collect_actions=True, rng=random.Random(0)
+                )
+        actions = reranker.get_last_rerank_actions()
+        assert not any(
+            a["action"] == "recently_engaged_boost" for a in actions
+        ), f"{lever}=True must gate the resurfacing boost off"
+        assert out[0][0] == "cold", f"{lever}=True must leave the ranker order (no boost flip)"
+
+
 # ---------------------------------------------------------------------------
 # Two-card candidate→confirmed split + ignore-gate + reranker spread-gating
 # ---------------------------------------------------------------------------

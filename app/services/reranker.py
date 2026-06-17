@@ -209,7 +209,14 @@ async def rerank(
     # `boostable_heat_target` reuses the inter_map already loaded above but honours suppress + the
     # Special-card ignore-gate, so the immediate cross-surface spread (GrooveIQ#139) never keeps
     # boosting a track the user dismissed or repeatedly ignored. Gated on cfg.recently_engaged_boost.
-    if cfg.recently_engaged_boost > 0.0 and inter_map:
+    #
+    # Posture gate (GrooveIQ#P2): twin of radio.py's Source-10 resurfacing gate. Suppress the
+    # boost on exploratory postures (discovery / deep_discovery) so a Discover-launched radio — or
+    # the discovery /recommend tier — isn't re-led by the user's hottest proven track. `preset` is
+    # the dial-resolved posture (modes.active under apply_overrides); keyed on the same novelty
+    # levers as radio so familiar / balanced still boost and discovery / deep do not.
+    _exploratory_posture = bool(preset.novelty_filter) or bool(preset.require_interaction)
+    if cfg.recently_engaged_boost > 0.0 and inter_map and not _exploratory_posture:
         from app.services.resurfacing import boostable_heat_target
 
         target = await boostable_heat_target(user_id, session, inter_map, now)
