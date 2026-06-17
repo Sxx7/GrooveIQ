@@ -280,6 +280,58 @@ if _APP_OK:
         ids = {t["track_id"] for t in tracks}
         assert set(_PROVEN_IDS) <= ids
 
+    @_requires_app
+    async def test_resurfacing_injection_gated_by_posture(monkeypatch):
+        """P2: the Source-10 resurfacing injection (radio.py) puts the user's hottest proven
+        track at the head of a batch — a *familiarity* behaviour — so an exploratory posture
+        must suppress it. The gate skips the resurfacing query outright, so a balanced radio
+        injects ``radio_resurface`` while a deep_discovery radio does not. The runtime twin of
+        ``test_reranker_boost_suppressed_on_exploratory_posture`` (tests/test_resurfacing.py),
+        which guards the reranker half of the same gate."""
+        await _seed_proven_and_weak()
+        _stub_pool(monkeypatch)
+
+        # Spy on the resurfacing query: return a hot track OUTSIDE the candidate pool
+        # (``_ALL_IDS``) so its injection isn't deduped against a same-track candidate —
+        # making ``radio_resurface`` presence an unambiguous signal that Source-10 fired.
+        # The call counter proves the gate skips the query entirely on the exploratory posture.
+        calls = {"n": 0}
+
+        async def _spy_resurfacing(user_id, db, *, limit=20, min_heat=0.05, stage=None, apply_ignore_gate=False):
+            calls["n"] += 1
+            return [("hotresurface", 0.9)]
+
+        monkeypatch.setattr("app.services.resurfacing.get_resurfacing_tracks", _spy_resurfacing)
+        async with _TestSession() as session:
+            session.add(
+                TrackFeatures(
+                    track_id="hotresurface",
+                    file_path="/music/hot/hotresurface.mp3",
+                    duration=200.0,
+                    analyzed_at=_NOW,
+                    analysis_version="1",
+                )
+            )
+            await session.commit()
+
+        _make_session("bal", discovery=0.3)
+        _make_session("deep", discovery=1.0)
+
+        async with _TestSession() as db:
+            bal = await radio_service.get_next_tracks("bal", 50, db)
+        bal_calls, calls["n"] = calls["n"], 0
+        async with _TestSession() as db:
+            deep = await radio_service.get_next_tracks("deep", 50, db)
+        deep_calls = calls["n"]
+
+        # Balanced (familiarity) queries + injects; deep_discovery skips the query entirely.
+        assert bal_calls == 1, "balanced must query resurfacing"
+        assert deep_calls == 0, "deep_discovery must NOT query resurfacing (the posture gate skips it)"
+        assert any(t["source"] == "radio_resurface" for t in bal), "balanced must inject radio_resurface"
+        assert not any(
+            t["source"] == "radio_resurface" for t in deep
+        ), "deep_discovery must suppress radio_resurface"
+
     # -----------------------------------------------------------------------
     # Routes: posture plumbing, validation, ownership
     # -----------------------------------------------------------------------
