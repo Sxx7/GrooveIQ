@@ -180,8 +180,9 @@ async def rerank(
     # actively up-rank tracks THIS user has played, proportional to play count, so
     # the proven cluster rises to the top instead of merely "not being excluded".
     # Crowd-free — it reads the user's own play history, not any CF signal. Gated
-    # on familiarity_weight > 0 (only familiar sets it), so balanced/discovery/deep
-    # and the default path are byte-for-byte unchanged.
+    # on familiarity_weight > 0, which familiar (0.40), balanced (0.30) and discovery
+    # (0.20) all set — so the proven uplift applies across those postures; only
+    # deep_discovery and the neutral default (weight 0) skip it.
     if preset.familiarity_weight > 0.0:
         for tid in track_ids:
             inter = inter_map.get(tid)
