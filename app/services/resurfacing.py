@@ -48,7 +48,6 @@ _INTENSITY_SCALE = 2.0  # divides the raw weighted sum toward ~[0, 1] before rec
 # stops it spreading cross-surface (the reranker honours the same gate — immediate spread, #139).
 SPECIAL_TRACKS_SURFACE = "library:special_tracks"
 _CONFIRM_REPEAT_MIN = 2  # repeat/replay count that organically confirms a candidate
-_CONFIRM_FULL_LISTEN_MIN = 2  # full-listen count that organically confirms a candidate
 _IGNORE_GATE_LIMIT = 3  # Special-card impressions with no play (since last engagement) → drop
 
 
@@ -94,13 +93,18 @@ def _is_candidate_triggered(inter) -> bool:
 def _is_confirmed(inter, confirmed_via_card: set[str]) -> bool:
     """Whether a candidate has graduated to the Keep-listening ("confirmed") card — one clear
     vote beyond the seek-back/replay that nominated it: played from the Special card (the strong,
-    explicit signal), liked, or organically returned to (≥``_CONFIRM_REPEAT_MIN`` replays or
-    ≥``_CONFIRM_FULL_LISTEN_MIN`` full listens)."""
+    explicit signal), liked, or organically returned to (≥``_CONFIRM_REPEAT_MIN`` replays).
+
+    A passive full-listen is deliberately NOT a graduation signal. An ordinary 2nd play would
+    otherwise auto-confirm a track before the tryout ("Special tracks") card could ever show it —
+    which is exactly why the candidate card came back empty in prod (most seek-back/replay
+    nominees were already full-listened twice). Graduation must be a real vote (played-from-card /
+    like) or a clear organic repeat; a searched full-listen still only earns a *tryout* via
+    :func:`_is_candidate_triggered`, never instant trust."""
     return (
         inter.track_id in confirmed_via_card
         or inter.like_count > 0
         or inter.repeat_count >= _CONFIRM_REPEAT_MIN
-        or inter.full_listen_count >= _CONFIRM_FULL_LISTEN_MIN
     )
 
 

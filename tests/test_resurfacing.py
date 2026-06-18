@@ -241,15 +241,18 @@ def _play(tid: str, rid: str, ts: int) -> ListenEvent:
 
 @pytest.mark.asyncio
 async def test_stage_splits_candidates_from_confirmed():
-    """A single seek-back/replay is a candidate; a like or a 2nd repeat/full-listen confirms."""
+    """A single seek-back/replay is a candidate; a like or a 2nd repeat confirms. A passive
+    full-listen does NOT confirm — a seek-back nominee the user merely played through twice stays
+    on the tryout card until it earns a real vote / organic repeat."""
     async with _Session() as s:
         s.add_all(
             [
                 _row("cand_seek", played_ago_days=1, total_seekbk=1),  # candidate (one seek-back)
                 _row("cand_replay1", played_ago_days=1, repeat_count=1),  # candidate (one replay)
+                # seek-back nominee, full-listened twice: full-listens no longer auto-confirm.
+                _row("cand_full2", played_ago_days=1, total_seekbk=1, full_listen_count=2),  # candidate
                 _row("conf_like", played_ago_days=1, total_seekbk=1, like_count=1),  # confirmed (liked)
                 _row("conf_replay2", played_ago_days=1, repeat_count=2),  # confirmed (≥2 replays)
-                _row("conf_full2", played_ago_days=1, full_listen_count=2),  # confirmed (≥2 full listens)
             ]
         )
         await s.commit()
@@ -258,8 +261,26 @@ async def test_stage_splits_candidates_from_confirmed():
         cand = await get_resurfacing_tracks("u", s, stage="candidate")
         conf = await get_resurfacing_tracks("u", s, stage="confirmed")
 
-    assert {t for t, _ in cand} == {"cand_seek", "cand_replay1"}
-    assert {t for t, _ in conf} == {"conf_like", "conf_replay2", "conf_full2"}
+    assert {t for t, _ in cand} == {"cand_seek", "cand_replay1", "cand_full2"}
+    assert {t for t, _ in conf} == {"conf_like", "conf_replay2"}
+
+
+@pytest.mark.asyncio
+async def test_passive_full_listen_does_not_confirm_candidate():
+    """Regression (empty-candidate-card bug): a track nominated by a seek-back and then played in
+    full several times — but never liked, replayed, or played from the Special card — stays a
+    CANDIDATE. Passive full-listens used to auto-confirm it (full_listen_count>=2), graduating it
+    before the tryout card could surface it, which is why the candidate card was empty in prod."""
+    async with _Session() as s:
+        s.add(_row("tryout", played_ago_days=1, total_seekbk=1, full_listen_count=3))  # seek-back + 3 full listens
+        await s.commit()
+
+    async with _Session() as s:
+        cand = [t for t, _ in await get_resurfacing_tracks("u", s, stage="candidate")]
+        conf = [t for t, _ in await get_resurfacing_tracks("u", s, stage="confirmed")]
+
+    assert cand == ["tryout"]  # still on the tryout card
+    assert conf == []  # NOT auto-confirmed by passive full-listens
 
 
 @pytest.mark.asyncio
