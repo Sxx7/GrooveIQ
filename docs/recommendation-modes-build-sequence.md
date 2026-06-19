@@ -1,9 +1,28 @@
 # Recommendation Modes — Build Sequence (Phase A)
 
-**Status:** Ready to implement
+**Status:** ✅ Phase A complete — shipped
 **Created:** 2026-06-02
 **Companion to:** [`recommendation-modes-plan.md`](./recommendation-modes-plan.md) (design)
-**Scope:** "A-now" — the confidence-based discovery dial using a Phase-A confidence *proxy* (no new model). Phase B (skip head + quantile sigma) is outlined at the end as a later sequence.
+**Scope:** "A-now" — the confidence-based discovery dial using a Phase-A confidence *proxy* (no new model). Phase B (skip head + quantile sigma) is outlined at the end and remains **future / deferred**.
+
+> **Reconciliation note:** All 10 Phase-A chunks below have shipped. The chunk write-ups are retained verbatim as the historical build record; a per-chunk **Status** line maps each to the module/endpoint that implements it. Only **Phase B** (real confidence model) is still future work.
+
+### Phase A status at a glance
+
+| # | Chunk | Status | Implemented by |
+|---|-------|--------|----------------|
+| 1 | Request-scoped config override mechanism | ✅ DONE | `app/services/request_config.py` (`apply_overrides`, `set_overrides`, `current_overrides`); `get_config()` deep-merge in `app/services/algorithm_config.py` |
+| 2 | Modes config group (schema + defaults) | ✅ DONE | `PresetConfig` / `ModesConfig` in `app/models/algorithm_config_schema.py` (`modes` group on `AlgorithmConfigData`); read-only `GET /v1/algorithm/modes` |
+| 3 | Phase-A confidence proxy (mu / sigma) | ✅ DONE | `app/services/confidence.py` (`compute_confidence`, `ConfidenceScore`, `is_proven`) |
+| 4 | UCB acquisition + proven set + novelty filter | ✅ DONE | `app/services/reranker.py` + `app/services/candidate_gen.py` (override-driven; default `balanced` == today) |
+| 5 | Endpoint wiring: discovery/mode params + dial + reasons | ✅ DONE | `discovery`/`mode` query params + `reasons[]` in `app/api/routes/recommend.py`; whitelisted `resolve_dial` in `app/services/modes.py` |
+| 6 | SWR mix cache + prewarm / mixes endpoints | ✅ DONE | `app/services/mix_cache.py` (`get_or_build`, semaphore); `POST /v1/users/{user_id}/mixes/prewarm`, `GET /v1/users/{user_id}/mixes` |
+| 7 | Radio honours the dial | ✅ DONE | `app/services/radio.py` (dial drift scaling); `discovery`/`mode` accepted on `POST /v1/radio/start` and `GET /v1/radio/{session_id}/next` |
+| 8 | Frontend: multi-shelf home + dial + reason chips | ✅ DONE | `app/static/js/v2/explore.js` (Explore → Recommendations shelves + dial) |
+| 9 | Frontend: modes editor (Settings) + radio posture | ✅ DONE | `app/static/js/v2/settings.js` (modes group in the versioned-config editor); read-only `GET /v1/algorithm/modes` |
+| 10 | Per-dial evaluation metrics | ✅ DONE | per-dial-bucket metrics in `app/services/evaluation.py`, surfaced on the model-stats endpoint |
+
+> **Path note:** the model-stats endpoint is registered as `GET /v1/stats/model` (the `recommend.py` decorator is `@router.get("/stats/model")` with no router prefix), not `/v1/recommend/stats/model`. The chunk text below refers to it by its older name; the live path is `/v1/stats/model`.
 
 ---
 
@@ -62,6 +81,8 @@ Chunks **1, 2, 3 are independent** and can be built in parallel. **4** joins the
 
 ## Chunk 1 — Request-scoped config override mechanism
 
+**Status:** ✅ DONE — `app/services/request_config.py` (`apply_overrides` context manager, `set_overrides`/`reset_overrides`, `current_overrides`); `get_config()` in `app/services/algorithm_config.py` deep-merges the active override on top of the cached config.
+
 **Depends on:** none. **(parallelizable** with 2, 3.)
 
 **Goal:** a tested primitive that lets request-handling code apply per-request overrides on top of the global `AlgorithmConfig`, with strict isolation and reset. No endpoint or behavior change yet.
@@ -93,6 +114,8 @@ Chunks **1, 2, 3 are independent** and can be built in parallel. **4** joins the
 ---
 
 ## Chunk 2 — Modes config group (schema + defaults)
+
+**Status:** ✅ DONE — `PresetConfig` + `ModesConfig` in `app/models/algorithm_config_schema.py`; `modes: ModesConfig` added to `AlgorithmConfigData` with `default_preset="balanced"`. Read-only serving access via `GET /v1/algorithm/modes` (any authenticated key — no admin). Implemented as a config group on the existing versioned `AlgorithmConfig` (not a separate table).
 
 **Depends on:** none. **(parallelizable** with 1, 3.)
 
@@ -127,6 +150,8 @@ Chunks **1, 2, 3 are independent** and can be built in parallel. **4** joins the
 
 ## Chunk 3 — Phase-A confidence proxy (mu / sigma)
 
+**Status:** ✅ DONE — `app/services/confidence.py` (`compute_confidence(...) -> dict[str, ConfidenceScore]`; `ConfidenceScore` carries `mu`/`sigma`/`is_proven`/`evidence`; `is_proven = mu >= proven_mu_min and sigma <= proven_sigma_max`, thresholds read from the active preset). No new model.
+
 **Depends on:** none. **(parallelizable** with 1, 2.)
 
 **Goal:** a service that returns, per candidate track for a given user, a predicted-engagement `mu` and an uncertainty `sigma` using only existing signals (ranker score, interaction history, FAISS neighbour density). No new model.
@@ -159,6 +184,8 @@ Chunks **1, 2, 3 are independent** and can be built in parallel. **4** joins the
 
 ## Chunk 4 — UCB acquisition + proven set + novelty filter
 
+**Status:** ✅ DONE — acquisition term + proven-set novelty exclusion live in `app/services/reranker.py` and `app/services/candidate_gen.py`, driven entirely by `get_config()` so Chunk-1 overrides flow through. Default (`balanced`, no override) reproduces the pre-change ranking.
+
 **Depends on:** 2 (modes anchors), 3 (confidence).
 
 **Goal:** make the pipeline *behave* differently by dial position — implement `score = mu + kappa(d)*sigma - lambda*is_proven`, the proven-set novelty exclusion at the discovery end, and relaxed anti-repetition at the familiar end. Still no endpoint param (driven by overrides, default `balanced` = today).
@@ -187,6 +214,8 @@ Chunks **1, 2, 3 are independent** and can be built in parallel. **4** joins the
 ---
 
 ## Chunk 5 — Endpoint wiring: discovery/mode params + dial resolution + reasons
+
+**Status:** ✅ DONE — `GET /v1/recommend/{user_id}` accepts `discovery: float (0–1)` and `mode: str` (familiar/balanced/discovery/deep_discovery; `mode` wins; unknown → 422). The whitelisted pure resolver `resolve_dial(...)` lives in `app/services/modes.py`; candidate-gen/rank/rerank run inside `apply_overrides(...)`. Response carries the resolved `discovery` value and per-track `reasons[]`.
 
 **Depends on:** 1, 2, 4.
 
@@ -219,6 +248,8 @@ Chunks **1, 2, 3 are independent** and can be built in parallel. **4** joins the
 ---
 
 ## Chunk 6 — SWR mix cache + prewarm / mixes endpoints
+
+**Status:** ✅ DONE — `app/services/mix_cache.py` (`get_or_build(...)`, version-keyed, single-flight background rebuild bounded by an `asyncio.Semaphore`). Endpoints: `POST /v1/users/{user_id}/mixes/prewarm` (202, rate-limited, user-scoped) and `GET /v1/users/{user_id}/mixes` (suggested-shelf specs, user-scoped).
 
 **Depends on:** 5.
 
@@ -253,6 +284,8 @@ Chunks **1, 2, 3 are independent** and can be built in parallel. **4** joins the
 
 ## Chunk 7 — Radio honours the dial
 
+**Status:** ✅ DONE — `POST /v1/radio/start` and `GET /v1/radio/{session_id}/next` accept `discovery` (and a `mode` preset); `app/services/radio.py` applies the same preset anchors via overrides and scales the drift step by dial position (`_dial_drift_scale`), with in-session feedback drift preserved on top of the baseline.
+
 **Depends on:** 2, 3, 4. **(parallelizable** with 6 — different files.)
 
 **Goal:** apply the dial to radio as a baseline posture that in-session feedback drifts around.
@@ -281,6 +314,8 @@ Chunks **1, 2, 3 are independent** and can be built in parallel. **4** joins the
 ---
 
 ## Chunk 8 — Frontend: multi-shelf home + discovery dial + reason chips
+
+**Status:** ✅ DONE — Explore → Recommendations in `app/static/js/v2/explore.js` renders the multi-shelf home, the 4-stop discovery slider, and per-track reason chips; prewarms via the mixes endpoint on view load.
 
 **Depends on:** 5, 6.
 
@@ -311,6 +346,8 @@ Chunks **1, 2, 3 are independent** and can be built in parallel. **4** joins the
 
 ## Chunk 9 — Frontend: modes editor (Settings) + radio posture control
 
+**Status:** ✅ DONE — the `modes` config group renders in Settings → Algorithm via the existing versioned-config editor (`app/static/js/v2/settings.js`); writes go through the admin-gated `PUT /v1/algorithm/config`. The read-only `GET /v1/algorithm/modes` (any authenticated key) serves the preset defs to the Explore dial. Radio posture control wired into the radio panel.
+
 **Depends on:** 2, 7.
 
 **Goal:** let an admin tune what each preset *does*, reusing the existing versioned-config editor; add the radio posture control.
@@ -339,6 +376,8 @@ Chunks **1, 2, 3 are independent** and can be built in parallel. **4** joins the
 
 ## Chunk 10 — Per-dial evaluation metrics
 
+**Status:** ✅ DONE — per-dial-bucket metrics (intra-list diversity, catalog coverage, novelty, proven-set skip-rate) computed in `app/services/evaluation.py` and surfaced on the model-stats endpoint (`GET /v1/stats/model`).
+
 **Depends on:** 4. **(parallelizable.)**
 
 **Goal:** measure each pole correctly (NDCG alone is insufficient).
@@ -360,9 +399,9 @@ Chunks **1, 2, 3 are independent** and can be built in parallel. **4** joins the
 
 ---
 
-## Phase B (later) — real confidence model
+## Phase B (future / deferred) — real confidence model
 
-Outlined now; sequence in detail when Phase A is in hand and the proxy's "proven" set has been felt against the ear.
+**Status:** ⏳ NOT STARTED — Phase A (the proxy) has shipped; Phase B replaces the proxy internals with a trained model and remains future work. Outlined now; sequence in detail when the proxy's "proven" set has been felt against the ear.
 
 - **B1 — Skip/completion head.** LightGBM **classifier** on the existing 39-feature matrix (label `early_skip` vs `full_listen`) -> calibrated `P(skip)`. Add as a pipeline training step (`scheduler.py`) and a new ranker feature. Tests: trains on fixture, calibration sane, persisted/loaded. [RETRAIN]
 - **B2 — Quantile uncertainty.** Two extra LightGBM models (`objective="quantile"`, alpha~0.15/0.85) -> `sigma = q_hi - q_lo`. Swap `confidence.py` to consume real `mu = 1 - P(skip)` and quantile `sigma` behind the same interface (Chunk 3's signature unchanged -> minimal blast radius). [RETRAIN]
@@ -374,17 +413,21 @@ Because Chunk 3 fixed the `compute_confidence` interface, Phase B is a drop-in r
 
 ## At-a-glance sequencing & sizing
 
-| # | Chunk | Depends | Size | New tests |
-|---|-------|---------|------|-----------|
-| 1 | Override mechanism | — | S | `test_request_config.py` |
-| 2 | Modes config group | — | S | `test_modes_config.py` |
-| 3 | Confidence proxy (mu/sigma) | — | M | `test_confidence.py` |
-| 4 | Acquisition + proven + novelty | 2,3 | M-L | `test_modes_behavior.py` |
-| 5 | Endpoint + dial + reasons | 1,2,4 | M | `test_recommend_modes_api.py` |
-| 6 | SWR cache + prewarm/mixes | 5 | M | `test_mix_cache.py` |
-| 7 | Radio dial | 2,3,4 | M | `test_radio_modes.py` |
-| 8 | Frontend home/dial/chips | 5,6 | M | (behavioral) |
-| 9 | Frontend modes editor + radio posture | 2,7 | M | `test_modes_endpoint.py` |
-| 10 | Per-dial eval metrics | 4 | S | `test_eval_modes.py` |
+All 10 chunks have shipped (`Status` column). New tests listed below all exist in `tests/`.
+
+| # | Chunk | Status | Depends | Size | New tests |
+|---|-------|--------|---------|------|-----------|
+| 1 | Override mechanism | ✅ DONE | — | S | `test_request_config.py` |
+| 2 | Modes config group | ✅ DONE | — | S | `test_modes_config.py` |
+| 3 | Confidence proxy (mu/sigma) | ✅ DONE | — | M | `test_confidence.py` |
+| 4 | Acquisition + proven + novelty | ✅ DONE | 2,3 | M-L | `test_modes_behavior.py` |
+| 5 | Endpoint + dial + reasons | ✅ DONE | 1,2,4 | M | `test_recommend_modes_api.py` |
+| 6 | SWR cache + prewarm/mixes | ✅ DONE | 5 | M | `test_mix_cache.py` |
+| 7 | Radio dial | ✅ DONE | 2,3,4 | M | `test_radio_modes.py` |
+| 8 | Frontend home/dial/chips | ✅ DONE | 5,6 | M | (behavioral) |
+| 9 | Frontend modes editor + radio posture | ✅ DONE | 2,7 | M | `test_modes_endpoint.py` |
+| 10 | Per-dial eval metrics | ✅ DONE | 4 | S | `test_eval_modes.py` |
 
 **First usable slice:** Chunks 1-5 (backend dial works end-to-end, fully tested, secured). **Demoable in the app:** + 6, 8. **Admin-tunable + radio:** + 7, 9. **Measured:** + 10.
+
+**Phase A is complete.** The next sequence is **Phase B** (real confidence model) above — still future / deferred.

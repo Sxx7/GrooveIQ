@@ -66,7 +66,8 @@ ssh user@gpu-host 'cd ~/lyrics-api && docker compose up -d --build'
 
 # 4. Verify — first call lazily downloads the model (~3 GB) to the lyrics_models volume
 ssh user@gpu-host 'curl -s localhost:8300/health'
-# => {"status":"ok","ready":true,"device":"cuda","model":"large-v3","music":{"readable":true,...}}
+# => {"status":"ok","ready":true,"model":"large-v3","device":"cuda","compute_type":"float16",
+#     "model_loaded":true,"gpu":{...},"max_concurrency":1,"music":{"readable":true,...}}
 ```
 
 `docker-compose.yml` mounts `${MUSIC_PATH}:/music:ro` + a `lyrics_models` named volume
@@ -91,13 +92,25 @@ all queue/retry state.
 | `LYRICS_MODEL_DIR` | `/data/models` | Where the model is cached (the named volume). |
 | `LYRICS_BEAM_SIZE` | `5` | Decoding beam size. |
 | `LYRICS_VAD` | `true` | Default VAD when the caller doesn't specify. GrooveIQ overrides this per request (see note below). |
+| `LYRICS_LANGUAGE` | *(empty → auto-detect)* | Forced default transcription language (e.g. `en`) used when a `/transcribe` request omits `language`. Empty lets faster-whisper detect per track. |
 | `LYRICS_MAX_CONCURRENCY` | `1` | Concurrent transcriptions (single GPU → keep at 1). |
 | `MUSIC_MIN_ENTRIES` | `0` | When > 0, `/health` also requires `/music` to list ≥ N entries — set `1` on a populated library to catch a stale/empty mount. |
 
 ### Endpoints
 
-- `GET /health` — readiness + model/device/VRAM. Returns **503** when `/music` isn't readable (stale mount) so Docker marks the container unhealthy.
-- `POST /transcribe` — body `{"path": "/music/...", "vad": false, "word_timestamps": false}`. Returns `{language, duration, text, lrc, segments, rtf, ...}`.
+- `GET /health` — readiness + model/device/compute_type + `gpu` (VRAM) block. Returns **503** when `/music` isn't readable (stale mount) so Docker marks the container unhealthy. The `gpu` block is best-effort — it's populated by shelling out to `nvidia-smi`, so its `name`/`memory_total_mb`/`memory_used_mb` come back `null` when `nvidia-smi` is absent (e.g. CPU mode).
+- `POST /transcribe` — body fields:
+
+  | Field | Type | Default | Description |
+  |---|---|---|---|
+  | `path` | str | *(required)* | File path under `/music` to transcribe. |
+  | `language` | str? | *(unset → `LYRICS_LANGUAGE`, else auto-detect)* | Force a transcription language (e.g. `en`). |
+  | `vad` | bool? | *(unset → `LYRICS_VAD`)* | Per-request VAD override. |
+  | `word_timestamps` | bool | `false` | Include per-word timestamps in segments. |
+  | `beam_size` | int? | *(unset → `LYRICS_BEAM_SIZE`)* | Per-request decoding beam size. |
+  | `temperature` | float | `0.0` | Sampling temperature. |
+
+  Returns `{language, language_probability, duration, text, lrc, segments, model, device, compute_type, rtf, processing_seconds}`.
 
 ```bash
 curl -s -X POST localhost:8300/transcribe -H 'content-type: application/json' \

@@ -1,10 +1,23 @@
 # GrooveIQ Recommendation Algorithm — End‑to‑End Audit & Tuning Guide
 
 **Date:** 2026-06-11
-**Scope:** Full trace of the recommendation pipeline from the iOS Ampster app → GrooveIQ API → candidate generation → scoring → reranking → radio, verified against the live prod DB (read‑only) and the live API (`grooveiq.devii.ch`).
+**Scope:** Full trace of the recommendation pipeline from the iOS Ampster app → GrooveIQ API → candidate generation → scoring → reranking → radio, verified against the live prod DB (read‑only) and the live API (`<host>`).
 **Purpose:** A reference document for making targeted improvements with Claude Code. It (a) sketches the whole algorithm front‑to‑back, (b) root‑causes the three reported concerns with code + live evidence, (c) lists other latent issues found, (d) benchmarks against Spotify/YT‑Music/academic practice, and (e) gives a prioritized fix/tuning plan.
 
 > Verification method: 6 code‑mapping passes (iOS + web frontends, candidate gen, scoring/taste, reranker/modes/radio core, config) + 2 live passes (prod DB forensics on the primary user's real data + live API A/B tests) + 3 adversarial verifications. All file:line references checked against the working tree. Sensitive identifiers (API key, DB password, host, raw user id) are intentionally omitted here.
+
+---
+
+> ## ⚠️ Status update (post‑audit)
+>
+> **This is a point‑in‑time audit from 2026‑06‑11. Many of its prioritized fixes have since been implemented.** The body below (analysis, evidence tables, live numbers, prioritized plan) is preserved unchanged as a historical/forensic record — the live numbers describe the state of prod **as of the audit date** and have not been re‑measured. The mapping below reflects what now exists in the codebase per the verified ground truth; items are tagged `[shipped]` only where the corresponding code was confirmed to exist.
+>
+> - **Concern #1 / F1‑a — positive familiarity boost.** `[shipped]` `PresetConfig` now carries `familiarity_weight` (familiar 0.40 / balanced 0.30 / discovery 0.20 / deep 0.0) and the reranker applies a gated positive boost `score += familiarity_weight · min(1, play_count/8)` when `familiarity_weight > 0` (`app/services/reranker.py`, `app/models/algorithm_config_schema.py`). This is the previously‑missing "exploit my proven favourites" term.
+> - **Concern #1 / F1‑b — make the dial reshape the radio pool (proven‑recall).** `[shipped]` A `radio_proven` source now intersects the user's proven set with the seed FAISS neighbourhood, weighted by the new `proven_recall_mult` preset field (familiar 1.5 → deep 0.0); the radio `ranker_blend` is now dial‑driven (`ranker · ranker_blend + retrieval · (1 − ranker_blend)`, familiar 0.80 → deep 0.40) (`app/services/radio.py`). See §8 for the design.
+> - **Concern #2 / F2 — close the Discover leak deterministically (novelty filter gates on the proven set).** `[shipped]` `apply_novelty_filter` now excludes the user's proven set at the discovery end (`app/services/candidate_gen.py`), and CF's `get_cf_candidates(..., filter_liked=…)` is now parameterised so liked items can be filtered (`app/services/collab_filter.py`). Whether the prod config that activates these levers is published is **status not verified here**.
+> - **Concern #3 / F3‑a — repeat handling (graded cross‑session cooldown) + resurfacing.** `[shipped]` Radio applies a dial‑driven graded, floored repeat cooldown gated on the new `cooldown_alpha` preset field (`app/services/radio.py`), and a dedicated resurfacing service (`app/services/resurfacing.py`) governs candidate→confirmed graduation and "keep listening / special tracks" cards with a posture gate. The dead `_enforce_no_consecutive_artist` flow‑guard stub is now implemented (`[shipped]`, per §8.8).
+> - **Per‑dial evaluation metrics.** `[shipped]` `app/services/evaluation.py` now computes per‑dial‑bucket evaluation across `PRESET_NAMES` (`evaluate_dial_modes`, cached in `_last_dial_eval`), making dial posture measurable — addressing the §4 telemetry gap.
+> - **F3‑b (graded radio skips), F4 housekeeping (exploration floor, audit telemetry, `created_by` security fix), config‑only quick wins C1–C5:** **status not verified here** — see the live‑config caveats in §8.8 (activation requires republishing the persisted config).
 
 ---
 

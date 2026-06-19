@@ -1,4 +1,4 @@
-# Handoff — lyrics (Phases A–C BUILT + deployed; next = dashboard progress panel + Phase D)
+# Handoff — lyrics (Phases A–C BUILT + deployed; dashboard progress panel DONE; next = Phase D)
 
 **For:** a fresh Claude Code session continuing the lyrics feature.
 **Repo:** GrooveIQ backend. **Branch:** `dev` (tip `ddefe2a`, 3 commits ahead of `main`). **Remote:** `origin` → `github.com/Sxx7/GrooveIQ`.
@@ -10,18 +10,18 @@
 
 ## 0. Status (2026-06-13)
 
-**Phases A + B + C are built, committed to `dev`, deployed to the `<prod-host>` snapshot + `<gpu-vm>`, and live-verified.** The cascade resolves real lyrics (LRCLIB + embedded + ASR), the drain is backfilling the library **unthrottled**, and the per-track lyrics modal is in the dashboard.
+**Phases A + B + C are built, committed to `dev`, deployed to the `<prod-host>` snapshot + `<gpu-vm>`, and live-verified.** The cascade resolves real lyrics (LRCLIB + embedded + ASR), the drain is backfilling the library **unthrottled**, the per-track lyrics modal is in the dashboard, and the **Monitor → Lyrics** drain-progress panel (§5.1) is wired in.
 
 **Done:**
 - Storage + migration `017` (verified on **PostgreSQL**), the cascade, all 3 tiers, the drain + admin routes, the `lyrics-api` GPU sidecar, the per-track display modal, and a test suite (47 new tests, full suite green, ruff clean).
 - Pilot run; owner decisions locked (§4).
 
-**Done since (2026-06-13, working tree on `dev` — NOT yet committed):**
-- **Dashboard live progress panel** (§5.1) — built + browser-verified. New **Monitor → Lyrics** sub-page (`#/monitor/lyrics`): coverage % headline + bar, six stat tiles (resolved / remaining / in-queue / ASR-last-hour / ETA / status), by-source (rolled up embedded/lrclib/asr + synced/plain split) and by-status breakdown bars, and a filterable queue table with per-row Retry/Skip/Delete, bulk reset-by-scope, and Run-tick-now. Polls `GET /v1/lyrics/{stats,requests}` every 10 s; admin-403 degrades to an explanatory message. Files: `app/static/js/v2/monitor.js` (`renderLyricsMonitor`), `app/static/js/v2/router.js` (route + label), `app/static/css/pages.css` (`.lyr-breakdown` + 4 lyrics-only `.lbf-state-chip` colors).
-- **Static cache fix** — `add_security_headers` (`app/main.py`) now sets `Cache-Control: no-cache` on `/static/*` + `/dashboard` (paired with StaticFiles' ETag → 304 when unchanged). Kills the "hard-refresh to see new JS/CSS after a deploy" footgun noted below; `/v1/*` stays `no-store, private`.
+**Done since (now in the tree — confirmed against current source):**
+- **Dashboard live progress panel** (§5.1) — built + browser-verified. New **Monitor → Lyrics** sub-page (`#/monitor/lyrics`): coverage % headline + bar, six stat tiles (resolved / remaining / in-queue / ASR-last-hour / ETA / status), by-source (rolled up embedded/lrclib/asr + synced/plain split) and by-status breakdown bars, and a filterable queue table with per-row Retry/Skip/Delete, bulk reset-by-scope, and Run-tick-now. Polls `GET /v1/lyrics/{stats,requests}` every 10 s; admin-403 degrades to an explanatory message. Files: `app/static/js/v2/monitor.js` (`renderLyricsMonitor`, registered as `GIQ.pages.monitor.lyrics`), `app/static/js/v2/router.js` (route + `'lyrics': 'Lyrics'` label), `app/static/css/pages.css` (`.lyr-breakdown` + lyrics-only `.lbf-state-chip` colors).
+- **Static cache fix** — `add_security_headers` (`app/main.py:191-192`) now sets `Cache-Control: no-cache` on `/static/*` + `/dashboard` (paired with StaticFiles' ETag → 304 when unchanged). Kills the "hard-refresh to see new JS/CSS after a deploy" footgun noted below; `/v1/*` stays `no-store, private` (`app/main.py:186`).
 
 **NOT done — pick up here:**
-1. **Phase D** — lyric-aware ranker features (§5.2). A `[RETRAIN]` change. Deferred.
+1. **Phase D** — lyric-aware ranker features (§5.2). A `[RETRAIN]` change. **Deferred.** The config switches already exist but stay off: `LYRICS_EMBED_ENABLED=false`, `LYRICS_EMBED_MODEL_DIR=/data/models/lyrics` (`app/core/config.py:207-209`).
 2. **Promote to real prod** — `<prod-host>` currently runs `dev` (a snapshot was taken for rollback). Fast-forward `dev → main` + redeploy when satisfied (§3.3).
 3. **Phase E** — optional self-hosted LRCLIB mirror (unchanged from the original design; defer).
 
@@ -142,7 +142,7 @@ Pilot = 28 tracks (20 voiced + 8 instrumental) POSTed straight to the sidecar (`
 
 ## 5. Remaining work
 
-### 5.1 Dashboard live progress panel  ·  **DONE (built + verified, uncommitted)**
+### 5.1 Dashboard live progress panel  ·  **DONE (built, verified, in the tree)**
 
 > Implemented as **Monitor → Lyrics** — see "Done since" in §0. The spec below is retained as the build record. No backend stats tweak was needed (the panel rolls up `by_source` client-side); the optional `Cache-Control` fix in the §5.1 reminder *was* applied.
 
@@ -156,7 +156,7 @@ A backfill-progress view (the read+control side of the drain, mirroring the exis
 - **ASR pacing**: `asr_used_last_hour`, `asr_capacity_remaining` (null = unthrottled), `eta_hours`, `tick_in_progress`, `last_tick_at`.
 - **Queue table** (`GET /v1/lyrics/requests?status=&limit=&offset=`) with a status filter; columns track_id / status / source / attempts / last_error / next_retry.
 
-**Controls (admin):** "Run tick now" → `POST /v1/lyrics/run`; per-row Retry/Skip/Delete → `POST /v1/lyrics/requests/{id}/retry|skip`, `DELETE /v1/lyrics/requests/{id}`; bulk "Reset scope" → `POST /v1/lyrics/requests/reset` body `{"scope": "..."}`. Reuse `GIQ.api` + `GIQ.toast`. (All `/v1/lyrics/*` routes are admin-gated.)
+**Controls (admin):** "Run tick now" → `POST /v1/lyrics/run`; per-row Retry/Skip/Delete → `POST /v1/lyrics/requests/{id}/retry|skip`, `DELETE /v1/lyrics/requests/{id}`; bulk "Reset scope" → `POST /v1/lyrics/requests/reset` body `{"scope": "..."}`. Reuse `GIQ.api` + `GIQ.toast`. (Every `/v1/lyrics/*` route calls `require_admin`, i.e. admin-gated only when admin keys are configured — `ADMIN_API_KEYS` set; otherwise any valid key reaches them.)
 
 **Reminder:** after deploying frontend changes, the owner must **hard-refresh** (no `Cache-Control` on `/static`). Optionally fix that globally by adding `Cache-Control: no-cache` for `/static/*` + `/dashboard` in `add_security_headers` (`app/main.py`).
 
@@ -172,7 +172,7 @@ Layer in cheapest-first; everything must degrade gracefully when lyrics are abse
 | `lyrics_embedding` | **torch-free ONNX** sentence-embedding (e.g. `bge-small`/multilingual-e5-small) via existing `onnxruntime`+`tokenizers`, lazy-loaded like the CLAP text tower (`app/services/clap_text.py` is the template); store base64 in `lyrics_embedding`; optional 2nd FAISS `lyrics_index` | `lyric_similarity` (cosine vs the user's lyrical-taste centroid) → candidate source + feature |
 | `text_valence` / topic | lexicon or small ONNX classifier | contrast with audio `valence`; reranking diversity |
 
-Plug into `FEATURE_COLUMNS` in `app/services/feature_eng.py` (39 cols today) + `ranker.py`; tag `[RETRAIN]` and bump the ranker, **never** `ANALYSIS_VERSION`. Keep prod **torch-free** (ONNX only). Recommended first set: `language + is_explicit + lyrical_density + lyric_similarity`; defer sentiment/topic.
+Plug into `FEATURE_COLUMNS` in `app/services/feature_eng.py` (39 cols today) + `ranker.py`; tag `[RETRAIN]` and bump the ranker, **never** `ANALYSIS_VERSION`. Keep prod **torch-free** (ONNX only). Recommended first set: `language + is_explicit + lyrical_density + lyric_similarity`; defer sentiment/topic. The gate + model location are already stubbed: `LYRICS_EMBED_ENABLED` (default `false`) and `LYRICS_EMBED_MODEL_DIR` (default `/data/models/lyrics`) in `app/core/config.py:207-209` — both unused until this phase lands.
 
 ### 5.3 Phase E — self-hosted LRCLIB mirror (optional, deferred)
 

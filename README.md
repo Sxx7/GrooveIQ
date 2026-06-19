@@ -8,24 +8,30 @@ No cloud. No tracking. Runs on your hardware.
 
 ## Features
 
-- **Behavioral event ingestion** — 17 event types from any Subsonic-compatible app
+- **Behavioral event ingestion** — 18 event types from any Subsonic-compatible app
 - **Local audio analysis** — BPM, key, energy, mood, danceability, 64-dim embeddings via Essentia + ONNX
-- **9-step recommendation pipeline** — sessionization, scoring, taste profiles, collaborative filtering, LightGBM ranking, transformer sequential model, diversity reranking
-- **8 candidate sources** — content similarity (FAISS), collaborative filtering, session skip-gram, SASRec, Last.fm external CF, artist recall, popularity
-- **Context-aware ranking** — device, output, location, time-of-day features
-- **Adaptive radio** — stateful sessions seeded from track/artist/playlist with real-time feedback adaptation
-- **Playlist generation** — flow, mood, energy curve, and key-compatible (Camelot wheel) strategies
-- **Artist recommendations** — multi-source artist discovery from listening history, Last.fm similar, and Last.fm top artists
+- **10-step recommendation pipeline** — sessionization, scoring, taste profiles, collaborative filtering, LightGBM ranking, session skip-gram embeddings, Last.fm external CF, transformer sequential model (SASRec), session GRU taste drift, 2D music map
+- **8 candidate sources** — content similarity (FAISS, seed or taste-centroid — mutually exclusive), collaborative filtering, session skip-gram, SASRec, Last.fm external CF, artist recall, popularity (so any single request blends up to 7)
+- **Context-aware ranking** — 39 features per candidate including device, output, location, and time-of-day signals
+- **Discovery dial** — `familiar` / `balanced` / `discovery` / `deep_discovery` presets (plus a continuous `discovery` float) that retune retrieval, novelty filtering, and reranking per request
+- **Adaptive radio** — stateful sessions seeded from track/artist/playlist with real-time feedback adaptation and the same discovery dial
+- **Playlist generation** — 6 strategies: flow, mood, energy curve, key-compatible (Camelot wheel), **path** (A→B slerp sonic bridge over audio embeddings), and **text** (natural-language CLAP prompt)
+- **Artist recommendations** — multi-source artist discovery: audio centroid (FAISS), track-ranker roll-up, Last.fm similar/top, and listening-history heuristic
+- **Album recommendations** — library-only album roll-up (ranker + coverage + freshness + audio coherence)
 - **User onboarding** — explicit preference collection for cold-start taste profile seeding
 - **Last.fm integration** — scrobbling, profile sync, similar-artist discovery, chart fetching, backfill
 - **Personalized news feed** — Reddit-sourced music news scored per user's taste profile
-- **Download proxy** — search and download tracks via spotdl-api (YouTube Music) or Spotizerr (legacy fallback)
+- **Download routing cascade** — versioned policy that walks multiple backends per purpose: spotdl-api (YouTube Music), streamrip-api (Qobuz/Tidal/Deezer/SoundCloud lossless), slskd (Soulseek), Spotizerr (legacy fallback), plus Lidarr for bulk album. Three chains (`individual` / `bulk_per_track` / `bulk_album`) + parallel multi-backend search
+- **Lidarr backfill** — drains Lidarr's `wanted/missing` queue through streamrip with fuzzy matching, rate limiting, and a versioned policy
 - **Media server sync** — Navidrome/Plex track ID mapping with cascading updates
-- **Algorithm tuning** — 78 pipeline weights/thresholds configurable via REST API with versioning, rollback, and export/import
+- **Algorithm tuning** — ~90 pipeline weights/thresholds across 10 config groups (plus a discovery-dial preset matrix), configurable via REST API with versioning, rollback, and export/import
+- **Recommendation audit & replay** — every `/v1/recommend` and radio batch persists its full candidate pool + feature vectors for "why was this surfaced?" inspection and offline replay
+- **Per-user API call log** — every `/v1/*` request the client makes is captured (redacted) for debugging integrations
+- **2D music map** — UMAP projection of audio embeddings into a navigable map where nearby tracks sound alike
 - **Web dashboard** — real-time pipeline visualization, recommendation debugger, algorithm tuning GUI, system health panels
-- **Music discovery** — Last.fm similar artists auto-added to Lidarr, optional AcousticBrainz lookup (29.5M tracks)
+- **Music discovery** — Last.fm similar artists auto-added to Lidarr, optional AcousticBrainz lookup (29.5M tracks) + Fill Library
 - **Lyrics** — read-along/karaoke + algorithm signal via a cascade: embedded tags → LRCLIB → optional GPU ASR sidecar (faster-whisper), instrumental-gated
-- **Integration health** — live connectivity probes for all external services
+- **Integration health** — live connectivity probes for 9 external services
 
 ## Quick start
 
@@ -115,16 +121,17 @@ Runs every hour (configurable). Each step is error-isolated.
 | 1 | **Sessionizer** | Groups events into listening sessions by inactivity gaps |
 | 2 | **Track scoring** | Computes per-(user, track) satisfaction scores from engagement signals |
 | 3 | **Taste profiles** | Builds multi-timescale audio preference profiles (7d / 30d / all-time) |
-| 4 | **Collaborative filtering** | User-user and item-item similarity matrices |
+| 4 | **Collaborative filtering** | ALS matrix factorization over the user×track interaction matrix |
 | 5 | **Ranker training** | LightGBM model on 39 features with hard negative weighting |
 | 6 | **Session embeddings** | Word2Vec skip-gram on listening sessions |
 | 7 | **Last.fm cache** | External CF via Last.fm track.getSimilar |
 | 8 | **SASRec** | Transformer decoder for next-track prediction |
 | 9 | **Session GRU** | Taste drift modeling across sessions |
+| 10 | **Music map** | UMAP projection of audio embeddings to 2D coordinates |
 
 ### Serving flow
 
-1. **Candidate retrieval** — 8 sources merged and deduplicated
+1. **Candidate retrieval** — up to 7 of 8 sources merged and deduplicated (content-from-seed and content-from-taste-centroid are mutually exclusive)
 2. **Feature engineering** — 39 features per candidate (audio, behavioral, context, sequential)
 3. **Ranking** — LightGBM scores candidates (falls back to satisfaction score)
 4. **Reranking** — artist diversity, anti-repetition, freshness boost, skip suppression, ~15% exploration slots
@@ -167,8 +174,10 @@ All settings via environment variables or `.env` file. See [`.env.example`](.env
 | Navidrome/Plex sync | `MEDIA_SERVER_TYPE`, `MEDIA_SERVER_URL`, credentials |
 | Last.fm | `LASTFM_API_KEY`, `LASTFM_API_SECRET` |
 | Lidarr discovery | `LIDARR_URL`, `LIDARR_API_KEY` |
-| spotdl-api downloads | `SPOTDL_API_URL`, `SPOTIFY_CLIENT_ID`, `SPOTIFY_CLIENT_SECRET` |
-| Spotizerr (legacy) | `SPOTIZERR_URL` (optional auth: `SPOTIZERR_USERNAME`, `SPOTIZERR_PASSWORD`) |
+| spotdl-api downloads (YouTube Music) | `SPOTDL_API_URL` (+ `SPOTIFY_CLIENT_ID`/`SPOTIFY_CLIENT_SECRET` on the sidecar) |
+| streamrip-api downloads (Qobuz/Tidal/Deezer/SoundCloud lossless) | `STREAMRIP_API_URL` (+ streaming-service creds on the sidecar) |
+| slskd / Soulseek downloads | `SLSKD_ENABLED=true`, `SLSKD_URL`, `SLSKD_API_KEY` |
+| Spotizerr (legacy fallback) | `SPOTIZERR_URL` (optional auth: `SPOTIZERR_USERNAME`, `SPOTIZERR_PASSWORD`) |
 | Charts | `CHARTS_ENABLED=true`, `LASTFM_API_KEY` |
 | News feed | `NEWS_ENABLED=true` (optional: `NEWS_INTERVAL_MINUTES`, `NEWS_DEFAULT_SUBREDDITS`) |
 | AcousticBrainz lookup | `AB_LOOKUP_URL`, `AB_LOOKUP_ENABLED=true` (separate container) |
@@ -299,26 +308,36 @@ Interactive docs available at `/docs` when `ENABLE_DOCS=true` (development only)
 
 ### Endpoint overview
 
+Admin-gated endpoints below are enforced only when `ADMIN_API_KEYS` is configured; otherwise any valid key may call them.
+
 | Group | Endpoints |
 |-------|-----------|
 | Health | `GET /health`, `GET /dashboard` |
 | Events | `POST /v1/events`, `POST /v1/events/batch`, `GET /v1/events` |
-| Library | `POST /v1/library/scan`, `GET /v1/library/scan/{id}`, `GET /v1/library/scan/{id}/logs`, `POST /v1/library/sync` |
-| Tracks | `GET /v1/tracks`, `GET /v1/tracks/{id}/features`, `GET /v1/tracks/{id}/similar` |
-| Users | `GET/POST /v1/users`, `GET/PATCH /v1/users/{id}`, profile, interactions, history, sessions |
+| Library | `POST /v1/library/scan`, `GET /v1/library/scan/{id}`, `GET /v1/library/scan/{id}/logs`, `POST /v1/library/sync`, `POST /v1/library/cleanup-stale` |
+| Tracks | `GET /v1/tracks`, `GET /v1/tracks/lookup`, `GET /v1/tracks/{id}/features`, `GET /v1/tracks/{id}/similar`, `GET /v1/tracks/{id}/lyrics`, `GET /v1/tracks/map`, `GET /v1/tracks/text-search` (CLAP), `GET/POST /v1/tracks/clap/*` |
+| Users | `GET/POST /v1/users`, `GET/PATCH /v1/users/{id}`, profile, interactions, history, sessions, stats |
 | Onboarding | `POST/GET /v1/users/{id}/onboarding` |
-| Recommendations | `GET /v1/recommend/{user_id}`, history, artists, model stats |
+| Recommendations | `GET /v1/recommend/{user_id}`, history, artists, albums; mixes/prewarm, resurfacing, suppress; `GET /v1/stats/model` |
 | Radio | `POST /v1/radio/start`, `GET /v1/radio/{id}/next`, `DELETE /v1/radio/{id}`, `GET /v1/radio` |
 | Playlists | `POST/GET /v1/playlists`, `GET/DELETE /v1/playlists/{id}` |
-| Discovery | `GET/POST /v1/discovery`, stats |
-| Last.fm | connect, disconnect, sync, backfill, profile per user |
-| Charts | list, get, build, download, stats |
-| Downloads | search, download, status, history |
+| Discovery | `GET /v1/discovery`, `POST /v1/discovery/run`, stats |
+| Fill Library | `POST /v1/fill-library/run`, `GET /v1/fill-library`, stats |
+| Last.fm | connect, disconnect, sync, backfill, profile (per user) |
+| Charts | list, get, snapshots, history, build, download, stats |
+| Downloads | search, multi-search, artist search, download (cascade), from-handle, status, queue, history, stats, cancel |
+| Download routing | config CRUD, defaults, history, export/import, rollback (admin) |
+| Soulseek | `GET /v1/soulseek/search`, download, status, cancel, history, bulk-download |
+| Lidarr backfill | config CRUD, requests list/retry/skip/forget/reset, run, preview, stats (admin) |
+| Lyrics (drain) | `GET /v1/lyrics/stats`, requests, run, retry/skip/delete/reset (admin) |
 | Artists | `GET /v1/artists/{name}/meta` |
 | News | `POST /v1/news/refresh`, `GET /v1/news/{user_id}` |
-| Pipeline | run, reset, status, SSE stream, model readiness, per-step stats |
-| Algorithm | config CRUD, defaults, history, export/import, rollback |
-| Integrations | `GET /v1/integrations/status` |
+| Reco audit & replay | `GET /v1/recommend/audit/sessions`, stats, detail, `POST .../replay` |
+| API call log | `GET /v1/users/{id}/api-calls`, `GET /v1/api-calls`, detail, stats (admin) |
+| Pipeline | run, reset, status, SSE stream, model readiness, per-step stats (admin) |
+| Algorithm | config CRUD, defaults, history, export/import, rollback (admin); `GET /v1/algorithm/modes` (discovery-dial presets) |
+| Integrations | `GET /v1/integrations/status` (admin) |
+| Admin | `GET /v1/admin/analysis-health` (library-wide audio-feature invariants, admin) |
 
 ## HTTPS / public deployment
 

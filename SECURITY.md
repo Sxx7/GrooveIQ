@@ -47,6 +47,13 @@ exploit path:
 
 ## Hardening tips
 
+- Admin-only endpoints (config CRUD, pipeline control, library scan, etc.)
+  are only enforced when `ADMIN_API_KEYS` is set. If it is empty, every
+  valid key in `API_KEYS` is effectively an admin. Likewise, per-key →
+  user binding is only enforced when `API_KEY_USERS` is set; otherwise any
+  valid key can act on any `user_id`. If you expose more than one user,
+  configure both so a client key is scoped to its own user and can't reach
+  admin surfaces.
 - Always run behind a reverse proxy with TLS if exposed to the internet.
 - Pin `ghcr.io/sxx7/grooveiq` to a specific digest in production rather
   than `:latest`; bump deliberately on a schedule.

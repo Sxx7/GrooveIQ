@@ -1,13 +1,36 @@
 # Recommendation Modes — Implementation Plan
 
-**Status:** Planned (design only — not yet implemented)
+**Status:** ✅ Implemented — this design has shipped. The discovery dial, the four presets, the request-scoped override mechanism, the SWR mix cache, the `modes` config group, and the radio dial are all in the codebase. This document is retained as the **design record** — the rationale, comparisons, and section structure below remain the canonical explanation of *why* the feature is shaped the way it is. Where the shipped reality diverges from the original plan, it is called out inline with **[Shipped: …]** notes.
 **Created:** 2026-06-02
-**Updated:** 2026-06-02 (added confidence-based "proven" definition, app surfacing, dashboard settings, request-only surfaces)
-**Estimated effort:** ~5–10 days for the core dial + confidence-based "proven" (Phases 0–2); optional phases beyond
+**Updated:** 2026-06-02 (added confidence-based "proven" definition, app surfacing, dashboard settings, request-only surfaces); reconciled to implemented status (see "Implementation status" below)
+**Estimated effort (original plan):** ~5–10 days for the core dial + confidence-based "proven" (Phases 0–2); optional phases beyond
+
+---
+
+## Implementation status (as of this doc revision)
+
+The plan below has been built. Mapping the plan's phases to what now exists in code:
+
+| Plan phase | Status | Where it landed |
+|------------|--------|-----------------|
+| **Phase 0** — per-request override mechanism, `discovery`/`mode` params, UCB acquisition, **Phase A confidence proxy**, proven-set novelty filter, SWR cache | ✅ Shipped | `app/services/request_config.py` (`apply_overrides` context manager), `app/services/modes.py` (`resolve_dial`, `_interpolate_preset`, `derive_reasons`), `app/services/confidence.py` (`mu`/`sigma` proxies), `app/services/mix_cache.py` (SWR cache + prewarm), reranker acquisition + novelty filter in `app/services/reranker.py`, candidate exclude hook in `app/services/candidate_gen.py` |
+| **Phase 1** — `modes` versioned config group, dashboard surfacing, radio dial, prewarm endpoint | ✅ Shipped | `modes` group in `app/models/algorithm_config_schema.py` (`PresetConfig`, `ModesConfig`, `PRESET_NAMES`), read-only `GET /v1/algorithm/modes` endpoint, `discovery`/`mode` wiring in `app/api/routes/recommend.py` + `app/api/routes/radio.py`, `POST /v1/users/{user_id}/mixes/prewarm` + `GET /v1/users/{user_id}/mixes` |
+| **Phase 2 — Phase B confidence model** (LightGBM skip head + quantile `sigma`, dedicated training steps) | ⚠️ Deferred | Confidence is currently the **Phase A proxy** (ranker score + FAISS neighbour density) in `confidence.py`. The quantile/skip-head model has **not** shipped. |
+| Per-dial-bucket evaluation metrics | ✅ Shipped (Phase-A-driven) | `evaluate_dial_modes` in `app/services/evaluation.py` (novelty, `pct_never_played`, intra-list diversity, catalog coverage, proven-set skip rate), surfaced via the model report (`GET /v1/stats/model`) |
+| **Phase 3** — bandit-driven default feed (BaRT-style online reward loop) | ⏳ Not started | Future extension (section 14) |
+
+**Key ways the shipped feature differs from this plan:**
+
+- **Four presets, not three.** The dial presets are `familiar` / `balanced` / `discovery` / `deep_discovery` (`PRESET_NAMES`), with a **continuous `discovery` float in [0, 1]** underneath. Fractional dial values interpolate between preset anchors (`_interpolate_preset`); a named `mode` pins the exact anchor. (Note: the separate **artist/album** reco endpoints use a *different*, older 3-value vocabulary `familiar|balanced|discover` — `discover`, not `discovery` — and are not part of this dial.)
+- **Confidence is the Phase-A proxy.** `mu`/`sigma` come from the ranker score plus FAISS neighbour density in `confidence.py`. The Phase-B quantile/skip-head model (section 5.2) was **deferred**, exactly as the "A-now / B-later" decision in section 15 anticipated.
+- **`/v1/algorithm/modes` is read-only and non-admin.** The plan proposed full CRUD (`GET/PUT/POST` on `/v1/algorithm/modes`, section 9). In practice the `modes` group is edited through the *existing* versioned algorithm-config routes (`PUT /v1/algorithm/config`, etc.), and `GET /v1/algorithm/modes` is a thin **read-only** projection of the active config's `modes` group — reachable with any authenticated key (no admin gate) so end-user surfaces can read preset definitions. The standalone `PUT/POST /v1/algorithm/modes` endpoints from the plan were not added.
+- **A related "resurfacing / Keep listening" surface shipped alongside.** `app/services/resurfacing.py` + `GET /v1/users/{user_id}/resurfacing` / `POST /v1/users/{user_id}/tracks/{track_id}/suppress` add time-decayed per-user engagement "heat" that the reranker reads. This was not in the original plan but is part of the same familiarity-axis work.
 
 ## Overview
 
-GrooveIQ's recommender today has effectively **one mode**: it optimizes a single objective — the per-user `satisfaction_score` — and tries to find the best next track. The major streaming services don't work this way. They expose listener *intent* as a spectrum between two poles:
+> **[Shipped]** "Today" in the prose below refers to GrooveIQ *before* this dial was built — it captures the design motivation. The dial described here is now implemented; see "Implementation status."
+
+GrooveIQ's recommender originally had effectively **one mode**: it optimized a single objective — the per-user `satisfaction_score` — and tried to find the best next track. The major streaming services don't work this way. They expose listener *intent* as a spectrum between two poles:
 
 - **"Play me my proven favorites"** — exploitation of what the user already loves (Spotify Daily Mix, Apple Favorites Mix / Personal Station).
 - **"I want to discover new music"** — exploration of the novel and unheard (Spotify Discover Weekly, Apple New Music Mix / Discovery Station).
@@ -15,6 +38,8 @@ GrooveIQ's recommender today has effectively **one mode**: it optimizes a single
 This plan adds that spectrum to GrooveIQ as a **single continuous "discovery dial"** (`discovery` in [0.0, 1.0]) on the recommendation request, with named presets (`familiar` / `balanced` / `discovery` / `deep_discovery`) as labeled points on the dial.
 
 The dial is best understood as a **UCB-style acquisition function** over two per-(user, track) model outputs — predicted engagement `mu` and uncertainty `sigma` (see section 5). It re-weights knobs that *already exist* in the pipeline plus one new model output (`sigma`). It does **not** require replacing the ranking model.
+
+> **[Shipped]** This is exactly the shape that landed. `app/services/modes.py` resolves a request's `discovery`/`mode` into a `PresetConfig`; `app/services/reranker.py` applies the UCB adjustment `ranker_score + kappa·sigma − lambda_proven·[is_proven]` (gated on `kappa > 0 or lambda_proven > 0`); `app/services/confidence.py` supplies the `mu`/`sigma` proxies. The base ranker was not replaced, as promised.
 
 | Pole | Dial value | What it means here |
 |------|-----------|--------------------|
@@ -29,11 +54,13 @@ The dial is best understood as a **UCB-style acquisition function** over two per
 > 4. **Radio honours the dial** (section 6.3).
 > 5. **Surfaces/"mixes" are request-only** with stale-while-revalidate caching + pre-warm (section 8) — no persisted/scheduled surface tables.
 >
-> This document is a **plan only**; no code changes are made yet.
+> **[Shipped]** All five locked decisions above hold in the shipped implementation. (This box originally read "plan only; no code changes are made yet" — that is no longer true; see "Implementation status" above.)
 
 ---
 
 ## 1. The problem
+
+> **[Shipped]** This section describes the pre-dial state that motivated the work. The "hardcoded and global" exploration knobs below are now *per-request overridable* via the mechanism in section 4.3, which shipped as `app/services/request_config.py` + `app/services/modes.py`.
 
 Every stage of the pipeline serves one number: the per-user `satisfaction_score`, a weighted sum of engagement signals (full listen +1.0, like +2.0, repeat +1.5, early skip -0.5, dislike -2.0, ...) min-max normalized to [0,1] per user.
 
@@ -83,7 +110,9 @@ What's missing: the **policy layer** (per-request intent) and a **confidence sig
 
 ## 3. Comparison
 
-| Capability | Spotify | Apple Music | **GrooveIQ today** |
+> **[Shipped]** The "GrooveIQ today" column below was written *before* the dial shipped and reflects the pre-dial gap. With the dial implemented, GrooveIQ now has the explore/exploit **policy layer** (the discovery dial + UCB acquisition), a **per-request selectable intent** (`discovery`/`mode`), **familiar and discovery surfaces with a novelty filter**, and a **Phase-A confidence proxy** (`mu`/`sigma`). The remaining genuine gap vs. the majors is a *learned* per-track uncertainty model (Phase B, deferred) and an online bandit (Phase 3, not started).
+
+| Capability | Spotify | Apple Music | **GrooveIQ (pre-dial)** |
 |---|---|---|---|
 | Two-stage retrieve->rank->rerank | yes | yes | yes |
 | Multiple candidate models (CF + audio + sequence) | yes CF/NLP/audio | yes CF/content/editorial | yes **rich** (CF, FAISS audio, skip-gram, SASRec, GRU, Last.fm) |
@@ -96,7 +125,7 @@ What's missing: the **policy layer** (per-request intent) and a **confidence sig
 | Context-awareness (time/device/mood) | yes | yes | yes **strong** |
 | Per-request tunability | yes via surface | yes via surface | no — global config only |
 
-**Takeaway:** GrooveIQ is not behind on models or features — it's missing the **intent/policy layer** and a **confidence signal**.
+**Takeaway (original):** GrooveIQ is not behind on models or features — it's missing the **intent/policy layer** and a **confidence signal**. **[Shipped]** Both have since been added: the intent/policy layer (the discovery dial) and a Phase-A confidence proxy. A *learned* uncertainty model (Phase B) and an online bandit (Phase 3) remain future work.
 
 ---
 
@@ -142,6 +171,8 @@ Modes must apply **per request**, but config is a global singleton. **Do not** i
 
 Add a `modes` group to `app/models/algorithm_config_schema.py` holding the anchor values and preset->dial mappings, editable in **Settings -> Algorithm** with versioning/history/diff/export for free (section 7). The per-request `discovery` value chooses a point; the `modes` config defines what each point means.
 
+> **[Shipped]** This is how it works. The `modes` group exists as `ModesConfig` in `app/models/algorithm_config_schema.py` (default preset `balanced`, with `dial_anchors` defaulting to familiar=0.0, balanced=0.3, discovery=0.6, deep_discovery=1.0). It is one of the algorithm-config groups and is edited through the existing versioned algorithm-config routes (so it inherits history/diff/export). Each preset is a `PresetConfig` carrying the dial knobs (`kappa`, `lambda_proven`, `exploration_fraction`, `freshness_boost`, `novelty_filter`/`novelty_strength`/`novelty_weight`, `repeat_window_hours`, `proven_mu_min`/`proven_sigma_max`, `source_weight_mult`, plus radio-specific fields like `seed_anchor_weight`, `semiknown_fraction`, `require_interaction`, `proven_recall_mult`, `ranker_blend`, `cooldown_alpha`). End-user surfaces read the resolved definitions via the read-only `GET /v1/algorithm/modes`.
+
 ### 4.5 What does *not* change
 
 - **The base ranker and feature engineering are untouched.** One model plus an uncertainty estimate (section 5) serves every dial position.
@@ -176,6 +207,8 @@ This is the principled version of the existing `1/sqrt(plays+1)` heuristic, and 
 
 GrooveIQ's LightGBM ranker emits neither a skip probability nor `sigma` today, so this needs a small, incremental model addition.
 
+> **[Shipped — Phase A only]** `app/services/confidence.py` implements the Phase-A proxy described immediately below (ranker score + recency-weighted personal evidence + FAISS neighbour density). **Phase B (the LightGBM skip-head classifier + quantile `sigma` models) has not shipped** — it remains the deferred fast-follow, consistent with the "A-now / B-later" decision recorded in section 15.
+
 **Phase A — proxy from existing signals (ships *with* the dial, no new model):**
 
 - **`mu` proxy:** the ranker's `satisfaction_score` prediction (already a skip-aware composite) blended with the track's own `avg_completion` / `skip_count` when present; for unheard tracks, inherited from nearest neighbours.
@@ -205,9 +238,11 @@ For users with little history, the proven set is tiny and `sigma` is high almost
 
 ## 6. App surfacing & UX
 
+> **[Shipped]** The backend for this shipped: `GET /v1/users/{user_id}/mixes` returns the suggested shelf specs (On Repeat / Your Mix / Discover / Deep Cuts), each a ready-to-call recommend request; `POST /v1/users/{user_id}/mixes/prewarm` warms the SWR cache; the recommend response carries per-track `reasons` (derived by `modes.derive_reasons()` — e.g. `proven_favourite`, `new_to_you`, `exploring`, `keep_listening`, plus source-based chips). Radio honours the dial via `mode`/`discovery` on `start`/`next` (section 6.3). Exact dashboard layout (the `explore.js` shelf/dial rendering) follows this design.
+
 ### 6.1 Explore -> Recommendations becomes a multi-shelf home
 
-Today Recommendations is a single ranked list. To match the "request as many mixes as needed" model (section 8) and the way Spotify/Apple present intent, restructure it as a **home of shelves**:
+Before the dial, Recommendations was a single ranked list. To match the "request as many mixes as needed" model (section 8) and the way Spotify/Apple present intent, it is restructured as a **home of shelves**:
 
 ```
 Recommendations
@@ -255,6 +290,8 @@ There are **two distinct levels**, and they live in different buckets of the fou
 
 ### Settings -> Algorithm -> Modes editor
 
+> **[Shipped]** The `modes` group is a first-class member of the versioned algorithm-config (`ModesConfig` with one `PresetConfig` per preset), so it inherits versioning/diff/history/rollback/export-import from the existing config shell. Each preset exposes the dial knobs listed in section 4.4. The runtime dial reads the resolved definitions via `GET /v1/algorithm/modes`. The Phase-B "[RETRAIN] confidence-model settings" sub-bullet below is **N/A** — Phase B was deferred, so there are no skip-head/quantile params to edit yet.
+
 A new accordion group ("Modes") in the existing versioned-config dashboard (`app/static/js/v2/settings.js` + the shared config shell), so it inherits sliders, inline validation, **diff**, **history/rollback**, **export/import**.
 
 - One sub-card per preset (`familiar` / `balanced` / `discovery` / `deep_discovery`), each exposing its anchors: `kappa`, `exploration_fraction`, `freshness_boost`, novelty-filter on/off + strength, anti-repetition window, source-weight multipliers, and the proven thresholds `proven_mu_min` / `proven_sigma_max`.
@@ -266,6 +303,8 @@ The runtime dial in Explore reads these definitions via `GET /v1/algorithm/modes
 ---
 
 ## 8. Surfaces: request-only with pre-warming
+
+> **[Shipped]** Implemented as `app/services/mix_cache.py` (in-memory SWR cache, prewarmed per mode), wired into `GET /v1/recommend/{user_id}` and the `POST /v1/users/{user_id}/mixes/prewarm` endpoint. Tunables: `MIX_CACHE_ENABLED` (default true), `MIX_CACHE_FRESH_SECONDS` (120), `MIX_CACHE_STALE_SECONDS` (900 — the stale grace window that triggers one background rebuild), `MIX_CACHE_MAX_ENTRIES` (512), `MIX_CACHE_MAX_CONCURRENT_REBUILDS` (4), `MIX_PREWARM_RATE_LIMIT_PER_MIN` (12, per key+user), `MIX_PREWARM_MAX_MODES` (8). No persisted/scheduled surface tables were added, as decided.
 
 **Decision:** no persisted/scheduled surface tables. Every "mix" is a normal request; the frontend asks for as many as it wants. To hide generation latency, add **stale-while-revalidate (SWR)** caching + **pre-warm**:
 
@@ -281,26 +320,31 @@ Trade-off acknowledged: a cold mix costs one full pipeline run (~100-500 ms). SW
 
 ## 9. API changes
 
+> **[Shipped]** The annotated block below is the **as-built** surface. It differs from the original proposal in two places: the dial uses the `discovery` query param and a preset `mode` (radio also accepts `mode` on `start`/`next`), and the modes config is **not** a separate CRUD resource — it is edited through the existing `PUT /v1/algorithm/config` routes, with `GET /v1/algorithm/modes` as a **read-only, non-admin** projection. The struck-through `PUT/POST /v1/algorithm/modes` endpoints were never added.
+
 ```
-# Changed — add the dial (+ preset alias) to the existing endpoint
+# Changed — the dial (+ preset alias) on the existing endpoint  [SHIPPED]
 GET /v1/recommend/{user_id}?discovery=0.0..1.0
-GET /v1/recommend/{user_id}?mode=familiar|balanced|discovery|deep_discovery
+GET /v1/recommend/{user_id}?mode=familiar|balanced|discovery|deep_discovery   # 422 on unknown mode
 #   existing context params unchanged (seed_track_id, device_type, hour_of_day, genre, mood, ...)
-#   response gains: "discovery" (resolved value) + per-track "reasons"[]  (+ mu/sigma after section 5 Phase B)
+#   response gains: "discovery" (resolved value) + per-track "reasons"[]
+#   (mu/sigma would land with section 5 Phase B — deferred)
+#   served through the SWR mix cache (section 8)
 
-# Radio honours the dial
-POST /v1/radio/start?discovery=0.0..1.0          # sets baseline posture
-GET  /v1/radio/{session_id}/next?discovery=...   # optional per-batch override
+# Radio honours the dial  [SHIPPED]
+POST /v1/radio/start    body: { ..., discovery?: 0.0..1.0, mode?: familiar|balanced|discovery|deep_discovery }   # sets baseline posture
+GET  /v1/radio/{session_id}/next?discovery=...&mode=...   # per-batch override; mode wins over discovery
 
-# New — request-only surfaces: pre-warm hint (SWR cache, section 8)
-POST /v1/users/{user_id}/mixes/prewarm           # body: { modes?: [...], seeds?: [...] } -> 202, warms cache in background
-GET  /v1/users/{user_id}/mixes                   # optional: menu of suggested shelves (each = a ready-to-call request spec)
+# Request-only surfaces: pre-warm hint (SWR cache, section 8)  [SHIPPED]
+POST /v1/users/{user_id}/mixes/prewarm           # body: { modes?: [...], limit? } -> 202, warms cache in background
+GET  /v1/users/{user_id}/mixes                   # menu of suggested shelves (On Repeat / Your Mix / Discover / Deep Cuts)
 
-# New — modes/dial config CRUD (mirror existing algorithm-config routes)
-GET  /v1/algorithm/modes                         # anchors + preset definitions (read by the Explore dial)
-GET  /v1/algorithm/modes/defaults
-PUT  /v1/algorithm/modes                         # save (versioned, becomes active)
-POST /v1/algorithm/modes/reset
+# Modes/dial config  [SHIPPED — read-only projection; edited via the algorithm-config routes]
+GET  /v1/algorithm/modes                         # anchors + preset definitions (read by the Explore dial; any authenticated key, no admin)
+#  --- the standalone CRUD below was PROPOSED but NOT built; use PUT /v1/algorithm/config instead ---
+#  GET  /v1/algorithm/modes/defaults
+#  PUT  /v1/algorithm/modes
+#  POST /v1/algorithm/modes/reset
 ```
 
 No new endpoints are required for the confidence model (section 5) — `mu`/`sigma` are produced inside the pipeline and surfaced via the existing recommend/debug/audit responses.
@@ -308,6 +352,8 @@ No new endpoints are required for the confidence model (section 5) — `mu`/`sig
 ---
 
 ## 10. File change summary
+
+> **[Shipped]** All Phase 0–1 rows below landed (the new files `request_config.py`, `mix_cache.py`, `confidence.py` exist, joined by `app/services/modes.py` — the dial resolver, which wasn't named in the original table). Phase 2's `ranker.py`/`scheduler.py` rows (the Phase-B confidence *model*) did **not** land; `evaluation.py`'s per-dial metrics row **did** land (`evaluate_dial_modes`).
 
 | File | Change | Phase |
 |------|--------|-------|
@@ -336,6 +382,8 @@ The **base** ranker/feature-eng are untouched in Phase 0-1; Phase 2 *adds* model
 
 ## 11. Effort estimate
 
+> **[Shipped]** Phases 0–1 are done; Phase 2 (the Phase-B confidence model) is deferred and Phase 3 (the bandit) is not started. The estimates below are retained as the original sizing.
+
 Single developer familiar with the codebase. Implementation **deferred** — these size the work for pickup.
 
 | Phase | Scope | Size | Rough |
@@ -350,6 +398,8 @@ Single developer familiar with the codebase. Implementation **deferred** — the
 ---
 
 ## 12. Evaluation
+
+> **[Shipped]** Per-dial-bucket list-quality metrics are implemented in `app/services/evaluation.py` (`evaluate_dial_modes`): `mean_inverse_popularity` (novelty), `pct_never_played`, `intra_list_diversity` (mean pairwise cosine distance), `catalog_coverage`, and `skip_rate_on_set` (the proven-set skip rate, surfaced on the `familiar` bucket). It runs the live pipeline per preset for a bounded user sample (`RECO_DIAL_EVAL_*` settings) and is combined into the model report at `GET /v1/stats/model`. The confidence-calibration reliability curve below belongs to Phase B and is **not** shipped.
 
 Judge the poles by different metrics (NDCG alone is insufficient):
 
@@ -389,9 +439,9 @@ Judge the poles by different metrics (NDCG alone is insufficient):
 5. Default unparameterized request stays at `balanced` (no regression).
 
 **Remaining open question:**
-- **Confidence-model scope for v1** — ship Phase A proxy only and add Phase B (skip head + quantile `sigma`) later, or build A+B together up front? (Recommendation: A in v1, B as fast-follow.) DECIDED: A-now / B-later.
+- **Confidence-model scope for v1** — ship Phase A proxy only and add Phase B (skip head + quantile `sigma`) later, or build A+B together up front? (Recommendation: A in v1, B as fast-follow.) DECIDED: A-now / B-later. **[Shipped]** Resolved as decided — Phase A shipped with the dial; Phase B remains the deferred fast-follow.
 
-Secondary calibration choices (proven thresholds, dial->knob curve shape, cache TTL) are config values, tunable post-launch rather than blocking decisions.
+Secondary calibration choices (proven thresholds, dial->knob curve shape, cache TTL) are config values, tunable post-launch rather than blocking decisions. **[Shipped]** These live in the `modes` config group (proven thresholds, dial anchors, per-preset knobs) and in `MIX_CACHE_*` settings (cache TTLs).
 
 ---
 

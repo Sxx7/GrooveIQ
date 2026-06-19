@@ -1,6 +1,6 @@
 # Handoff — iOS integration of GrooveIQ CLAP playlists
 
-> Audience: Claude Code (or a developer) working in the iOS app repo. Self-contained — no need to read GrooveIQ source. Verified live on `dsvr-prod-03.local.devii.ch` on 2026-05-09 against issue [Sxx7/GrooveIQ#89](https://github.com/Sxx7/GrooveIQ/issues/89).
+> Audience: Claude Code (or a developer) working in the iOS app repo. Self-contained — no need to read GrooveIQ source. Originally verified live against issue [Sxx7/GrooveIQ#89](https://github.com/Sxx7/GrooveIQ/issues/89) on 2026-05-09; the API contract below was re-confirmed against the GrooveIQ source.
 
 ---
 
@@ -13,10 +13,10 @@ The endpoint that turns a prompt into a playlist is `POST /v1/playlists` with `s
 The server is deployed at:
 
 ```
-http://dsvr-prod-03.local.devii.ch:8000   # internal LAN
+http://<prod-host>:8000   # internal LAN
 ```
 
-Reverse-proxied via Caddy externally — confirm the public hostname with the user before hardcoding.
+Reverse-proxied via Caddy externally — confirm the actual internal and public hostnames with the user before hardcoding.
 
 ---
 
@@ -103,22 +103,22 @@ Query param:
 |--------|---------|--------------|
 | `201 Created` | Fresh generation | Normal path. |
 | `200 OK` | Cache hit (same caller + same body params + same UTC day) | Identical to 201. Treat as success. Optional: log for cache-hit telemetry. |
-| `400 Bad Request` | Invalid params (prompt empty, `max_tracks` out of range, unknown `strategy`, etc.) | Show inline error; don't retry without changing input. |
+| `400 Bad Request` | The strategy rejected the input or produced no tracks (empty `prompt`, unknown `strategy`, empty result set) | Show inline error; don't retry without changing input. |
 | `401 Unauthorized` | Bad/missing API key | Re-prompt for credentials; clear keychain entry. |
-| `422 Unprocessable Entity` | Strategy ran but produced 0 tracks (library too small / no CLAP-embedded tracks) | "Library still warming up — try again later." |
+| `422 Unprocessable Entity` | Request body failed schema validation (`max_tracks` outside 5–100, wrong field types) | Fix the request; treat like a 400. |
 | `429 Too Many Requests` | Rate limit | Back off (use `Retry-After` if present, else 60s). |
 | `500 Internal Server Error` | Server bug | Surface a generic error; log the request body + response for diagnosis. |
-| `503 Service Unavailable` | CLAP disabled or model files missing | "Text mixes aren't available on this server right now." |
+| `503 Service Unavailable` | CLAP disabled, model files missing, or no tracks have CLAP embeddings yet | "Text mixes aren't available on this server right now." |
 
 ---
 
 ## 4. Daily idempotency cache (the important behavior)
 
-The server **already deduplicates** repeated calls. Specifically:
+The server **already deduplicates** repeated calls. It persists a `cache_key` column on each playlist row (added in GrooveIQ migration `015_add_playlist_cache_key.py`, issue #89) and looks it up before generating. Specifically:
 
-- Cache key = `sha256(api_key_hash | strategy | seed_track_id | params | max_tracks | YYYY-MM-DD-UTC)[:32]`
-- Same key today → same `playlist.id` returned (status `200`)
-- New UTC day, different params, or `?refresh=true` → fresh playlist (status `201`)
+- Cache key = `sha256(...)[:32]` over a canonical JSON blob of `{owner, strategy, seed, params, max_tracks, day}`, where `owner` is the **hash of the calling API key**, `params` is canonicalised with sorted keys (so dict ordering can't change the hash), and `day` is `YYYY-MM-DD` in UTC. `name` is **not** in the key.
+- Same key today → the existing `playlist.id` is returned (status `200`)
+- New UTC day, different params (including a different `max_tracks` or `seed_track_id`), or `?refresh=true` → fresh playlist (status `201`)
 
 **This means the iOS app must NOT cache `playlist.id` per mix on the client.** Rely on the server. Concretely:
 
@@ -349,7 +349,7 @@ After tracks start playing, fire events back to GrooveIQ — this trains the rec
 {
   "user_id": "<navidrome_user_id>",
   "track_id": "9f3a1b2c4d5e6f70",
-  "event_type": "play",          // or "skip", "like", "dislike", "complete"
+  "event_type": "play_start",    // lifecycle: play_start / play_end (value = completion 0–1); also skip, like, dislike
   "context_type": "playlist",
   "context_id": "42",            // the playlist.id
   "surface": "playlist_view",
@@ -363,7 +363,7 @@ This gives the recommender the signal that "this CLAP playlist worked / didn't w
 
 ## 7. CLAP prompt patterns (curated for the music model)
 
-The server runs LAION-CLAP `music_audioset_epoch_15_esc_90.14`. It was trained predominantly on **MusicCaps-style descriptive captions** — not abstract concepts, not lyrics topics, not artist names, not years.
+The server runs a LAION-CLAP model — `larger_clap_music_and_speech`, auto-downloaded as a pre-exported ONNX from the [`Xenova/larger_clap_music_and_speech`](https://huggingface.co/Xenova/larger_clap_music_and_speech) Hugging Face repo. It was trained predominantly on **MusicCaps-style descriptive captions** — not abstract concepts, not lyrics topics, not artist names, not years.
 
 **Best results: 3–8 sonic attributes, comma-separated, mentioning some of {genre/sub-genre, instrument, BPM-feel, vocal type, production style, mood, scene}.**
 
@@ -404,14 +404,24 @@ The server runs LAION-CLAP `music_audioset_epoch_15_esc_90.14`. It was trained p
 
 ---
 
-## 8. Known issue (as of 2026-05-09)
+## 8. CLAP availability & a point-in-time prod note
 
-The `text` strategy currently returns **HTTP 500** on production due to a pre-existing Python 3.12 SyntaxError in `app/services/clap_text.py` on the GrooveIQ server (duplicate `global` declaration in `_load()`). This is being fixed in a separate task. While that's pending:
+### Current contract
+
+When CLAP is enabled and embeddings exist, the `text` strategy works as documented above. When CLAP is **not** available — `CLAP_ENABLED=false`, model files missing, text encoding fails, or no tracks have CLAP embeddings yet — the server's `text` code path raises a **`503 Service Unavailable`** (it surfaces a `PlaylistServiceUnavailableError`). That is the signal to treat as "text mixes aren't available right now," per the §3 status table. A genuinely bad request (empty `prompt`, bad `max_tracks`, unknown `strategy`) is still a `400`.
+
+So in normal operation you should never see a `500` from a `text`-strategy POST; treat any `500` as a server bug to log, not an expected state.
+
+### Point-in-time note (as of 2026-05-09 — may be stale)
+
+> At the time this handoff was written, the `text` strategy was returning **HTTP 500** on the production server due to a pre-existing Python 3.12 `SyntaxError` in `app/services/clap_text.py` (duplicate `global` declaration in `_load()`), tracked separately. **This was a deployment-time bug, not the intended contract** (the code path is meant to return `503`, see above). Whether a given server is still affected can only be confirmed by hitting it — don't assume from this doc.
+
+While bringing the integration up against a server where `text` is unavailable for any reason (the bug above, CLAP disabled, or embeddings still backfilling):
 
 - Build the integration end-to-end against the `mood` strategy (substitute `params: {"mood": "happy" | "sad" | "relaxed" | "party" | "aggressive"}`). The cache behavior, response shape, and error handling are identical.
-- As soon as the CLAP fix lands and is redeployed, swap your `MixCatalog` entries from `mood` to `text` — no other code changes needed.
+- Once `text` is available on the target server, swap your `MixCatalog` entries from `mood` to `text` — no other code changes needed.
 
-You can detect the bug in the field by treating any `500` from a `text`-strategy POST as a recoverable "service issue, try a non-text mix" instead of a hard failure.
+Defensive client posture: treat both `503` (expected "unavailable") and any unexpected `500` from a `text`-strategy POST as a recoverable "service issue, try a non-text mix" rather than a hard failure.
 
 ---
 
