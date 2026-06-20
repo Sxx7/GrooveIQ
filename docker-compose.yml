@@ -16,7 +16,13 @@ services:
       target: runtime
       platforms:
         - linux/amd64
-    image: grooveiq:latest
+    # Default deploy pulls the published release image from GHCR (public, no
+    # login). Pin a release with GROOVEIQ_VERSION in .env (e.g.
+    # GROOVEIQ_VERSION=0.1.0); defaults to :latest. The build: stanza above is
+    # the fallback — `docker compose build grooveiq` still builds from source.
+    # Deploy a release with `docker compose pull grooveiq && docker compose up
+    # -d grooveiq`; plain `up` without a prior pull still builds locally.
+    image: ghcr.io/sxx7/grooveiq:${GROOVEIQ_VERSION:-latest}
     platform: linux/amd64
     container_name: grooveiq
     restart: unless-stopped
