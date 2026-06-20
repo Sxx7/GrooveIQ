@@ -33,6 +33,28 @@ No cloud. No tracking. Runs on your hardware.
 - **Lyrics**: read-along/karaoke + algorithm signal via a cascade: embedded tags → LRCLIB → optional GPU ASR sidecar (faster-whisper), instrumental-gated
 - **Integration health**: live connectivity probes for 9 external services
 
+## Screenshots
+
+The single-page web dashboard (served at `/dashboard`) is the operator and exploration surface. A few of its Monitor views:
+
+### Overview
+
+![GrooveIQ dashboard, Monitor Overview](screenshots/dashboard-overview.png)
+
+Library and event totals, ML model readiness, library-scan progress, and one-click pipeline / scan / backfill actions.
+
+### Pipeline
+
+![GrooveIQ dashboard, Monitor Pipeline](screenshots/dashboard-pipeline.png)
+
+The 10-step recommendation pipeline as a live flow diagram, model-readiness cards, and per-run history.
+
+### User diagnostics
+
+![GrooveIQ dashboard, Monitor User Diagnostics](screenshots/dashboard-user-diagnostics.png)
+
+A user's learned taste profile: audio preferences, mood and key distributions, and a multi-timescale preference radar. (On-screen user identifiers are redacted.)
+
 ## Quick start
 
 ### Prerequisites
