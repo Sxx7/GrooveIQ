@@ -211,9 +211,9 @@ async def test_reranker_boost_suppressed_on_exploratory_posture():
                     [("cold", 0.60), ("hot", 0.50)], "u", s, collect_actions=True, rng=random.Random(0)
                 )
         actions = reranker.get_last_rerank_actions()
-        assert not any(
-            a["action"] == "recently_engaged_boost" for a in actions
-        ), f"{lever}=True must gate the resurfacing boost off"
+        assert not any(a["action"] == "recently_engaged_boost" for a in actions), (
+            f"{lever}=True must gate the resurfacing boost off"
+        )
         assert out[0][0] == "cold", f"{lever}=True must leave the ranker order (no boost flip)"
 
 

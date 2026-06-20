@@ -101,11 +101,7 @@ def _is_confirmed(inter, confirmed_via_card: set[str]) -> bool:
     nominees were already full-listened twice). Graduation must be a real vote (played-from-card /
     like) or a clear organic repeat; a searched full-listen still only earns a *tryout* via
     :func:`_is_candidate_triggered`, never instant trust."""
-    return (
-        inter.track_id in confirmed_via_card
-        or inter.like_count > 0
-        or inter.repeat_count >= _CONFIRM_REPEAT_MIN
-    )
+    return inter.track_id in confirmed_via_card or inter.like_count > 0 or inter.repeat_count >= _CONFIRM_REPEAT_MIN
 
 
 async def _suppressed_until(user_id: str, db: AsyncSession) -> dict[str, int]:

@@ -328,9 +328,7 @@ if _APP_OK:
         assert bal_calls == 1, "balanced must query resurfacing"
         assert deep_calls == 0, "deep_discovery must NOT query resurfacing (the posture gate skips it)"
         assert any(t["source"] == "radio_resurface" for t in bal), "balanced must inject radio_resurface"
-        assert not any(
-            t["source"] == "radio_resurface" for t in deep
-        ), "deep_discovery must suppress radio_resurface"
+        assert not any(t["source"] == "radio_resurface" for t in deep), "deep_discovery must suppress radio_resurface"
 
     # -----------------------------------------------------------------------
     # Routes: posture plumbing, validation, ownership
