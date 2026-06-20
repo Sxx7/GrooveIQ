@@ -439,14 +439,23 @@ ruff check app/ tests/
 docker build --platform linux/amd64 -t grooveiq:dev .
 ```
 
-## CI/CD
+## CI/CD & releases
 
-GitHub Actions workflow (`.github/workflows/ci.yml`) runs automatically on push and pull requests:
+GitHub Actions (`.github/workflows/ci.yml`) runs on every push to `main` and on pull requests:
 
 - **Lint**: ruff check + format
 - **Test**: pytest with JUnit reporting
-- **Security**: pip-audit (dependency CVEs), semgrep (SAST), trivy (container scan)
-- **Build**: Docker image pushed to GitHub Container Registry (`ghcr.io`) on main branch + tags
+- **Security**: pip-audit (dependency CVEs), semgrep (SAST)
+
+**Releases are tag-driven.** Pushing a `vX.Y.Z` tag builds the container, pushes it to the GitHub Container Registry (`ghcr.io/sxx7/grooveiq`) with semver tags (`X.Y.Z`, `X.Y`, `X`, `latest`; `latest` is skipped for pre-releases), runs a trivy scan on the published image, and cuts a GitHub Release with generated notes. Merges to `main` validate (lint/test/security) but no longer build an image.
+
+```bash
+# Cut a release
+git tag v0.1.0 && git push origin v0.1.0
+
+# Deploy a release on the host (image is public — no login needed)
+GROOVEIQ_VERSION=0.1.0 docker compose pull grooveiq && docker compose up -d grooveiq
+```
 
 ## License
 
