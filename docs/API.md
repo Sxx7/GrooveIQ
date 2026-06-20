@@ -1095,7 +1095,8 @@ Paginated.
 ## Charts
 
 Last.fm-sourced charts with library matching, cover art, daily snapshots, and
-optional auto-download. Rebuilt periodically (default 24h) or on demand.
+optional auto-download. Rebuilt on a daily cron (`CHARTS_CRON`, default
+`0 3 * * *` = 03:00 UTC) or on demand. One snapshot is stamped per calendar day.
 
 ### `GET /v1/charts`: List available charts
 
@@ -1103,7 +1104,9 @@ All chart type + scope combos (latest-snapshot entry counts).
 
 ### `GET /v1/charts/stats`: Chart statistics
 
-Latest-snapshot stats: total entries, match rate, next build time.
+Latest-snapshot stats: total entries, match rate, retained `snapshot_count`,
+and the build schedule — `schedule_cron`, `schedule_label` (e.g. `daily 03:00
+UTC`), and `next_run_at`.
 
 ### `GET /v1/charts/{chart_type}`: Chart entries
 
@@ -1122,6 +1125,12 @@ deltas. (Re-matches against the library when serving the latest snapshot.)
 Each entry includes `in_library`, `matched_track_id`, `image_url`, and a
 `library` object (`track_id`, `media_server_id`, `cover_url`, metadata) when
 matched. Prefer `library.cover_url`, fall back to `image_url`.
+
+When `compare=Nd` is set, the response adds `compared_to` (the snapshot date
+diffed against, or `null` if none is old enough) and each entry gains
+`position_change` (positive = climbed, `null` when new) and `previously` (prior
+position, `null` = new/re-entry). Deltas are relative to the served snapshot, so
+`compare` composes with `as_of`.
 
 ### `GET /v1/charts/{chart_type}/snapshots`: Distinct snapshot dates
 
