@@ -20,7 +20,7 @@ route.
 | Layer | What it does | When it is enforced |
 |-------|--------------|---------------------|
 | **Bearer key** (`require_api_key`) | SHA-256 + HMAC constant-time check of `Authorization: Bearer <key>`. `401` on missing/invalid, `429` on per-key rate limit. | Always, on every `/v1/*` route. (`/health` is open.) |
-| **Admin gate** (`require_admin`) | Restricts a route to admin keys. | **Only when `ADMIN_API_KEYS` is configured.** If unset, every valid key is treated as admin — so "admin-gated" routes are reachable by any key. |
+| **Admin gate** (`require_admin`) | Restricts a route to admin keys. | **Only when `ADMIN_API_KEYS` is configured.** If unset, every valid key is treated as admin, so "admin-gated" routes are reachable by any key. |
 | **User scoping** (`check_user_access`) | A key may only act on the `user_id`(s) it is bound to. | **Only when `API_KEY_USERS` bindings are configured.** If unset, any key may act on any user. |
 
 Throughout this doc, **"admin-gated (when admin keys are configured)"** means the
@@ -32,8 +32,8 @@ all other endpoints use `RATE_LIMIT_DEFAULT` (default 200/min/key).
 
 ### `user_id` format (issue #86)
 
-Every endpoint that accepts a `user_id` — path param, query string, or request
-body field — validates it against a regex. Non-conforming values are rejected
+Every endpoint that accepts a `user_id` (path param, query string, or request
+body field) validates it against a regex. Non-conforming values are rejected
 with **400 Bad Request**:
 
 ```json
@@ -43,7 +43,7 @@ with **400 Bad Request**:
 The default pattern (`^[A-Za-z0-9]{20,22}$`) covers Navidrome's identifier output
 across versions: `xid` (20 chars, pre-0.50) and `nanoid` (21–22 chars, 0.50+).
 Override via `USER_ID_PATTERN`. Plex usernames (which were emails) are no longer
-supported — Navidrome is the canonical identity source. Send the Navidrome user
+supported. Navidrome is the canonical identity source. Send the Navidrome user
 ID exactly as Navidrome surfaces it on `getUser.view`.
 
 ### Track identifiers in responses
@@ -52,12 +52,12 @@ Every track has one stable internal GrooveIQ `track_id` (a SHA-256-prefix hash o
 the relative file path, immutable once scanned) plus zero or more per-backend
 external IDs (`media_server_id`, `spotify_id`, `qobuz_id`, `tidal_id`,
 `deezer_id`, `soundcloud_id`, `mb_track_id`). Every track-returning endpoint
-ships both. Use `media_server_id` to play the track on Navidrome / Plex; use
+ships both. Use `media_server_id` to play the track on your media server (Navidrome); use
 `track_id` for everything sent back to GrooveIQ (events, features, lookup, audit,
 radio). `media_server_id` is `null` for tracks the media server hasn't matched
-yet — run `POST /v1/library/sync` to populate.
+yet: run `POST /v1/library/sync` to populate.
 
-The **events API also accepts any per-backend external ID** in `track_id` — the
+The **events API also accepts any per-backend external ID** in `track_id`: the
 server resolves it to the canonical internal hash at ingest. Events whose
 `track_id` matches no `TrackFeatures` row are dropped (no attribution possible).
 
@@ -116,7 +116,7 @@ Single-page web dashboard. **No auth required.** `GET /` redirects here.
 
 ## Events
 
-### `POST /v1/events` — Ingest a single event
+### `POST /v1/events`: Ingest a single event
 
 User-scoped. Returns `202 Accepted`.
 
@@ -168,7 +168,7 @@ These improve recommendation quality but are not required.
 <details>
 <summary>Expand all optional rich-signal fields</summary>
 
-**Impression & exposure** — for learning-to-rank
+**Impression & exposure**: for learning-to-rank
 
 | Field | Type | Description |
 |-------|------|-------------|
@@ -250,7 +250,7 @@ events so impression-to-stream attribution works:
  "event_type": "play_start", "request_id": "a1b2c3d4-..."}
 ```
 
-### `POST /v1/events/batch` — Ingest multiple events
+### `POST /v1/events/batch`: Ingest multiple events
 
 Send up to `EVENT_BATCH_MAX` (default 50) events; each is validated and
 user-scoped independently. Returns `202`.
@@ -263,19 +263,19 @@ user-scoped independently. Returns `202`.
 {"accepted": 3, "rejected": 0, "errors": []}
 ```
 
-### `GET /v1/events` — Query stored events
+### `GET /v1/events`: Query stored events
 
 Debug query. **User-scoped if `user_id` is given, otherwise admin-gated (when
 admin keys are configured).**
 
 | Param | Type | Default | Description |
 |-------|------|---------|-------------|
-| `user_id` | string | — | Filter by user |
-| `track_id` | string | — | Filter by track |
-| `event_type` | string | — | Filter by event type |
-| `device_id` | string | — | Filter by device |
-| `context_type` | string | — | Filter by context type |
-| `request_id` | string | — | Filter by request ID |
+| `user_id` | string | – | Filter by user |
+| `track_id` | string | – | Filter by track |
+| `event_type` | string | – | Filter by event type |
+| `device_id` | string | – | Filter by device |
+| `context_type` | string | – | Filter by context type |
+| `request_id` | string | – | Filter by request ID |
 | `limit` | int | 50 | 1-500 |
 | `offset` | int | 0 | Pagination offset |
 
@@ -283,16 +283,16 @@ admin keys are configured).**
 
 ## Users
 
-### `GET /v1/users` — List all users
+### `GET /v1/users`: List all users
 
 Admin-gated (when admin keys are configured). Paginated.
 
 | Param | Default | Description |
 |-------|---------|-------------|
 | `limit` | 100 | 1-500 |
-| `offset` | 0 | — |
+| `offset` | 0 | – |
 
-### `POST /v1/users` — Create a user
+### `POST /v1/users`: Create a user
 
 Auto-created on first event too; explicit creation lets you set `display_name`.
 
@@ -302,13 +302,13 @@ Auto-created on first event too; explicit creation lets you set `display_name`.
 
 `201 Created` returns the user object. `409` if `user_id` already exists.
 
-### `GET /v1/users/{user_id}` — Get a user
+### `GET /v1/users/{user_id}`: Get a user
 
 User-scoped. `404` if not found.
 
-### `PATCH /v1/users/{uid}` — Update a user
+### `PATCH /v1/users/{uid}`: Update a user
 
-User-scoped. **Keys on the stable numeric `uid` (int), not the username string** —
+User-scoped. **Keys on the stable numeric `uid` (int), not the username string**,
 unlike every other `/users/{user_id}` route. Renaming `user_id` cascades to all
 related tables. Body (`UserUpdate`, at least one field): `user_id` (1-128),
 `display_name`.
@@ -322,14 +322,14 @@ curl -X PATCH http://localhost:8000/v1/users/1 \
 
 `404` (no user), `409` (user_id taken), `422` (no fields).
 
-### `GET /v1/users/{user_id}/profile` — Taste profile
+### `GET /v1/users/{user_id}/profile`: Taste profile
 
 User-scoped. Returns the computed taste profile (audio preferences;
 mood/key/time/device/output/context/location patterns; top tracks; behaviour;
 multi-timescale 7d/30d/all-time sub-profiles) plus a Last.fm block if linked.
 `taste_profile` is `null` until the pipeline has run.
 
-### `GET /v1/users/{user_id}/interactions` — Track interactions
+### `GET /v1/users/{user_id}/interactions`: Track interactions
 
 User-scoped. Paginated (returns `total`). Each row carries `track_id` +
 `media_server_id`, satisfaction/play/skip/like/dislike/repeat counts, and track
@@ -340,9 +340,9 @@ metadata.
 | `sort_by` | `satisfaction_score` | `satisfaction_score`, `play_count`, `last_played_at`, `skip_count` |
 | `sort_dir` | `desc` | `asc`, `desc` |
 | `limit` | 50 | 1-200 |
-| `offset` | 0 | — |
+| `offset` | 0 | – |
 
-### `GET /v1/users/{user_id}/history` — Listening history
+### `GET /v1/users/{user_id}/history`: Listening history
 
 User-scoped. Paginated. Chronological play history with title/artist/album,
 device/output context, completion %, `dwell_ms`, `reason_end`.
@@ -350,9 +350,9 @@ device/output context, completion %, `dwell_ms`, `reason_end`.
 | Param | Default | Description |
 |-------|---------|-------------|
 | `limit` | 50 | 1-200 |
-| `offset` | 0 | — |
+| `offset` | 0 | – |
 
-### `GET /v1/users/{user_id}/sessions` — Listening sessions
+### `GET /v1/users/{user_id}/sessions`: Listening sessions
 
 User-scoped. Paginated. Materialised sessions (grouped by inactivity gap, default
 30 min).
@@ -360,9 +360,9 @@ User-scoped. Paginated. Materialised sessions (grouped by inactivity gap, defaul
 | Param | Default | Description |
 |-------|---------|-------------|
 | `limit` | 25 | 1-100 |
-| `offset` | 0 | — |
+| `offset` | 0 | – |
 
-### `GET /v1/users/{user_id}/stats` — Engagement summary
+### `GET /v1/users/{user_id}/stats`: Engagement summary
 
 User-scoped. Single-user engagement numbers. `total_events`, `unique_tracks`,
 `diversity`, `last_active` are over the **last 30 days**; `plays`, `skips`,
@@ -381,7 +381,7 @@ User-scoped. Single-user engagement numbers. `total_events`, `unique_tracks`,
 
 ## Onboarding
 
-### `POST /v1/users/{user_id}/onboarding` — Submit onboarding preferences
+### `POST /v1/users/{user_id}/onboarding`: Submit onboarding preferences
 
 User-scoped. Full replace (at least one field required). Seeds a cold-start taste
 profile.
@@ -405,7 +405,7 @@ profile.
 {"preferences_saved": 8, "matched_tracks": 12, "matched_artists": 2, "profile_seeded": true}
 ```
 
-### `GET /v1/users/{user_id}/onboarding` — Get onboarding preferences
+### `GET /v1/users/{user_id}/onboarding`: Get onboarding preferences
 
 User-scoped. Returns the stored preferences object.
 
@@ -413,7 +413,7 @@ User-scoped. Returns the stored preferences object.
 
 ## Tracks & Library
 
-### `GET /v1/tracks` — List / search analyzed tracks
+### `GET /v1/tracks`: List / search analyzed tracks
 
 Paginated (returns `total`). Each row carries the internal `track_id` plus every
 known per-backend external ID.
@@ -421,15 +421,15 @@ known per-backend external ID.
 | Param | Type | Default | Description |
 |-------|------|---------|-------------|
 | `limit` | int | 50 | 1-200 |
-| `offset` | int | 0 | — |
+| `offset` | int | 0 | – |
 | `sort_by` | string | `bpm` | `bpm`, `energy`, `danceability`, `valence`, `key`, `duration`, `analyzed_at`, `analysis_version` |
 | `sort_dir` | string | `asc` | `asc`, `desc` |
-| `search` | string | — | Title / artist / album / genre / track_id |
-| `min_bpm` / `max_bpm` | float | — | BPM range |
-| `min_energy` / `max_energy` | float | — | Energy range (0-1) |
-| `key` | string | — | Musical key, e.g. `C`, `C#` |
-| `mode` | string | — | `major` / `minor` |
-| `mood` | string | — | One of `happy`, `sad`, `aggressive`, `relaxed`, `party` (confidence > 0.3). Returns `400` for any other value |
+| `search` | string | – | Title / artist / album / genre / track_id |
+| `min_bpm` / `max_bpm` | float | – | BPM range |
+| `min_energy` / `max_energy` | float | – | Energy range (0-1) |
+| `key` | string | – | Musical key, e.g. `C`, `C#` |
+| `mode` | string | – | `major` / `minor` |
+| `mood` | string | – | One of `happy`, `sad`, `aggressive`, `relaxed`, `party` (confidence > 0.3). Returns `400` for any other value |
 
 ```json
 {
@@ -447,7 +447,7 @@ known per-backend external ID.
 }
 ```
 
-### `GET /v1/tracks/lookup` — Resolve ONE external ID → internal `track_id`
+### `GET /v1/tracks/lookup`: Resolve ONE external ID → internal `track_id`
 
 Pass **exactly one** of the lookup params; `400` if zero or multiple supplied,
 `404` if no match.
@@ -469,7 +469,7 @@ curl "http://localhost:8000/v1/tracks/lookup?media_server_id=iDkrnC4UrRVJ6HHEa83
 
 Returns the track object (with `track_id` and all per-backend IDs).
 
-### `POST /v1/tracks/lookup` — Batch-resolve external IDs → `track_id`
+### `POST /v1/tracks/lookup`: Batch-resolve external IDs → `track_id`
 
 Body must contain **exactly one** list field:
 `media_server_ids` / `spotify_ids` / `qobuz_ids` / `tidal_ids` / `deezer_ids` /
@@ -485,7 +485,7 @@ Body must contain **exactly one** list field:
 
 `null` for IDs that match no track.
 
-### `GET /v1/tracks/{track_id}/features` — Audio features
+### `GET /v1/tracks/{track_id}/features`: Audio features
 
 `{track_id}` is the **internal** GrooveIQ ID. `404` if not yet analyzed.
 
@@ -504,13 +504,13 @@ Body must contain **exactly one** list field:
 }
 ```
 
-### `GET /v1/tracks/{track_id}/lyrics` — Track lyrics
+### `GET /v1/tracks/{track_id}/lyrics`: Track lyrics
 
 Returns lyrics resolved through the cascade (embedded → LRCLIB → ASR). `200` with
 an instrumental marker when the track is instrumental; `404` when no lyrics are
 available. Requires `LYRICS_ENABLED=true` for acquisition.
 
-### `GET /v1/tracks/{track_id}/similar` — Similar tracks
+### `GET /v1/tracks/{track_id}/similar`: Similar tracks
 
 FAISS embedding similarity + SQL pre-filter (BPM/energy/mode). Each item carries
 `track_id` + `media_server_id` plus metadata and a `similarity` score.
@@ -520,7 +520,7 @@ FAISS embedding similarity + SQL pre-filter (BPM/energy/mode). Each item carries
 | `limit` | 10 | 1-50 |
 | `include_features` | false | Include full audio features per result |
 
-### `GET /v1/tracks/map` — 2D music-map coordinates
+### `GET /v1/tracks/map`: 2D music-map coordinates
 
 Returns every track with UMAP-projected `(x, y)` from the `music_map` pipeline
 step (requires `umap-learn` + ≥50 analysed tracks). Unmapped tracks are excluded.
@@ -539,7 +539,7 @@ step (requires `umap-learn` + ≥50 analysed tracks). Unmapped tracks are exclud
 }
 ```
 
-### `GET /v1/tracks/text-search` — Natural-language search (CLAP)
+### `GET /v1/tracks/text-search`: Natural-language search (CLAP)
 
 Encodes the prompt via the LAION-CLAP text tower and returns the closest tracks
 in the joint 512-dim space.
@@ -556,7 +556,7 @@ in the joint 512-dim space.
 
 `503` if `CLAP_ENABLED=false` or the CLAP FAISS index isn't ready.
 
-### `POST /v1/tracks/clap/backfill` — Backfill CLAP embeddings
+### `POST /v1/tracks/clap/backfill`: Backfill CLAP embeddings
 
 Admin-gated (when admin keys are configured). Queues a background job to compute
 CLAP audio embeddings for tracks missing one; rebuilds the CLAP index on
@@ -569,13 +569,13 @@ completion.
 `202` `{"status": "accepted", "pending": 8421, "limit": null}`. `400` if
 `CLAP_ENABLED=false`.
 
-### `GET /v1/tracks/clap/stats` — CLAP coverage
+### `GET /v1/tracks/clap/stats`: CLAP coverage
 
 ```json
 {"enabled": true, "total_tracks": 9203, "with_clap_embedding": 782, "coverage": 0.085}
 ```
 
-### `POST /v1/library/scan` — Trigger library scan
+### `POST /v1/library/scan`: Trigger library scan
 
 Admin-gated (when admin keys are configured). Starts async audio analysis (one
 scan at a time). `202`.
@@ -584,7 +584,7 @@ scan at a time). `202`.
 {"message": "Scan started", "scan_id": 3, "status": "running"}
 ```
 
-### `GET /v1/library/scan/{scan_id}` — Scan status
+### `GET /v1/library/scan/{scan_id}`: Scan status
 
 Admin-gated (when admin keys are configured). Status: `pending`, `running`,
 `completed`, `failed`.
@@ -594,7 +594,7 @@ Admin-gated (when admin keys are configured). Status: `pending`, `running`,
  "files_failed": 2, "started_at": 1743638400, "ended_at": null}
 ```
 
-### `GET /v1/library/scan/{scan_id}/logs` — Scan logs
+### `GET /v1/library/scan/{scan_id}/logs`: Scan logs
 
 Admin-gated (when admin keys are configured). Poll-paginated via `after_id`.
 
@@ -603,7 +603,7 @@ Admin-gated (when admin keys are configured). Poll-paginated via `after_id`.
 | `limit` | 50 | 1-200 |
 | `after_id` | 0 | Only entries with `id` > this |
 
-### `POST /v1/library/sync` — Sync with media server
+### `POST /v1/library/sync`: Sync with media server
 
 Admin-gated (when admin keys are configured). Populates
 `TrackFeatures.media_server_id` and refreshes title/artist/album metadata.
@@ -624,7 +624,7 @@ disambiguated) → **ATD** (album/title + strict duration) → **path**.
 
 `400` if no media server configured.
 
-### `POST /v1/library/cleanup-stale` — Delete TrackFeatures rows whose files are gone
+### `POST /v1/library/cleanup-stale`: Delete TrackFeatures rows whose files are gone
 
 Admin-gated (when admin keys are configured). One-shot cleanup of legacy rows
 pointing at files no longer on disk. Deletes the `track_features` row plus
@@ -633,7 +633,7 @@ orphaned interactions/events; leaves rows whose files still exist.
 | Param | Type | Default | Description |
 |-------|------|---------|-------------|
 | `dry_run` | bool | `true` | Report counts without deleting; pass `false` to delete |
-| `pattern` | string | `legacy_hex` | Stale-ID pattern (currently only `legacy_hex` — 16 lowercase-hex chars) |
+| `pattern` | string | `legacy_hex` | Stale-ID pattern (currently only `legacy_hex`: 16 lowercase-hex chars) |
 
 ```json
 {
@@ -650,32 +650,32 @@ orphaned interactions/events; leaves rows whose files still exist.
 
 ## Recommendations
 
-### `GET /v1/recommend/{user_id}` — Get recommendations
+### `GET /v1/recommend/{user_id}`: Get recommendations
 
 User-scoped. Candidate-gen → LightGBM rank → diversity rerank, served from a
 stale-while-revalidate mix cache. Fires a fire-and-forget audit write.
 
 | Param | Type | Default | Description |
 |-------|------|---------|-------------|
-| `seed_track_id` | string | — | Bias results toward this track |
+| `seed_track_id` | string | – | Bias results toward this track |
 | `limit` | int | 25 | 1-100 |
-| `genre` | string | — | Filter by genre (case-insensitive substring) |
-| `mood` | string | — | One of `happy`, `sad`, `aggressive`, `relaxed`, `party` (confidence > 0.3); `400` for other values |
-| `discovery` | float | — | **Continuous discovery dial 0.0–1.0** (familiar → deep discovery) |
-| `mode` | string | — | **Discovery-dial preset**: `familiar`, `balanced`, `discovery`, `deep_discovery`. `422` if unknown |
-| `device_type` | string | — | `mobile`, `desktop`, `speaker`, `car`, `web` |
-| `output_type` | string | — | `headphones`, `speaker`, `bluetooth_speaker`, `car_audio`, `built_in`, `airplay` |
-| `context_type` | string | — | `playlist`, `album`, `radio`, `search`, `home_shelf` |
-| `location_label` | string | — | `home`, `work`, `gym`, `commute` |
+| `genre` | string | – | Filter by genre (case-insensitive substring) |
+| `mood` | string | – | One of `happy`, `sad`, `aggressive`, `relaxed`, `party` (confidence > 0.3); `400` for other values |
+| `discovery` | float | – | **Continuous discovery dial 0.0–1.0** (familiar → deep discovery) |
+| `mode` | string | – | **Discovery-dial preset**: `familiar`, `balanced`, `discovery`, `deep_discovery`. `422` if unknown |
+| `device_type` | string | – | `mobile`, `desktop`, `speaker`, `car`, `web` |
+| `output_type` | string | – | `headphones`, `speaker`, `bluetooth_speaker`, `car_audio`, `built_in`, `airplay` |
+| `context_type` | string | – | `playlist`, `album`, `radio`, `search`, `home_shelf` |
+| `location_label` | string | – | `home`, `work`, `gym`, `commute` |
 | `hour_of_day` | int 0-23 | server time | Client's local hour |
 | `day_of_week` | int 1-7 | server time | ISO 8601 (1=Mon, 7=Sun) |
-| `debug` | bool | false | Include debug data — **forces admin gating (when admin keys are configured)** |
+| `debug` | bool | false | Include debug data: **forces admin gating (when admin keys are configured)** |
 
 > **Mode vocabulary note.** The recommend/radio discovery dial uses
 > `familiar` / `balanced` / `discovery` / `deep_discovery` (plus the continuous
 > `?discovery=0..1`). This is **distinct** from the artist/album recommenders,
 > which use `familiar` / `balanced` / `discover` (note the different spelling and
-> default — see below).
+> default; see below).
 
 ```json
 {
@@ -700,7 +700,7 @@ stale-while-revalidate mix cache. Fires a fire-and-forget audit write.
 `short_track_exclude`, `exploration_slot`, `artist_diversity_demote`), and
 `feature_vectors` (all 39 features per candidate).
 
-### `POST /v1/users/{user_id}/mixes/prewarm` — Prewarm mix cache
+### `POST /v1/users/{user_id}/mixes/prewarm`: Prewarm mix cache
 
 User-scoped + per-(key,user) rate-limited. Warms the SWR mix cache for preset
 mixes in the background so a later `GET /v1/recommend/{user_id}?mode=...` is
@@ -717,7 +717,7 @@ Body (`PrewarmRequest`, optional):
 {"status": "warming", "user_id": "aBc...", "modes": ["familiar", "balanced"], "limit": 25}
 ```
 
-### `GET /v1/users/{user_id}/mixes` — List suggested shelves
+### `GET /v1/users/{user_id}/mixes`: List suggested shelves
 
 User-scoped. Returns ready-to-call recommend specs powering a multi-shelf home
 view (On Repeat / Your Mix / Discover / Deep Cuts).
@@ -734,7 +734,7 @@ view (On Repeat / Your Mix / Discover / Deep Cuts).
 }
 ```
 
-### `GET /v1/users/{user_id}/resurfacing` — Recently-engaged tracks
+### `GET /v1/users/{user_id}/resurfacing`: Recently-engaged tracks
 
 User-scoped. Returns currently-"hot" tracks (just replayed, seeked back into,
 finished, or liked), each with a decayed `heat` score, plus a `request_id` tying
@@ -745,12 +745,12 @@ the served list to impression/play events.
 | `limit` | int | 20 | 1-50 |
 | `stage` | enum | `confirmed` | `candidate` (tryout "Special tracks" card) or `confirmed` ("Keep listening") |
 
-### `POST /v1/users/{user_id}/tracks/{track_id}/suppress` — Suppress from resurfacing
+### `POST /v1/users/{user_id}/tracks/{track_id}/suppress`: Suppress from resurfacing
 
 User-scoped. Writes a `suppress` event so the track stops appearing in
 resurfacing cards. `track_id` max 128 chars.
 
-### `GET /v1/recommend/{user_id}/history` — Recommendation history
+### `GET /v1/recommend/{user_id}/history`: Recommendation history
 
 User-scoped. Paginated. Past impressions with impression-to-stream attribution
 (`track_id`, `media_server_id`, `position`, `request_id`, `model_version`,
@@ -759,9 +759,9 @@ User-scoped. Paginated. Past impressions with impression-to-stream attribution
 | Param | Default | Description |
 |-------|---------|-------------|
 | `limit` | 50 | 1-200 |
-| `offset` | 0 | — |
+| `offset` | 0 | – |
 
-### `GET /v1/recommend/{user_id}/artists` — Recommended artists
+### `GET /v1/recommend/{user_id}/artists`: Recommended artists
 
 User-scoped. Blends content centroid, ranker roll-up, Last.fm similar/top, and
 the listening-history heuristic.
@@ -769,7 +769,7 @@ the listening-history heuristic.
 | Param | Type | Default | Description |
 |-------|------|---------|-------------|
 | `limit` | int | 20 | 1-100 |
-| `mode` | string | `discover` | `familiar`, `balanced`, `discover` (note spelling — **default `discover`**) |
+| `mode` | string | `discover` | `familiar`, `balanced`, `discover` (note spelling; **default `discover`**) |
 | `include_discovery` | bool | true | Include FAISS/Last.fm discovery candidates |
 
 ```json
@@ -789,7 +789,7 @@ the listening-history heuristic.
 
 Per-item `sources`/`reasons`/`signals` enable "Because you listen to X" badges.
 
-### `GET /v1/recommend/{user_id}/albums` — Recommended albums
+### `GET /v1/recommend/{user_id}/albums`: Recommended albums
 
 User-scoped. Library-only roll-up: ranker + coverage + freshness + audio
 coherence.
@@ -799,7 +799,7 @@ coherence.
 | `limit` | int | 20 | 1-100 |
 | `mode` | string | `discover` | `familiar`, `balanced`, `discover` (default `discover`) |
 
-### `GET /v1/stats/model` — Recommendation model stats
+### `GET /v1/stats/model`: Recommendation model stats
 
 > **Path note.** This route's real path is **`/v1/stats/model`** (the decorator
 > is `@router.get("/stats/model")`, not `/recommend/stats/model`).
@@ -816,34 +816,34 @@ Always-on persistence of every `/v1/recommend` call and radio batch with its ful
 candidate pool, for post-hoc "why was X surfaced at position N?" analysis and
 offline replay.
 
-### `GET /v1/recommend/audit/sessions` — Audit summaries
+### `GET /v1/recommend/audit/sessions`: Audit summaries
 
 Paginated. **User-scoped if `user_id` is given, otherwise admin-gated (when admin
 keys are configured).**
 
 | Param | Type | Default | Description |
 |-------|------|---------|-------------|
-| `user_id` | string | — | Filter by user |
-| `surface` | string | — | Filter by surface (e.g. `radio`) |
-| `since_days` | int | — | 1-365 lookback |
+| `user_id` | string | – | Filter by user |
+| `surface` | string | – | Filter by surface (e.g. `radio`) |
+| `since_days` | int | – | 1-365 lookback |
 | `limit` | int | 50 | 1-200 |
-| `offset` | int | 0 | — |
+| `offset` | int | 0 | – |
 
-### `GET /v1/recommend/audit/stats` — Audit storage stats
+### `GET /v1/recommend/audit/stats`: Audit storage stats
 
 Admin-gated (when admin keys are configured). Total counts, storage estimate,
 retention/cap settings.
 
-### `GET /v1/recommend/audit/{request_id}` — Full audit detail
+### `GET /v1/recommend/audit/{request_id}`: Full audit detail
 
 User-scoped (against the audited user). All persisted candidates with raw + final
 scores, positions, reranker actions, and feature vectors.
 
-### `GET /v1/recommend/audit/{request_id}/track/{track_id}` — Single candidate audit
+### `GET /v1/recommend/audit/{request_id}/track/{track_id}`: Single candidate audit
 
 User-scoped. Feature vector, sources, and reranker actions for one candidate.
 
-### `POST /v1/recommend/audit/{request_id}/replay` — Replay vs current ranker
+### `POST /v1/recommend/audit/{request_id}/replay`: Replay vs current ranker
 
 User-scoped. Re-ranks the audited request against the loaded model.
 
@@ -851,7 +851,7 @@ User-scoped. Re-ranks the audited request against the loaded model.
 {"mode": "rerank_only"}
 ```
 
-`mode` is `rerank_only` (re-score persisted feature vectors — cheap) or `full`
+`mode` is `rerank_only` (re-score persisted feature vectors, cheap) or `full`
 (rebuild features live); `422` for any other value. Returns per-track
 `rank_deltas` plus a `summary` (top-10 overlap, Kendall's τ, avg |Δrank|, etc.).
 
@@ -863,7 +863,7 @@ Adaptive, stateful radio sessions. Sessions adapt in real-time to skip/like/disl
 feedback (sent via `POST /v1/events` with `context_type=radio`,
 `context_id=<session_id>`).
 
-### `POST /v1/radio/start` — Start a session
+### `POST /v1/radio/start`: Start a session
 
 User-scoped (on body `user_id`). Returns the first batch as `201`. Logs
 impressions + fire-and-forget audit.
@@ -875,12 +875,12 @@ impressions + fire-and-forget audit.
 | `seed_value` | string | *(required)* | Track ID, artist name, or playlist ID (1-512) |
 | `count` | int | 10 | 1-50 |
 | `discovery` | float | 0.3 | Continuous dial 0.0–1.0 |
-| `mode` | string | — | `familiar`, `balanced`, `discovery`, `deep_discovery` |
-| `device_type` | string | — | Device context |
-| `output_type` | string | — | Audio-output context |
-| `location_label` | string | — | Location context |
-| `hour_of_day` | int 0-23 | — | Local hour |
-| `day_of_week` | int 1-7 | — | ISO day |
+| `mode` | string | – | `familiar`, `balanced`, `discovery`, `deep_discovery` |
+| `device_type` | string | – | Device context |
+| `output_type` | string | – | Audio-output context |
+| `location_label` | string | – | Location context |
+| `hour_of_day` | int 0-23 | – | Local hour |
+| `day_of_week` | int 1-7 | – | ISO day |
 
 ```json
 {
@@ -891,7 +891,7 @@ impressions + fire-and-forget audit.
 
 `404` (user/seed not found), `422` (no embedding/candidates).
 
-### `GET /v1/radio/{session_id}/next` — Next batch
+### `GET /v1/radio/{session_id}/next`: Next batch
 
 User-scoped (session's user). Posture/context params are updatable per call. Logs
 impressions + audit. `404` if the session expired.
@@ -899,17 +899,17 @@ impressions + audit. `404` if the session expired.
 | Param | Type | Default | Description |
 |-------|------|---------|-------------|
 | `count` | int | 10 | 1-50 |
-| `discovery` | float | — | 0.0–1.0 |
-| `mode` | string | — | `familiar`, `balanced`, `discovery`, `deep_discovery` |
-| `device_type` / `output_type` / `location_label` | string | — | Updated context |
-| `hour_of_day` | int 0-23 | — | Updated hour |
-| `day_of_week` | int 1-7 | — | Updated day |
+| `discovery` | float | – | 0.0–1.0 |
+| `mode` | string | – | `familiar`, `balanced`, `discovery`, `deep_discovery` |
+| `device_type` / `output_type` / `location_label` | string | – | Updated context |
+| `hour_of_day` | int 0-23 | – | Updated hour |
+| `day_of_week` | int 1-7 | – | Updated day |
 
 ```json
 {"session_id": "uuid", "total_served": 20, "tracks": [ /* track objects */ ]}
 ```
 
-### `DELETE /v1/radio/{session_id}` — Stop a session
+### `DELETE /v1/radio/{session_id}`: Stop a session
 
 User-scoped. `404` if expired.
 
@@ -917,7 +917,7 @@ User-scoped. `404` if expired.
 {"status": "stopped", "session_id": "uuid"}
 ```
 
-### `GET /v1/radio` — List active sessions
+### `GET /v1/radio`: List active sessions
 
 **User-scoped if `user_id` is given, otherwise admin-gated (when admin keys are
 configured).**
@@ -934,7 +934,7 @@ configured).**
 
 ## Playlists
 
-### `POST /v1/playlists` — Generate a playlist
+### `POST /v1/playlists`: Generate a playlist
 
 Daily-idempotent (issue #89): same caller + same body params within a UTC day
 returns the existing playlist (`200`) instead of duplicating it (`201` on a fresh
@@ -955,8 +955,8 @@ Body (`PlaylistCreate`): `name` (1-255, required), `strategy`, `seed_track_id`,
 | `mood` | `params.mood` | Mood tag + energy arc. `params.mood` ∈ `happy`, `sad`, `aggressive`, `relaxed`, `party` |
 | `energy_curve` | `params.curve` | Energy profile: `ramp_up`, `cool_down`, `ramp_up_cool_down`, `steady_high`, `steady_low` |
 | `key_compatible` | `seed_track_id` | Camelot-wheel harmonic chaining |
-| `path` | `seed_track_id` + `params.target_track_id` | **Song Path** — slerp-interpolates between two 64-dim embeddings; nearest unused track at each waypoint. Both tracks must have an `embedding` |
-| `text` | `params.prompt` | **CLAP Text Prompt** — ranks by cosine similarity to the encoded prompt. Requires `CLAP_ENABLED=true`; `503` until some tracks have `clap_embedding` |
+| `path` | `seed_track_id` + `params.target_track_id` | **Song Path**: slerp-interpolates between two 64-dim embeddings; nearest unused track at each waypoint. Both tracks must have an `embedding` |
+| `text` | `params.prompt` | **CLAP Text Prompt**: ranks by cosine similarity to the encoded prompt. Requires `CLAP_ENABLED=true`; `503` until some tracks have `clap_embedding` |
 
 ```bash
 curl -X POST http://localhost:8000/v1/playlists \
@@ -969,21 +969,21 @@ curl -X POST http://localhost:8000/v1/playlists \
 `201`/`200` returns the playlist with a `tracks` array (`position`, `track_id`,
 `media_server_id`, audio features, metadata).
 
-### `GET /v1/playlists` — List playlists
+### `GET /v1/playlists`: List playlists
 
 Paginated.
 
 | Param | Default | Description |
 |-------|---------|-------------|
 | `limit` | 20 | 1-100 |
-| `offset` | 0 | — |
-| `strategy` | — | Filter by strategy |
+| `offset` | 0 | – |
+| `strategy` | – | Filter by strategy |
 
-### `GET /v1/playlists/{playlist_id}` — Get playlist with tracks
+### `GET /v1/playlists/{playlist_id}`: Get playlist with tracks
 
 `404` if missing.
 
-### `DELETE /v1/playlists/{playlist_id}` — Delete playlist
+### `DELETE /v1/playlists/{playlist_id}`: Delete playlist
 
 `204`. Admin required (when admin keys are configured) only if the caller is not
 the playlist's creator.
@@ -992,24 +992,24 @@ the playlist's creator.
 
 ## Discovery
 
-### `GET /v1/discovery` — List discovery requests
+### `GET /v1/discovery`: List discovery requests
 
 Paginated.
 
 | Param | Default | Description |
 |-------|---------|-------------|
-| `user_id` | — | Filter by user |
-| `status` | — | Filter by status |
+| `user_id` | – | Filter by user |
+| `status` | – | Filter by status |
 | `limit` | 50 | 1-200 |
-| `offset` | 0 | — |
+| `offset` | 0 | – |
 
-### `POST /v1/discovery/run` — Trigger discovery pipeline
+### `POST /v1/discovery/run`: Trigger discovery pipeline
 
 Admin-gated (when admin keys are configured). Last.fm similar artists (+ optional
 AcousticBrainz) → Lidarr. Returns `{"status": "error", ...}` with HTTP 200 if not
 configured.
 
-### `GET /v1/discovery/stats` — Discovery statistics
+### `GET /v1/discovery/stats`: Discovery statistics
 
 Status counts and daily limits.
 
@@ -1022,7 +1022,7 @@ groups by album, and sends best-matching albums to Lidarr for FLAC download.
 Requires `FILL_LIBRARY_ENABLED=true`, `AB_LOOKUP_URL`, `LIDARR_URL`,
 `LIDARR_API_KEY`.
 
-### `POST /v1/fill-library/run` — Trigger pipeline
+### `POST /v1/fill-library/run`: Trigger pipeline
 
 Admin-gated (when admin keys are configured).
 
@@ -1035,18 +1035,18 @@ Admin-gated (when admin keys are configured).
  "albums_skipped": 12, "tracks_matched": 347, "tracks_no_album": 23, "errors": 0}}
 ```
 
-### `GET /v1/fill-library` — List requests
+### `GET /v1/fill-library`: List requests
 
 Paginated.
 
 | Param | Default | Description |
 |-------|---------|-------------|
-| `user_id` | — | Filter by user |
-| `status` | — | `pending`, `artist_added`, `album_monitored`, `sent`, `skipped`, `failed` |
+| `user_id` | – | Filter by user |
+| `status` | – | `pending`, `artist_added`, `album_monitored`, `sent`, `skipped`, `failed` |
 | `limit` | 50 | 1-200 |
-| `offset` | 0 | — |
+| `offset` | 0 | – |
 
-### `GET /v1/fill-library/stats` — Statistics
+### `GET /v1/fill-library/stats`: Statistics
 
 ```json
 {"enabled": true, "total": 42, "by_status": {"sent": 28, "skipped": 10, "failed": 4},
@@ -1060,39 +1060,39 @@ Paginated.
 Last.fm-sourced charts with library matching, cover art, daily snapshots, and
 optional auto-download. Rebuilt periodically (default 24h) or on demand.
 
-### `GET /v1/charts` — List available charts
+### `GET /v1/charts`: List available charts
 
 All chart type + scope combos (latest-snapshot entry counts).
 
-### `GET /v1/charts/stats` — Chart statistics
+### `GET /v1/charts/stats`: Chart statistics
 
 Latest-snapshot stats: total entries, match rate, next build time.
 
-### `GET /v1/charts/{chart_type}` — Chart entries
+### `GET /v1/charts/{chart_type}`: Chart entries
 
 Paginated. Serves the latest or a historical snapshot, optionally with position
 deltas. (Re-matches against the library when serving the latest snapshot.)
 
 | Param | Type | Default | Description |
 |-------|------|---------|-------------|
-| `chart_type` | path | — | `top_tracks` or `top_artists` |
+| `chart_type` | path | – | `top_tracks` or `top_artists` |
 | `scope` | string | `global` | `global`, genre tag, or country name |
 | `limit` | int | 100 | 1-200 |
-| `offset` | int | 0 | — |
-| `as_of` | date | — | `YYYY-MM-DD` to fetch a historical snapshot |
-| `compare` | string | — | `"Nd"` (e.g. `7d`) to include position deltas |
+| `offset` | int | 0 | – |
+| `as_of` | date | – | `YYYY-MM-DD` to fetch a historical snapshot |
+| `compare` | string | – | `"Nd"` (e.g. `7d`) to include position deltas |
 
 Each entry includes `in_library`, `matched_track_id`, `image_url`, and a
 `library` object (`track_id`, `media_server_id`, `cover_url`, metadata) when
 matched. Prefer `library.cover_url`, fall back to `image_url`.
 
-### `GET /v1/charts/{chart_type}/snapshots` — Distinct snapshot dates
+### `GET /v1/charts/{chart_type}/snapshots`: Distinct snapshot dates
 
 | Param | Default | Description |
 |-------|---------|-------------|
 | `scope` | `global` | Chart scope |
 
-### `GET /v1/charts/{chart_type}/track/{artist}/{title}/history` — Position trajectory
+### `GET /v1/charts/{chart_type}/track/{artist}/{title}/history`: Position trajectory
 
 Position history for one entry over snapshots. (`title` is ignored for
 `top_artists`.)
@@ -1101,12 +1101,12 @@ Position history for one entry over snapshots. (`title` is ignored for
 |-------|---------|-------------|
 | `scope` | `global` | Chart scope |
 
-### `POST /v1/charts/build` — Trigger chart rebuild
+### `POST /v1/charts/build`: Trigger chart rebuild
 
 Admin-gated (when admin keys are configured). Fetches fresh charts, matches to
 library, optionally auto-adds to Lidarr.
 
-### `POST /v1/charts/download` — Download a chart track
+### `POST /v1/charts/download`: Download a chart track
 
 By `position`, or by `artist_name` + `track_title`. `503` if no download backend
 configured.
@@ -1116,20 +1116,20 @@ configured.
 ```
 
 Body (`ChartDownloadRequest`): `chart_type` (default `top_tracks`), `scope`
-(default `global`), `position` (≥0), `artist_name`, `track_title` — supply either
+(default `global`), `position` (≥0), `artist_name`, `track_title`: supply either
 `position` OR `artist_name`+`track_title`.
 
 ---
 
 ## Downloads
 
-Download proxy across multiple backends — **spotdl-api** (YouTube Music),
+Download proxy across multiple backends: **spotdl-api** (YouTube Music),
 **streamrip-api** (Qobuz/Tidal/Deezer/SoundCloud lossless), **Spotizerr** (legacy
 fallback), **slskd** (Soulseek). `POST /v1/downloads` walks the configured
 `individual` chain (see [Download Routing Configuration](#download-routing-configuration))
 and records every backend attempt in the request's `attempts` log.
 
-### `GET /v1/downloads/search` — Single-backend search (legacy)
+### `GET /v1/downloads/search`: Single-backend search (legacy)
 
 Hits the single backend selected by `DEFAULT_DOWNLOAD_CLIENT`. `503` if downloads
 are disabled.
@@ -1139,7 +1139,7 @@ are disabled.
 | `q` | string | *(required)* | Search query |
 | `limit` | int | 25 | 1-100 |
 
-### `GET /v1/downloads/search/multi` — Multi-backend parallel search
+### `GET /v1/downloads/search/multi`: Multi-backend parallel search
 
 Runs `search` against every backend in `parallel_search_backends` concurrently
 (per-backend timeout). Each result carries an opaque `download_handle` to POST
@@ -1166,7 +1166,7 @@ matches.
 }
 ```
 
-### `GET /v1/downloads/search/artist` — Artist search with discography
+### `GET /v1/downloads/search/artist`: Artist search with discography
 
 streamrip-only. Returns artists plus their full album discography.
 
@@ -1177,7 +1177,7 @@ streamrip-only. Returns artists plus their full album discography.
 | `albums_per_artist` | int | 100 | 1-300 |
 | `backend` | string | `streamrip` | Backend |
 
-### `GET /v1/downloads/album-tracks` — Lazy-load album tracks
+### `GET /v1/downloads/album-tracks`: Lazy-load album tracks
 
 streamrip-only. `503` if streamrip not configured.
 
@@ -1187,7 +1187,7 @@ streamrip-only. `503` if streamrip not configured.
 | `album_id` | string | *(required)* | Album ID |
 | `backend` | string | `streamrip` | Backend |
 
-### `POST /v1/downloads` — Download a track via the cascade
+### `POST /v1/downloads`: Download a track via the cascade
 
 Walks the active `individual` chain. Accepts a `spotify_id` directly, or
 `artist_name` + `track_title` (each adapter resolves internally). `503` if no
@@ -1215,9 +1215,9 @@ Body (`DownloadCreateRequest`): `spotify_id` (required, 1-64), `track_title`,
 Status values: `pending`, `downloading`, `queued`, `duplicate`, `completed`,
 `error`.
 
-### `POST /v1/downloads/from-handle` — Download a specific multi-search result
+### `POST /v1/downloads/from-handle`: Download a specific multi-search result
 
-Bypasses the cascade — the user already chose a backend via `/search/multi`. Pass
+Bypasses the cascade: the user already chose a backend via `/search/multi`. Pass
 the opaque `handle` dict verbatim. `502` on failure; the `attempts` array has a
 single entry.
 
@@ -1229,11 +1229,11 @@ single entry.
 Body (`DownloadFromHandleRequest`): `handle` (required dict), `track_title`,
 `artist_name`, `album_name`, `cover_url`.
 
-### `GET /v1/downloads/status/{task_id}` — Check progress
+### `GET /v1/downloads/status/{task_id}`: Check progress
 
 Proxies the backend's task progress and opportunistically updates the DB row.
 
-### `GET /v1/downloads/queue` — Live queue snapshot
+### `GET /v1/downloads/queue`: Live queue snapshot
 
 Buckets: `in_flight` / `recent_completed` / `recent_failed`, with live progress
 probes.
@@ -1243,7 +1243,7 @@ probes.
 | `recent_limit` | 10 | 0-50 |
 | `in_flight_limit` | 50 | 1-200 |
 
-### `GET /v1/downloads/stats` — Per-backend telemetry
+### `GET /v1/downloads/stats`: Per-backend telemetry
 
 Aggregates `download_requests` over a window into per-backend counts.
 
@@ -1263,20 +1263,20 @@ Aggregates `download_requests` over a window into per-backend counts.
 
 `success_rate` is `null` when no terminal results are in the window.
 
-### `DELETE /v1/downloads/{download_id}` — Cancel / dismiss a download
+### `DELETE /v1/downloads/{download_id}`: Cancel / dismiss a download
 
 Marks the DB row `cancelled` (no upstream abort). `404` if not found.
 
-### `GET /v1/downloads` — Download history
+### `GET /v1/downloads`: Download history
 
 Newest first. Each row includes the cascade `attempts` log (older rows may have
 `attempts: null`).
 
 | Param | Default | Description |
 |-------|---------|-------------|
-| `status` | — | Filter by status |
+| `status` | – | Filter by status |
 | `limit` | 50 | 1-200 |
-| `offset` | 0 | — |
+| `offset` | 0 | – |
 
 ---
 
@@ -1284,7 +1284,7 @@ Newest first. Each row includes the cascade `attempts` log (older rows may have
 
 Versioned, DB-persisted policy deciding which download backends are tried, in what
 order, for which purpose, and at what quality. Defaults are seeded on first boot.
-Changes take effect on the next request — no restart. **Every routing endpoint is
+Changes take effect on the next request; no restart. **Every routing endpoint is
 admin-gated (when admin keys are configured).**
 
 Three independent priority chains plus parallel-search settings:
@@ -1301,7 +1301,7 @@ Each chain entry: `backend` (`spotdl`/`streamrip`/`spotizerr`/`slskd`/`lidarr`),
 controls `/search/multi`; `parallel_search_timeout_ms` is the per-backend timeout.
 Quality tiers are ordinal (`lossy_low < lossy_high < lossless < hires`).
 
-### `GET /v1/downloads/routing` — Active routing config
+### `GET /v1/downloads/routing`: Active routing config
 
 `404` if none.
 
@@ -1321,40 +1321,40 @@ Quality tiers are ordinal (`lossy_low < lossy_high < lossless < hires`).
 }
 ```
 
-### `GET /v1/downloads/routing/defaults` — Defaults + group metadata
+### `GET /v1/downloads/routing/defaults`: Defaults + group metadata
 
 Default config plus `groups` (the four UI sections: `individual`,
 `bulk_per_track`, `bulk_album`, `parallel_search`).
 
-### `GET /v1/downloads/routing/history` — Version history
+### `GET /v1/downloads/routing/history`: Version history
 
 | Param | Default | Description |
 |-------|---------|-------------|
 | `limit` | 20 | 1-100 |
-| `offset` | 0 | — |
+| `offset` | 0 | – |
 
-### `PUT /v1/downloads/routing` — Save a new version (becomes active)
+### `PUT /v1/downloads/routing`: Save a new version (becomes active)
 
 Body: `config` (`DownloadRoutingConfigData`), `name` (optional). `422` on
 validation error.
 
-### `POST /v1/downloads/routing/reset` — Reset to defaults
+### `POST /v1/downloads/routing/reset`: Reset to defaults
 
 Creates a new version.
 
-### `POST /v1/downloads/routing/activate/{version}` — Roll back
+### `POST /v1/downloads/routing/activate/{version}`: Roll back
 
 `404` if the version doesn't exist.
 
-### `GET /v1/downloads/routing/export` — Export active config (JSON)
+### `GET /v1/downloads/routing/export`: Export active config (JSON)
 
 Downloadable JSON with `grooveiq_download_routing_config: true`. `404` if none.
 
-### `POST /v1/downloads/routing/import` — Import config (JSON)
+### `POST /v1/downloads/routing/import`: Import config (JSON)
 
 Body: `config` (dict), `name` (optional). `422` if invalid.
 
-### `GET /v1/downloads/routing/{version}` — Specific historical version
+### `GET /v1/downloads/routing/{version}`: Specific historical version
 
 `404` if not found.
 
@@ -1365,14 +1365,14 @@ Body: `config` (dict), `name` (optional). `422` if invalid.
 Text-search + file-level download via slskd (distinct from the Spotify-ID
 `/downloads` group). All endpoints return `503` if slskd is not configured.
 
-### `GET /v1/soulseek/search` — Search the Soulseek network
+### `GET /v1/soulseek/search`: Search the Soulseek network
 
 | Param | Type | Default | Description |
 |-------|------|---------|-------------|
 | `q` | string | *(required)* | Search query |
 | `limit` | int | 20 | 1-100 |
 
-### `POST /v1/soulseek/download` — Queue a peer file
+### `POST /v1/soulseek/download`: Queue a peer file
 
 Returns `201`; spawns a transfer watcher. `502` on slskd error.
 
@@ -1384,25 +1384,25 @@ Returns `201`; spawns a transfer watcher. `502` on slskd error.
 Body (`SoulseekDownloadRequest`): `username` (1-256), `filename` (1-1024), `size`
 (>0), `track_title`, `artist_name`, `album_name`.
 
-### `GET /v1/soulseek/downloads/{username}/{transfer_id}` — Transfer status
+### `GET /v1/soulseek/downloads/{username}/{transfer_id}`: Transfer status
 
 Real-time status from slskd. `404` if not found.
 
-### `DELETE /v1/soulseek/downloads/{username}/{transfer_id}` — Cancel a transfer
+### `DELETE /v1/soulseek/downloads/{username}/{transfer_id}`: Cancel a transfer
 
 `204`; updates the DB row. `404` if not found / already done.
 
-### `GET /v1/soulseek/downloads` — Soulseek download history
+### `GET /v1/soulseek/downloads`: Soulseek download history
 
 Newest first.
 
 | Param | Default | Description |
 |-------|---------|-------------|
-| `status` | — | Filter by status |
+| `status` | – | Filter by status |
 | `limit` | 50 | 1-200 |
-| `offset` | 0 | — |
+| `offset` | 0 | – |
 
-### `POST /v1/soulseek/bulk-download` — Bulk-download top Last.fm artists' tracks
+### `POST /v1/soulseek/bulk-download`: Bulk-download top Last.fm artists' tracks
 
 Admin-gated (when admin keys are configured). Background job (`202`). `503` if
 slskd / Last.fm off; `409` if a job is already running.
@@ -1412,11 +1412,11 @@ slskd / Last.fm off; `409` if a job is already running.
 | `max_artists` | 500 | 1-1000 |
 | `tracks_per_artist` | 20 | 1-50 |
 
-### `GET /v1/soulseek/bulk-download/status` — Bulk job status
+### `GET /v1/soulseek/bulk-download/status`: Bulk job status
 
 Current / most-recent bulk-download job status.
 
-### `POST /v1/soulseek/bulk-download/cancel` — Cancel the bulk job
+### `POST /v1/soulseek/bulk-download/cancel`: Cancel the bulk job
 
 Admin-gated (when admin keys are configured).
 
@@ -1426,7 +1426,7 @@ Admin-gated (when admin keys are configured).
 
 All user-scoped.
 
-### `POST /v1/users/{user_id}/lastfm/connect` — Connect account
+### `POST /v1/users/{user_id}/lastfm/connect`: Connect account
 
 Exchanges credentials for a session key; the password is discarded (never
 stored). `503` if Last.fm / encryption key not enabled; `401` on auth failure;
@@ -1436,20 +1436,20 @@ stored). `503` if Last.fm / encryption key not enabled; `401` on auth failure;
 {"lastfm_username": "my_lastfm", "lastfm_password": "..."}
 ```
 
-### `DELETE /v1/users/{user_id}/lastfm` — Disconnect
+### `DELETE /v1/users/{user_id}/lastfm`: Disconnect
 
 Clears credentials/cache and purges pending scrobbles.
 
-### `POST /v1/users/{user_id}/lastfm/sync` — Force profile refresh
+### `POST /v1/users/{user_id}/lastfm/sync`: Force profile refresh
 
 `503` if not enabled; `404` if no username.
 
-### `POST /v1/users/{user_id}/lastfm/backfill` — Backfill missed scrobbles
+### `POST /v1/users/{user_id}/lastfm/backfill`: Backfill missed scrobbles
 
 Scans past `play_end` events and enqueues missed scrobbles. `503` if not enabled;
 `400` on error.
 
-### `GET /v1/users/{user_id}/lastfm/profile` — Get cached profile
+### `GET /v1/users/{user_id}/lastfm/profile`: Get cached profile
 
 Read-only cached Last.fm profile (top artists, tracks, genres). `404` if no
 username.
@@ -1458,7 +1458,7 @@ username.
 
 ## Artists
 
-### `GET /v1/artists/{name}/meta` — Artist metadata
+### `GET /v1/artists/{name}/meta`: Artist metadata
 
 Rich Last.fm metadata (bio, tags, similar artists, top tracks, images) with local
 library cross-referencing. `top_tracks` entries carry `matched_track_id` +
@@ -1470,9 +1470,11 @@ no data.
 ## News
 
 Reddit-sourced music news, fetched on a schedule, cached in memory, and scored
-per-user at query time. Requires `NEWS_ENABLED=true`.
+per-user at query time. **Experimental and off by default**: the backend is
+implemented but not yet validated, and the dashboard renders a "Coming Soon"
+placeholder until you set `NEWS_ENABLED=true`.
 
-### `POST /v1/news/refresh` — Trigger a cache refresh
+### `POST /v1/news/refresh`: Trigger a cache refresh
 
 Background (`202`). `503` if news disabled.
 
@@ -1480,15 +1482,15 @@ Background (`202`). `503` if news disabled.
 {"status": "refresh_started"}
 ```
 
-### `GET /v1/news/{user_id}` — Personalized news feed
+### `GET /v1/news/{user_id}`: Personalized news feed
 
 User-scoped. `503` if news disabled.
 
 | Param | Type | Default | Description |
 |-------|------|---------|-------------|
 | `limit` | int | 25 | 1-100 |
-| `tag` | string | — | `FRESH`, `NEWS`, `DISCUSSION` (≤50 chars) |
-| `subreddit` | string | — | Filter to a subreddit (≤100 chars) |
+| `tag` | string | – | `FRESH`, `NEWS`, `DISCUSSION` (≤50 chars) |
+| `subreddit` | string | – | Filter to a subreddit (≤100 chars) |
 
 ```json
 {
@@ -1512,20 +1514,20 @@ enables "Because you listen to X" badges.
 
 All endpoints in this section are admin-gated (when admin keys are configured).
 
-### `GET /v1/stats` — Dashboard aggregate stats
+### `GET /v1/stats`: Dashboard aggregate stats
 
 Total events/users/tracks/playlists, 24h/1h event counts, event-type breakdown,
 top tracks, latest scan status, library coverage.
 
-### `POST /v1/pipeline/run` — Trigger pipeline manually
+### `POST /v1/pipeline/run`: Trigger pipeline manually
 
 Background; won't start if one is already running.
 
-### `POST /v1/pipeline/reset` — Reset and rebuild
+### `POST /v1/pipeline/reset`: Reset and rebuild
 
 Clears sessions/interactions/profiles and rebuilds from raw events.
 
-### `GET /v1/pipeline/status` — Run history
+### `GET /v1/pipeline/status`: Run history
 
 | Param | Default | Description |
 |-------|---------|-------------|
@@ -1536,7 +1538,7 @@ Current run + recent history with per-step timing, status, metrics, errors, and
 `taste_profiles`, `collab_filter`, `ranker`, `session_embeddings`,
 `lastfm_cache`, `sasrec`, `session_gru`, `music_map`.
 
-### `GET /v1/pipeline/stream` — SSE stream
+### `GET /v1/pipeline/stream`: SSE stream
 
 `text/event-stream`. Event types: `pipeline_start`, `step_start`, `step_complete`,
 `step_failed`, `pipeline_end`. 30s keepalive; `429` on subscriber overflow.
@@ -1545,29 +1547,29 @@ Current run + recent history with per-step timing, status, metrics, errors, and
 curl -N http://localhost:8000/v1/pipeline/stream -H "Authorization: Bearer YOUR_API_KEY"
 ```
 
-### `GET /v1/pipeline/models` — ML model readiness
+### `GET /v1/pipeline/models`: ML model readiness
 
 Trained/not-trained status + key metrics for all models (ranker, collab_filter,
 session_embeddings, sasrec, session_gru, lastfm_cache). Includes ranker
 `feature_importances`.
 
-### `GET /v1/pipeline/stats/sessionizer` — Session statistics
+### `GET /v1/pipeline/stats/sessionizer`: Session statistics
 
 Total sessions, avg duration/tracks/skip rate, distributions.
 
-### `GET /v1/pipeline/stats/scoring` — Scoring statistics
+### `GET /v1/pipeline/stats/scoring`: Scoring statistics
 
 Score distribution, signal breakdown, top/bottom tracks.
 
-### `GET /v1/pipeline/stats/taste_profiles` — Profile statistics
+### `GET /v1/pipeline/stats/taste_profiles`: Profile statistics
 
 Users with/without computed profiles.
 
-### `GET /v1/pipeline/stats/events` — Event ingest rate
+### `GET /v1/pipeline/stats/events`: Event ingest rate
 
 15-minute buckets over 24h (for sparklines).
 
-### `GET /v1/pipeline/stats/activity` — Activity timeline
+### `GET /v1/pipeline/stats/activity`: Activity timeline
 
 Event counts by type.
 
@@ -1575,7 +1577,7 @@ Event counts by type.
 |-------|---------|-------------|
 | `days` | 7 | 1-30 |
 
-### `GET /v1/pipeline/stats/engagement` — Engagement leaderboard
+### `GET /v1/pipeline/stats/engagement`: Engagement leaderboard
 
 Per-user 30-day metrics (top 50): total events, plays, skip rate, unique tracks,
 diversity.
@@ -1588,29 +1590,29 @@ Versioned, DB-persisted configuration for all pipeline tunables. **Every endpoin
 is admin-gated (when admin keys are configured) EXCEPT `GET /v1/algorithm/modes`**,
 which any authenticated key may read.
 
-### `GET /v1/algorithm/config` — Active config
+### `GET /v1/algorithm/config`: Active config
 
 `404` if none.
 
-### `GET /v1/algorithm/config/defaults` — Defaults + group metadata
+### `GET /v1/algorithm/config/defaults`: Defaults + group metadata
 
 Default values with group metadata and ge/le constraints (for GUI rendering).
 
-### `GET /v1/algorithm/modes` — Discovery-dial presets (non-admin)
+### `GET /v1/algorithm/modes`: Discovery-dial presets (non-admin)
 
 **Any authenticated key** (not admin). Read-only `modes` group from the in-memory
-active config — the discovery-dial preset matrix (`familiar`, `balanced`,
+active config: the discovery-dial preset matrix (`familiar`, `balanced`,
 `discovery`, `deep_discovery`, plus `dial_anchors`) used by end-user surfaces to
 render mode pickers / shelves.
 
-### `GET /v1/algorithm/config/history` — Version history
+### `GET /v1/algorithm/config/history`: Version history
 
 | Param | Default | Description |
 |-------|---------|-------------|
 | `limit` | 20 | 1-100 |
-| `offset` | 0 | — |
+| `offset` | 0 | – |
 
-### `PUT /v1/algorithm/config` — Save a new version (becomes active)
+### `PUT /v1/algorithm/config`: Save a new version (becomes active)
 
 Body: `config` (`AlgorithmConfigData`), `name` (optional).
 
@@ -1618,24 +1620,24 @@ Body: `config` (`AlgorithmConfigData`), `name` (optional).
 {"config": {"track_scoring": {"w_like": 2.5}, "reranker": {"freshness_boost": 0.15}}, "name": "More exploration"}
 ```
 
-### `POST /v1/algorithm/config/reset` — Reset to defaults
+### `POST /v1/algorithm/config/reset`: Reset to defaults
 
 Creates a new version.
 
-### `POST /v1/algorithm/config/activate/{version}` — Activate a version (rollback)
+### `POST /v1/algorithm/config/activate/{version}`: Activate a version (rollback)
 
 `404` if not found.
 
-### `GET /v1/algorithm/config/export` — Export active config (JSON)
+### `GET /v1/algorithm/config/export`: Export active config (JSON)
 
 Downloadable JSON with `grooveiq_algorithm_config: true`. `404` if none.
 
-### `POST /v1/algorithm/config/import` — Import config (JSON)
+### `POST /v1/algorithm/config/import`: Import config (JSON)
 
 Body: `config` (dict), `name` (optional). Missing keys get defaults; invalid
 values `422`.
 
-### `GET /v1/algorithm/config/{version}` — Specific version
+### `GET /v1/algorithm/config/{version}`: Specific version
 
 `404` if not found.
 
@@ -1666,43 +1668,43 @@ PUT/import bodies mirror the algorithm-config shape: `config`
 
 ### Queue & operations
 
-### `GET /v1/lidarr-backfill/requests` — List rows
+### `GET /v1/lidarr-backfill/requests`: List rows
 
 | Param | Default | Description |
 |-------|---------|-------------|
-| `status` | — | Filter by status |
-| `artist` | — | Artist substring |
+| `status` | – | Filter by status |
+| `artist` | – | Artist substring |
 | `limit` | 50 | 1-500 |
-| `offset` | 0 | — |
+| `offset` | 0 | – |
 
-### `POST /v1/lidarr-backfill/requests/{request_id}/retry` — Retry a row
+### `POST /v1/lidarr-backfill/requests/{request_id}/retry`: Retry a row
 
 Resets attempts and re-queues. `404` if not found.
 
-### `POST /v1/lidarr-backfill/requests/{request_id}/skip` — Skip a row
+### `POST /v1/lidarr-backfill/requests/{request_id}/skip`: Skip a row
 
 Marks it `permanently_skipped`. `404` if not found.
 
-### `DELETE /v1/lidarr-backfill/requests/{request_id}` — Forget a row
+### `DELETE /v1/lidarr-backfill/requests/{request_id}`: Forget a row
 
 Re-picked on the next tick. `404` if not found.
 
-### `POST /v1/lidarr-backfill/requests/reset` — Bulk-reset by scope
+### `POST /v1/lidarr-backfill/requests/reset`: Bulk-reset by scope
 
 Body: `{"scope": ...}` where scope ∈ `failed`, `no_match`, **`search_error`**,
 `permanently_skipped`, `all`. `400` if missing/invalid.
 
-### `POST /v1/lidarr-backfill/run` — Run one tick now
+### `POST /v1/lidarr-backfill/run`: Run one tick now
 
 Returns metrics.
 
-### `POST /v1/lidarr-backfill/preview` — Preview match decisions
+### `POST /v1/lidarr-backfill/preview`: Preview match decisions
 
 Body (optional): `limit` (default 20, clamped 1-100), `config_override` (dict).
 Runs match logic against the live missing queue without persisting (calibration
 tool).
 
-### `GET /v1/lidarr-backfill/stats` — Dashboard stats
+### `GET /v1/lidarr-backfill/stats`: Dashboard stats
 
 Queue counts, capacity, ETA, last/next tick.
 
@@ -1712,35 +1714,35 @@ Queue counts, capacity, ETA, last/next tick.
 
 Operator side of the lyrics-acquisition drain. **Every endpoint is admin-gated
 (when admin keys are configured).** (Per-track display is
-`GET /v1/tracks/{track_id}/lyrics` — see [Tracks & Library](#tracks--library).)
+`GET /v1/tracks/{track_id}/lyrics`; see [Tracks & Library](#tracks--library).)
 
-### `GET /v1/lyrics/stats` — Drain stats
+### `GET /v1/lyrics/stats`: Drain stats
 
 Queue counts, coverage, capacity, ETA.
 
-### `GET /v1/lyrics/requests` — List drain queue rows
+### `GET /v1/lyrics/requests`: List drain queue rows
 
 | Param | Default | Description |
 |-------|---------|-------------|
-| `status` | — | Filter by status |
+| `status` | – | Filter by status |
 | `limit` | 50 | 1-200 |
-| `offset` | 0 | — |
+| `offset` | 0 | – |
 
-### `POST /v1/lyrics/run` — Run one drain tick now
+### `POST /v1/lyrics/run`: Run one drain tick now
 
-### `POST /v1/lyrics/requests/{request_id}/retry` — Re-queue a row
-
-`404` if not found.
-
-### `POST /v1/lyrics/requests/{request_id}/skip` — Permanently skip a row
+### `POST /v1/lyrics/requests/{request_id}/retry`: Re-queue a row
 
 `404` if not found.
 
-### `DELETE /v1/lyrics/requests/{request_id}` — Forget a row
+### `POST /v1/lyrics/requests/{request_id}/skip`: Permanently skip a row
 
 `404` if not found.
 
-### `POST /v1/lyrics/requests/reset` — Bulk re-queue by scope
+### `DELETE /v1/lyrics/requests/{request_id}`: Forget a row
+
+`404` if not found.
+
+### `POST /v1/lyrics/requests/reset`: Bulk re-queue by scope
 
 Body: `{"scope": ...}` (e.g. `no_lyrics`). `422` if invalid.
 
@@ -1748,7 +1750,7 @@ Body: `{"scope": ...}` (e.g. `no_lyrics`). `422` if invalid.
 
 ## Integrations
 
-### `GET /v1/integrations/status` — Integration connectivity
+### `GET /v1/integrations/status`: Integration connectivity
 
 Admin-gated (when admin keys are configured). Probes all external services in
 parallel and returns per-service `configured`/`connected` status. Probes **9**
@@ -1779,28 +1781,28 @@ services: `spotdl_api`, `streamrip_api`, `lidarr`, `slskd`,
 Per-user HTTP request/response history (issues #79, #81). Surfaced under
 Monitor → User Diagnostics.
 
-### `GET /v1/users/{user_id}/api-calls` — Per-user log
+### `GET /v1/users/{user_id}/api-calls`: Per-user log
 
 User-scoped. Paginated.
 
 | Param | Type | Default | Description |
 |-------|------|---------|-------------|
 | `limit` | int | 50 | 1-500 |
-| `offset` | int | 0 | — |
-| `method` | string | — | HTTP method filter |
-| `path_contains` | string | — | Path substring filter |
-| `status` | int | — | Status code (100-599) |
+| `offset` | int | 0 | – |
+| `method` | string | – | HTTP method filter |
+| `path_contains` | string | – | Path substring filter |
+| `status` | int | – | Status code (100-599) |
 | `include_events` | bool | true | Include POST `/v1/events*` |
-| `since_minutes` | int | — | Time window (≥1) |
-| `source` | string | — | `browser`, `mobile`, `cli`, `other` (`422` if invalid) |
-| `client_ip_contains` | string | — | Client-IP substring filter |
+| `since_minutes` | int | – | Time window (≥1) |
+| `source` | string | – | `browser`, `mobile`, `cli`, `other` (`422` if invalid) |
+| `client_ip_contains` | string | – | Client-IP substring filter |
 
-### `GET /v1/api-calls/{call_id}` — Single call detail
+### `GET /v1/api-calls/{call_id}`: Single call detail
 
 User-scoped on the row's `user_id` (if present). Full request body + response
 summary. `404` if not found.
 
-### `GET /v1/api-calls` — List across all users
+### `GET /v1/api-calls`: List across all users
 
 Admin-gated (when admin keys are configured). Same filters as the per-user log
 plus `user_id`.
@@ -1808,15 +1810,15 @@ plus `user_id`.
 | Param | Type | Default | Description |
 |-------|------|---------|-------------|
 | `limit` | int | 100 | 1-1000 |
-| `offset` | int | 0 | — |
-| `method` / `path_contains` / `status` | — | — | As above |
-| `user_id` | string | — | Filter by user |
+| `offset` | int | 0 | – |
+| `method` / `path_contains` / `status` | – | – | As above |
+| `user_id` | string | – | Filter by user |
 | `include_events` | bool | true | Include event POSTs |
-| `since_minutes` | int | — | Time window (≥1) |
-| `source` | string | — | `browser`, `mobile`, `cli`, `other` |
-| `client_ip_contains` | string | — | Client-IP substring filter |
+| `since_minutes` | int | – | Time window (≥1) |
+| `source` | string | – | `browser`, `mobile`, `cli`, `other` |
+| `client_ip_contains` | string | – | Client-IP substring filter |
 
-### `GET /v1/api-calls/stats/summary` — Log totals + retention
+### `GET /v1/api-calls/stats/summary`: Log totals + retention
 
 Admin-gated (when admin keys are configured). Totals plus retention settings.
 
@@ -1824,7 +1826,7 @@ Admin-gated (when admin keys are configured). Totals plus retention settings.
 
 ## Admin
 
-### `GET /v1/admin/analysis-health` — Library invariant checks
+### `GET /v1/admin/analysis-health`: Library invariant checks
 
 Admin-gated (when admin keys are configured). Runs all library-wide
 `track_features` invariants and returns per-check pass/fail plus an overall
@@ -1846,7 +1848,7 @@ All settings come from environment variables or `.env`. The canonical, fully
 commented list is [`.env.example`](../.env.example). This section summarizes the
 groups; defaults below match `app/core/config.py`.
 
-Several settings are **gated** — a feature is only "enabled" when its toggle AND
+Several settings are **gated**: a feature is only "enabled" when its toggle AND
 its required connection settings are present (e.g. `slskd_enabled` requires
 `SLSKD_ENABLED=true` AND `SLSKD_URL` AND `SLSKD_API_KEY`; `fill_library_enabled`
 requires `FILL_LIBRARY_ENABLED=true` AND `AB_LOOKUP_URL` AND `LIDARR_URL` AND
@@ -1892,9 +1894,9 @@ requires `FILL_LIBRARY_ENABLED=true` AND `AB_LOOKUP_URL` AND `LIDARR_URL` AND
 | `ANALYSIS_GPU` / `ANALYSIS_GPU_BACKEND` | `false` / `""` | GPU ONNX inference (`cuda`/`openvino`) |
 | `AUDIO_EXTENSIONS` | `.mp3,.flac,.ogg,.m4a,.wav,.aac,.opus,.wv` | Scanner file extensions |
 
-(Additional GPU/ONNX threading knobs — `ANALYSIS_GPU_BATCH_SIZE`,
+(Additional GPU/ONNX threading knobs (`ANALYSIS_GPU_BATCH_SIZE`,
 `ANALYSIS_GPU_WORKERS`, `ANALYSIS_ONNX_INTRA_THREADS`, `ANALYSIS_ONNX_INTER_THREADS`,
-`ANALYSIS_OMP_THREADS` — exist; see `.env.example`.)
+`ANALYSIS_OMP_THREADS`) exist; see `.env.example`.)
 
 ### Recommendation pipeline & event ingestion
 
@@ -1919,7 +1921,7 @@ requires `FILL_LIBRARY_ENABLED=true` AND `AB_LOOKUP_URL` AND `LIDARR_URL` AND
 | `CLAP_AUDIO_CLIP_SECONDS` | `10.0` | Clip length fed to the audio tower |
 
 (Plus `CLAP_AUDIO_MODEL_FILE` / `CLAP_TEXT_MODEL_FILE` / `CLAP_TOKENIZER_FILE`
-filenames and `CLAP_*_URL` auto-download URLs — see `.env.example`.)
+filenames and `CLAP_*_URL` auto-download URLs; see `.env.example`.)
 
 ### Lyrics (optional)
 
@@ -1933,17 +1935,20 @@ filenames and `CLAP_*_URL` auto-download URLs — see `.env.example`.)
 | `LYRICS_DRAIN_MAX_ATTEMPTS` | `3` | Then permanently skipped |
 
 (Plus LRCLIB URL/UA, ASR timeout/VAD/instrumental/model, and drain
-throttle/cooldown/backoff knobs — see `.env.example`.)
+throttle/cooldown/backoff knobs; see `.env.example`.)
 
-### Media server (Navidrome / Plex)
+### Media server (Navidrome)
+
+Navidrome is the only supported media server. The `plex` value and the
+`MEDIA_SERVER_TOKEN` / `MEDIA_SERVER_LIBRARY_ID` fields are legacy and unsupported.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `MEDIA_SERVER_TYPE` | `""` | `navidrome` / `plex` |
+| `MEDIA_SERVER_TYPE` | `""` | `navidrome` (empty = disabled) |
 | `MEDIA_SERVER_URL` | `""` | Base URL (SSRF-validated) |
 | `MEDIA_SERVER_USER` / `MEDIA_SERVER_PASSWORD` | `""` | Navidrome credentials |
-| `MEDIA_SERVER_TOKEN` | `""` | Plex token |
-| `MEDIA_SERVER_LIBRARY_ID` | `1` | Plex section ID |
+| `MEDIA_SERVER_TOKEN` | `""` | Plex token (legacy/unsupported) |
+| `MEDIA_SERVER_LIBRARY_ID` | `1` | Plex section ID (legacy/unsupported) |
 | `MEDIA_SERVER_MUSIC_PATH` | `""` | Server's music root (path mapping) |
 | `CREDENTIAL_ENCRYPTION_KEY` | `""` | Fernet key for media creds at rest |
 
@@ -2006,7 +2011,7 @@ throttle/cooldown/backoff knobs — see `.env.example`.)
 > Streaming-service credentials (`SPOTIFY_*`, `QOBUZ_*`, `TIDAL_*`, `DEEZER_ARL`,
 > `SOUNDCLOUD_CLIENT_ID`) and `STREAMRIP_*` quality/codec knobs are consumed by
 > the **sidecar containers** (spotdl-api / streamrip-api), not by GrooveIQ
-> itself — set them in `.env`/compose for those containers.
+> itself; set them in `.env`/compose for those containers.
 
 ### Recommendation serving, audit & caching
 
@@ -2022,7 +2027,7 @@ throttle/cooldown/backoff knobs — see `.env.example`.)
 | `MIX_PREWARM_RATE_LIMIT_PER_MIN` | `12` | Per (key,user) prewarm cap |
 | `MIX_PREWARM_MAX_MODES` | `8` | Modes warmed per prewarm request |
 
-(Additional dial-eval and mix-cache tuning knobs exist — see `app/core/config.py`.)
+(Additional dial-eval and mix-cache tuning knobs exist; see `app/core/config.py`.)
 
 ### News (Reddit)
 

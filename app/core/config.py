@@ -304,7 +304,7 @@ class Settings(BaseSettings):
     SLSKD_URL: str = ""  # e.g. http://slskd:5030
     SLSKD_API_KEY: str = ""  # slskd API key (generate in slskd web UI or via --api-key)
     SLSKD_ENABLED: bool = False  # master toggle
-    SLSKD_SEARCH_TIMEOUT: int = 15  # seconds to wait for Soulseek search results
+    SLSKD_SEARCH_TIMEOUT: int = 50  # seconds to wait for Soulseek search results; must exceed slskd's ~45s internal search timeout, else results are abandoned before peers respond
     SLSKD_PREFER_LOSSLESS: bool = True  # prefer FLAC over MP3 in result ranking
 
     # ------------------------------------------------------------------

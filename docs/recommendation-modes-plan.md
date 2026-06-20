@@ -1,6 +1,6 @@
-# Recommendation Modes — Implementation Plan
+# Recommendation Modes: Implementation Plan
 
-**Status:** ✅ Implemented — this design has shipped. The discovery dial, the four presets, the request-scoped override mechanism, the SWR mix cache, the `modes` config group, and the radio dial are all in the codebase. This document is retained as the **design record** — the rationale, comparisons, and section structure below remain the canonical explanation of *why* the feature is shaped the way it is. Where the shipped reality diverges from the original plan, it is called out inline with **[Shipped: …]** notes.
+**Status:** ✅ Implemented. This design has shipped. The discovery dial, the four presets, the request-scoped override mechanism, the SWR mix cache, the `modes` config group, and the radio dial are all in the codebase. This document is retained as the **design record**: the rationale, comparisons, and section structure below remain the canonical explanation of *why* the feature is shaped the way it is. Where the shipped reality diverges from the original plan, it is called out inline with **[Shipped: …]** notes.
 **Created:** 2026-06-02
 **Updated:** 2026-06-02 (added confidence-based "proven" definition, app surfacing, dashboard settings, request-only surfaces); reconciled to implemented status (see "Implementation status" below)
 **Estimated effort (original plan):** ~5–10 days for the core dial + confidence-based "proven" (Phases 0–2); optional phases beyond
@@ -13,31 +13,31 @@ The plan below has been built. Mapping the plan's phases to what now exists in c
 
 | Plan phase | Status | Where it landed |
 |------------|--------|-----------------|
-| **Phase 0** — per-request override mechanism, `discovery`/`mode` params, UCB acquisition, **Phase A confidence proxy**, proven-set novelty filter, SWR cache | ✅ Shipped | `app/services/request_config.py` (`apply_overrides` context manager), `app/services/modes.py` (`resolve_dial`, `_interpolate_preset`, `derive_reasons`), `app/services/confidence.py` (`mu`/`sigma` proxies), `app/services/mix_cache.py` (SWR cache + prewarm), reranker acquisition + novelty filter in `app/services/reranker.py`, candidate exclude hook in `app/services/candidate_gen.py` |
-| **Phase 1** — `modes` versioned config group, dashboard surfacing, radio dial, prewarm endpoint | ✅ Shipped | `modes` group in `app/models/algorithm_config_schema.py` (`PresetConfig`, `ModesConfig`, `PRESET_NAMES`), read-only `GET /v1/algorithm/modes` endpoint, `discovery`/`mode` wiring in `app/api/routes/recommend.py` + `app/api/routes/radio.py`, `POST /v1/users/{user_id}/mixes/prewarm` + `GET /v1/users/{user_id}/mixes` |
-| **Phase 2 — Phase B confidence model** (LightGBM skip head + quantile `sigma`, dedicated training steps) | ⚠️ Deferred | Confidence is currently the **Phase A proxy** (ranker score + FAISS neighbour density) in `confidence.py`. The quantile/skip-head model has **not** shipped. |
+| **Phase 0**: per-request override mechanism, `discovery`/`mode` params, UCB acquisition, **Phase A confidence proxy**, proven-set novelty filter, SWR cache | ✅ Shipped | `app/services/request_config.py` (`apply_overrides` context manager), `app/services/modes.py` (`resolve_dial`, `_interpolate_preset`, `derive_reasons`), `app/services/confidence.py` (`mu`/`sigma` proxies), `app/services/mix_cache.py` (SWR cache + prewarm), reranker acquisition + novelty filter in `app/services/reranker.py`, candidate exclude hook in `app/services/candidate_gen.py` |
+| **Phase 1**: `modes` versioned config group, dashboard surfacing, radio dial, prewarm endpoint | ✅ Shipped | `modes` group in `app/models/algorithm_config_schema.py` (`PresetConfig`, `ModesConfig`, `PRESET_NAMES`), read-only `GET /v1/algorithm/modes` endpoint, `discovery`/`mode` wiring in `app/api/routes/recommend.py` + `app/api/routes/radio.py`, `POST /v1/users/{user_id}/mixes/prewarm` + `GET /v1/users/{user_id}/mixes` |
+| **Phase 2: Phase B confidence model** (LightGBM skip head + quantile `sigma`, dedicated training steps) | ⚠️ Deferred | Confidence is currently the **Phase A proxy** (ranker score + FAISS neighbour density) in `confidence.py`. The quantile/skip-head model has **not** shipped. |
 | Per-dial-bucket evaluation metrics | ✅ Shipped (Phase-A-driven) | `evaluate_dial_modes` in `app/services/evaluation.py` (novelty, `pct_never_played`, intra-list diversity, catalog coverage, proven-set skip rate), surfaced via the model report (`GET /v1/stats/model`) |
-| **Phase 3** — bandit-driven default feed (BaRT-style online reward loop) | ⏳ Not started | Future extension (section 14) |
+| **Phase 3**: bandit-driven default feed (BaRT-style online reward loop) | ⏳ Not started | Future extension (section 14) |
 
 **Key ways the shipped feature differs from this plan:**
 
-- **Four presets, not three.** The dial presets are `familiar` / `balanced` / `discovery` / `deep_discovery` (`PRESET_NAMES`), with a **continuous `discovery` float in [0, 1]** underneath. Fractional dial values interpolate between preset anchors (`_interpolate_preset`); a named `mode` pins the exact anchor. (Note: the separate **artist/album** reco endpoints use a *different*, older 3-value vocabulary `familiar|balanced|discover` — `discover`, not `discovery` — and are not part of this dial.)
+- **Four presets, not three.** The dial presets are `familiar` / `balanced` / `discovery` / `deep_discovery` (`PRESET_NAMES`), with a **continuous `discovery` float in [0, 1]** underneath. Fractional dial values interpolate between preset anchors (`_interpolate_preset`); a named `mode` pins the exact anchor. (Note: the separate **artist/album** reco endpoints use a *different*, older 3-value vocabulary `familiar|balanced|discover`, `discover`, not `discovery`, and are not part of this dial.)
 - **Confidence is the Phase-A proxy.** `mu`/`sigma` come from the ranker score plus FAISS neighbour density in `confidence.py`. The Phase-B quantile/skip-head model (section 5.2) was **deferred**, exactly as the "A-now / B-later" decision in section 15 anticipated.
-- **`/v1/algorithm/modes` is read-only and non-admin.** The plan proposed full CRUD (`GET/PUT/POST` on `/v1/algorithm/modes`, section 9). In practice the `modes` group is edited through the *existing* versioned algorithm-config routes (`PUT /v1/algorithm/config`, etc.), and `GET /v1/algorithm/modes` is a thin **read-only** projection of the active config's `modes` group — reachable with any authenticated key (no admin gate) so end-user surfaces can read preset definitions. The standalone `PUT/POST /v1/algorithm/modes` endpoints from the plan were not added.
+- **`/v1/algorithm/modes` is read-only and non-admin.** The plan proposed full CRUD (`GET/PUT/POST` on `/v1/algorithm/modes`, section 9). In practice the `modes` group is edited through the *existing* versioned algorithm-config routes (`PUT /v1/algorithm/config`, etc.), and `GET /v1/algorithm/modes` is a thin **read-only** projection of the active config's `modes` group: reachable with any authenticated key (no admin gate) so end-user surfaces can read preset definitions. The standalone `PUT/POST /v1/algorithm/modes` endpoints from the plan were not added.
 - **A related "resurfacing / Keep listening" surface shipped alongside.** `app/services/resurfacing.py` + `GET /v1/users/{user_id}/resurfacing` / `POST /v1/users/{user_id}/tracks/{track_id}/suppress` add time-decayed per-user engagement "heat" that the reranker reads. This was not in the original plan but is part of the same familiarity-axis work.
 
 ## Overview
 
-> **[Shipped]** "Today" in the prose below refers to GrooveIQ *before* this dial was built — it captures the design motivation. The dial described here is now implemented; see "Implementation status."
+> **[Shipped]** "Today" in the prose below refers to GrooveIQ *before* this dial was built; it captures the design motivation. The dial described here is now implemented; see "Implementation status."
 
-GrooveIQ's recommender originally had effectively **one mode**: it optimized a single objective — the per-user `satisfaction_score` — and tried to find the best next track. The major streaming services don't work this way. They expose listener *intent* as a spectrum between two poles:
+GrooveIQ's recommender originally had effectively **one mode**: it optimized a single objective, the per-user `satisfaction_score`, and tried to find the best next track. The major streaming services don't work this way. They expose listener *intent* as a spectrum between two poles:
 
-- **"Play me my proven favorites"** — exploitation of what the user already loves (Spotify Daily Mix, Apple Favorites Mix / Personal Station).
-- **"I want to discover new music"** — exploration of the novel and unheard (Spotify Discover Weekly, Apple New Music Mix / Discovery Station).
+- **"Play me my proven favorites"**: exploitation of what the user already loves (Spotify Daily Mix, Apple Favorites Mix / Personal Station).
+- **"I want to discover new music"**: exploration of the novel and unheard (Spotify Discover Weekly, Apple New Music Mix / Discovery Station).
 
 This plan adds that spectrum to GrooveIQ as a **single continuous "discovery dial"** (`discovery` in [0.0, 1.0]) on the recommendation request, with named presets (`familiar` / `balanced` / `discovery` / `deep_discovery`) as labeled points on the dial.
 
-The dial is best understood as a **UCB-style acquisition function** over two per-(user, track) model outputs — predicted engagement `mu` and uncertainty `sigma` (see section 5). It re-weights knobs that *already exist* in the pipeline plus one new model output (`sigma`). It does **not** require replacing the ranking model.
+The dial is best understood as a **UCB-style acquisition function** over two per-(user, track) model outputs: predicted engagement `mu` and uncertainty `sigma` (see section 5). It re-weights knobs that *already exist* in the pipeline plus one new model output (`sigma`). It does **not** require replacing the ranking model.
 
 > **[Shipped]** This is exactly the shape that landed. `app/services/modes.py` resolves a request's `discovery`/`mode` into a `PresetConfig`; `app/services/reranker.py` applies the UCB adjustment `ranker_score + kappa·sigma − lambda_proven·[is_proven]` (gated on `kappa > 0 or lambda_proven > 0`); `app/services/confidence.py` supplies the `mu`/`sigma` proxies. The base ranker was not replaced, as promised.
 
@@ -50,11 +50,11 @@ The dial is best understood as a **UCB-style acquisition function** over two per
 > **Product decisions locked (2026-06-02):**
 > 1. "Proven" = **the user's own** proven favourites (the *familiarity* / explore-exploit axis), **not** global popularity. Popularity (mainstream/niche) is a future second dial (section 14).
 > 2. Primary interface is a **single continuous dial**; presets `familiar / balanced / discovery / deep_discovery`.
-> 3. **"Proven" is confidence-based, not play-count-based** — a track is proven when the model has high confidence the user won't skip it (section 5).
+> 3. **"Proven" is confidence-based, not play-count-based**: a track is proven when the model has high confidence the user won't skip it (section 5).
 > 4. **Radio honours the dial** (section 6.3).
-> 5. **Surfaces/"mixes" are request-only** with stale-while-revalidate caching + pre-warm (section 8) — no persisted/scheduled surface tables.
+> 5. **Surfaces/"mixes" are request-only** with stale-while-revalidate caching + pre-warm (section 8): no persisted/scheduled surface tables.
 >
-> **[Shipped]** All five locked decisions above hold in the shipped implementation. (This box originally read "plan only; no code changes are made yet" — that is no longer true; see "Implementation status" above.)
+> **[Shipped]** All five locked decisions above hold in the shipped implementation. (This box originally read "plan only; no code changes are made yet"; that is no longer true; see "Implementation status" above.)
 
 ---
 
@@ -64,9 +64,9 @@ The dial is best understood as a **UCB-style acquisition function** over two per
 
 Every stage of the pipeline serves one number: the per-user `satisfaction_score`, a weighted sum of engagement signals (full listen +1.0, like +2.0, repeat +1.5, early skip -0.5, dislike -2.0, ...) min-max normalized to [0,1] per user.
 
-- **Scoring**: `_raw_satisfaction()` then `_normalise_scores()` — `app/services/track_scoring.py:396` and `:561`.
-- **Ranker**: LightGBM trained with label = `satisfaction_score` — `app/services/ranker.py:241`; falls back to the raw satisfaction feature when untrained. **Emits a point estimate only — no uncertainty, no explicit skip probability.**
-- **Reranker**: a single `rerank()` with no intent parameter — `app/services/reranker.py:49`.
+- **Scoring**: `_raw_satisfaction()` then `_normalise_scores()`: `app/services/track_scoring.py:396` and `:561`.
+- **Ranker**: LightGBM trained with label = `satisfaction_score` (`app/services/ranker.py:241`); falls back to the raw satisfaction feature when untrained. **Emits a point estimate only: no uncertainty, no explicit skip probability.**
+- **Reranker**: a single `rerank()` with no intent parameter: `app/services/reranker.py:49`.
 
 The only "discovery" in the system is **hardcoded and global**:
 
@@ -75,16 +75,16 @@ The only "discovery" in the system is **hardcoded and global**:
 | `exploration_fraction` | 0.15 | `app/services/reranker.py:232` (Thompson-flavoured slots; noise prop. to `1/sqrt(plays+1)`) |
 | `freshness_boost` | 0.10 | `app/services/reranker.py:101` (+10% for never-played tracks) |
 
-Both apply identically to every user on every request. The candidate-source weights and these knobs live in the **global** `AlgorithmConfig`, returned by a single in-memory singleton `get_config()` (`app/services/algorithm_config.py:41`) that "takes effect on next pipeline run" — so they **cannot be varied per request** as they stand.
+Both apply identically to every user on every request. The candidate-source weights and these knobs live in the **global** `AlgorithmConfig`, returned by a single in-memory singleton `get_config()` (`app/services/algorithm_config.py:41`) that "takes effect on next pipeline run", so they **cannot be varied per request** as they stand.
 
-Notably, the existing exploration slots already encode the right *intuition* — uncertainty as `1/sqrt(plays+1)` — but as a crude play-count proxy, exactly the thing we want to replace with a real confidence estimate (section 5).
+Notably, the existing exploration slots already encode the right *intuition*, uncertainty as `1/sqrt(plays+1)`, but as a crude play-count proxy, exactly the thing we want to replace with a real confidence estimate (section 5).
 
 **The levers a dial needs that already exist:**
 
-- `reranker.exploration_fraction`, `exploration_noise_scale`, `freshness_boost` — `app/models/algorithm_config_schema.py:55`
-- 8 candidate-source weights (`content`, `content_profile`, `cf`, `session_skipgram`, `lastfm_similar`, `sasrec`, `popular`, `artist_recall`) — `app/models/algorithm_config_schema.py:80`
-- A candidate **exclude set** (disliked / heavily-skipped / recently-skipped) — `app/services/candidate_gen.py:91` — the hook for the discovery novelty filter.
-- `taste_profile.top_tracks` (top 50 by satisfaction) and the **FAISS effnet index** (`app/services/faiss_index.py`) — used to compute neighbour-density evidence in section 5.
+- `reranker.exploration_fraction`, `exploration_noise_scale`, `freshness_boost`: `app/models/algorithm_config_schema.py:55`
+- 8 candidate-source weights (`content`, `content_profile`, `cf`, `session_skipgram`, `lastfm_similar`, `sasrec`, `popular`, `artist_recall`): `app/models/algorithm_config_schema.py:80`
+- A candidate **exclude set** (disliked / heavily-skipped / recently-skipped), `app/services/candidate_gen.py:91`, the hook for the discovery novelty filter.
+- `taste_profile.top_tracks` (top 50 by satisfaction) and the **FAISS effnet index** (`app/services/faiss_index.py`): used to compute neighbour-density evidence in section 5.
 
 What's missing: the **policy layer** (per-request intent) and a **confidence signal** (`sigma`).
 
@@ -93,9 +93,9 @@ What's missing: the **policy layer** (per-request intent) and a **confidence sig
 ## 2. How the majors do it
 
 ### Spotify
-- **Two-stage funnel** (candidate generation -> ranking -> rerank) — the shape GrooveIQ already has. Discover Weekly fuses CF + NLP-over-text + a CNN over raw audio.
-- **Explicit explore/exploit policy:** the Home feed runs **BaRT** ("Bandits for Recommendations as Treatments") — a multi-armed bandit with an **epsilon-greedy** split between *exploitation* (highest predicted engagement) and *exploration* (uncertain items). Published as "Explore, Exploit, Explain."
-- **Intent as surfaces:** Daily Mix (exploit/familiar), Discover Weekly (explore/novel — *hard-excludes music you already know*), Release Radar (new from connected artists), Smart Shuffle (in-session blend, ~1 recommended per 3 of yours).
+- **Two-stage funnel** (candidate generation -> ranking -> rerank): the shape GrooveIQ already has. Discover Weekly fuses CF + NLP-over-text + a CNN over raw audio.
+- **Explicit explore/exploit policy:** the Home feed runs **BaRT** ("Bandits for Recommendations as Treatments"), a multi-armed bandit with an **epsilon-greedy** split between *exploitation* (highest predicted engagement) and *exploration* (uncertain items). Published as "Explore, Exploit, Explain."
+- **Intent as surfaces:** Daily Mix (exploit/familiar), Discover Weekly (explore/novel, *hard-excludes music you already know*), Release Radar (new from connected artists), Smart Shuffle (in-session blend, ~1 recommended per 3 of yours).
 
 ### Apple Music
 - Editorial-first; the algorithm personalizes around human curation. Under the hood: collaborative + content/audio + contextual.
@@ -103,7 +103,7 @@ What's missing: the **policy layer** (per-request intent) and a **confidence sig
 
 ### The field
 - **Two-stage retrieve -> rank -> rerank** is the industry default. GrooveIQ matches it.
-- **Explore/exploit** is formalized as multi-armed / **contextual bandits** (epsilon-greedy, UCB, Thompson sampling). UCB picks items by `mu + kappa*sigma` — high predicted reward *or* high uncertainty. **This is exactly the acquisition function our dial implements (section 5).**
+- **Explore/exploit** is formalized as multi-armed / **contextual bandits** (epsilon-greedy, UCB, Thompson sampling). UCB picks items by `mu + kappa*sigma`: high predicted reward *or* high uncertainty. **This is exactly the acquisition function our dial implements (section 5).**
 - **Calibrated recommendations / popularity-bias control**: the distribution of recommended items should track the user's own history; novelty comes from deliberately re-weighting it.
 
 ---
@@ -116,16 +116,16 @@ What's missing: the **policy layer** (per-request intent) and a **confidence sig
 |---|---|---|---|
 | Two-stage retrieve->rank->rerank | yes | yes | yes |
 | Multiple candidate models (CF + audio + sequence) | yes CF/NLP/audio | yes CF/content/editorial | yes **rich** (CF, FAISS audio, skip-gram, SASRec, GRU, Last.fm) |
-| Explicit explore/exploit **policy** (bandit) | yes BaRT | ~ implicit | no — static 15% slots, no reward loop |
-| Per-track **uncertainty / confidence** estimate | yes | ~ | no — point estimate only |
+| Explicit explore/exploit **policy** (bandit) | yes BaRT | ~ implicit | no: static 15% slots, no reward loop |
+| Per-track **uncertainty / confidence** estimate | yes | ~ | no: point estimate only |
 | **Selectable per-request intent** | yes (surfaces) | yes (surfaces) | no |
 | Familiar / exploitation surface | Daily Mix | Favorites Mix / Personal Station | no familiar-only mode |
-| Discovery surface **with novelty filter** | Discover Weekly | New Music Mix / Discovery Station | no — only a 15% sprinkle |
+| Discovery surface **with novelty filter** | Discover Weekly | New Music Mix / Discovery Station | no: only a 15% sprinkle |
 | In-session blend with a dial | Smart Shuffle | ~ stations | ~ **Radio drift** (closest analog) |
 | Context-awareness (time/device/mood) | yes | yes | yes **strong** |
-| Per-request tunability | yes via surface | yes via surface | no — global config only |
+| Per-request tunability | yes via surface | yes via surface | no: global config only |
 
-**Takeaway (original):** GrooveIQ is not behind on models or features — it's missing the **intent/policy layer** and a **confidence signal**. **[Shipped]** Both have since been added: the intent/policy layer (the discovery dial) and a Phase-A confidence proxy. A *learned* uncertainty model (Phase B) and an online bandit (Phase 3) remain future work.
+**Takeaway (original):** GrooveIQ is not behind on models or features; it's missing the **intent/policy layer** and a **confidence signal**. **[Shipped]** Both have since been added: the intent/policy layer (the discovery dial) and a Phase-A confidence proxy. A *learned* uncertainty model (Phase B) and an online bandit (Phase 3) remain future work.
 
 ---
 
@@ -140,7 +140,7 @@ A single request parameter `discovery` in [0.0, 1.0]. Named presets are labeled 
 | 0.0 | `familiar` | "Play me what I love." |
 | ~0.3 | `balanced` *(default)* | Today's behaviour, unchanged. |
 | ~0.6 | `discovery` | "Mostly new, anchored to my taste." |
-| 1.0 | `deep_discovery` | "Surprise me — nothing I've heard." |
+| 1.0 | `deep_discovery` | "Surprise me, nothing I've heard." |
 
 ### 4.2 What the dial controls (anchor table)
 
@@ -159,13 +159,13 @@ A linear mapping (e.g. `exploration_fraction = 0.5*d`, `freshness_boost = 0.3*d`
 
 ### 4.3 Request-scoped override mechanism (the key plumbing)
 
-Modes must apply **per request**, but config is a global singleton. **Do not** implement modes by activating different global config versions — that races across concurrent requests and the trained ranker / taste profiles are baked regardless. Instead:
+Modes must apply **per request**, but config is a global singleton. **Do not** implement modes by activating different global config versions: that races across concurrent requests and the trained ranker / taste profiles are baked regardless. Instead:
 
 - Add `app/services/request_config.py` exposing a `contextvars.ContextVar` holding an optional overrides dict for the current request.
-  - **`contextvars`, not thread-local** — the async-safe primitive: it propagates across `await` inside the request's task and is auto-copied into the fire-and-forget `asyncio.create_task(write_audit(...))`.
+  - **`contextvars`, not thread-local**, the async-safe primitive: it propagates across `await` inside the request's task and is auto-copied into the fire-and-forget `asyncio.create_task(write_audit(...))`.
 - Teach `get_config()` to merge any active override on top of the base config.
 - The recommend handler computes overrides from `discovery`, sets the ContextVar, resets it in a `finally`.
-- **Deep call sites need no change** — `reranker`/`candidate_gen` keep calling `get_config()`.
+- **Deep call sites need no change**: `reranker`/`candidate_gen` keep calling `get_config()`.
 
 ### 4.4 Modes as versioned config
 
@@ -182,14 +182,14 @@ Add a `modes` group to `app/models/algorithm_config_schema.py` holding the ancho
 
 ## 5. Defining "proven": confidence, not play count
 
-This is the crux. "Proven" must mean **the model is confident the user won't skip this track** — not merely that it has been played before. A track played once and skipped is *not* proven; a never-heard track sitting deep inside a cluster of the user's loved tracks *can* be.
+This is the crux. "Proven" must mean **the model is confident the user won't skip this track**, not merely that it has been played before. A track played once and skipped is *not* proven; a never-heard track sitting deep inside a cluster of the user's loved tracks *can* be.
 
 ### 5.1 The acquisition function
 
 Per (user, track) we want two quantities:
 
-- **`mu` (predicted engagement)** — probability the user will *not* early-skip / will complete. High `mu` = a safe bet.
-- **`sigma` (uncertainty)** — how unsure the model is about `mu`. Low `sigma` = we can trust it.
+- **`mu` (predicted engagement)**: probability the user will *not* early-skip / will complete. High `mu` = a safe bet.
+- **`sigma` (uncertainty)**: how unsure the model is about `mu`. Low `sigma` = we can trust it.
 
 The dial is the exploration coefficient `kappa(d)` in a UCB-style score:
 
@@ -198,37 +198,37 @@ score(track) = mu  +  kappa(d)*sigma  -  lambda(d)*is_proven(track)
 ```
 
 - **`familiar` (`d=0`, `kappa=0`)**: rank by `mu` and **restrict the pool to high-`mu`, low-`sigma` tracks** -> confident no-skips. `lambda=0`.
-- **`balanced`**: small `kappa` — a gentle exploratory tilt (~ today).
+- **`balanced`**: small `kappa`, a gentle exploratory tilt (~ today).
 - **`deep_discovery` (`d=1`, large `kappa`)**: reward high `sigma` (things we're unsure about) and subtract `lambda` for tracks already in the proven set -> push genuine novelty.
 
 This is the principled version of the existing `1/sqrt(plays+1)` heuristic, and the natural on-ramp to a real bandit later (section 14).
 
-### 5.2 Estimating mu and sigma — two phases
+### 5.2 Estimating mu and sigma: two phases
 
 GrooveIQ's LightGBM ranker emits neither a skip probability nor `sigma` today, so this needs a small, incremental model addition.
 
-> **[Shipped — Phase A only]** `app/services/confidence.py` implements the Phase-A proxy described immediately below (ranker score + recency-weighted personal evidence + FAISS neighbour density). **Phase B (the LightGBM skip-head classifier + quantile `sigma` models) has not shipped** — it remains the deferred fast-follow, consistent with the "A-now / B-later" decision recorded in section 15.
+> **[Shipped: Phase A only]** `app/services/confidence.py` implements the Phase-A proxy described immediately below (ranker score + recency-weighted personal evidence + FAISS neighbour density). **Phase B (the LightGBM skip-head classifier + quantile `sigma` models) has not shipped**: it remains the deferred fast-follow, consistent with the "A-now / B-later" decision recorded in section 15.
 
-**Phase A — proxy from existing signals (ships *with* the dial, no new model):**
+**Phase A: proxy from existing signals (ships *with* the dial, no new model):**
 
 - **`mu` proxy:** the ranker's `satisfaction_score` prediction (already a skip-aware composite) blended with the track's own `avg_completion` / `skip_count` when present; for unheard tracks, inherited from nearest neighbours.
-- **`sigma` proxy (confidence):** *evidence density* —
+- **`sigma` proxy (confidence):** *evidence density*:
   - `personal_evidence`: own plays / completions on this track, recency-weighted.
   - `neighbour_evidence`: weighted count of the user's **proven** tracks within an embedding radius, via the existing FAISS `effnet_index`. Dense cluster of loved tracks nearby -> low `sigma`; isolated track -> high `sigma`.
 - This already beats `play_count`: confidence comes from prediction + neighbourhood density, not "heard before."
 
-**Phase B — proper model (high-leverage fast-follow):**
+**Phase B: proper model (high-leverage fast-follow):**
 
 - **Skip/completion head:** a LightGBM **classifier** on the same 39-feature matrix, label = `early_skip(1)` vs `full_listen(0)` from events -> calibrated `P(skip)`, so `mu = 1 - P(skip)`. Bonus: it becomes a new ranker feature that improves ranking generally.
-- **Uncertainty via quantile regression:** train two extra LightGBM models on satisfaction with `objective="quantile"` at `alpha~0.15` and `alpha~0.85`; `sigma = q_hi - q_lo`. Native to LightGBM (which you already use) — two small models, no new framework.
+- **Uncertainty via quantile regression:** train two extra LightGBM models on satisfaction with `objective="quantile"` at `alpha~0.15` and `alpha~0.85`; `sigma = q_hi - q_lo`. Native to LightGBM (which you already use): two small models, no new framework.
 - Carries a **[RETRAIN]** implication and slots into the existing pipeline as new training steps.
 
-> **Recommendation:** ship **Phase A with the dial** (so "proven" is confidence-based from day one), then do **Phase B** as the immediate next step — it's cheap given the existing LightGBM stack, improves ranking across all modes, and is the foundation for the eventual bandit.
+> **Recommendation:** ship **Phase A with the dial** (so "proven" is confidence-based from day one), then do **Phase B** as the immediate next step: it's cheap given the existing LightGBM stack, improves ranking across all modes, and is the foundation for the eventual bandit.
 
 ### 5.3 The "proven set" and the discovery novelty filter
 
 - **Proven set** (used by `familiar` and as the discovery *exclusion*): tracks with `mu >= proven_mu_min` **and** `sigma <= proven_sigma_max`. Both thresholds live in the `modes` config.
-- **Discovery filter** (`d->1`): exclude the proven set and the existing proven-*bad* set (disliked / heavily-skipped). Keep **uncertain-but-promising** tracks (high `sigma`, `mu` above a floor). A track skipped once but with weak/ambiguous signal can still appear — which is correct, and impossible to express with `play_count`.
+- **Discovery filter** (`d->1`): exclude the proven set and the existing proven-*bad* set (disliked / heavily-skipped). Keep **uncertain-but-promising** tracks (high `sigma`, `mu` above a floor). A track skipped once but with weak/ambiguous signal can still appear, which is correct, and impossible to express with `play_count`.
 
 ### 5.4 Cold-start interaction
 
@@ -238,7 +238,7 @@ For users with little history, the proven set is tiny and `sigma` is high almost
 
 ## 6. App surfacing & UX
 
-> **[Shipped]** The backend for this shipped: `GET /v1/users/{user_id}/mixes` returns the suggested shelf specs (On Repeat / Your Mix / Discover / Deep Cuts), each a ready-to-call recommend request; `POST /v1/users/{user_id}/mixes/prewarm` warms the SWR cache; the recommend response carries per-track `reasons` (derived by `modes.derive_reasons()` — e.g. `proven_favourite`, `new_to_you`, `exploring`, `keep_listening`, plus source-based chips). Radio honours the dial via `mode`/`discovery` on `start`/`next` (section 6.3). Exact dashboard layout (the `explore.js` shelf/dial rendering) follows this design.
+> **[Shipped]** The backend for this shipped: `GET /v1/users/{user_id}/mixes` returns the suggested shelf specs (On Repeat / Your Mix / Discover / Deep Cuts), each a ready-to-call recommend request; `POST /v1/users/{user_id}/mixes/prewarm` warms the SWR cache; the recommend response carries per-track `reasons` (derived by `modes.derive_reasons()`, e.g. `proven_favourite`, `new_to_you`, `exploring`, `keep_listening`, plus source-based chips). Radio honours the dial via `mode`/`discovery` on `start`/`next` (section 6.3). Exact dashboard layout (the `explore.js` shelf/dial rendering) follows this design.
 
 ### 6.1 Explore -> Recommendations becomes a multi-shelf home
 
@@ -257,23 +257,23 @@ Recommendations
 
 - The **dial** at the top is a 4-stop slider bound to the continuous `discovery` value; it drives a "Custom Mix" list and is also the control end-users reach for. Snap points = the four presets; the raw value is still continuous underneath.
 - Each **shelf** is one `GET /v1/recommend/{user_id}?mode=...` call (or seed variant), served instantly from cache and refreshed in the background.
-- Changing the dial re-requests the custom list — instant if pre-warmed.
+- Changing the dial re-requests the custom list: instant if pre-warmed.
 
 ### 6.2 Per-track "reason" chips
 
 Make the mode legible (Spotify's sparkle / "because you listen to X"). The response carries a `reasons` array per track; the UI renders small chips:
 
 - `familiar` -> "Proven favourite", "You complete this 90% of the time"
-- `discovery` -> "New to you", "Fans of {artist} like this", "Exploring — unsure you'll like it"
+- `discovery` -> "New to you", "Fans of {artist} like this", "Exploring, unsure you'll like it"
 
 The data already exists: candidate `sources`, the feature vector, and (post-section 5) `mu`/`sigma`. This also flows straight into the existing **recommendation audit** so every served mix is replayable.
 
 ### 6.3 Radio honours the dial (recommended)
 
-Radio is the most natural home for the dial — Apple's Discovery Station is literally a discovery-dialed radio.
+Radio is the most natural home for the dial: Apple's Discovery Station is literally a discovery-dialed radio.
 
 - Set at session start: `POST /v1/radio/start?discovery=...`; override per `GET /v1/radio/{id}/next?discovery=...`.
-- The dial modulates radio's **source weights**, the **novelty filter** (against the session's played set + the proven set), and the **drift step size** (how far each feedback nudge moves the drift embedding — `app/services/radio.py:300`).
+- The dial modulates radio's **source weights**, the **novelty filter** (against the session's played set + the proven set), and the **drift step size** (how far each feedback nudge moves the drift embedding, `app/services/radio.py:300`).
 - **Cooperation, not conflict:** the dial sets the *baseline posture*; in-session like/skip/dislike feedback drifts *around* that baseline. A `familiar` radio is a low-drift comfort station; a `deep_discovery` radio wanders and rarely repeats.
 - UI: a "Comfort / Adventurous" control on the Radio start panel (Explore -> Radio), adjustable mid-session.
 
@@ -290,7 +290,7 @@ There are **two distinct levels**, and they live in different buckets of the fou
 
 ### Settings -> Algorithm -> Modes editor
 
-> **[Shipped]** The `modes` group is a first-class member of the versioned algorithm-config (`ModesConfig` with one `PresetConfig` per preset), so it inherits versioning/diff/history/rollback/export-import from the existing config shell. Each preset exposes the dial knobs listed in section 4.4. The runtime dial reads the resolved definitions via `GET /v1/algorithm/modes`. The Phase-B "[RETRAIN] confidence-model settings" sub-bullet below is **N/A** — Phase B was deferred, so there are no skip-head/quantile params to edit yet.
+> **[Shipped]** The `modes` group is a first-class member of the versioned algorithm-config (`ModesConfig` with one `PresetConfig` per preset), so it inherits versioning/diff/history/rollback/export-import from the existing config shell. Each preset exposes the dial knobs listed in section 4.4. The runtime dial reads the resolved definitions via `GET /v1/algorithm/modes`. The Phase-B "[RETRAIN] confidence-model settings" sub-bullet below is **N/A**: Phase B was deferred, so there are no skip-head/quantile params to edit yet.
 
 A new accordion group ("Modes") in the existing versioned-config dashboard (`app/static/js/v2/settings.js` + the shared config shell), so it inherits sliders, inline validation, **diff**, **history/rollback**, **export/import**.
 
@@ -304,7 +304,7 @@ The runtime dial in Explore reads these definitions via `GET /v1/algorithm/modes
 
 ## 8. Surfaces: request-only with pre-warming
 
-> **[Shipped]** Implemented as `app/services/mix_cache.py` (in-memory SWR cache, prewarmed per mode), wired into `GET /v1/recommend/{user_id}` and the `POST /v1/users/{user_id}/mixes/prewarm` endpoint. Tunables: `MIX_CACHE_ENABLED` (default true), `MIX_CACHE_FRESH_SECONDS` (120), `MIX_CACHE_STALE_SECONDS` (900 — the stale grace window that triggers one background rebuild), `MIX_CACHE_MAX_ENTRIES` (512), `MIX_CACHE_MAX_CONCURRENT_REBUILDS` (4), `MIX_PREWARM_RATE_LIMIT_PER_MIN` (12, per key+user), `MIX_PREWARM_MAX_MODES` (8). No persisted/scheduled surface tables were added, as decided.
+> **[Shipped]** Implemented as `app/services/mix_cache.py` (in-memory SWR cache, prewarmed per mode), wired into `GET /v1/recommend/{user_id}` and the `POST /v1/users/{user_id}/mixes/prewarm` endpoint. Tunables: `MIX_CACHE_ENABLED` (default true), `MIX_CACHE_FRESH_SECONDS` (120), `MIX_CACHE_STALE_SECONDS` (900, the stale grace window that triggers one background rebuild), `MIX_CACHE_MAX_ENTRIES` (512), `MIX_CACHE_MAX_CONCURRENT_REBUILDS` (4), `MIX_PREWARM_RATE_LIMIT_PER_MIN` (12, per key+user), `MIX_PREWARM_MAX_MODES` (8). No persisted/scheduled surface tables were added, as decided.
 
 **Decision:** no persisted/scheduled surface tables. Every "mix" is a normal request; the frontend asks for as many as it wants. To hide generation latency, add **stale-while-revalidate (SWR)** caching + **pre-warm**:
 
@@ -320,15 +320,15 @@ Trade-off acknowledged: a cold mix costs one full pipeline run (~100-500 ms). SW
 
 ## 9. API changes
 
-> **[Shipped]** The annotated block below is the **as-built** surface. It differs from the original proposal in two places: the dial uses the `discovery` query param and a preset `mode` (radio also accepts `mode` on `start`/`next`), and the modes config is **not** a separate CRUD resource — it is edited through the existing `PUT /v1/algorithm/config` routes, with `GET /v1/algorithm/modes` as a **read-only, non-admin** projection. The struck-through `PUT/POST /v1/algorithm/modes` endpoints were never added.
+> **[Shipped]** The annotated block below is the **as-built** surface. It differs from the original proposal in two places: the dial uses the `discovery` query param and a preset `mode` (radio also accepts `mode` on `start`/`next`), and the modes config is **not** a separate CRUD resource: it is edited through the existing `PUT /v1/algorithm/config` routes, with `GET /v1/algorithm/modes` as a **read-only, non-admin** projection. The struck-through `PUT/POST /v1/algorithm/modes` endpoints were never added.
 
 ```
-# Changed — the dial (+ preset alias) on the existing endpoint  [SHIPPED]
+# Changed: the dial (+ preset alias) on the existing endpoint  [SHIPPED]
 GET /v1/recommend/{user_id}?discovery=0.0..1.0
 GET /v1/recommend/{user_id}?mode=familiar|balanced|discovery|deep_discovery   # 422 on unknown mode
 #   existing context params unchanged (seed_track_id, device_type, hour_of_day, genre, mood, ...)
 #   response gains: "discovery" (resolved value) + per-track "reasons"[]
-#   (mu/sigma would land with section 5 Phase B — deferred)
+#   (mu/sigma would land with section 5 Phase B: deferred)
 #   served through the SWR mix cache (section 8)
 
 # Radio honours the dial  [SHIPPED]
@@ -339,7 +339,7 @@ GET  /v1/radio/{session_id}/next?discovery=...&mode=...   # per-batch override; 
 POST /v1/users/{user_id}/mixes/prewarm           # body: { modes?: [...], limit? } -> 202, warms cache in background
 GET  /v1/users/{user_id}/mixes                   # menu of suggested shelves (On Repeat / Your Mix / Discover / Deep Cuts)
 
-# Modes/dial config  [SHIPPED — read-only projection; edited via the algorithm-config routes]
+# Modes/dial config  [SHIPPED: read-only projection; edited via the algorithm-config routes]
 GET  /v1/algorithm/modes                         # anchors + preset definitions (read by the Explore dial; any authenticated key, no admin)
 #  --- the standalone CRUD below was PROPOSED but NOT built; use PUT /v1/algorithm/config instead ---
 #  GET  /v1/algorithm/modes/defaults
@@ -347,13 +347,13 @@ GET  /v1/algorithm/modes                         # anchors + preset definitions 
 #  POST /v1/algorithm/modes/reset
 ```
 
-No new endpoints are required for the confidence model (section 5) — `mu`/`sigma` are produced inside the pipeline and surfaced via the existing recommend/debug/audit responses.
+No new endpoints are required for the confidence model (section 5): `mu`/`sigma` are produced inside the pipeline and surfaced via the existing recommend/debug/audit responses.
 
 ---
 
 ## 10. File change summary
 
-> **[Shipped]** All Phase 0–1 rows below landed (the new files `request_config.py`, `mix_cache.py`, `confidence.py` exist, joined by `app/services/modes.py` — the dial resolver, which wasn't named in the original table). Phase 2's `ranker.py`/`scheduler.py` rows (the Phase-B confidence *model*) did **not** land; `evaluation.py`'s per-dial metrics row **did** land (`evaluate_dial_modes`).
+> **[Shipped]** All Phase 0–1 rows below landed (the new files `request_config.py`, `mix_cache.py`, `confidence.py` exist, joined by `app/services/modes.py`, the dial resolver, which wasn't named in the original table). Phase 2's `ranker.py`/`scheduler.py` rows (the Phase-B confidence *model*) did **not** land; `evaluation.py`'s per-dial metrics row **did** land (`evaluate_dial_modes`).
 
 | File | Change | Phase |
 |------|--------|-------|
@@ -384,16 +384,16 @@ The **base** ranker/feature-eng are untouched in Phase 0-1; Phase 2 *adds* model
 
 > **[Shipped]** Phases 0–1 are done; Phase 2 (the Phase-B confidence model) is deferred and Phase 3 (the bandit) is not started. The estimates below are retained as the original sizing.
 
-Single developer familiar with the codebase. Implementation **deferred** — these size the work for pickup.
+Single developer familiar with the codebase. Implementation **deferred**: these size the work for pickup.
 
 | Phase | Scope | Size | Rough |
 |-------|-------|------|-------|
 | **0** | ContextVar overrides + `discovery`/`mode` params + UCB acquisition + **Phase A confidence proxy** + proven-set novelty filter + SWR cache + tests | **M** | **3-5 days** |
 | **1** | `modes` versioned config + dashboard (multi-shelf home, dial, reason chips, modes editor) + radio dial + prewarm endpoint | **M-L** | **4-6 days** |
 | **2** | **Phase B confidence model** (skip head + quantile `sigma`) + pipeline training steps + per-dial eval metrics | **M** | **3-5 days** [RETRAIN] |
-| **3** | Bandit-driven default feed (BaRT-style), online reward loop from impressions — subsumes the manual default | **XL** | multi-week |
+| **3** | Bandit-driven default feed (BaRT-style), online reward loop from impressions: subsumes the manual default | **XL** | multi-week |
 
-**Core ask — a confidence-based dial from proven favourites to deep discovery, surfaced in the app — is Phases 0-2: ~10-16 days.** A first usable version (dial + Phase-A confidence + shelves) is Phase 0-1: ~1-1.5 weeks.
+**Core ask, a confidence-based dial from proven favourites to deep discovery, surfaced in the app, is Phases 0-2: ~10-16 days.** A first usable version (dial + Phase-A confidence + shelves) is Phase 0-1: ~1-1.5 weeks.
 
 ---
 
@@ -403,7 +403,7 @@ Single developer familiar with the codebase. Implementation **deferred** — the
 
 Judge the poles by different metrics (NDCG alone is insufficient):
 
-- **Familiar (`d->0`)**: completion rate up, skip rate down, and **skip rate on the proven set** (validates the `mu`/`sigma` thresholds — a good proven set should almost never be skipped).
+- **Familiar (`d->0`)**: completion rate up, skip rate down, and **skip rate on the proven set** (validates the `mu`/`sigma` thresholds: a good proven set should almost never be skipped).
 - **Discovery (`d->1`)**: novelty (mean inverse popularity / % never-played), catalog coverage, intra-list diversity, and **save/like rate on newly surfaced tracks**.
 - **Confidence calibration (Phase B)**: reliability curve of `P(skip)` vs actual; does low-`sigma` actually mean low skip variance?
 - Report per dial-bucket in `app/services/evaluation.py`; the existing `reco_impression` -> stream/skip logging supplies the raw signal.
@@ -415,7 +415,7 @@ Judge the poles by different metrics (NDCG alone is insufficient):
 - **Confidence model investment** (the main fork): Phase A proxy only, or commit to Phase B (skip head + quantile `sigma`)? Recommendation: A in v1, B as fast-follow.
 - **Proven thresholds** (`proven_mu_min`, `proven_sigma_max`): expose in `modes` config; calibrate against the section 12 "skip rate on proven set" metric.
 - **Cold-start**: clamp the effective dial toward balanced until evidence exists; `familiar` falls back to seed/onboarding (section 5.4).
-- **Small libraries**: a hard novelty filter at `d=1` can starve candidates — add a floor that relaxes the filter when the post-filter pool is too small.
+- **Small libraries**: a hard novelty filter at `d=1` can starve candidates; add a floor that relaxes the filter when the post-filter pool is too small.
 - **Override leakage**: reset the ContextVar per request (`finally`); test two concurrent requests with different dials don't bleed.
 - **Cache correctness**: keys must include `model_version` + `config_version` so retrains/config changes don't serve stale mixes; persist resolved `discovery` into the audit for reproducible replays.
 
@@ -423,8 +423,8 @@ Judge the poles by different metrics (NDCG alone is insufficient):
 
 ## 14. Future extensions
 
-- **Second dial — mainstream / niche (popularity).** `popularity_preference` already exists (`app/services/taste_profile.py:466`) as a passive feature; a second dial would *actively* target a popularity setpoint via a reranker calibration rule ("proven mainstream hits" vs "deep cuts"). Out of scope for v1 per the familiarity-only decision.
-- **Close the loop with a real bandit.** Replace the static exploration slots with a contextual bandit (BaRT-style) using the section 5 `mu`/`sigma` and the impression->outcome data already logged — the principled endgame that subsumes the manual default dial.
+- **Second dial: mainstream / niche (popularity).** `popularity_preference` already exists (`app/services/taste_profile.py:466`) as a passive feature; a second dial would *actively* target a popularity setpoint via a reranker calibration rule ("proven mainstream hits" vs "deep cuts"). Out of scope for v1 per the familiarity-only decision.
+- **Close the loop with a real bandit.** Replace the static exploration slots with a contextual bandit (BaRT-style) using the section 5 `mu`/`sigma` and the impression->outcome data already logged: the principled endgame that subsumes the manual default dial.
 - **Smart-Shuffle-style in-session blend.** Interleave a familiar queue with N% discovery picks (N from the dial), reusing the Radio machinery.
 
 ---
@@ -439,7 +439,7 @@ Judge the poles by different metrics (NDCG alone is insufficient):
 5. Default unparameterized request stays at `balanced` (no regression).
 
 **Remaining open question:**
-- **Confidence-model scope for v1** — ship Phase A proxy only and add Phase B (skip head + quantile `sigma`) later, or build A+B together up front? (Recommendation: A in v1, B as fast-follow.) DECIDED: A-now / B-later. **[Shipped]** Resolved as decided — Phase A shipped with the dial; Phase B remains the deferred fast-follow.
+- **Confidence-model scope for v1**: ship Phase A proxy only and add Phase B (skip head + quantile `sigma`) later, or build A+B together up front? (Recommendation: A in v1, B as fast-follow.) DECIDED: A-now / B-later. **[Shipped]** Resolved as decided: Phase A shipped with the dial; Phase B remains the deferred fast-follow.
 
 Secondary calibration choices (proven thresholds, dial->knob curve shape, cache TTL) are config values, tunable post-launch rather than blocking decisions. **[Shipped]** These live in the `modes` config group (proven thresholds, dial anchors, per-preset knobs) and in `MIX_CACHE_*` settings (cache TTLs).
 
@@ -447,10 +447,10 @@ Secondary calibration choices (proven thresholds, dial->knob curve shape, cache 
 
 ## 16. Sources & related reading
 
-**Spotify** — Explore, Exploit, Explain (Spotify Research): https://research.atspotify.com/publications/explore-exploit-explain-personalizing-explainable-recommendations-with-bandits ; BaRT overview: https://dynamoi.com/learn/faqs/what-is-spotify-bart-algorithm ; Discover Weekly vs Daily Mix vs Release Radar: https://roadtripsandplaylists.medium.com/the-spotify-discover-weekly-and-release-radar-algorithm-explained-32a611df77fc ; Discover Weekly's three models: https://medium.com/the-sound-of-ai/spotifys-discover-weekly-explained-breaking-from-your-music-bubble-or-maybe-not-b506da144123 ; Smart Shuffle: https://newsroom.spotify.com/2023-03-08/smart-shuffle-new-life-spotify-playlists/
+**Spotify**: Explore, Exploit, Explain (Spotify Research): https://research.atspotify.com/publications/explore-exploit-explain-personalizing-explainable-recommendations-with-bandits ; BaRT overview: https://dynamoi.com/learn/faqs/what-is-spotify-bart-algorithm ; Discover Weekly vs Daily Mix vs Release Radar: https://roadtripsandplaylists.medium.com/the-spotify-discover-weekly-and-release-radar-algorithm-explained-32a611df77fc ; Discover Weekly's three models: https://medium.com/the-sound-of-ai/spotifys-discover-weekly-explained-breaking-from-your-music-bubble-or-maybe-not-b506da144123 ; Smart Shuffle: https://newsroom.spotify.com/2023-03-08/smart-shuffle-new-life-spotify-playlists/
 
-**Apple Music** — Algorithmic playlists: https://musosoup.com/blog/apple-music-algorithmic-playlists ; Favorites vs New Music Mix: https://notnoise.co/blog/how-apple-music-algorithm-works ; Personal vs Discovery Station: https://www.makeuseof.com/apple-musics-discovery-station-new-music-playlist-differences/
+**Apple Music**: Algorithmic playlists: https://musosoup.com/blog/apple-music-algorithmic-playlists ; Favorites vs New Music Mix: https://notnoise.co/blog/how-apple-music-algorithm-works ; Personal vs Discovery Station: https://www.makeuseof.com/apple-musics-discovery-station-new-music-playlist-differences/
 
-**Theory** — Two-stage recommenders: https://www.mlwhiz.com/p/the-recommendation-engine-under-the ; Calibrated recommendations survey: https://arxiv.org/html/2507.02643v1 ; Exploration/exploitation in sequential music rec: https://arxiv.org/pdf/1812.03226 ; Controlling popularity bias via calibration: https://arxiv.org/pdf/2007.12230
+**Theory**: Two-stage recommenders: https://www.mlwhiz.com/p/the-recommendation-engine-under-the ; Calibrated recommendations survey: https://arxiv.org/html/2507.02643v1 ; Exploration/exploitation in sequential music rec: https://arxiv.org/pdf/1812.03226 ; Controlling popularity bias via calibration: https://arxiv.org/pdf/2007.12230
 
-**In-repo** — `./Telemetry, Features, and Learning-to-Rank Architectures for Music Recommendation.pdf` ; `./LLM_CONTEXT.md` ; `CLAUDE.md` (Recommendation pipeline / serving)
+**In-repo**: `./Telemetry, Features, and Learning-to-Rank Architectures for Music Recommendation.pdf` ; `./LLM_CONTEXT.md` ; `CLAUDE.md` (Recommendation pipeline / serving)

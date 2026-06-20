@@ -2,36 +2,36 @@
 
 **Self-hosted behavioral music recommendation engine.**
 
-GrooveIQ sits alongside your media server (Navidrome, Jellyfin, Plex) and learns *how* you listen — not just *what*. It collects behavioral signals (skips, replays, volume changes, completion rates), analyzes your audio files locally with [Essentia](https://essentia.upf.edu/), trains ML models on your habits, and serves personalized recommendations via a REST API.
+GrooveIQ sits alongside your Navidrome server and learns *how* you listen, not just *what*. It collects behavioral signals (skips, replays, volume changes, completion rates), analyzes your audio files locally with [Essentia](https://essentia.upf.edu/), trains ML models on your habits, and serves personalized recommendations via a REST API.
 
 No cloud. No tracking. Runs on your hardware.
 
 ## Features
 
-- **Behavioral event ingestion** — 18 event types from any Subsonic-compatible app
-- **Local audio analysis** — BPM, key, energy, mood, danceability, 64-dim embeddings via Essentia + ONNX
-- **10-step recommendation pipeline** — sessionization, scoring, taste profiles, collaborative filtering, LightGBM ranking, session skip-gram embeddings, Last.fm external CF, transformer sequential model (SASRec), session GRU taste drift, 2D music map
-- **8 candidate sources** — content similarity (FAISS, seed or taste-centroid — mutually exclusive), collaborative filtering, session skip-gram, SASRec, Last.fm external CF, artist recall, popularity (so any single request blends up to 7)
-- **Context-aware ranking** — 39 features per candidate including device, output, location, and time-of-day signals
-- **Discovery dial** — `familiar` / `balanced` / `discovery` / `deep_discovery` presets (plus a continuous `discovery` float) that retune retrieval, novelty filtering, and reranking per request
-- **Adaptive radio** — stateful sessions seeded from track/artist/playlist with real-time feedback adaptation and the same discovery dial
-- **Playlist generation** — 6 strategies: flow, mood, energy curve, key-compatible (Camelot wheel), **path** (A→B slerp sonic bridge over audio embeddings), and **text** (natural-language CLAP prompt)
-- **Artist recommendations** — multi-source artist discovery: audio centroid (FAISS), track-ranker roll-up, Last.fm similar/top, and listening-history heuristic
-- **Album recommendations** — library-only album roll-up (ranker + coverage + freshness + audio coherence)
-- **User onboarding** — explicit preference collection for cold-start taste profile seeding
-- **Last.fm integration** — scrobbling, profile sync, similar-artist discovery, chart fetching, backfill
-- **Personalized news feed** — Reddit-sourced music news scored per user's taste profile
-- **Download routing cascade** — versioned policy that walks multiple backends per purpose: spotdl-api (YouTube Music), streamrip-api (Qobuz/Tidal/Deezer/SoundCloud lossless), slskd (Soulseek), Spotizerr (legacy fallback), plus Lidarr for bulk album. Three chains (`individual` / `bulk_per_track` / `bulk_album`) + parallel multi-backend search
-- **Lidarr backfill** — drains Lidarr's `wanted/missing` queue through streamrip with fuzzy matching, rate limiting, and a versioned policy
-- **Media server sync** — Navidrome/Plex track ID mapping with cascading updates
-- **Algorithm tuning** — ~90 pipeline weights/thresholds across 10 config groups (plus a discovery-dial preset matrix), configurable via REST API with versioning, rollback, and export/import
-- **Recommendation audit & replay** — every `/v1/recommend` and radio batch persists its full candidate pool + feature vectors for "why was this surfaced?" inspection and offline replay
-- **Per-user API call log** — every `/v1/*` request the client makes is captured (redacted) for debugging integrations
-- **2D music map** — UMAP projection of audio embeddings into a navigable map where nearby tracks sound alike
-- **Web dashboard** — real-time pipeline visualization, recommendation debugger, algorithm tuning GUI, system health panels
-- **Music discovery** — Last.fm similar artists auto-added to Lidarr, optional AcousticBrainz lookup (29.5M tracks) + Fill Library
-- **Lyrics** — read-along/karaoke + algorithm signal via a cascade: embedded tags → LRCLIB → optional GPU ASR sidecar (faster-whisper), instrumental-gated
-- **Integration health** — live connectivity probes for 9 external services
+- **Behavioral event ingestion**: 18 event types from any Subsonic-compatible app
+- **Local audio analysis**: BPM, key, energy, mood, danceability, 64-dim embeddings via Essentia + ONNX
+- **10-step recommendation pipeline**: sessionization, scoring, taste profiles, collaborative filtering, LightGBM ranking, session skip-gram embeddings, Last.fm external CF, transformer sequential model (SASRec), session GRU taste drift, 2D music map
+- **8 candidate sources**: content similarity (FAISS, seed or taste-centroid, mutually exclusive), collaborative filtering, session skip-gram, SASRec, Last.fm external CF, artist recall, popularity (so any single request blends up to 7)
+- **Context-aware ranking**: 39 features per candidate including device, output, location, and time-of-day signals
+- **Discovery dial**: `familiar` / `balanced` / `discovery` / `deep_discovery` presets (plus a continuous `discovery` float) that retune retrieval, novelty filtering, and reranking per request
+- **Adaptive radio**: stateful sessions seeded from track/artist/playlist with real-time feedback adaptation and the same discovery dial
+- **Playlist generation**: 6 strategies: flow, mood, energy curve, key-compatible (Camelot wheel), **path** (A→B slerp sonic bridge over audio embeddings), and **text** (natural-language CLAP prompt)
+- **Artist recommendations**: multi-source artist discovery: audio centroid (FAISS), track-ranker roll-up, Last.fm similar/top, and listening-history heuristic
+- **Album recommendations**: library-only album roll-up (ranker + coverage + freshness + audio coherence)
+- **User onboarding**: explicit preference collection for cold-start taste profile seeding
+- **Last.fm integration**: scrobbling, profile sync, similar-artist discovery, chart fetching, backfill
+- **Personalized news feed** (experimental, off by default): Reddit-sourced music news scored per user's taste profile; the dashboard shows "Coming Soon" until enabled
+- **Download routing cascade**: versioned policy that walks multiple backends per purpose: spotdl-api (YouTube Music), streamrip-api (Qobuz/Tidal/Deezer/SoundCloud lossless), slskd (Soulseek), Spotizerr (legacy fallback), plus Lidarr for bulk album. Three chains (`individual` / `bulk_per_track` / `bulk_album`) + parallel multi-backend search
+- **Lidarr backfill**: drains Lidarr's `wanted/missing` queue through streamrip with fuzzy matching, rate limiting, and a versioned policy
+- **Media server sync** (Navidrome): track ID mapping with cascading updates
+- **Algorithm tuning**: ~90 pipeline weights/thresholds across 10 config groups (plus a discovery-dial preset matrix), configurable via REST API with versioning, rollback, and export/import
+- **Recommendation audit & replay**: every `/v1/recommend` and radio batch persists its full candidate pool + feature vectors for "why was this surfaced?" inspection and offline replay
+- **Per-user API call log**: every `/v1/*` request the client makes is captured (redacted) for debugging integrations
+- **2D music map**: UMAP projection of audio embeddings into a navigable map where nearby tracks sound alike
+- **Web dashboard**: real-time pipeline visualization, recommendation debugger, algorithm tuning GUI, system health panels
+- **Music discovery**: Last.fm similar artists auto-added to Lidarr, optional AcousticBrainz lookup (29.5M tracks) + Fill Library
+- **Lyrics**: read-along/karaoke + algorithm signal via a cascade: embedded tags → LRCLIB → optional GPU ASR sidecar (faster-whisper), instrumental-gated
+- **Integration health**: live connectivity probes for 9 external services
 
 ## Quick start
 
@@ -39,7 +39,7 @@ No cloud. No tracking. Runs on your hardware.
 
 - Docker and Docker Compose
 - A music library accessible on the host
-- (Optional) Navidrome or Plex for track ID sync
+- (Optional) Navidrome for track ID sync
 
 ### 1. Clone and configure
 
@@ -49,7 +49,7 @@ cd grooveiq
 cp .env.example .env
 ```
 
-Edit `.env` — at minimum set these three values:
+Edit `.env`: at minimum set these three values:
 
 ```bash
 # Generate secrets
@@ -109,7 +109,7 @@ curl "http://localhost:8000/v1/recommend/alice?limit=10" \
 Music app  ──►  POST /v1/events  ──►  GrooveIQ  ──►  GET /v1/recommend/{user}
  (Navidrome,      (behavioral           (pipeline        (ranked
   Symfonium,       signals)              trains ML        track IDs)
-  Plexamp)                               models)
+  Amperfy)                               models)
 ```
 
 ### Recommendation pipeline
@@ -131,11 +131,11 @@ Runs every hour (configurable). Each step is error-isolated.
 
 ### Serving flow
 
-1. **Candidate retrieval** — up to 7 of 8 sources merged and deduplicated (content-from-seed and content-from-taste-centroid are mutually exclusive)
-2. **Feature engineering** — 39 features per candidate (audio, behavioral, context, sequential)
-3. **Ranking** — LightGBM scores candidates (falls back to satisfaction score)
-4. **Reranking** — artist diversity, anti-repetition, freshness boost, skip suppression, ~15% exploration slots
-5. **Impression logging** — closes the feedback loop for model improvement
+1. **Candidate retrieval**: up to 7 of 8 sources merged and deduplicated (content-from-seed and content-from-taste-centroid are mutually exclusive)
+2. **Feature engineering**: 39 features per candidate (audio, behavioral, context, sequential)
+3. **Ranking**: LightGBM scores candidates (falls back to satisfaction score)
+4. **Reranking**: artist diversity, anti-repetition, freshness boost, skip suppression, ~15% exploration slots
+5. **Impression logging**: closes the feedback loop for model improvement
 
 ## Tech stack
 
@@ -171,7 +171,7 @@ All settings via environment variables or `.env` file. See [`.env.example`](.env
 
 | Integration | Required variables |
 |-------------|-------------------|
-| Navidrome/Plex sync | `MEDIA_SERVER_TYPE`, `MEDIA_SERVER_URL`, credentials |
+| Navidrome sync | `MEDIA_SERVER_TYPE=navidrome`, `MEDIA_SERVER_URL`, credentials |
 | Last.fm | `LASTFM_API_KEY`, `LASTFM_API_SECRET` |
 | Lidarr discovery | `LIDARR_URL`, `LIDARR_API_KEY` |
 | spotdl-api downloads (YouTube Music) | `SPOTDL_API_URL` (+ `SPOTIFY_CLIENT_ID`/`SPOTIFY_CLIENT_SECRET` on the sidecar) |
@@ -186,9 +186,9 @@ All settings via environment variables or `.env` file. See [`.env.example`](.env
 
 ## Database
 
-GrooveIQ runs on **SQLite by default** — zero-config, no extra container, ideal for trying it out and for small libraries.
+GrooveIQ runs on **SQLite by default**: zero-config, no extra container, ideal for trying it out and for small libraries.
 
-For **production deployments — especially libraries beyond ~50K tracks — use PostgreSQL.** GrooveIQ generates sustained concurrent writes: continuous library scans persisting audio features, the hourly recommendation pipeline, background jobs, and API traffic all hit the database at once. SQLite serializes every write behind a single database-wide lock, so under that load it spends increasing time blocked on busy-timeout waits and can stall with `database is locked`. PostgreSQL handles concurrent writers natively and removes that ceiling.
+For **production deployments, especially libraries beyond ~50K tracks, use PostgreSQL.** GrooveIQ generates sustained concurrent writes: continuous library scans persisting audio features, the hourly recommendation pipeline, background jobs, and API traffic all hit the database at once. SQLite serializes every write behind a single database-wide lock, so under that load it spends increasing time blocked on busy-timeout waits and can stall with `database is locked`. PostgreSQL handles concurrent writers natively and removes that ceiling.
 
 `docker-compose.yml` already includes a `postgres` service. To use it:
 
@@ -197,9 +197,9 @@ For **production deployments — especially libraries beyond ~50K tracks — use
    ```
    DATABASE_URL=postgresql+asyncpg://grooveiq:YOUR_POSTGRES_PASSWORD@postgres:5432/grooveiq
    ```
-3. `docker compose up -d` — a fresh install builds the schema automatically on first start.
+3. `docker compose up -d`: a fresh install builds the schema automatically on first start.
 
-Already running on SQLite? `migrations/002_sqlite_to_postgres.py` copies your data into PostgreSQL — see the script's header comment for usage.
+Already running on SQLite? `migrations/002_sqlite_to_postgres.py` copies your data into PostgreSQL. See the script's header comment for usage.
 
 ## Connecting your music app
 
@@ -263,12 +263,12 @@ docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d
 GrooveIQ acquires lyrics through a priority **cascade**, preferring real sources over
 machine transcription:
 
-1. **Embedded tags** (USLT/SYLT, Vorbis `LYRICS`, MP4 `©lyr`) — read for free during the library scan.
-2. **[LRCLIB](https://lrclib.net)** — free, no API key, returns time-synced LRC.
-3. **ASR** (optional) — [faster-whisper](lyrics-api/README.md) transcription for voiced tracks that tiers 1–2 miss.
+1. **Embedded tags** (USLT/SYLT, Vorbis `LYRICS`, MP4 `©lyr`): read for free during the library scan.
+2. **[LRCLIB](https://lrclib.net)**: free, no API key, returns time-synced LRC.
+3. **ASR** (optional): [faster-whisper](lyrics-api/README.md) transcription for voiced tracks that tiers 1–2 miss.
 
 Lyrics power both read-along/karaoke display (`GET /v1/tracks/{id}/lyrics`, shown in the
-dashboard's Tracks view) and — later — algorithm signals. ASR results are tagged
+dashboard's Tracks view) and (later) algorithm signals. ASR results are tagged
 `auto-transcribed` and ranked below real sources, and **instrumentals are gated out**
 (no hallucinated lyrics).
 
@@ -278,16 +278,16 @@ dashboard's Tracks view) and — later — algorithm signals. ASR results are ta
 LYRICS_ENABLED=true
 LYRICS_LRCLIB_ENABLED=true
 ```
-That's it — embedded tags land during scans and a background drain fills in LRCLIB matches.
+That's it. Embedded tags land during scans and a background drain fills in LRCLIB matches.
 
-### Tier 3 — ASR on a separate GPU host
+### Tier 3: ASR on a separate GPU host
 
 ASR runs as a standalone **[`lyrics-api`](lyrics-api/README.md)** container on a machine
-with an NVIDIA GPU — **not** in the main `docker-compose.yml`. This keeps the GrooveIQ
+with an NVIDIA GPU, **not** in the main `docker-compose.yml`. This keeps the GrooveIQ
 image GPU/PyTorch-free; GrooveIQ just calls it over HTTP. Typical topology: GrooveIQ on a
-CPU box, `lyrics-api` on your Plex/GPU box (which already has the library mounted).
+CPU box, `lyrics-api` on your media/GPU box (which already has the library mounted).
 
-1. Deploy the sidecar on the GPU host — see **[`lyrics-api/README.md`](lyrics-api/README.md)**.
+1. Deploy the sidecar on the GPU host: see **[`lyrics-api/README.md`](lyrics-api/README.md)**.
 2. Point GrooveIQ at it:
    ```ini
    LYRICS_ASR_ENABLED=true
@@ -347,7 +347,7 @@ If exposing GrooveIQ on the internet:
 2. **Set `ALLOWED_HOSTS`** to your domain.
 3. **Restrict `CORS_ORIGINS`** to your frontend origin.
 4. **Rotate API keys** periodically (`openssl rand -base64 32`).
-5. **Firewall** — expose only port 443 externally.
+5. **Firewall**: expose only port 443 externally.
 
 ## Troubleshooting
 
@@ -355,7 +355,7 @@ If exposing GrooveIQ on the internet:
 
 `streamrip-api` and `spotdl-api` bind-mount your library at `/music`. If the host
 directory backing that mount is replaced while the containers keep running (e.g. a
-deploy recreates it), the containers keep a reference to the *old* inode — `/music`
+deploy recreates it), the containers keep a reference to the *old* inode. `/music`
 looks empty and root-owned inside the container and every download fails, even
 though search still works.
 
@@ -379,21 +379,21 @@ acceptable was found. (Infra/transient search failures are recorded separately a
 `search_error` and re-queue automatically once the backend recovers.) On a large
 library the residual `no_match` tail is usually *structural*, not a bug:
 
-- **Singles / remixes / promos** — if Lidarr's metadata profile monitors the
+- **Singles / remixes / promos**: if Lidarr's metadata profile monitors the
   `Single` (and `EP`) release types, many "missing albums" are really individual
   tracks that only exist *inside* an album on streaming services, so album-level
   matching can't fetch them. **The biggest single fix is to narrow the Lidarr
   metadata profile to `Album` (+ `EP`).** Alternatively, enable
   `match.allow_track_fallback` in the backfill settings to download the single
   track instead.
-- **Classical** — Lidarr's album artist is the *composer* (often non-Latin script)
+- **Classical**: Lidarr's album artist is the *composer* (often non-Latin script)
   while services list the *performer / orchestra*, so the artist-similarity check
   rejects an otherwise-correct album. Enable `match.classical_relax_artist` to
   accept when the album title matches strongly **and** the year or track count
   corroborates (the corroboration guards against unrelated albums that merely
   share a common title).
 
-Both options are off by default — use the **Preview Match** modal to calibrate
+Both options are off by default. Use the **Preview Match** modal to calibrate
 before enabling, especially for libraries with significant non-Latin content.
 
 ## Development
@@ -413,7 +413,7 @@ pytest tests/ -v
 pip install ruff
 ruff check app/ tests/
 
-# Build Docker image (amd64 only — essentia has no ARM wheels)
+# Build Docker image (amd64 only, essentia has no ARM wheels)
 docker build --platform linux/amd64 -t grooveiq:dev .
 ```
 
@@ -421,11 +421,11 @@ docker build --platform linux/amd64 -t grooveiq:dev .
 
 GitHub Actions workflow (`.github/workflows/ci.yml`) runs automatically on push and pull requests:
 
-- **Lint** — ruff check + format
-- **Test** — pytest with JUnit reporting
-- **Security** — pip-audit (dependency CVEs), semgrep (SAST), trivy (container scan)
-- **Build** — Docker image pushed to GitHub Container Registry (`ghcr.io`) on main branch + tags
+- **Lint**: ruff check + format
+- **Test**: pytest with JUnit reporting
+- **Security**: pip-audit (dependency CVEs), semgrep (SAST), trivy (container scan)
+- **Build**: Docker image pushed to GitHub Container Registry (`ghcr.io`) on main branch + tags
 
 ## License
 
-[CC BY-NC 4.0](LICENSE) — free to use, copy, and modify for non-commercial purposes with attribution.
+[CC BY-NC 4.0](LICENSE): free to use, copy, and modify for non-commercial purposes with attribution.

@@ -1,8 +1,8 @@
-# acousticbrainz-lookup — audio-feature discovery sidecar for GrooveIQ
+# acousticbrainz-lookup: audio-feature discovery sidecar for GrooveIQ
 
 `acousticbrainz-lookup` is an **optional add-on container** that gives GrooveIQ a
-~29.5M-track discovery pool keyed by *audio characteristics* — BPM, energy, mood,
-danceability, genre — with **zero external API dependency** after the initial data
+~29.5M-track discovery pool keyed by *audio characteristics*: BPM, energy, mood,
+danceability, genre, with **zero external API dependency** after the initial data
 download.
 
 On first boot it ingests the [AcousticBrainz](https://acousticbrainz.org/) high-level
@@ -13,9 +13,9 @@ spotdl-api for download. It powers GrooveIQ's **Fill Library** pipeline and the
 **AcousticBrainz discovery** source.
 
 It runs as its own service in the main GrooveIQ `docker-compose.yml`. It listens on
-**port 8200**, is reachable only on the internal Docker network, and has **no auth** —
+**port 8200**, is reachable only on the internal Docker network, and has **no auth**.
 GrooveIQ's auth layer fronts it. (Whether GrooveIQ *uses* it is gated by
-`AB_LOOKUP_ENABLED` — see [§5](#5-deploy).)
+`AB_LOOKUP_ENABLED`; see [§5](#5-deploy).)
 
 ```
 ┌──────────────────────────┐   POST /v1/search (taste profile)   ┌──────────────────────────┐
@@ -23,7 +23,7 @@ GrooveIQ's auth layer fronts it. (Whether GrooveIQ *uses* it is gated by
 │  AB_LOOKUP_ENABLED=true   │   ◀───── matching tracks (MBIDs) ──  │  SQLite (~29.5M tracks)  │
 │  AB_LOOKUP_URL=…:8200     │                                      │  port 8200, /data volume │
 └──────────────────────────┘                                      └──────────────────────────┘
-        same Docker network — no host ports, no auth
+        same Docker network: no host ports, no auth
 ```
 
 > **Note:** unlike the download sidecars (spotdl-api / streamrip-api / lyrics-api),
@@ -37,7 +37,7 @@ GrooveIQ's auth layer fronts it. (Whether GrooveIQ *uses* it is gated by
 The AcousticBrainz high-level dump contains Essentia-computed audio features (BPM,
 key, danceability, 7 mood classifiers, genre, instrumentalness, plus low-level
 rhythm/tonal/loudness) keyed by MusicBrainz Recording ID (MBID). Ingestion runs once,
-in a **background daemon thread** at startup, and is **resumable** — if the container
+in a **background daemon thread** at startup, and is **resumable**: if the container
 restarts mid-ingest it picks up from the next unprocessed archive (tracked in an
 `ingestion_state` table).
 
@@ -49,7 +49,7 @@ Pipeline (`ingest.py`):
 3. **Parse** each high-level JSON file, extract ~18 fields per track
 4. **Batch INSERT** into SQLite (5000 rows/batch, `INSERT OR IGNORE` for duplicate MBIDs)
 5. **Index** after the bulk load completes (much faster than maintaining during insert)
-6. **Cleanup** — delete each archive after processing; remove `/data/tmp/` when done
+6. **Cleanup**: delete each archive after processing; remove `/data/tmp/` when done
 
 | Mode | Archives | Download | DB after ingest | Time |
 |---|---|---|---|---|
@@ -85,7 +85,7 @@ No auth. All endpoints are served on the internal Docker network only.
 Status + track count + ingestion progress. Returns `{"status": "ready", "tracks": N,
 "ingestion": "completed"}` once ingestion finishes, otherwise `{"status":
 "ingesting", "progress": "archive N/30", "tracks_so_far": N}`. (No `ready`/`music`
-keys, no 503 — a different shape from the download sidecars.)
+keys, no 503: a different shape from the download sidecars.)
 
 ### `POST /v1/search`
 
@@ -170,7 +170,7 @@ and `bpm_histogram` (10 bins spanning 60–200 BPM). Returns a partial `{"status
 ## 4. Feature-mapping caveats
 
 AcousticBrainz used the same Essentia classifiers GrooveIQ uses, so most features map
-directly — but a few are **derived or proxied**, not native:
+directly. But a few are **derived or proxied**, not native:
 
 | Feature | Source | Match quality |
 |---|---|---|
@@ -189,7 +189,7 @@ search results.
 
 The `acousticbrainz-lookup` service block ships in the main GrooveIQ
 `docker-compose.yml`. (Its header comment reads "Uncomment to enable", but the block
-beneath it is already active YAML — there is nothing to uncomment.) To enable
+beneath it is already active YAML. There is nothing to uncomment.) To enable
 discovery against it:
 
 1. In your `.env` on the **grooveiq** container, set:
@@ -197,14 +197,14 @@ discovery against it:
    ```ini
    AB_LOOKUP_ENABLED=true
    AB_LOOKUP_URL=http://acousticbrainz-lookup:8200
-   # AB_SAMPLE_MODE=true   # optional — sample dump for testing (<5 min, <1 GB)
+   # AB_SAMPLE_MODE=true   # optional: sample dump for testing (<5 min, <1 GB)
    ```
 
-2. `docker compose up -d` — the sidecar container starts and begins ingesting on
+2. `docker compose up -d`: the sidecar container starts and begins ingesting on
    first boot. Watch progress at the sidecar's `/health`.
 
 > **To skip it entirely** (avoid the ~39 GB ingest), comment out the
-> `acousticbrainz-lookup:` service block — and the `ablookup_data` volume — in
+> `acousticbrainz-lookup:` service block (and the `ablookup_data` volume) in
 > `docker-compose.yml`. With `AB_LOOKUP_ENABLED=false` (the default) GrooveIQ won't
 > query it, but the container will still run and ingest if left active in compose.
 

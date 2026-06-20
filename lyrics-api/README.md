@@ -1,16 +1,16 @@
-# lyrics-api — GPU ASR sidecar for GrooveIQ lyrics
+# lyrics-api: GPU ASR sidecar for GrooveIQ lyrics
 
 `lyrics-api` is the **tier-3** of GrooveIQ's lyrics cascade: machine transcription
 (ASR) for voiced tracks that have no embedded tag and no LRCLIB match. It's a thin
 [faster-whisper](https://github.com/SYSTRAN/faster-whisper) wrapper (CTranslate2 /
-CUDA — **no PyTorch**) that transcribes one file at a time and returns the text plus
+CUDA, **no PyTorch**) that transcribes one file at a time and returns the text plus
 an LRC built from the segment timestamps.
 
-It runs as a **separate, standalone container on a GPU host** — *not* part of the main
+It runs as a **separate, standalone container on a GPU host**, *not* part of the main
 GrooveIQ `docker-compose.yml`. That's deliberate:
 
 - It needs an **NVIDIA GPU**, while the GrooveIQ box is typically CPU-only.
-- It keeps the GrooveIQ image **PyTorch/CUDA-free** — GrooveIQ only talks to it over HTTP.
+- It keeps the GrooveIQ image **PyTorch/CUDA-free**: GrooveIQ only talks to it over HTTP.
 
 ```
 ┌─────────────────────────┐         HTTP POST /transcribe        ┌──────────────────────────┐
@@ -21,7 +21,7 @@ GrooveIQ `docker-compose.yml`. That's deliberate:
         both bind-mount the SAME library; the sidecar reads it read-only
 ```
 
-If your GrooveIQ box *itself* has a GPU you can run this on the same machine — it's
+If your GrooveIQ box *itself* has a GPU you can run this on the same machine; it's
 still its own compose project (see [Single-box](#single-box-same-machine-has-the-gpu)).
 
 ---
@@ -30,12 +30,12 @@ still its own compose project (see [Single-box](#single-box-same-machine-has-the
 
 - An **NVIDIA GPU** + driver, and the **[nvidia-container-toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html)** (so `docker info` lists an `nvidia` runtime). `large-v3` needs ~3 GB VRAM; an 8 GB+ card is comfortable.
 - **Docker** with the Compose plugin (`docker compose`).
-- The **same music library** GrooveIQ scanned, mounted on this host (read access is enough). Plex/Jellyfin boxes usually already have it.
+- The **same music library** GrooveIQ scanned, mounted on this host (read access is enough). Your media-server or GPU box usually already has it.
 
 > **The paths must line up.** GrooveIQ transcribes *by path*: it sends the `file_path`
 > it stored at scan time (e.g. `/music/Artist/Album/track.flac`) to the sidecar, which
 > reads that path inside its own container. The simplest setup is to mount your library
-> at **`/music`** in *both* GrooveIQ and this sidecar — then no mapping is needed. If the
+> at **`/music`** in *both* GrooveIQ and this sidecar, then no mapping is needed. If the
 > sidecar mounts the library somewhere else, set `LYRICS_API_MUSIC_PATH` on the **GrooveIQ**
 > side (see [§4](#4-wire-grooveiq-to-the-sidecar)).
 
@@ -64,7 +64,7 @@ EOF
 # 3. Build + start (needs the nvidia runtime)
 ssh user@gpu-host 'cd ~/lyrics-api && docker compose up -d --build'
 
-# 4. Verify — first call lazily downloads the model (~3 GB) to the lyrics_models volume
+# 4. Verify: first call lazily downloads the model (~3 GB) to the lyrics_models volume
 ssh user@gpu-host 'curl -s localhost:8300/health'
 # => {"status":"ok","ready":true,"model":"large-v3","device":"cuda","compute_type":"float16",
 #     "model_loaded":true,"gpu":{...},"max_concurrency":1,"music":{"readable":true,...}}
@@ -72,7 +72,7 @@ ssh user@gpu-host 'curl -s localhost:8300/health'
 
 `docker-compose.yml` mounts `${MUSIC_PATH}:/music:ro` + a `lyrics_models` named volume
 (so the model download survives recreates) and grants the GPU via
-`deploy.resources.reservations.devices`. The service is **stateless** — GrooveIQ owns
+`deploy.resources.reservations.devices`. The service is **stateless**: GrooveIQ owns
 all queue/retry state.
 
 **Redeploy after a code change:** re-`scp main.py` then `docker compose up -d --build`
@@ -94,12 +94,12 @@ all queue/retry state.
 | `LYRICS_VAD` | `true` | Default VAD when the caller doesn't specify. GrooveIQ overrides this per request (see note below). |
 | `LYRICS_LANGUAGE` | *(empty → auto-detect)* | Forced default transcription language (e.g. `en`) used when a `/transcribe` request omits `language`. Empty lets faster-whisper detect per track. |
 | `LYRICS_MAX_CONCURRENCY` | `1` | Concurrent transcriptions (single GPU → keep at 1). |
-| `MUSIC_MIN_ENTRIES` | `0` | When > 0, `/health` also requires `/music` to list ≥ N entries — set `1` on a populated library to catch a stale/empty mount. |
+| `MUSIC_MIN_ENTRIES` | `0` | When > 0, `/health` also requires `/music` to list ≥ N entries: set `1` on a populated library to catch a stale/empty mount. |
 
 ### Endpoints
 
-- `GET /health` — readiness + model/device/compute_type + `gpu` (VRAM) block. Returns **503** when `/music` isn't readable (stale mount) so Docker marks the container unhealthy. The `gpu` block is best-effort — it's populated by shelling out to `nvidia-smi`, so its `name`/`memory_total_mb`/`memory_used_mb` come back `null` when `nvidia-smi` is absent (e.g. CPU mode).
-- `POST /transcribe` — body fields:
+- `GET /health`: readiness + model/device/compute_type + `gpu` (VRAM) block. Returns **503** when `/music` isn't readable (stale mount) so Docker marks the container unhealthy. The `gpu` block is best-effort; it's populated by shelling out to `nvidia-smi`, so its `name`/`memory_total_mb`/`memory_used_mb` come back `null` when `nvidia-smi` is absent (e.g. CPU mode).
+- `POST /transcribe`: body fields:
 
   | Field | Type | Default | Description |
   |---|---|---|---|
@@ -139,7 +139,7 @@ LYRICS_DRAIN_MAX_PER_HOUR=0         # 0 = unthrottled; raise to pace a shared GP
 GrooveIQ then backfills the library on a schedule (the lyrics *drain*), walking
 embedded tags → LRCLIB → this sidecar, and only sending **voiced** tracks to ASR
 (tracks with `instrumentalness ≥ LYRICS_ASR_INSTRUMENTAL_MAX`, default 0.5, are
-skipped — no hallucinated lyrics on instrumentals). Watch progress at
+skipped: no hallucinated lyrics on instrumentals). Watch progress at
 `GET /v1/lyrics/stats`.
 
 ---
@@ -147,7 +147,7 @@ skipped — no hallucinated lyrics on instrumentals). Watch progress at
 ## 5. Tuning notes
 
 - **VAD off for music.** Silero VAD is trained on *speech* and discards a large share of
-  *sung* vocals — we measured ~50 % recall loss with it on. Since GrooveIQ's
+  *sung* vocals; we measured ~50 % recall loss with it on. Since GrooveIQ's
   instrumentalness gate already prevents ASR on instrumentals, `LYRICS_ASR_VAD=false`
   is recommended (and is the GrooveIQ default). Turn it on only if you see hallucinated
   text on voiced tracks with long instrumental passages.
@@ -155,31 +155,31 @@ skipped — no hallucinated lyrics on instrumentals). Watch progress at
   GPU (a 4-min track in seconds). Drop to `medium`/`small` only if throughput matters more
   than accuracy.
 - **Vocal separation (Demucs)** can improve transcription of dense mixes but adds PyTorch
-  and 2–3× GPU cost — not included; revisit only if WER is unacceptable.
+  and 2–3× GPU cost; not included; revisit only if WER is unacceptable.
 - **Pacing.** The single GPU is the bottleneck. `LYRICS_DRAIN_MAX_PER_HOUR` (on GrooveIQ)
-  caps ASR calls/hour so the GPU stays free for other work (e.g. Plex transcodes); `0`
+  caps ASR calls/hour so the GPU stays free for other work (e.g. other GPU jobs); `0`
   runs flat out.
 
 ---
 
 ## 6. Troubleshooting
 
-- **`/health` is 503 / `music.readable: false`** — the `/music` mount is missing or stale.
+- **`/health` is 503 / `music.readable: false`**: the `/music` mount is missing or stale.
   Check `MUSIC_PATH` points at the real library on this host; if the host dir was replaced
   under a running container, rebind with `docker compose up -d --force-recreate lyrics-api`.
-- **`404 file not found` from `/transcribe`** — the path GrooveIQ sent doesn't exist inside
+- **`404 file not found` from `/transcribe`**: the path GrooveIQ sent doesn't exist inside
   the sidecar. The mounts don't line up: either mount the library at `/music` on both sides,
   or set `LYRICS_API_MUSIC_PATH` on GrooveIQ.
-- **`device: cpu` in `/health` though you have a GPU** — the nvidia runtime isn't wired up;
+- **`device: cpu` in `/health` though you have a GPU**: the nvidia runtime isn't wired up;
   verify `docker info` lists `nvidia` and that the compose `deploy.resources` block is present.
-- **First transcription is slow** — it's downloading the model (~3 GB) to the volume; it's
+- **First transcription is slow**: it's downloading the model (~3 GB) to the volume; it's
   cached after that.
 
 ---
 
 ## Single-box (same machine has the GPU)
 
-If your GrooveIQ host has a GPU, you can run this sidecar on the same machine — still as its
+If your GrooveIQ host has a GPU, you can run this sidecar on the same machine, still as its
 own compose project in `lyrics-api/`. Point `LYRICS_API_URL=http://localhost:8300` (or, from
 inside the GrooveIQ container, the host's docker-bridge address). It does **not** need to be
 merged into the main `docker-compose.yml`; keeping it separate preserves the PyTorch-free
@@ -188,4 +188,4 @@ main image.
 ## CPU-only (testing)
 
 `LYRICS_DEVICE=cpu` works for trying it out (faster-whisper falls back to CPU automatically
-when no GPU is present), but it's far slower — not suitable for a whole-library backfill.
+when no GPU is present), but it's far slower: not suitable for a whole-library backfill.

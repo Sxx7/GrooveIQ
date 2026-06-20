@@ -1,4 +1,4 @@
-# streamrip-api — lossless/hi-res download sidecar for GrooveIQ
+# streamrip-api: lossless/hi-res download sidecar for GrooveIQ
 
 `streamrip-api` is a thin REST wrapper around the
 [streamrip](https://github.com/nathom/streamrip) Python library (used as a
@@ -7,7 +7,7 @@ quality from **Qobuz, Tidal, Deezer, and SoundCloud**, and exposes a small HTTP
 API that GrooveIQ's download cascade calls.
 
 It runs as a **separate container on GrooveIQ's internal Docker network** (port
-**8282**, no host ports, **no auth** — GrooveIQ's auth layer fronts it). GrooveIQ
+**8282**, no host ports, **no auth**: GrooveIQ's auth layer fronts it). GrooveIQ
 reaches it over HTTP at `http://streamrip-api:8282`.
 
 > **You need a paid subscription to at least one service.** Qobuz, Tidal, and
@@ -20,7 +20,7 @@ reaches it over HTTP at `http://streamrip-api:8282`.
 
 ## Endpoints (7)
 
-No authentication — reachable only on the internal Docker network.
+No authentication: reachable only on the internal Docker network.
 
 | Method | Path | Purpose |
 |--------|------|---------|
@@ -41,9 +41,9 @@ Task statuses: `queued | downloading | complete | duplicate | error`.
 |---|---|---|
 | `entity_type` | `"track"` | `track` or `album`. |
 | `service_id` | `""` | Service-native id. Albums **require** this + `service ∈ {qobuz,tidal,deezer}`. |
-| `service` | — | Target service. |
-| `spotify_id` | — | Alternative id; download id resolves to `service_id or spotify_id`. |
-| `artist` / `title` | — | Tracks (only) can fall back to an artist+title search when no id is given. |
+| `service` | - | Target service. |
+| `spotify_id` | - | Alternative id; download id resolves to `service_id or spotify_id`. |
+| `artist` / `title` | - | Tracks (only) can fall back to an artist+title search when no id is given. |
 
 ```bash
 curl -s -X POST streamrip-api:8282/download -H 'content-type: application/json' \
@@ -62,19 +62,19 @@ curl -s -X POST streamrip-api:8282/download -H 'content-type: application/json' 
 | `DOWNLOAD_QUALITY` | `3` | streamrip quality ladder: `0`=128 kbps, `1`=320 kbps, `2`=16-bit/44.1, `3`=24-bit/96, `4`=24-bit/192. |
 | `DOWNLOAD_CODEC` | `FLAC` | Output codec (surfaced in `/health`). |
 | `MAX_CONNECTIONS` | `6` | streamrip `downloads.max_connections`. |
-| `MAX_THREADS` | `4` | Read but **not currently applied** to streamrip — only `MAX_CONNECTIONS` is patched into the config. |
+| `MAX_THREADS` | `4` | Read but **not currently applied** to streamrip: only `MAX_CONNECTIONS` is patched into the config. |
 | `LOG_LEVEL` | `INFO` | DEBUG/INFO/WARNING/ERROR. |
 | `DEFAULT_SERVICE` | `qobuz` | Default service for search/download. |
-| `QOBUZ_EMAIL` | `""` | Qobuz email — **or** numeric user_id when token mode is on (see below). |
-| `QOBUZ_PASSWORD` | `""` | Qobuz password — **or** the auth token when token mode is on. |
+| `QOBUZ_EMAIL` | `""` | Qobuz email, **or** numeric user_id when token mode is on (see below). |
+| `QOBUZ_PASSWORD` | `""` | Qobuz password, **or** the auth token when token mode is on. |
 | `QOBUZ_USE_AUTH_TOKEN` | *(false)* | Truthy (`1`/`true`/`yes`) → treat `QOBUZ_EMAIL` as user_id and `QOBUZ_PASSWORD` as an auth token (Qobuz dropped email/password login). |
-| `TIDAL_EMAIL` | `""` | Read, but Tidal needs OAuth — email/password is **not fully wired**. |
+| `TIDAL_EMAIL` | `""` | Read, but Tidal needs OAuth; email/password is **not fully wired**. |
 | `TIDAL_PASSWORD` | `""` | Same caveat as above. |
 | `DEEZER_ARL` | `""` | Deezer ARL cookie (from browser dev tools). Deezer quality is **capped at 16-bit/44.1** (`min(DOWNLOAD_QUALITY, 2)`). |
 | `SOUNDCLOUD_CLIENT_ID` | `""` | SoundCloud client ID. |
 
 > **Per-service credential notes.** Qobuz uses token mode when `QOBUZ_USE_AUTH_TOKEN`
-> is set. Tidal's email/password fields are read but not fully wired — it really
+> is set. Tidal's email/password fields are read but not fully wired; it really
 > needs OAuth. Deezer downloads are quality-limited to 16-bit/44.1 regardless of
 > `DOWNLOAD_QUALITY`.
 
@@ -82,7 +82,7 @@ curl -s -X POST streamrip-api:8282/download -H 'content-type: application/json' 
 
 `streamrip-api` bind-mounts the host library read-write at `/music`. If that mount
 is replaced under a running container, the container keeps a reference to the old
-inode — `/music` appears empty and every download fails with `Permission denied`,
+inode: `/music` appears empty and every download fails with `Permission denied`,
 yet a naive health check stays green. To catch this, `/health` runs a **write
 probe** (create + delete a dotfile): when `/music` isn't writable it returns
 **HTTP 503** with `ready:false`, so the Docker `HEALTHCHECK` flips the container to
@@ -103,7 +103,7 @@ streamrip-api:
     dockerfile: Dockerfile
   restart: unless-stopped
   read_only: true
-  # No host ports — reachable by grooveiq via Docker network at streamrip-api:8282.
+  # No host ports: reachable by grooveiq via Docker network at streamrip-api:8282.
   environment:
     OUTPUT_DIR:       /music
     DOWNLOAD_QUALITY: ${STREAMRIP_QUALITY:-3}
@@ -124,7 +124,7 @@ Add your streaming-service credentials (`QOBUZ_*`, `TIDAL_*`, `DEEZER_ARL`,
 STREAMRIP_API_URL=http://streamrip-api:8282
 ```
 
-> **`STREAMRIP_API_URL` is commented out in `docker-compose.yml` by default** — so
+> **`STREAMRIP_API_URL` is commented out in `docker-compose.yml` by default**, so
 > even though the `streamrip-api` service itself is defined, GrooveIQ won't use the
 > sidecar until you uncomment/set that line and restart GrooveIQ.
 

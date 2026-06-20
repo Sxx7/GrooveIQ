@@ -63,7 +63,9 @@ class SlskdClient:
         self._base_url = base_url.rstrip("/")
         self._api_key = api_key
         self._last_request: float = 0.0
-        self._client = httpx.AsyncClient(timeout=30.0, verify=True)
+        # 60s comfortably exceeds SLSKD_SEARCH_TIMEOUT (default 50s) so no single
+        # search-window request (notably the responses fetch) is cut short.
+        self._client = httpx.AsyncClient(timeout=60.0, verify=True)
 
     async def close(self) -> None:
         await self._client.aclose()

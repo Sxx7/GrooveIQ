@@ -4,7 +4,7 @@
 
 GrooveIQ ships from `main`. Only the latest Docker image
 (`ghcr.io/sxx7/grooveiq:latest`) and the `main` branch receive security
-fixes. Older builds are not patched — pull a fresh image to pick up
+fixes. Older builds are not patched. Pull a fresh image to pick up
 fixes.
 
 ## Reporting a vulnerability
@@ -15,7 +15,7 @@ report privately via GitHub's
 That opens a private channel between you and the maintainer; the report
 is not visible to anyone else.
 
-You can also email the maintainer directly if you prefer — see the
+You can also email the maintainer directly if you prefer. See the
 GitHub profile of the repo owner.
 
 When reporting, please include:
