@@ -340,7 +340,7 @@ Admin-gated endpoints below are enforced only when `ADMIN_API_KEYS` is configure
 | Tracks | `GET /v1/tracks`, `GET /v1/tracks/lookup`, `GET /v1/tracks/{id}/features`, `GET /v1/tracks/{id}/similar`, `GET /v1/tracks/{id}/lyrics`, `GET /v1/tracks/map`, `GET /v1/tracks/text-search` (CLAP), `GET/POST /v1/tracks/clap/*` |
 | Users | `GET/POST /v1/users`, `GET/PATCH /v1/users/{id}`, profile, interactions, history, sessions, stats |
 | Onboarding | `POST/GET /v1/users/{id}/onboarding` |
-| Recommendations | `GET /v1/recommend/{user_id}`, history, artists, albums; mixes/prewarm, resurfacing, suppress; `GET /v1/stats/model` |
+| Recommendations | `GET /v1/recommend/{user_id}`, history, artists, albums, forgotten-favourites; mixes/prewarm, resurfacing, suppress; `GET /v1/stats/model` |
 | Radio | `POST /v1/radio/start`, `GET /v1/radio/{id}/next`, `DELETE /v1/radio/{id}`, `GET /v1/radio` |
 | Playlists | `POST/GET /v1/playlists`, `GET/DELETE /v1/playlists/{id}` |
 | Discovery | `GET /v1/discovery`, `POST /v1/discovery/run`, stats |

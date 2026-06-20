@@ -1134,6 +1134,50 @@ async def get_recommended_albums(
 
 
 @router.get(
+    "/recommend/{user_id}/forgotten-favourites",
+    summary="Get forgotten favourites for a user",
+    description="""
+Returns individual library tracks the user demonstrably loved but hasn't played
+in a long time — the "I forgot how much I liked this" surface.
+
+Each track is scored multiplicatively as ``affinity × dormancy``: a track only
+surfaces when it is *both* a proven favourite (high satisfaction / likes /
+repeats / plays) *and* dormant (long time since last play). Qualification gates
+keep it favourites-only — never-played tracks are excluded (those are the
+new-discovery surface, not forgotten favourites).
+
+Tunable via the ``forgotten_favourites`` algorithm-config group. Each track
+carries ``sources``/``reasons``/``signals`` for "you loved this — last played N
+months ago"-style badges.
+""",
+)
+async def get_forgotten_favourites(
+    user_id: str,
+    limit: int = Query(25, ge=1, le=100),
+    session: AsyncSession = Depends(get_session),
+    _key: str = Depends(require_api_key),
+):
+    validate_user_id(user_id)
+    check_user_access(_key, user_id)
+
+    user_row = (await session.execute(select(User.user_id).where(User.user_id == user_id))).scalar_one_or_none()
+    if user_row is None:
+        raise HTTPException(status_code=404, detail="User not found.")
+
+    from app.services import forgotten_favourites
+
+    reco = await forgotten_favourites.recommend_forgotten_favourites(session, user_id, limit=limit)
+    tracks = reco["tracks"]
+
+    return {
+        "user_id": user_id,
+        "generated_at": reco["generated_at"],
+        "total": len(tracks),
+        "tracks": tracks,
+    }
+
+
+@router.get(
     "/stats/model",
     summary="Get recommendation model stats and evaluation metrics",
     description="Returns ranker training info, latest offline evaluation metrics, and impression-to-stream stats.",

@@ -531,6 +531,52 @@ class AlbumRecoConfig(BaseModel):
     )
 
 
+class ForgottenFavouritesConfig(BaseModel):
+    """Forgotten-favourites blend (GET /v1/recommend/{user}/forgotten-favourites).
+
+    Surfaces individual *tracks* the user demonstrably loved but hasn't played in
+    a long time. Score is **multiplicative** — ``affinity * dormancy`` — so a
+    track only surfaces when it is *both* a proven favourite *and* dormant; a
+    weighted sum would leak in loved-but-recent or dormant-but-mediocre tracks.
+
+    ``affinity`` (how much the user loved it) blends the normalised
+    satisfaction_score, a like/repeat boost, and a play-count saturation term.
+    ``dormancy`` (how long since the last play) uses the same exponential ramp as
+    the album "rediscover" boost. Qualification gates keep it favourites-only.
+    No model is trained — this is a read-only aggregation of track_interactions.
+    """
+
+    w_satisfaction: float = Field(
+        0.6, ge=0, le=1, description="Weight of the normalised satisfaction_score in the affinity term"
+    )
+    w_likes: float = Field(0.25, ge=0, le=1, description="Weight of the like/repeat boost in the affinity term")
+    w_plays: float = Field(0.15, ge=0, le=1, description="Weight of the play-count saturation in the affinity term")
+    dormancy_halflife_days: float = Field(
+        90.0, ge=1, le=730, description="Half-life (days) of the dormancy ramp; longer = slower revival ramp"
+    )
+    min_dormancy_days: float = Field(
+        30.0,
+        ge=0,
+        le=365,
+        description="A track must not have been played within this many days to qualify as 'forgotten'",
+    )
+    min_satisfaction: float = Field(
+        0.5,
+        ge=0,
+        le=1,
+        description="Minimum normalised satisfaction_score to qualify as a 'favourite' (per-user min-max scaled)",
+    )
+    min_play_count: int = Field(
+        2, ge=1, le=100, description="Minimum lifetime play count to qualify (rules out one-off skips)"
+    )
+    likes_saturation: int = Field(
+        3, ge=1, le=50, description="Combined like+repeat count at which the like/repeat boost saturates to 1.0"
+    )
+    plays_saturation: int = Field(
+        25, ge=1, le=500, description="Play count at which the play-count term saturates to 1.0"
+    )
+
+
 # ---------------------------------------------------------------------------
 # Top-level config
 # ---------------------------------------------------------------------------
@@ -554,6 +600,7 @@ class AlgorithmConfigData(BaseModel):
     modes: ModesConfig = Field(default_factory=ModesConfig)
     artist_reco: ArtistRecoConfig = Field(default_factory=ArtistRecoConfig)
     album_reco: AlbumRecoConfig = Field(default_factory=AlbumRecoConfig)
+    forgotten_favourites: ForgottenFavouritesConfig = Field(default_factory=ForgottenFavouritesConfig)
 
 
 # ---------------------------------------------------------------------------
@@ -662,6 +709,17 @@ CONFIG_GROUPS: list[dict[str, Any]] = [
             "Blend weights for the library-only album recommender: track-ranker roll-up, coverage, "
             "rediscover freshness, and audio coherence vs your taste. "
             "No model is trained — this is a read-only aggregation of existing track signals."
+        ),
+        "retrain_required": False,
+    },
+    {
+        "key": "forgotten_favourites",
+        "label": "Forgotten Favourites",
+        "description": (
+            "Track-level 'forgotten favourites' surface: tracks you demonstrably loved but haven't "
+            "played in a long time. Score is affinity (satisfaction + likes/repeats + plays) × dormancy "
+            "(time since last play), with qualification gates so only proven, dormant favourites surface. "
+            "No model is trained — a read-only aggregation of track_interactions."
         ),
         "retrain_required": False,
     },

@@ -799,6 +799,43 @@ coherence.
 | `limit` | int | 20 | 1-100 |
 | `mode` | string | `discover` | `familiar`, `balanced`, `discover` (default `discover`) |
 
+### `GET /v1/recommend/{user_id}/forgotten-favourites`: Forgotten favourites
+
+User-scoped. Library-only. Surfaces individual tracks the user demonstrably
+loved but hasn't played in a long time — the "I forgot how much I liked this"
+surface. Score is **multiplicative** — `affinity × dormancy` — so a track only
+surfaces when it is *both* a proven favourite *and* dormant. `affinity` blends
+the per-user normalised `satisfaction_score`, a like/repeat boost, and a
+play-count saturation term; `dormancy` is `1 − exp(−ln2·days_since/halflife)`.
+
+Qualification gates (all tunable via the `forgotten_favourites` algorithm-config
+group) keep it favourites-only: the track must have been played (`last_played_at`
+set — never-played tracks belong to the new-discovery surface, not here),
+`play_count ≥ min_play_count`, `satisfaction_score ≥ min_satisfaction`, and have
+been dormant for `≥ min_dormancy_days`. No model is trained.
+
+| Param | Type | Default | Description |
+|-------|------|---------|-------------|
+| `limit` | int | 25 | 1-100 |
+
+```json
+{
+  "user_id": "aBc...", "generated_at": 1712000000, "total": 25,
+  "tracks": [
+    {"track_id": "abc", "title": "The Gem", "artist": "Artist X", "album": "Album Y",
+     "media_server_id": "Z5dd...", "duration": 214.0, "score": 0.71,
+     "sources": ["satisfaction", "likes", "plays"],
+     "reasons": ["you loved this", "you liked it", "not played in 7 months"],
+     "signals": {"affinity": 0.88, "dormancy": 0.81, "satisfaction": 0.95,
+                 "days_since_last_play": 210, "play_count": 12, "like_count": 2, "repeat_count": 0},
+     "last_played_at": 1693000000}
+  ]
+}
+```
+
+Per-item `sources`/`reasons`/`signals` enable "you loved this — last played N
+months ago" badges.
+
 ### `GET /v1/stats/model`: Recommendation model stats
 
 > **Path note.** This route's real path is **`/v1/stats/model`** (the decorator
