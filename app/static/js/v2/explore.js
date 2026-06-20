@@ -2304,6 +2304,9 @@
         chartType: 'top_tracks',
         offset: 0,
         limit: 100,
+        compare: '7d',
+        asOf: '',
+        snapshots: null,
         available: null,
         stats: null,
         chart: null,
@@ -2314,6 +2317,7 @@
         if (!GIQ.state.charts) {
             GIQ.state.charts = {
                 scope: 'global', chartType: 'top_tracks', offset: 0, limit: 100,
+                compare: '7d', asOf: '', snapshots: null,
                 available: null, stats: null, chart: null, loading: false,
             };
         }
@@ -2361,8 +2365,32 @@
         typeWrap.appendChild(typeSel);
         filterBar.appendChild(typeWrap);
 
-        scopeSel.addEventListener('change', () => { s.scope = scopeSel.value; s.offset = 0; loadChart(); });
-        typeSel.addEventListener('change', () => { s.chartType = typeSel.value; s.offset = 0; loadChart(); });
+        const compareWrap = document.createElement('div');
+        compareWrap.className = 'charts-filter-field';
+        compareWrap.innerHTML = '<div class="eyebrow">Trend vs</div>';
+        const compareSel = document.createElement('select');
+        compareSel.className = 'reco-select';
+        compareSel.innerHTML = '<option value="">Off</option>'
+            + '<option value="1d">Yesterday</option>'
+            + '<option value="7d">7 days ago</option>'
+            + '<option value="30d">30 days ago</option>';
+        compareSel.value = s.compare;
+        compareWrap.appendChild(compareSel);
+        filterBar.appendChild(compareWrap);
+
+        const snapWrap = document.createElement('div');
+        snapWrap.className = 'charts-filter-field charts-filter-field-snap';
+        snapWrap.innerHTML = '<div class="eyebrow">Snapshot</div>';
+        const snapSel = document.createElement('select');
+        snapSel.className = 'reco-select';
+        snapSel.innerHTML = '<option value="">Latest</option>';
+        snapWrap.appendChild(snapSel);
+        filterBar.appendChild(snapWrap);
+
+        scopeSel.addEventListener('change', () => { s.scope = scopeSel.value; s.offset = 0; s.asOf = ''; loadChart(); });
+        typeSel.addEventListener('change', () => { s.chartType = typeSel.value; s.offset = 0; s.asOf = ''; loadChart(); });
+        compareSel.addEventListener('change', () => { s.compare = compareSel.value; s.offset = 0; loadChart(); });
+        snapSel.addEventListener('change', () => { s.asOf = snapSel.value; s.offset = 0; loadChart(); });
 
         /* Chart panel */
         const panel = document.createElement('section');
@@ -2380,8 +2408,8 @@
         function setCronBadge(stats) {
             if (!stats) { cronBadge.textContent = ''; return; }
             if (stats.auto_rebuild_enabled) {
-                const interval = stats.interval_hours || 24;
-                cronBadge.textContent = '✓ Auto-rebuild every ' + interval + 'h';
+                const cadence = stats.schedule_label || ('every ' + (stats.interval_hours || 24) + 'h');
+                cronBadge.textContent = '✓ Auto-rebuild · ' + cadence;
                 cronBadge.classList.add('charts-cron-on');
                 cronBadge.classList.remove('charts-cron-off');
                 cronBadge.title = 'Periodic chart build is registered'
@@ -2428,14 +2456,33 @@
             }
         }
 
+        async function loadSnapshots() {
+            const key = s.chartType + '|' + s.scope;
+            if (s._snapKey === key) return;   // only refetch when chart/scope changes
+            s._snapKey = key;
+            try {
+                const r = await GIQ.api.get('/v1/charts/' + encodeURIComponent(s.chartType)
+                    + '/snapshots?scope=' + encodeURIComponent(s.scope));
+                s.snapshots = (r && r.snapshots) || [];
+            } catch (e) {
+                s.snapshots = [];
+            }
+            snapSel.innerHTML = '<option value="">Latest</option>'
+                + s.snapshots.map(d => '<option value="' + GIQ.fmt.esc(d) + '">' + GIQ.fmt.esc(d) + '</option>').join('');
+            snapSel.value = s.asOf || '';
+        }
+
         async function loadChart() {
             s.loading = true;
             renderHead();
+            loadSnapshots();
             panelBody.innerHTML = '<div class="vc-loading">Loading chart…</div>';
             try {
-                const url = '/v1/charts/' + encodeURIComponent(s.chartType)
+                let url = '/v1/charts/' + encodeURIComponent(s.chartType)
                     + '?scope=' + encodeURIComponent(s.scope)
                     + '&limit=' + s.limit + '&offset=' + s.offset;
+                if (s.compare) url += '&compare=' + encodeURIComponent(s.compare);
+                if (s.asOf) url += '&as_of=' + encodeURIComponent(s.asOf);
                 const data = await GIQ.api.get(url);
                 s.chart = data;
                 s.loading = false;
@@ -2460,6 +2507,10 @@
             if (c) {
                 subParts.push((c.total || 0) + ' entries');
                 if (c.fetched_at) subParts.push('updated ' + GIQ.fmt.timeAgo(c.fetched_at));
+                if (s.asOf && c.snapshot_date) subParts.push('snapshot ' + c.snapshot_date);
+                if (s.compare) {
+                    subParts.push(c.compared_to ? ('Δ vs ' + c.compared_to) : ('no snapshot ~' + s.compare + ' back'));
+                }
             }
             panelHead.innerHTML = '<div class="panel-head-left"><div class="panel-title-row">'
                 + '<div class="panel-title">' + GIQ.fmt.esc(_scopeLabel(s.scope)) + ' — '
@@ -2475,18 +2526,22 @@
                 return;
             }
             const isTrack = s.chartType === 'top_tracks';
+            const showMove = !!s.compare;            // column present whenever a trend window is selected
+            const cmpAvailable = !!(c && c.compared_to);
+            const moveCol = showMove ? ' 64px' : '';
 
             const table = document.createElement('div');
             table.className = 'charts-table';
             table.style.gridTemplateColumns = isTrack
-                ? '40px 56px minmax(180px, 2fr) minmax(120px, 1fr) 80px 80px minmax(140px, 1.2fr)'
-                : '40px 56px minmax(180px, 2fr) 80px 80px 80px minmax(140px, 1.2fr)';
+                ? '40px' + moveCol + ' 56px minmax(180px, 2fr) minmax(120px, 1fr) 80px 80px minmax(140px, 1.2fr)'
+                : '40px' + moveCol + ' 56px minmax(180px, 2fr) 80px 80px 80px minmax(140px, 1.2fr)';
 
             const head = document.createElement('div');
             head.className = 'charts-row charts-row-head';
+            const moveHead = showMove ? ['Δ ' + s.compare] : [];
             const headers = isTrack
-                ? ['#', '', 'Title', 'Artist', 'Plays', 'Listeners', 'Status']
-                : ['#', '', 'Artist', 'Plays', 'Listeners', 'Tracks', 'Status'];
+                ? ['#'].concat(moveHead, ['', 'Title', 'Artist', 'Plays', 'Listeners', 'Status'])
+                : ['#'].concat(moveHead, ['', 'Artist', 'Plays', 'Listeners', 'Tracks', 'Status']);
             headers.forEach(h => {
                 const cell = document.createElement('div');
                 cell.className = 'charts-h';
@@ -2503,6 +2558,13 @@
                 numCell.className = 'charts-c charts-c-num mono';
                 numCell.textContent = (entry.position + 1);
                 row.appendChild(numCell);
+
+                if (showMove) {
+                    const moveCell = document.createElement('div');
+                    moveCell.className = 'charts-c charts-c-move';
+                    moveCell.appendChild(_chartsMovement(entry, cmpAvailable));
+                    row.appendChild(moveCell);
+                }
 
                 const thumbCell = document.createElement('div');
                 thumbCell.className = 'charts-c charts-c-thumb';
@@ -2593,6 +2655,42 @@
         if (scope.indexOf('tag:') === 0) return 'Genre: ' + scope.substring(4);
         if (scope.indexOf('geo:') === 0) return 'Country: ' + scope.substring(4);
         return scope;
+    }
+
+    /* Position-movement chip for a chart entry vs. an earlier snapshot.
+     * positive position_change = climbed (lower rank number). previously=null
+     * marks a new/re-entered entry. Palette mirrors the reco-audit rank deltas:
+     * accent = up, wine = down (not green/red). */
+    function _chartsMovement(entry, available) {
+        const span = document.createElement('span');
+        if (!available) {
+            span.className = 'charts-move charts-move-none';
+            span.textContent = '—';
+            span.title = 'No earlier snapshot to compare against';
+            return span;
+        }
+        const prev = entry.previously;
+        if (prev === null || prev === undefined) {
+            span.className = 'charts-move-new';
+            span.textContent = 'NEW';
+            span.title = 'New entry — not in the comparison snapshot';
+            return span;
+        }
+        const d = entry.position_change || 0;
+        if (d > 0) {
+            span.className = 'charts-move charts-move-up';
+            span.textContent = '▲ ' + d;
+            span.title = 'Up ' + d + ' · was #' + (prev + 1);
+        } else if (d < 0) {
+            span.className = 'charts-move charts-move-down';
+            span.textContent = '▼ ' + Math.abs(d);
+            span.title = 'Down ' + Math.abs(d) + ' · was #' + (prev + 1);
+        } else {
+            span.className = 'charts-move charts-move-flat';
+            span.textContent = '–';
+            span.title = 'No change · #' + (prev + 1);
+        }
+        return span;
     }
 
     function _chartsThumbnail(entry) {

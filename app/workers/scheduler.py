@@ -86,11 +86,22 @@ async def start_scheduler() -> None:
             replace_existing=True,
         )
 
-    # Charts rebuild (Last.fm)
+    # Charts rebuild (Last.fm) — wall-clock daily cron, not an interval timer.
+    # An IntervalTrigger in the MemoryJobStore resets on every container
+    # restart, so frequent deploys kept deferring the next build (builds only
+    # fired after >24h uptime). A cron fires on the schedule regardless.
     if settings.charts_enabled:
+        ch_cron = settings.CHARTS_CRON.split()
         _scheduler.add_job(
             _periodic_charts_build,
-            trigger=IntervalTrigger(hours=settings.CHARTS_INTERVAL_HOURS),
+            trigger=CronTrigger(
+                minute=ch_cron[0],
+                hour=ch_cron[1],
+                day=ch_cron[2],
+                month=ch_cron[3],
+                day_of_week=ch_cron[4],
+                timezone="UTC",
+            ),
             id="charts_build",
             replace_existing=True,
         )

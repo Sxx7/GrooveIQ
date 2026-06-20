@@ -270,7 +270,8 @@ class Settings(BaseSettings):
     # Charts (Last.fm)
     # ------------------------------------------------------------------
     CHARTS_ENABLED: bool = False  # master toggle for periodic chart builds
-    CHARTS_INTERVAL_HOURS: int = 24  # how often to rebuild charts
+    CHARTS_CRON: str = "0 3 * * *"  # daily build schedule (default 3 AM UTC). Wall-clock cron so restarts don't defer it.
+    CHARTS_INTERVAL_HOURS: int = 24  # freshness window (hours) for the Monitor staleness banner; build cadence is CHARTS_CRON
     CHARTS_TOP_LIMIT: int = 100  # entries per chart (max 200)
     CHARTS_TAGS: str = ""  # comma-separated genre tags, e.g. "rock,electronic,hip-hop"
     CHARTS_COUNTRIES: str = ""  # comma-separated country names, e.g. "germany,united states"
@@ -420,6 +421,16 @@ class Settings(BaseSettings):
     @property
     def charts_enabled(self) -> bool:
         return bool(self.CHARTS_ENABLED and self.LASTFM_API_KEY)
+
+    @property
+    def charts_schedule_label(self) -> str:
+        """Friendly label for CHARTS_CRON (handles the common daily case)."""
+        parts = self.CHARTS_CRON.split()
+        if len(parts) == 5:
+            minute, hour, dom, month, dow = parts
+            if dom == "*" and month == "*" and dow == "*" and minute.isdigit() and hour.isdigit():
+                return f"daily {int(hour):02d}:{int(minute):02d} UTC"
+        return self.CHARTS_CRON
 
     @property
     def spotdl_enabled(self) -> bool:

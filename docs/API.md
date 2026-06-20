@@ -1991,7 +1991,8 @@ Navidrome is the only supported media server. The `plex` value and the
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `CHARTS_ENABLED` | `false` | Periodic chart builds (also needs `LASTFM_API_KEY`) |
-| `CHARTS_INTERVAL_HOURS` | `24` | Rebuild cadence |
+| `CHARTS_CRON` | `0 3 * * *` | Daily build schedule, UTC (wall-clock cron; survives restarts) |
+| `CHARTS_INTERVAL_HOURS` | `24` | Freshness window (h) for the Monitor staleness banner; cadence is `CHARTS_CRON` |
 | `CHARTS_TOP_LIMIT` | `100` | Entries per chart (max 200) |
 | `CHARTS_TAGS` / `CHARTS_COUNTRIES` | `""` | Genre tags / countries (CSV) |
 | `CHARTS_LIDARR_AUTO_ADD` / `CHARTS_LIDARR_MAX_ADDS` | `false` / `50` | Auto-add chart artists to Lidarr |

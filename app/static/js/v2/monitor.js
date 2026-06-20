@@ -5691,6 +5691,7 @@
             const auto = !!st.auto_rebuild_enabled;
             const last = st.last_fetched_at;
             const interval = st.interval_hours || 24;
+            const cadence = st.schedule_label || ('every ' + interval + 'h');
             const ageH = last ? (Math.floor(Date.now() / 1000) - last) / 3600 : null;
 
             let kind = 'warn';
@@ -5702,7 +5703,7 @@
             } else if (ageH < interval * 1.5) {
                 kind = 'good';
                 title = 'FRESH';
-                msg = 'Built ' + GIQ.fmt.timeAgo(last) + (auto ? ' · auto-rebuild every ' + interval + 'h' : ' · auto-rebuild OFF');
+                msg = 'Built ' + GIQ.fmt.timeAgo(last) + (auto ? ' · auto-rebuild ' + cadence : ' · auto-rebuild OFF');
             } else if (ageH < interval * 3) {
                 kind = 'warn';
                 title = 'AGING';

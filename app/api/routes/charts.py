@@ -251,6 +251,8 @@ async def chart_stats(
         "snapshot_count": snapshot_count,
         "auto_rebuild_enabled": bool(_settings.charts_enabled),
         "interval_hours": _settings.CHARTS_INTERVAL_HOURS,
+        "schedule_cron": _settings.CHARTS_CRON,
+        "schedule_label": _settings.charts_schedule_label,
         "next_run_at": get_job_next_run("charts_build"),
     }
 
