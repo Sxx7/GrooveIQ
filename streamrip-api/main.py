@@ -205,13 +205,77 @@ async def _close_main(main, config):
         pass
 
 
+# ---------------------------------------------------------------------------
+# Cached client for read-only metadata ops (search / artist / album tracks)
+# ---------------------------------------------------------------------------
+#
+# Read-only lookups used to build a fresh ``Main`` per request, which forced a
+# full streaming-service *login* every time. Qobuz/Tidal token negotiation
+# routinely takes several seconds, so callers with a short per-request budget
+# (GrooveIQ's parallel multi-search caps each backend at a few seconds) saw
+# every streamrip search time out.
+#
+# We keep ONE long-lived ``Main`` for read-only ops and reuse it — ``Main``
+# caches the logged-in client per service internally (``get_logged_in_client``
+# only logs in when ``not client.logged_in``), so repeat calls skip the login
+# and a warm search is a few hundred ms instead of login+search. The cached
+# Main is rebuilt once it ages past the TTL (bounds token staleness) and dropped
+# after any read-only error (replaces a stale/wedged session on the next call) —
+# so this never does worse than the old per-request login.
+#
+# Downloads deliberately keep their own ephemeral ``Main`` under
+# ``_streamrip_lock`` — a download mutates Main's pending/resolved queue
+# (add_by_id/resolve/rip) and must stay isolated from concurrent searches.
+
+_SEARCH_MAIN_TTL_S = 1800.0  # re-login at least every 30 min
+
+_search_main: Any = None
+_search_config: Any = None
+_search_main_built_at: float = 0.0
+_search_main_lock = asyncio.Lock()
+
+
+async def _get_search_client(service: str):
+    """Return a cached, logged-in streamrip client for read-only metadata ops.
+
+    The backing ``Main`` is built lazily and reused across requests; the cheap
+    ``get_logged_in_client`` call returns the already-logged-in client on warm
+    hits. The (re)build is serialised by ``_search_main_lock`` so concurrent
+    searches can't trigger duplicate logins, while the actual ``client.search``
+    runs outside the lock so searches stay concurrent.
+    """
+    global _search_main, _search_config, _search_main_built_at
+    async with _search_main_lock:
+        age = time.monotonic() - _search_main_built_at
+        if _search_main is None or age >= _SEARCH_MAIN_TTL_S:
+            if _search_main is not None:
+                await _close_main(_search_main, _search_config)
+                _search_main = None
+                _search_config = None
+            _search_main, _search_config = await _get_main()
+            _search_main_built_at = time.monotonic()
+        return await _search_main.get_logged_in_client(service)
+
+
+async def _invalidate_search_main() -> None:
+    """Drop the cached read-only ``Main`` so the next call re-logs-in.
+
+    Called after a read-only op raises (the usual cause is an expired or wedged
+    session, and a fresh login is exactly the recovery) and on shutdown.
+    """
+    global _search_main, _search_config, _search_main_built_at
+    async with _search_main_lock:
+        if _search_main is not None:
+            await _close_main(_search_main, _search_config)
+            _search_main = None
+            _search_config = None
+            _search_main_built_at = 0.0
+
+
 async def _do_search(service: str, query: str, limit: int) -> List[Dict[str, Any]]:
     """Search using streamrip's Python API directly."""
-    main = None
-    config = None
     try:
-        main, config = await _get_main()
-        client = await main.get_logged_in_client(service)
+        client = await _get_search_client(service)
 
         # client.search() returns raw API response pages
         pages = await client.search("track", query, limit=limit)
@@ -227,10 +291,8 @@ async def _do_search(service: str, query: str, limit: int) -> List[Dict[str, Any
 
     except Exception as exc:
         logger.error("Search failed for %r on %s: %s", query, service, exc, exc_info=True)
+        await _invalidate_search_main()
         return []
-    finally:
-        if main and config:
-            await _close_main(main, config)
 
 
 def _normalize_artist_release(alb: Any, release_type: str) -> Optional[Dict[str, Any]]:
@@ -290,11 +352,8 @@ async def _do_artist_search(
     are loaded lazily per-album via :func:`_do_album_tracks` so the response
     stays compact for prolific artists (Daft Punk has ~89 albums).
     """
-    main = None
-    config = None
     try:
-        main, config = await _get_main()
-        client = await main.get_logged_in_client(service)
+        client = await _get_search_client(service)
 
         pages = await client.search("artist", query, limit=artist_limit)
         # Top-level shape: {"query":..., "artists": {"items": [...]}}
@@ -396,20 +455,15 @@ async def _do_artist_search(
         return {"query": query, "service": service, "artists": out_artists}
     except Exception as exc:
         logger.error("Artist search failed for %r on %s: %s", query, service, exc, exc_info=True)
+        await _invalidate_search_main()
         return {"query": query, "service": service, "artists": [], "error": str(exc)}
-    finally:
-        if main and config:
-            await _close_main(main, config)
 
 
 async def _do_album_tracks(service: str, album_id: str) -> Dict[str, Any]:
     """Fetch full track list for an album. Used to lazy-load tracks when the
     user expands an album card on the artist-search results panel."""
-    main = None
-    config = None
     try:
-        main, config = await _get_main()
-        client = await main.get_logged_in_client(service)
+        client = await _get_search_client(service)
         meta = await client.get_metadata(album_id, "album")
         if not isinstance(meta, dict):
             return {"service": service, "album_id": album_id, "tracks": [], "error": "no metadata"}
@@ -458,10 +512,8 @@ async def _do_album_tracks(service: str, album_id: str) -> Dict[str, Any]:
         }
     except Exception as exc:
         logger.error("Album tracks fetch failed for %s/%s: %s", service, album_id, exc, exc_info=True)
+        await _invalidate_search_main()
         return {"service": service, "album_id": album_id, "tracks": [], "error": str(exc)}
-    finally:
-        if main and config:
-            await _close_main(main, config)
 
 
 def _extract_tracks_from_page(page: Any, service: str) -> List[Dict[str, Any]]:
@@ -1139,3 +1191,4 @@ async def startup():
 @app.on_event("shutdown")
 async def shutdown():
     logger.info("streamrip-api shutting down")
+    await _invalidate_search_main()

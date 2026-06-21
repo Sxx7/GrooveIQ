@@ -257,12 +257,21 @@ async def search_tracks_multi(
     else:
         requested = list(routing.parallel_search_backends)
 
-    timeout_s = (timeout_ms or routing.parallel_search_timeout_ms) / 1000.0
+    global_ms = routing.parallel_search_timeout_ms
+    per_backend = routing.parallel_search_backend_timeouts_ms or {}
+
+    def _timeout_s_for(backend: BackendName) -> float:
+        # An explicit ?timeout_ms= query override applies uniformly to every
+        # backend; otherwise honour a per-backend override, falling back to the
+        # global default. Clamped to the same [500, 30000] ms range as the config.
+        ms = timeout_ms if timeout_ms else per_backend.get(backend, global_ms)
+        return max(500, min(30000, ms)) / 1000.0
 
     async def _run(backend: BackendName) -> dict:
         adapter = make_adapter(backend)
         if adapter is None:
             return {"backend": backend.value, "ok": False, "error": "no adapter", "results": []}
+        timeout_s = _timeout_s_for(backend)
         try:
             if not await adapter.is_configured():
                 return {
@@ -320,7 +329,9 @@ async def search_tracks_multi(
     return {
         "query": q,
         "limit": limit,
-        "timeout_ms": int(timeout_s * 1000),
+        # Representative default timeout; per-backend values may differ and each
+        # timed-out group reports its own budget in its error string.
+        "timeout_ms": int(max(500, min(30000, timeout_ms or global_ms))),
         "groups": grouped,
     }
 

@@ -166,10 +166,25 @@ class DownloadRoutingConfigData(BaseModel):
     )
 
     parallel_search_timeout_ms: int = Field(
-        5000,
+        12000,
         ge=500,
         le=30000,
-        description="Per-backend timeout for parallel multi-search (milliseconds)",
+        description=(
+            "Default per-backend timeout for parallel multi-search (milliseconds). "
+            "Each backend's /search does an upstream metadata lookup (Spotify for "
+            "spotdl/spotizerr, Qobuz/Tidal/Deezer for streamrip), so a few seconds "
+            "is normal — 5s was too tight and timed out otherwise-healthy searches."
+        ),
+    )
+
+    parallel_search_backend_timeouts_ms: dict[BackendName, int] = Field(
+        default_factory=dict,
+        description=(
+            "Optional per-backend overrides for the parallel multi-search timeout "
+            "(milliseconds, keyed by backend name). A backend not listed here uses "
+            "parallel_search_timeout_ms. Lets a slower backend get a longer budget "
+            "without inflating the others. Values are clamped to [500, 30000]."
+        ),
     )
 
 
