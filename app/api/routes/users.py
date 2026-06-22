@@ -482,8 +482,11 @@ async def get_user_stats(
 ):
     """Single-user engagement summary mirroring one row of /v1/pipeline/stats/engagement.
 
-    `total_events`, `unique_tracks`, and `last_active` are computed over the last
-    30 days of events. `plays` and `skips` come from the all-time
+    `total_events` and `last_active` cover the last 30 days of *all* events.
+    `unique_tracks` (and the diversity denominator) are scoped to play events in
+    that window, so recommendation impressions — logged for every track merely
+    shown in Discover/radio/search — don't inflate the distinct-track count past
+    the play count. `plays` and `skips` come from the all-time
     `track_interactions` rollup.
     """
     await _resolve_user(session, user_id, _key)
@@ -491,15 +494,36 @@ async def get_user_stats(
     window_days = 30
     cutoff = int(time.time()) - window_days * 86400
 
+    # Total event volume + recency over the window. Counts *every* event type
+    # (plays, skips, pauses, seeks, reco_impression), so it reflects overall
+    # engagement breadth — not listening.
     event_row = (
         await session.execute(
             select(
                 func.count(ListenEvent.id).label("total_events"),
-                func.count(func.distinct(ListenEvent.track_id)).label("unique_tracks"),
                 func.max(ListenEvent.timestamp).label("last_active"),
             ).where(
                 ListenEvent.user_id == user_id,
                 ListenEvent.timestamp >= cutoff,
+            )
+        )
+    ).first()
+
+    # Listening breadth over the window — DISTINCT tracks the user actually
+    # PLAYED. Scoped to play events so reco_impression rows (one per track
+    # merely shown in Discover/radio/search, dozens per scroll) plus
+    # skips/pauses/seeks can't inflate it. Without this scope a heavy browser
+    # accrued more "unique" tracks than their all-time play count.
+    play_event_types = ("play_start", "play_end")
+    play_row = (
+        await session.execute(
+            select(
+                func.count(func.distinct(ListenEvent.track_id)).label("unique_tracks"),
+                func.count(ListenEvent.id).label("play_events"),
+            ).where(
+                ListenEvent.user_id == user_id,
+                ListenEvent.timestamp >= cutoff,
+                ListenEvent.event_type.in_(play_event_types),
             )
         )
     ).first()
@@ -514,7 +538,8 @@ async def get_user_stats(
     ).first()
 
     total_events = event_row.total_events or 0
-    unique_tracks = event_row.unique_tracks or 0
+    unique_tracks = play_row.unique_tracks or 0
+    play_events = play_row.play_events or 0
     plays = int(inter_row.plays or 0)
     skips = int(inter_row.skips or 0)
 
@@ -526,7 +551,8 @@ async def get_user_stats(
         "skips": skips,
         "skip_rate": round(skips / max(plays, 1), 3),
         "unique_tracks": unique_tracks,
-        "diversity": round(unique_tracks / max(total_events, 1), 3),
+        # Both sides play-scoped so impressions can't dilute the ratio.
+        "diversity": round(unique_tracks / max(play_events, 1), 3),
         "last_active": event_row.last_active,
     }
 

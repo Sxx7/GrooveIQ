@@ -227,6 +227,41 @@ class TestUserStats:
         resp = await client.get("/v1/users/nonexistent/stats")
         assert resp.status_code == 404
 
+    async def test_unique_tracks_excludes_impressions(self, client: AsyncClient):
+        """unique_tracks counts distinct PLAYED tracks only — reco_impression
+        rows (tracks merely shown) must not inflate it. Regression for a heavy
+        browser whose 'unique this month' exceeded their all-time play count.
+        """
+        await seed_user_with_data()
+        now = int(time.time())
+        async with _TestSession() as session:
+            # Two distinct tracks actually played (track-A twice).
+            session.add_all([
+                ListenEvent(user_id="testuser", track_id="track-A",
+                            event_type="play_start", timestamp=now),
+                ListenEvent(user_id="testuser", track_id="track-A",
+                            event_type="play_end", timestamp=now + 200),
+                ListenEvent(user_id="testuser", track_id="track-B",
+                            event_type="play_start", timestamp=now + 5),
+                # Three tracks only ever shown in recommendations — never played.
+                ListenEvent(user_id="testuser", track_id="imp-1",
+                            event_type="reco_impression", timestamp=now + 1),
+                ListenEvent(user_id="testuser", track_id="imp-2",
+                            event_type="reco_impression", timestamp=now + 2),
+                ListenEvent(user_id="testuser", track_id="imp-3",
+                            event_type="reco_impression", timestamp=now + 3),
+            ])
+            await session.commit()
+
+        resp = await client.get("/v1/users/testuser/stats")
+        assert resp.status_code == 200
+        data = resp.json()
+        # Only track-A and track-B were played; the 3 impression-only tracks
+        # are excluded (a pre-fix count would have been 5).
+        assert data["unique_tracks"] == 2
+        # total_events still counts every event in the window (incl. impressions).
+        assert data["total_events"] == 6
+
 
 class TestRecommendationHistory:
     async def test_history_empty(self, client: AsyncClient):
