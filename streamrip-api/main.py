@@ -43,6 +43,20 @@ MAX_CONNECTIONS = int(os.environ.get("MAX_CONNECTIONS", "6"))
 MAX_THREADS = int(os.environ.get("MAX_THREADS", "4"))
 LOG_LEVEL = os.environ.get("LOG_LEVEL", "INFO").upper()
 
+# Auto-remediation: hard ceiling on a single download's wall-clock time. Every
+# download holds the global _streamrip_lock for its whole duration, and streamrip
+# has no internal timeout — a stalled rip (network IncompleteRead retry loops, a
+# hung NFS write to /music) otherwise holds the lock forever and wedges every
+# queued search/download behind it, while /health stays green (it doesn't take
+# the lock) so Docker never notices. wait_for cancels the rip at this deadline,
+# releasing the lock so the API self-recovers. Set 0 to disable.
+DOWNLOAD_TIMEOUT_S = float(os.environ.get("DOWNLOAD_TIMEOUT_S", "1800"))
+# /health probes the /music mount with blocking syscalls (os.listdir / os.open).
+# On a stalled NFS mount, running that inline freezes the whole event loop. We
+# run it in a worker thread bounded by this timeout, so a hung mount surfaces as
+# a fast 503 (→ unhealthy → autoheal restarts us) instead of hanging /health.
+HEALTH_MUSIC_PROBE_TIMEOUT_S = float(os.environ.get("HEALTH_MUSIC_PROBE_TIMEOUT_S", "5"))
+
 # Service credentials
 QOBUZ_EMAIL = os.environ.get("QOBUZ_EMAIL", "")
 QOBUZ_PASSWORD = os.environ.get("QOBUZ_PASSWORD", "")
@@ -810,18 +824,71 @@ def _maybe_mark_duplicate(task, before_count: Optional[int]) -> None:
 async def _do_download(task_id: str, service: str, service_id: str,
                        artist: str = "", title: str = "",
                        entity_type: str = "track") -> None:
-    """Download a track or album using streamrip's Python API."""
+    """Download a track or album, bounded by ``DOWNLOAD_TIMEOUT_S``.
+
+    The real streamrip work runs under the global ``_streamrip_lock`` inside
+    :func:`_run_locked_download`; here we wrap it in ``asyncio.wait_for`` so a
+    stalled rip is cancelled at the deadline and the lock is released, instead of
+    wedging every queued search/download behind it indefinitely. (That was the
+    outage: a download stalled on 2026-06-20 and held the lock until a manual
+    restart ~2 days later, while /health stayed green so nothing auto-recovered.)
+    """
     task = _tasks.get(task_id)
     if not task:
         return
-
-    main = None
-    config = None
 
     try:
         task.status = TaskStatus.downloading
         task.updated_at = time.time()
 
+        coro = _run_locked_download(
+            task, task_id, service, service_id, artist, title, entity_type
+        )
+        if DOWNLOAD_TIMEOUT_S > 0:
+            await asyncio.wait_for(coro, timeout=DOWNLOAD_TIMEOUT_S)
+        else:
+            await coro
+
+        # Only the orchestrator marks success. The branches in
+        # _run_locked_download set their own terminal status (error / duplicate)
+        # and return — don't clobber it, so guard on still-downloading.
+        if task.status == TaskStatus.downloading:
+            task.status = TaskStatus.complete
+            task.progress = 100.0
+        task.updated_at = time.time()
+
+    except TimeoutError:  # raised by asyncio.wait_for at the deadline
+        logger.error(
+            "Download task %s exceeded DOWNLOAD_TIMEOUT_S=%ss — cancelled to "
+            "release the streamrip lock", task_id, DOWNLOAD_TIMEOUT_S,
+        )
+        task.status = TaskStatus.error
+        task.error = (
+            f"download exceeded {DOWNLOAD_TIMEOUT_S:.0f}s timeout and was aborted "
+            "to keep the API responsive"
+        )
+        task.updated_at = time.time()
+    except Exception as exc:
+        logger.exception("Download failed for task %s: %s", task_id, exc)
+        task.status = TaskStatus.error
+        task.error = str(exc)[:1024]
+        task.updated_at = time.time()
+
+
+async def _run_locked_download(task: TaskState, task_id: str, service: str,
+                               service_id: str, artist: str, title: str,
+                               entity_type: str) -> None:
+    """Run one streamrip download while holding the global ``_streamrip_lock``.
+
+    streamrip isn't concurrency-safe, so all rips serialise here. The ``Main``
+    instance is always closed in ``finally`` — including when the
+    ``DOWNLOAD_TIMEOUT_S`` watchdog in :func:`_do_download` cancels this
+    coroutine mid-rip, which also unwinds the ``async with`` and frees the lock.
+    """
+    main = None
+    config = None
+
+    try:
         async with _streamrip_lock:
             main, config = await _get_main()
 
@@ -894,19 +961,6 @@ async def _do_download(task_id: str, service: str, service_id: str,
                 before_count = _streamrip_db_track_count()
                 await main.rip()
                 _maybe_mark_duplicate(task, before_count)
-
-        # If the rip turned out to be a duplicate, _maybe_mark_duplicate
-        # already set the terminal status — don't override it.
-        if task.status != TaskStatus.duplicate:
-            task.status = TaskStatus.complete
-            task.progress = 100.0
-        task.updated_at = time.time()
-
-    except Exception as exc:
-        logger.exception("Download failed for task %s: %s", task_id, exc)
-        task.status = TaskStatus.error
-        task.error = str(exc)[:1024]
-        task.updated_at = time.time()
     finally:
         if main and config:
             await _close_main(main, config)
@@ -1028,7 +1082,24 @@ async def health():
         1 for t in _tasks.values()
         if t.status in (TaskStatus.queued, TaskStatus.downloading)
     )
-    music = _music_status()
+    # Probe the /music mount off the event loop with a timeout. _music_status()
+    # does blocking os.listdir / os.open syscalls; on a stalled NFS mount,
+    # running them inline would freeze the whole server (every request, not just
+    # /health). With the timeout, a hung mount reports 503 fast (→ unhealthy →
+    # autoheal restarts us) instead of wedging the loop. Note: a probe that times
+    # out leaves its worker thread blocked until the mount recovers or we're
+    # restarted — acceptable, since an unhealthy container is about to be cycled.
+    try:
+        music = await asyncio.wait_for(
+            asyncio.to_thread(_music_status),
+            timeout=HEALTH_MUSIC_PROBE_TIMEOUT_S,
+        )
+    except Exception as exc:  # includes asyncio.TimeoutError (a TimeoutError subclass)
+        music = {
+            "path": OUTPUT_DIR, "exists": None, "entries": None, "writable": False,
+            "error": f"mount probe did not complete within "
+                     f"{HEALTH_MUSIC_PROBE_TIMEOUT_S:.0f}s: {exc!r}",
+        }
     ready = _music_ready(music)
     body: Dict[str, Any] = {
         "status": "ok" if ready else "degraded",

@@ -26,6 +26,13 @@ services:
     platform: linux/amd64
     container_name: grooveiq
     restart: unless-stopped
+    labels:
+      # Opt this container in to the `autoheal` service (defined below): when its
+      # healthcheck goes (unhealthy), autoheal restarts it. `restart:
+      # unless-stopped` only fires on process *exit* — it can't recover a wedged
+      # event loop (a hung process never exits), which is exactly what happened
+      # to streamrip-api. autoheal closes that gap.
+      autoheal: "true"
     depends_on:
       postgres:
         condition: service_healthy
@@ -113,6 +120,10 @@ services:
     image: spotdl-api:latest
     container_name: spotdl-api
     restart: unless-stopped
+    labels:
+      # Auto-restart on (unhealthy) — same stale-/music-mount risk as
+      # streamrip-api (issue #123). See the `autoheal` service below.
+      autoheal: "true"
     read_only: true
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]
@@ -168,6 +179,12 @@ services:
     container_name: streamrip-api
 
     restart: unless-stopped
+    labels:
+      # Auto-restart on (unhealthy). This is the container that wedged for ~2
+      # days when a download stalled holding the global lock; the in-app
+      # DOWNLOAD_TIMEOUT_S watchdog + this autoheal label are the two recovery
+      # layers. See the `autoheal` service below.
+      autoheal: "true"
     read_only: true
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]
@@ -183,6 +200,9 @@ services:
       MAX_THREADS:         ${STREAMRIP_THREADS:-4}
       DEFAULT_SERVICE:     ${STREAMRIP_DEFAULT_SERVICE:-qobuz}
       LOG_LEVEL:           ${LOG_LEVEL:-INFO}
+      # Auto-remediation: a stalled download is cancelled after this many seconds
+      # so it can't hold the global streamrip lock forever (0 disables).
+      DOWNLOAD_TIMEOUT_S:  ${STREAMRIP_DOWNLOAD_TIMEOUT:-1800}
     volumes:
       - ${MUSIC_LIBRARY_PATH:-/mnt/music}:/music
       - streamrip_config:/config
@@ -198,6 +218,40 @@ services:
         limits:
           cpus: "${STREAMRIP_CPU_LIMIT:-1.0}"
           memory: "${STREAMRIP_MEM_LIMIT:-1G}"
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+  # ---------------------------------------------------------------------------
+  # autoheal — restarts any container that goes (unhealthy)
+  # ---------------------------------------------------------------------------
+  # Docker's `restart: unless-stopped` only restarts a container when its main
+  # process *exits*. A wedged event loop (a stalled streamrip download holding
+  # the global lock, a hung /music NFS mount) leaves the process alive but
+  # unresponsive: the healthcheck flips to (unhealthy) and nothing acts on it.
+  # autoheal polls the Docker API and restarts every container labelled
+  # `autoheal=true` once it reports unhealthy — turning detection into recovery.
+  #
+  # It needs the Docker socket, which grants control of the daemon. That's the
+  # cost of self-healing; for tighter isolation front it with a read/write-scoped
+  # tecnativa/docker-socket-proxy instead of the raw socket.
+  autoheal:
+    image: willfarrell/autoheal:1.2.0
+    container_name: grooveiq-autoheal
+    restart: unless-stopped
+    security_opt: [no-new-privileges:true]
+    environment:
+      AUTOHEAL_CONTAINER_LABEL: autoheal      # only restart opted-in containers
+      AUTOHEAL_INTERVAL: 10                    # seconds between health scans
+      AUTOHEAL_START_PERIOD: 60                # grace after autoheal itself starts
+      AUTOHEAL_DEFAULT_STOP_TIMEOUT: 30        # SIGTERM grace before SIGKILL on restart
+      DOCKER_SOCK: /var/run/docker.sock
+      TZ: ${TZ:-UTC}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    networks:
+      - default
     logging:
       driver: "json-file"
       options:
