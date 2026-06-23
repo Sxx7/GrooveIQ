@@ -1111,3 +1111,69 @@ class ApiCallLog(Base):
         Index("idx_api_call_user_time", "user_id", "created_at"),
         Index("idx_api_call_path_time", "path", "created_at"),
     )
+
+
+# ---------------------------------------------------------------------------
+# Session mixes  (rotating, session-clustered personalized mixes)
+# ---------------------------------------------------------------------------
+
+
+class Mix(Base):
+    """A persisted, slowly-rotating personalized mix for one user.
+
+    Built by clustering the user's recently-engaged tracks on the session
+    co-listening embedding (NOT genre/artist). Members live in the MixTrack
+    join table. Unlike the ephemeral ``/recommend`` "mix" (an in-memory SWR
+    cache), a Mix is a stored object with a shelf-life lifecycle:
+
+        active    shown on "Made for you / More mixes"; rotates slowly
+        stale     its cluster no longer forms (transient, pre-archive)
+        archived  hidden; membership snapshot kept
+
+    A ``kind='nostalgic'`` view is derived (read-side) from archived mixes that
+    have been dormant long enough to resurface — there is no separate stored
+    nostalgic object. ``centroid`` is the JSON-serialised session-space cluster
+    centroid, used to re-match a mix to a cluster on the next rebuild so its
+    identity (and stable core) persists across refreshes. Names are deliberately
+    omitted: the client shows a generic "Mix N" (``ordinal``) or nothing.
+    """
+
+    __tablename__ = "mixes"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(String(128), nullable=False, index=True)
+    kind = Column(String(16), nullable=False, default="session")  # session | nostalgic
+    state = Column(String(16), nullable=False, default="active", index=True)  # active | stale | archived
+    ordinal = Column(Integer, nullable=False, default=0)  # generic display order (Mix 1, Mix 2 …)
+    centroid = Column(JSON, nullable=True)  # session-space cluster centroid (list[float]) for re-matching
+    track_count = Column(Integer, nullable=False, default=0)
+
+    created_at = Column(Integer, nullable=False, default=lambda: int(time.time()))
+    refreshed_at = Column(Integer, nullable=True)  # last membership rotation
+    expires_at = Column(Integer, nullable=True)  # next rotation allowed only after this
+    archived_at = Column(Integer, nullable=True)  # when it left the active set
+    last_shown_at = Column(Integer, nullable=True)
+
+    __table_args__ = (Index("ix_mixes_user_kind_state", "user_id", "kind", "state"),)
+
+
+class MixTrack(Base):
+    """Ordered track within a Mix (clone of PlaylistTrack with provenance)."""
+
+    __tablename__ = "mix_tracks"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    mix_id = Column(Integer, ForeignKey("mixes.id", ondelete="CASCADE"), nullable=False, index=True)
+    track_id = Column(String(128), nullable=False)
+    position = Column(Integer, nullable=False)
+    score = Column(Float, nullable=True)  # engagement score at last rotation
+    # True when placed via the acoustic-embedding fallback (no session vector).
+    # Retained only while later event data (its engagement score) supports it.
+    provisional = Column(Boolean, nullable=False, default=False)
+    added_at = Column(Integer, nullable=False, default=lambda: int(time.time()))  # first entry into THIS mix
+
+    __table_args__ = (
+        UniqueConstraint("mix_id", "position", name="uq_mix_position"),
+        Index("ix_mix_track_pos", "mix_id", "position"),
+        Index("ix_mix_track_tid", "mix_id", "track_id"),
+    )

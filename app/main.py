@@ -29,6 +29,7 @@ from app.api.routes import (
     lastfm,
     lidarr_backfill,
     lyrics,
+    mixes,
     news,
     playlists,
     radio,
@@ -240,6 +241,7 @@ app.include_router(playlists.router, prefix="/v1", tags=["playlists"])
 app.include_router(stats.router, prefix="/v1", tags=["stats"])
 app.include_router(recommend.router, prefix="/v1", tags=["recommendations"])
 app.include_router(reco_audit.router, prefix="/v1", tags=["recommendations"])
+app.include_router(mixes.router, prefix="/v1", tags=["mixes"])
 app.include_router(discovery.router, prefix="/v1", tags=["discovery"])
 app.include_router(charts.router, prefix="/v1", tags=["charts"])
 app.include_router(downloads.router, prefix="/v1", tags=["downloads"])

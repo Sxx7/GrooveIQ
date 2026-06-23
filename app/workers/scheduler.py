@@ -163,6 +163,24 @@ async def start_scheduler() -> None:
         replace_existing=True,
     )
 
+    # Session-clustered mixes: nightly rebuild (03:30 UTC) + archive prune (03:45).
+    # Registered unconditionally but the job early-returns when the persisted
+    # `mixes.enabled` flag is off, so toggling the feature needs no restart. A
+    # nightly cadence (not the hourly pipeline) keeps mixes from reshuffling too
+    # often; per-mix shelf-life gates whether any membership actually rotates.
+    _scheduler.add_job(
+        _periodic_user_mixes,
+        trigger=CronTrigger(hour=3, minute=30, timezone="UTC"),
+        id="user_mixes_rebuild",
+        replace_existing=True,
+    )
+    _scheduler.add_job(
+        _purge_old_mixes,
+        trigger=CronTrigger(hour=3, minute=45, timezone="UTC"),
+        id="user_mixes_prune",
+        replace_existing=True,
+    )
+
     # Lidarr backfill engine — drains /wanted/missing through streamrip-api.
     # Both jobs are gated on the persisted config's `enabled` flag; the API
     # route calls `apply_lidarr_backfill_config()` to register / remove /
@@ -320,6 +338,42 @@ async def _cleanup_old_events() -> None:
         deleted = result.rowcount
     if deleted:
         logger.info(f"Cleaned up {deleted} events older than {settings.EVENT_RETENTION_DAYS} days.")
+
+
+async def _periodic_user_mixes(trigger: str = "scheduled") -> dict:
+    """Rebuild every active user's session-clustered mixes. No-op when disabled."""
+    from app.services.algorithm_config import get_config
+
+    if not get_config().mixes.enabled:
+        return {"skipped": "disabled"}
+    from app.services import user_mixes
+
+    logger.info("User-mixes rebuild starting (trigger=%s)…", trigger)
+    summary = await user_mixes.rebuild_all()
+    logger.info("User-mixes rebuild done: %s", summary)
+    return summary
+
+
+async def run_user_mixes_now(trigger: str = "manual") -> dict:
+    """Rebuild all users' session mixes on demand (admin / startup helper)."""
+    return await _periodic_user_mixes(trigger=trigger)
+
+
+async def _purge_old_mixes() -> None:
+    """Drop archived mixes past the retention horizon so the table stays bounded.
+    Nostalgic resurfacing only ever looks back a few months, so 180 days is safe.
+    MixTrack rows cascade-delete via the FK (sqlite FKs are enabled in session.py)."""
+    from app.models.db import Mix
+
+    horizon = int(time.time()) - 180 * 86_400
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(
+            delete(Mix).where(Mix.state == "archived", Mix.archived_at.isnot(None), Mix.archived_at < horizon)
+        )
+        await session.commit()
+        deleted = result.rowcount
+    if deleted:
+        logger.info("Purged %d archived mixes older than 180 days.", deleted)
 
 
 async def _periodic_recommendation_pipeline(trigger: str = "scheduled") -> None:

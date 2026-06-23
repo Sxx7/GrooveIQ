@@ -299,3 +299,25 @@ def vocab_size() -> int:
         if _model is None:
             return 0
         return len(_model.wv)
+
+
+def get_vectors(track_ids: list[str]) -> dict[str, np.ndarray]:
+    """Return the raw session embedding vector for each given track_id that is
+    in the model vocabulary.
+
+    Tracks absent from the vocabulary (too thinly co-listened to have been
+    trained, i.e. fewer than ``min_count`` session appearances) are simply
+    omitted — callers fall back to the acoustic ``TrackFeatures.embedding`` for
+    those. Used by the user-mixes clustering job (``app.services.user_mixes``),
+    which needs the per-track vectors to run its own KMeans rather than a
+    ``most_similar`` lookup.
+    """
+    with _lock:
+        model = _model
+    if model is None:
+        return {}
+    out: dict[str, np.ndarray] = {}
+    for tid in track_ids:
+        if tid in model.wv:
+            out[tid] = np.asarray(model.wv[tid], dtype=np.float32)
+    return out
