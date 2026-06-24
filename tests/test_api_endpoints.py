@@ -263,6 +263,78 @@ class TestUserStats:
         assert data["total_events"] == 6
 
 
+class TestUserActivityDaily:
+    async def test_activity_daily_basic(self, client: AsyncClient):
+        """Per-day play counts bucket play_start events by UTC day, excluding
+        play_end (co-fires with play_start), impressions, and out-of-window rows.
+        """
+        await seed_user_with_data()
+        now = int(time.time())
+        # Anchor to noon of a recent past day so events never straddle midnight.
+        d0 = ((now // 86400) - 1) * 86400 + 43200  # noon yesterday (UTC)
+        async with _TestSession() as session:
+            session.add_all([
+                # Most recent day: two tracks started (same day, 100s apart).
+                ListenEvent(user_id="testuser", track_id="t1",
+                            event_type="play_start", timestamp=d0),
+                ListenEvent(user_id="testuser", track_id="t2",
+                            event_type="play_start", timestamp=d0 + 100),
+                # One day earlier: one.
+                ListenEvent(user_id="testuser", track_id="t3",
+                            event_type="play_start", timestamp=d0 - 86400),
+                # Three days earlier: one.
+                ListenEvent(user_id="testuser", track_id="t4",
+                            event_type="play_start", timestamp=d0 - 3 * 86400),
+                # Excluded: play_end co-fires with play_start; impression isn't a
+                # play; and an event older than the 365-day window.
+                ListenEvent(user_id="testuser", track_id="t1",
+                            event_type="play_end", timestamp=d0 + 200),
+                ListenEvent(user_id="testuser", track_id="imp",
+                            event_type="reco_impression", timestamp=d0),
+                ListenEvent(user_id="testuser", track_id="old",
+                            event_type="play_start", timestamp=d0 - 400 * 86400),
+            ])
+            await session.commit()
+
+        resp = await client.get("/v1/users/testuser/activity/daily")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["bucket_size_seconds"] == 86400
+        assert data["tz_offset_minutes"] == 0
+        buckets = data["buckets"]
+        # Three distinct days; the old event fell outside the 365-day window.
+        assert len(buckets) == 3
+        # Four plays total (play_end + impression excluded — not 6).
+        assert sum(b["play_count"] for b in buckets) == 4
+        # Most recent day holds the two play_starts.
+        assert max(buckets, key=lambda b: b["timestamp"])["play_count"] == 2
+        # UTC buckets land on midnight.
+        assert all(b["timestamp"] % 86400 == 0 for b in buckets)
+
+    async def test_activity_daily_not_found(self, client: AsyncClient):
+        resp = await client.get("/v1/users/nonexistent/activity/daily")
+        assert resp.status_code == 404
+
+    async def test_activity_daily_tz_offset_shifts_day(self, client: AsyncClient):
+        """A play just after UTC midnight belongs to the previous local day for a
+        user west of UTC, so the bucket shifts back a day.
+        """
+        await seed_user_with_data()
+        day_start = ((int(time.time()) // 86400) - 5) * 86400  # UTC midnight, 5 days ago
+        async with _TestSession() as session:
+            session.add(ListenEvent(user_id="testuser", track_id="x",
+                                    event_type="play_start", timestamp=day_start + 1800))
+            await session.commit()
+
+        utc = (await client.get("/v1/users/testuser/activity/daily")).json()
+        assert utc["buckets"][0]["timestamp"] == day_start
+
+        # UTC-1: 00:30 UTC is 23:30 the previous local day → previous local-day bucket,
+        # whose local midnight is 01:00 UTC = day_start - 82800.
+        west = (await client.get("/v1/users/testuser/activity/daily?tz_offset_minutes=-60")).json()
+        assert west["buckets"][0]["timestamp"] == day_start - 82800
+
+
 class TestRecommendationHistory:
     async def test_history_empty(self, client: AsyncClient):
         await seed_user_with_data()

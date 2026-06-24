@@ -558,6 +558,80 @@ async def get_user_stats(
 
 
 # ---------------------------------------------------------------------------
+# Activity heatmap
+# ---------------------------------------------------------------------------
+
+
+@router.get(
+    "/users/{user_id}/activity/daily",
+    summary="Per-day play activity for the last N days (heatmap source)",
+)
+async def get_user_activity_daily(
+    user_id: str,
+    days: int = Query(365, ge=1, le=730, description="Days of history to return"),
+    tz_offset_minutes: int = Query(
+        0,
+        ge=-840,
+        le=840,
+        description="Client UTC offset in minutes; days bucket on the client's local midnight.",
+    ),
+    session: AsyncSession = Depends(get_session),
+    _key: str = Depends(require_api_key),
+):
+    """Daily play counts for a GitHub-style listening-activity heatmap.
+
+    Unlike a single device's local history, this aggregates every device the user
+    listens on (the event log is keyed by ``user_id``, not device).
+
+    Counts ``play_start`` events only — one per track started — so the number is an
+    honest "tracks played that day". ``play_end`` is excluded because it co-fires
+    with ``play_start`` and would roughly double the count; ``reco_impression`` and
+    other non-listening events are excluded too.
+
+    Buckets fall on the *client's* local midnight when ``tz_offset_minutes`` is
+    supplied (otherwise UTC), and each returned ``timestamp`` is the UTC epoch of
+    that local day's start. Only days with at least one play are returned — the
+    client fills the gaps with zero. Note raw events are pruned after
+    ``EVENT_RETENTION_DAYS`` (default 365), so history beyond that is unavailable.
+    """
+    await _resolve_user(session, user_id, _key)
+
+    now = int(time.time())
+    cutoff = now - days * 86400
+    bucket_size = 86400  # one day
+    offset_s = tz_offset_minutes * 60
+
+    # Shift into the client's local frame, then floor to the day with modulo.
+    # (Integer arithmetic on both SQLite and Postgres — SQLAlchemy's `/` does
+    # float division and would never actually bucket.) The key is shifted back
+    # to a real UTC timestamp below.
+    shifted = ListenEvent.timestamp + offset_s
+    rows = (
+        await session.execute(
+            select(
+                (shifted - shifted % bucket_size).label("bucket"),
+                func.count(ListenEvent.id).label("cnt"),
+            )
+            .where(
+                ListenEvent.user_id == user_id,
+                ListenEvent.timestamp >= cutoff,
+                ListenEvent.event_type == "play_start",
+            )
+            .group_by("bucket")
+            .order_by("bucket")
+        )
+    ).all()
+
+    return {
+        "user_id": user_id,
+        "bucket_size_seconds": bucket_size,
+        "days": days,
+        "tz_offset_minutes": tz_offset_minutes,
+        "buckets": [{"timestamp": int(r.bucket) - offset_s, "play_count": r.cnt} for r in rows],
+    }
+
+
+# ---------------------------------------------------------------------------
 # CRUD
 # ---------------------------------------------------------------------------
 
