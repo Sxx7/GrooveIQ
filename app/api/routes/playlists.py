@@ -6,7 +6,8 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.security import hash_key, require_admin, require_api_key
+from app.core.security import check_user_access, hash_key, require_admin, require_api_key
+from app.core.user_id import validate_user_id
 from app.db.session import get_session
 from app.models.db import Playlist
 from app.models.schemas import (
@@ -42,6 +43,13 @@ async def create_playlist(
     session: AsyncSession = Depends(get_session),
     _key: str = Depends(require_api_key),
 ):
+    # Optional personalization: validate + authorize the user before it can
+    # influence selection or the (now per-user) idempotency cache. Same rules
+    # as /recommend; both are no-ops/soft unless configured.
+    if body.user_id:
+        validate_user_id(body.user_id)
+        check_user_access(_key, body.user_id)
+
     # Daily idempotency: same caller + same params + same UTC day → return the
     # already-generated playlist instead of creating a duplicate row. See #89.
     key_hash = hash_key(_key)
@@ -52,6 +60,7 @@ async def create_playlist(
         params=body.params,
         max_tracks=body.max_tracks,
         bucket_date=utc_day_bucket(),
+        user_id=body.user_id,
     )
 
     if not refresh:
@@ -71,6 +80,7 @@ async def create_playlist(
             seed_track_id=body.seed_track_id,
             params=body.params,
             max_tracks=body.max_tracks,
+            user_id=body.user_id,
         )
         # Record which API key created this playlist + the daily cache key.
         playlist.created_by = key_hash

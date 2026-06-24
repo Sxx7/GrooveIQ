@@ -26,8 +26,32 @@ from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.db import Playlist, PlaylistTrack, TrackFeatures
+from app.services.ranker import score_candidates
 
 logger = logging.getLogger(__name__)
+
+TASTE_ALPHA = 0.5  # how hard taste tilts each strategy's score. 0 = off, ~0.5 keeps
+# the strategy's intrinsic objective (BPM/energy/key/CLAP) in charge. Tune later.
+
+
+async def _taste_weights(
+    user_id: str,
+    track_ids: list[str],
+    session: AsyncSession,
+) -> dict[str, float]:
+    """Per-track taste relevance in [0,1] for ``user_id``, via the recommend ranker.
+
+    Returns ``{}`` when there's nothing to weigh; callers use ``.get(tid, 0.0)``
+    so a cold user (no taste_profile / untrained ranker) degrades to a no-op blend.
+    A constant score set (e.g. untrained fallback) min-max-collapses to all-zero
+    weights — also a no-op, which is the intended cold-start behavior.
+    """
+    scored = await score_candidates(user_id, track_ids, session)
+    if not scored:
+        return {}
+    lo = min(s for _, s in scored)
+    span = (max(s for _, s in scored) - lo) or 1.0
+    return {tid: (s - lo) / span for tid, s in scored}
 
 
 class PlaylistServiceUnavailableError(Exception):
@@ -54,15 +78,22 @@ def compute_cache_key(
     params: dict[str, Any] | None,
     max_tracks: int,
     bucket_date: str,
+    user_id: str | None = None,
 ) -> str:
     """Stable per-day idempotency key for a playlist generation request.
 
     Excludes ``name`` so the frontend can vary the title without busting the
     cache. ``params`` is canonicalised via ``sort_keys`` so dict ordering can't
     produce a different hash for the same logical request. See issue #89.
+
+    ``user_id`` segments the cache per personalized user; the ``or ""`` default
+    keeps the hash byte-identical for legacy (user-agnostic) callers and also
+    fixes a latent bug where two users sharing one API key collided on a single
+    cached playlist.
     """
     payload = {
         "owner": created_by or "",
+        "user": user_id or "",
         "strategy": strategy,
         "seed": seed_track_id or "",
         "params": params or {},
@@ -154,7 +185,9 @@ def _camelot_compatible(code1: tuple[int, str], code2: tuple[int, str], max_dist
 # ---------------------------------------------------------------------------
 
 
-def _generate_flow(tracks: list[TrackFeatures], seed_id: str, max_tracks: int) -> list[str]:
+def _generate_flow(
+    tracks: list[TrackFeatures], seed_id: str, max_tracks: int, taste: dict[str, float] | None = None
+) -> list[str]:
     """Greedy chain from seed, preferring smooth BPM/energy transitions."""
     seed = next((t for t in tracks if t.track_id == seed_id), None)
     if not seed:
@@ -201,7 +234,7 @@ def _generate_flow(tracks: list[TrackFeatures], seed_id: str, max_tracks: int) -
             if current.track_id in embeddings and t.track_id in embeddings:
                 cos = _cosine_sim(embeddings[current.track_id], embeddings[t.track_id])
 
-            score = cos * bpm_bonus * energy_bonus
+            score = cos * bpm_bonus * energy_bonus * (1 + TASTE_ALPHA * (taste or {}).get(t.track_id, 0.0))
             if score > best_score:
                 best_score = score
                 best_id = t.track_id
@@ -246,6 +279,7 @@ def _generate_path(
     from_id: str,
     to_id: str,
     max_tracks: int,
+    taste: dict[str, float] | None = None,
 ) -> list[str]:
     """
     Build a sonic bridge from ``from_id`` to ``to_id``.
@@ -301,7 +335,9 @@ def _generate_path(
         for tid, vec in embeddings.items():
             if tid in used:
                 continue
-            score = float(np.dot(wp, vec))  # both unit-norm → cosine
+            score = float(np.dot(wp, vec)) * (
+                1 + TASTE_ALPHA * (taste or {}).get(tid, 0.0)
+            )  # both unit-norm → cosine, biased toward loved tracks
             if score > best_score:
                 best_score = score
                 best_id = tid
@@ -322,6 +358,7 @@ def _generate_text(
     tracks: list[TrackFeatures],
     prompt: str,
     max_tracks: int,
+    taste: dict[str, float] | None = None,
 ) -> list[str]:
     """
     Rank every CLAP-embedded track by cosine similarity to the prompt.
@@ -356,6 +393,7 @@ def _generate_text(
             if norm < 1e-9:
                 continue
             cos = float(np.dot(query_vec, vec / norm))
+            cos *= 1 + TASTE_ALPHA * (taste or {}).get(t.track_id, 0.0)
             scored.append((cos, t.track_id))
         except Exception:
             continue
@@ -376,7 +414,9 @@ def _generate_text(
 # ---------------------------------------------------------------------------
 
 
-def _generate_mood(tracks: list[TrackFeatures], mood: str, max_tracks: int) -> list[str]:
+def _generate_mood(
+    tracks: list[TrackFeatures], mood: str, max_tracks: int, taste: dict[str, float] | None = None
+) -> list[str]:
     """Filter tracks by mood tag confidence, order by energy arc."""
     from app.services.audio_analysis import SUPPORTED_MOOD_LABELS
 
@@ -402,8 +442,9 @@ def _generate_mood(tracks: list[TrackFeatures], mood: str, max_tracks: int) -> l
     if not scored:
         raise ValueError(f"No tracks found with mood '{mood}' (confidence > 0.3)")
 
-    # Sort by confidence, take top candidates
-    scored.sort(key=lambda x: x[0], reverse=True)
+    # Sort by confidence (taste-biased), take top candidates. Taste only changes
+    # which high-confidence tracks survive the truncation, not the arc shape below.
+    scored.sort(key=lambda x: x[0] * (1 + TASTE_ALPHA * (taste or {}).get(x[1].track_id, 0.0)), reverse=True)
     candidates = [t for _, t in scored[:max_tracks]]
 
     # Re-order for pleasant listening: energy ramp up then cool down
@@ -419,7 +460,9 @@ def _generate_mood(tracks: list[TrackFeatures], mood: str, max_tracks: int) -> l
 # ---------------------------------------------------------------------------
 
 
-def _generate_energy_curve(tracks: list[TrackFeatures], curve: str, max_tracks: int) -> list[str]:
+def _generate_energy_curve(
+    tracks: list[TrackFeatures], curve: str, max_tracks: int, taste: dict[str, float] | None = None
+) -> list[str]:
     """Match tracks to a target energy profile."""
     n = min(max_tracks, len(tracks))
 
@@ -466,7 +509,8 @@ def _generate_energy_curve(tracks: list[TrackFeatures], curve: str, max_tracks: 
             if prev_embed is not None and t.track_id in embeddings:
                 sim_bonus = _cosine_sim(prev_embed, embeddings[t.track_id]) * 0.1
 
-            score = energy_dist - sim_bonus
+            # MINIMIZER: lower score wins, so taste is SUBTRACTED (loved → lower cost).
+            score = energy_dist - sim_bonus - TASTE_ALPHA * (taste or {}).get(t.track_id, 0.0)
             if score < best_score:
                 best_score = score
                 best_id = t.track_id
@@ -486,7 +530,9 @@ def _generate_energy_curve(tracks: list[TrackFeatures], curve: str, max_tracks: 
 # ---------------------------------------------------------------------------
 
 
-def _generate_key_compatible(tracks: list[TrackFeatures], seed_id: str, max_tracks: int) -> list[str]:
+def _generate_key_compatible(
+    tracks: list[TrackFeatures], seed_id: str, max_tracks: int, taste: dict[str, float] | None = None
+) -> list[str]:
     """Chain tracks using Camelot wheel harmonic compatibility."""
     seed = next((t for t in tracks if t.track_id == seed_id), None)
     if not seed:
@@ -534,7 +580,7 @@ def _generate_key_compatible(tracks: list[TrackFeatures], seed_id: str, max_trac
             if cur_id in embeddings and t.track_id in embeddings:
                 cos = _cosine_sim(embeddings[cur_id], embeddings[t.track_id])
 
-            score = cos * key_bonus
+            score = cos * key_bonus * (1 + TASTE_ALPHA * (taste or {}).get(t.track_id, 0.0))
             if score > best_score:
                 best_score = score
                 best_id = t.track_id
@@ -561,10 +607,16 @@ async def generate_playlist(
     seed_track_id: str | None,
     params: dict[str, Any] | None,
     max_tracks: int,
+    user_id: str | None = None,
 ) -> Playlist:
     """
     Generate a playlist and persist it.
     Returns the created Playlist with track_count and total_duration set.
+
+    When ``user_id`` is given, each strategy's per-candidate score is biased by
+    the user's taste (via the recommend ranker) so the playlist prefers loved
+    tracks while the strategy's sonic objective still dictates order. With
+    ``user_id=None`` the behavior is byte-identical to the user-agnostic path.
     """
     tracks = await _load_tracks(session)
     if len(tracks) < 5:
@@ -572,23 +624,27 @@ async def generate_playlist(
 
     logger.info(f"Generating '{strategy}' playlist '{name}' from {len(tracks)} tracks")
 
+    # One taste-weight map over the whole candidate pool, folded into every
+    # strategy's score. Empty (no-op) for the user-agnostic / cold-user path.
+    taste = await _taste_weights(user_id, [t.track_id for t in tracks], session) if user_id else {}
+
     # Dispatch to strategy
     if strategy == "flow":
-        track_ids = _generate_flow(tracks, seed_track_id, max_tracks)
+        track_ids = _generate_flow(tracks, seed_track_id, max_tracks, taste=taste)
     elif strategy == "mood":
         mood = (params or {}).get("mood", "happy")
-        track_ids = _generate_mood(tracks, mood, max_tracks)
+        track_ids = _generate_mood(tracks, mood, max_tracks, taste=taste)
     elif strategy == "energy_curve":
         curve = (params or {}).get("curve", "ramp_up_cool_down")
-        track_ids = _generate_energy_curve(tracks, curve, max_tracks)
+        track_ids = _generate_energy_curve(tracks, curve, max_tracks, taste=taste)
     elif strategy == "key_compatible":
-        track_ids = _generate_key_compatible(tracks, seed_track_id, max_tracks)
+        track_ids = _generate_key_compatible(tracks, seed_track_id, max_tracks, taste=taste)
     elif strategy == "path":
         target = (params or {}).get("target_track_id")
-        track_ids = _generate_path(tracks, seed_track_id, target, max_tracks)
+        track_ids = _generate_path(tracks, seed_track_id, target, max_tracks, taste=taste)
     elif strategy == "text":
         prompt = (params or {}).get("prompt", "")
-        track_ids = _generate_text(tracks, prompt, max_tracks)
+        track_ids = _generate_text(tracks, prompt, max_tracks, taste=taste)
     else:
         raise ValueError(f"Unknown strategy: {strategy}")
 

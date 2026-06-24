@@ -416,6 +416,9 @@ class PlaylistCreate(BaseModel):
     seed_track_id: str | None = Field(None, max_length=128)
     params: dict[str, Any] | None = None
     max_tracks: int = Field(25, ge=5, le=100)
+    user_id: str | None = Field(None, max_length=128)
+    # When present: personalize track selection to this user AND scope the daily
+    # idempotency cache per-user. Same Navidrome id the client sends to /recommend.
 
     @model_validator(mode="after")
     def validate_strategy_params(self):
