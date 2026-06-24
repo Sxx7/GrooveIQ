@@ -335,6 +335,83 @@ class TestUserActivityDaily:
         assert west["buckets"][0]["timestamp"] == day_start - 82800
 
 
+class TestPipelineStatsBuckets:
+    """The pipeline ingest/activity charts must floor timestamps into fixed-width
+    buckets. SQLAlchemy 2.x `/` is float division, so the old
+    `timestamp / bucket * bucket` returned the timestamp essentially unchanged —
+    one "bucket" per distinct timestamp. These tests pin the integer modulo-floor:
+    bucket keys are exact multiples of bucket_size and several events inside one
+    bucket collapse to a single grouped row.
+    """
+
+    async def test_events_15min_buckets_floor_and_collapse(self, client: AsyncClient):
+        now = int(time.time())
+        bucket = 900  # 15 minutes
+        # Anchor to a 15-min boundary ~1h ago, well inside the 24h window.
+        base = ((now - 3600) // bucket) * bucket
+        async with _TestSession() as session:
+            session.add_all([
+                # Three events in one bucket, at distinct timestamps.
+                ListenEvent(user_id="testuser", track_id="t1",
+                            event_type="play_start", timestamp=base),
+                ListenEvent(user_id="testuser", track_id="t2",
+                            event_type="play_start", timestamp=base + 10),
+                ListenEvent(user_id="testuser", track_id="t3",
+                            event_type="skip", timestamp=base + 100),
+                # One event in the previous bucket.
+                ListenEvent(user_id="testuser", track_id="t4",
+                            event_type="play_start", timestamp=base - bucket + 50),
+            ])
+            await session.commit()
+
+        resp = await client.get("/v1/pipeline/stats/events")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["bucket_size_seconds"] == bucket
+        buckets = data["buckets"]
+        # Two buckets, not four — the three same-bucket events collapsed.
+        assert len(buckets) == 2
+        # Every bucket key is an exact multiple of the bucket width.
+        assert all(b["timestamp"] % bucket == 0 for b in buckets)
+        by_ts = {b["timestamp"]: b["count"] for b in buckets}
+        assert by_ts[base] == 3
+        assert by_ts[base - bucket] == 1
+
+    async def test_activity_hourly_buckets_floor_and_collapse(self, client: AsyncClient):
+        now = int(time.time())
+        bucket = 3600  # 1 hour
+        # Anchor to an hour boundary ~2h ago, well inside the default 7-day window.
+        base = ((now - 7200) // bucket) * bucket
+        async with _TestSession() as session:
+            session.add_all([
+                # One bucket: two play_starts (collapse within event_type) + one skip.
+                ListenEvent(user_id="testuser", track_id="t1",
+                            event_type="play_start", timestamp=base),
+                ListenEvent(user_id="testuser", track_id="t2",
+                            event_type="play_start", timestamp=base + 60),
+                ListenEvent(user_id="testuser", track_id="t3",
+                            event_type="skip", timestamp=base + 120),
+                # Previous bucket: one play_start.
+                ListenEvent(user_id="testuser", track_id="t4",
+                            event_type="play_start", timestamp=base - bucket + 30),
+            ])
+            await session.commit()
+
+        resp = await client.get("/v1/pipeline/stats/activity")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["bucket_size_seconds"] == bucket
+        buckets = data["buckets"]
+        # Two buckets, not four distinct timestamps.
+        assert len(buckets) == 2
+        assert all(b["timestamp"] % bucket == 0 for b in buckets)
+        by_ts = {b["timestamp"]: b for b in buckets}
+        # play_start collapsed to a count of 2 within the bucket; skip kept separate.
+        assert by_ts[base]["play_start"] == 2
+        assert by_ts[base]["skip"] == 1
+        assert by_ts[base - bucket]["play_start"] == 1
+
+
 class TestRecommendationHistory:
     async def test_history_empty(self, client: AsyncClient):
         await seed_user_with_data()

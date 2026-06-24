@@ -516,10 +516,13 @@ async def pipeline_stats_events(
     day_ago = now - 86400
     bucket_size = 900  # 15 minutes
 
+    # Floor to the bucket with integer modulo. SQLAlchemy 2.x `/` is float
+    # division, so `timestamp / bucket * bucket` returns the timestamp
+    # essentially unchanged and never actually buckets.
     rows = (
         await session.execute(
             select(
-                (ListenEvent.timestamp / bucket_size * bucket_size).label("bucket"),
+                (ListenEvent.timestamp - ListenEvent.timestamp % bucket_size).label("bucket"),
                 func.count(ListenEvent.id).label("cnt"),
             )
             .where(ListenEvent.timestamp >= day_ago)
@@ -548,11 +551,14 @@ async def pipeline_stats_activity(
     cutoff = now - days * 86400
     bucket_size = 3600  # 1 hour
 
+    # Floor to the bucket with integer modulo. SQLAlchemy 2.x `/` is float
+    # division, so `timestamp / bucket * bucket` returns the timestamp
+    # essentially unchanged and never actually buckets.
     rows = (
         await session.execute(
             select(
                 ListenEvent.event_type,
-                (ListenEvent.timestamp / bucket_size * bucket_size).label("bucket"),
+                (ListenEvent.timestamp - ListenEvent.timestamp % bucket_size).label("bucket"),
                 func.count(ListenEvent.id).label("cnt"),
             )
             .where(ListenEvent.timestamp >= cutoff)
