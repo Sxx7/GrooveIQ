@@ -91,18 +91,27 @@ async def _engaged_pool(db: AsyncSession, user_id: str, cfg, now: int) -> dict[s
     """Recently-engaged tracks {track_id: engagement_score} within the window."""
     cutoff = now - cfg.window_days * DAY
     rows = (
-        await db.execute(
-            select(TrackInteraction).where(
-                TrackInteraction.user_id == user_id,
-                TrackInteraction.last_played_at.isnot(None),
-                TrackInteraction.last_played_at >= cutoff,
-                TrackInteraction.dislike_count == 0,
+        (
+            await db.execute(
+                select(TrackInteraction).where(
+                    TrackInteraction.user_id == user_id,
+                    TrackInteraction.last_played_at.isnot(None),
+                    TrackInteraction.last_played_at >= cutoff,
+                    TrackInteraction.dislike_count == 0,
+                )
             )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     pool: dict[str, float] = {}
     for r in rows:
-        if (r.play_count or 0) >= 2 or (r.like_count or 0) > 0 or (r.repeat_count or 0) > 0 or (r.full_listen_count or 0) > 0:
+        if (
+            (r.play_count or 0) >= 2
+            or (r.like_count or 0) > 0
+            or (r.repeat_count or 0) > 0
+            or (r.full_listen_count or 0) > 0
+        ):
             score = _engagement_score(r)
             if score >= cfg.min_satisfaction:
                 pool[r.track_id] = score
@@ -200,26 +209,20 @@ def _rotate(old: list[str], desired_ranked: list[str], cfg) -> list[str]:
 
 async def _active_session_mixes(db: AsyncSession, user_id: str) -> list[Mix]:
     return list(
-        (
-            await db.execute(
-                select(Mix).where(Mix.user_id == user_id, Mix.kind == "session", Mix.state == "active")
-            )
-        ).scalars().all()
+        (await db.execute(select(Mix).where(Mix.user_id == user_id, Mix.kind == "session", Mix.state == "active")))
+        .scalars()
+        .all()
     )
 
 
 async def _member_added(db: AsyncSession, mix_id: int) -> dict[str, int]:
-    rows = (
-        await db.execute(select(MixTrack.track_id, MixTrack.added_at).where(MixTrack.mix_id == mix_id))
-    ).all()
+    rows = (await db.execute(select(MixTrack.track_id, MixTrack.added_at).where(MixTrack.mix_id == mix_id))).all()
     return {tid: added for tid, added in rows}
 
 
 async def _ordered_member_ids(db: AsyncSession, mix_id: int) -> list[str]:
     rows = (
-        await db.execute(
-            select(MixTrack.track_id).where(MixTrack.mix_id == mix_id).order_by(MixTrack.position)
-        )
+        await db.execute(select(MixTrack.track_id).where(MixTrack.mix_id == mix_id).order_by(MixTrack.position))
     ).all()
     return [r[0] for r in rows]
 
@@ -268,8 +271,14 @@ async def rebuild_user_mixes(db: AsyncSession, user_id: str, *, now: int | None 
         # (their world is gone) so the client falls back to genre mixes.
         archived = await _archive_active(db, user_id, now)
         await db.commit()
-        return {"user_id": user_id, "built": 0, "reason": "cold_start", "engaged": len(pool),
-                "backbone": len(backbone), "archived": archived}
+        return {
+            "user_id": user_id,
+            "built": 0,
+            "reason": "cold_start",
+            "engaged": len(pool),
+            "backbone": len(backbone),
+            "archived": archived,
+        }
 
     X = np.vstack([_l2(vec_map[t]) for t in backbone])
     clusters = _balanced_clusters(len(backbone), X, cfg)
@@ -490,7 +499,9 @@ async def get_session_mixes(db: AsyncSession, user_id: str) -> list[dict]:
                 .where(Mix.user_id == user_id, Mix.kind == "session", Mix.state == "active")
                 .order_by(Mix.ordinal)
             )
-        ).scalars().all()
+        )
+        .scalars()
+        .all()
     )
     return await _serialise(db, mixes)
 
@@ -517,7 +528,9 @@ async def get_nostalgic_mixes(db: AsyncSession, user_id: str, *, now: int | None
                 .order_by(Mix.archived_at.desc())
                 .limit(cfg.nostalgia_max)
             )
-        ).scalars().all()
+        )
+        .scalars()
+        .all()
     )
     serialised = await _serialise(db, mixes)
     for s in serialised:

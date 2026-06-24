@@ -236,21 +236,17 @@ class TestUserStats:
         now = int(time.time())
         async with _TestSession() as session:
             # Two distinct tracks actually played (track-A twice).
-            session.add_all([
-                ListenEvent(user_id="testuser", track_id="track-A",
-                            event_type="play_start", timestamp=now),
-                ListenEvent(user_id="testuser", track_id="track-A",
-                            event_type="play_end", timestamp=now + 200),
-                ListenEvent(user_id="testuser", track_id="track-B",
-                            event_type="play_start", timestamp=now + 5),
-                # Three tracks only ever shown in recommendations — never played.
-                ListenEvent(user_id="testuser", track_id="imp-1",
-                            event_type="reco_impression", timestamp=now + 1),
-                ListenEvent(user_id="testuser", track_id="imp-2",
-                            event_type="reco_impression", timestamp=now + 2),
-                ListenEvent(user_id="testuser", track_id="imp-3",
-                            event_type="reco_impression", timestamp=now + 3),
-            ])
+            session.add_all(
+                [
+                    ListenEvent(user_id="testuser", track_id="track-A", event_type="play_start", timestamp=now),
+                    ListenEvent(user_id="testuser", track_id="track-A", event_type="play_end", timestamp=now + 200),
+                    ListenEvent(user_id="testuser", track_id="track-B", event_type="play_start", timestamp=now + 5),
+                    # Three tracks only ever shown in recommendations — never played.
+                    ListenEvent(user_id="testuser", track_id="imp-1", event_type="reco_impression", timestamp=now + 1),
+                    ListenEvent(user_id="testuser", track_id="imp-2", event_type="reco_impression", timestamp=now + 2),
+                    ListenEvent(user_id="testuser", track_id="imp-3", event_type="reco_impression", timestamp=now + 3),
+                ]
+            )
             await session.commit()
 
         resp = await client.get("/v1/users/testuser/stats")
@@ -273,27 +269,24 @@ class TestUserActivityDaily:
         # Anchor to noon of a recent past day so events never straddle midnight.
         d0 = ((now // 86400) - 1) * 86400 + 43200  # noon yesterday (UTC)
         async with _TestSession() as session:
-            session.add_all([
-                # Most recent day: two tracks started (same day, 100s apart).
-                ListenEvent(user_id="testuser", track_id="t1",
-                            event_type="play_start", timestamp=d0),
-                ListenEvent(user_id="testuser", track_id="t2",
-                            event_type="play_start", timestamp=d0 + 100),
-                # One day earlier: one.
-                ListenEvent(user_id="testuser", track_id="t3",
-                            event_type="play_start", timestamp=d0 - 86400),
-                # Three days earlier: one.
-                ListenEvent(user_id="testuser", track_id="t4",
-                            event_type="play_start", timestamp=d0 - 3 * 86400),
-                # Excluded: play_end co-fires with play_start; impression isn't a
-                # play; and an event older than the 365-day window.
-                ListenEvent(user_id="testuser", track_id="t1",
-                            event_type="play_end", timestamp=d0 + 200),
-                ListenEvent(user_id="testuser", track_id="imp",
-                            event_type="reco_impression", timestamp=d0),
-                ListenEvent(user_id="testuser", track_id="old",
-                            event_type="play_start", timestamp=d0 - 400 * 86400),
-            ])
+            session.add_all(
+                [
+                    # Most recent day: two tracks started (same day, 100s apart).
+                    ListenEvent(user_id="testuser", track_id="t1", event_type="play_start", timestamp=d0),
+                    ListenEvent(user_id="testuser", track_id="t2", event_type="play_start", timestamp=d0 + 100),
+                    # One day earlier: one.
+                    ListenEvent(user_id="testuser", track_id="t3", event_type="play_start", timestamp=d0 - 86400),
+                    # Three days earlier: one.
+                    ListenEvent(user_id="testuser", track_id="t4", event_type="play_start", timestamp=d0 - 3 * 86400),
+                    # Excluded: play_end co-fires with play_start; impression isn't a
+                    # play; and an event older than the 365-day window.
+                    ListenEvent(user_id="testuser", track_id="t1", event_type="play_end", timestamp=d0 + 200),
+                    ListenEvent(user_id="testuser", track_id="imp", event_type="reco_impression", timestamp=d0),
+                    ListenEvent(
+                        user_id="testuser", track_id="old", event_type="play_start", timestamp=d0 - 400 * 86400
+                    ),
+                ]
+            )
             await session.commit()
 
         resp = await client.get("/v1/users/testuser/activity/daily")
@@ -322,8 +315,9 @@ class TestUserActivityDaily:
         await seed_user_with_data()
         day_start = ((int(time.time()) // 86400) - 5) * 86400  # UTC midnight, 5 days ago
         async with _TestSession() as session:
-            session.add(ListenEvent(user_id="testuser", track_id="x",
-                                    event_type="play_start", timestamp=day_start + 1800))
+            session.add(
+                ListenEvent(user_id="testuser", track_id="x", event_type="play_start", timestamp=day_start + 1800)
+            )
             await session.commit()
 
         utc = (await client.get("/v1/users/testuser/activity/daily")).json()
@@ -350,18 +344,18 @@ class TestPipelineStatsBuckets:
         # Anchor to a 15-min boundary ~1h ago, well inside the 24h window.
         base = ((now - 3600) // bucket) * bucket
         async with _TestSession() as session:
-            session.add_all([
-                # Three events in one bucket, at distinct timestamps.
-                ListenEvent(user_id="testuser", track_id="t1",
-                            event_type="play_start", timestamp=base),
-                ListenEvent(user_id="testuser", track_id="t2",
-                            event_type="play_start", timestamp=base + 10),
-                ListenEvent(user_id="testuser", track_id="t3",
-                            event_type="skip", timestamp=base + 100),
-                # One event in the previous bucket.
-                ListenEvent(user_id="testuser", track_id="t4",
-                            event_type="play_start", timestamp=base - bucket + 50),
-            ])
+            session.add_all(
+                [
+                    # Three events in one bucket, at distinct timestamps.
+                    ListenEvent(user_id="testuser", track_id="t1", event_type="play_start", timestamp=base),
+                    ListenEvent(user_id="testuser", track_id="t2", event_type="play_start", timestamp=base + 10),
+                    ListenEvent(user_id="testuser", track_id="t3", event_type="skip", timestamp=base + 100),
+                    # One event in the previous bucket.
+                    ListenEvent(
+                        user_id="testuser", track_id="t4", event_type="play_start", timestamp=base - bucket + 50
+                    ),
+                ]
+            )
             await session.commit()
 
         resp = await client.get("/v1/pipeline/stats/events")
@@ -383,18 +377,18 @@ class TestPipelineStatsBuckets:
         # Anchor to an hour boundary ~2h ago, well inside the default 7-day window.
         base = ((now - 7200) // bucket) * bucket
         async with _TestSession() as session:
-            session.add_all([
-                # One bucket: two play_starts (collapse within event_type) + one skip.
-                ListenEvent(user_id="testuser", track_id="t1",
-                            event_type="play_start", timestamp=base),
-                ListenEvent(user_id="testuser", track_id="t2",
-                            event_type="play_start", timestamp=base + 60),
-                ListenEvent(user_id="testuser", track_id="t3",
-                            event_type="skip", timestamp=base + 120),
-                # Previous bucket: one play_start.
-                ListenEvent(user_id="testuser", track_id="t4",
-                            event_type="play_start", timestamp=base - bucket + 30),
-            ])
+            session.add_all(
+                [
+                    # One bucket: two play_starts (collapse within event_type) + one skip.
+                    ListenEvent(user_id="testuser", track_id="t1", event_type="play_start", timestamp=base),
+                    ListenEvent(user_id="testuser", track_id="t2", event_type="play_start", timestamp=base + 60),
+                    ListenEvent(user_id="testuser", track_id="t3", event_type="skip", timestamp=base + 120),
+                    # Previous bucket: one play_start.
+                    ListenEvent(
+                        user_id="testuser", track_id="t4", event_type="play_start", timestamp=base - bucket + 30
+                    ),
+                ]
+            )
             await session.commit()
 
         resp = await client.get("/v1/pipeline/stats/activity")

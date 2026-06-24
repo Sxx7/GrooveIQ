@@ -45,6 +45,7 @@ def _now() -> int:
 
 # --- fake embedding space -------------------------------------------------
 
+
 def _vec(tid: str) -> np.ndarray | None:
     fam = tid[0]
     idx = int(tid.split("_")[1])
@@ -78,10 +79,21 @@ def _enc(v: np.ndarray) -> str:
 
 def _cfg(**kw) -> AlgorithmConfigData:
     base = dict(
-        enabled=True, window_days=30, target_size=10, min_size=4, max_size=30,
-        min_mixes=2, max_mixes=4, min_session_vectors=6, refresh_days=6.0,
-        max_churn=0.2, stale_days=25.0, serve_cooldown_days=14.0, min_satisfaction=0.0,
-        nostalgia_dormancy_days=45.0, nostalgia_max=2,
+        enabled=True,
+        window_days=30,
+        target_size=10,
+        min_size=4,
+        max_size=30,
+        min_mixes=2,
+        max_mixes=4,
+        min_session_vectors=6,
+        refresh_days=6.0,
+        max_churn=0.2,
+        stale_days=25.0,
+        serve_cooldown_days=14.0,
+        min_satisfaction=0.0,
+        nostalgia_dormancy_days=45.0,
+        nostalgia_max=2,
     )
     base.update(kw)
     return AlgorithmConfigData(mixes=MixesConfig(**base))
@@ -106,21 +118,35 @@ def patch_embeddings(monkeypatch):
 async def _add_track(s, tid):
     s.add(
         TrackFeatures(
-            track_id=tid, file_path=f"/music/{tid}.mp3", title=tid, artist=tid[0],
-            album="Album", duration=200.0, energy=0.8, valence=0.5,
-            media_server_id=f"ms_{tid}", embedding=_enc(_acoustic(tid)),
-            analyzed_at=_now(), analysis_version="1",
+            track_id=tid,
+            file_path=f"/music/{tid}.mp3",
+            title=tid,
+            artist=tid[0],
+            album="Album",
+            duration=200.0,
+            energy=0.8,
+            valence=0.5,
+            media_server_id=f"ms_{tid}",
+            embedding=_enc(_acoustic(tid)),
+            analyzed_at=_now(),
+            analysis_version="1",
         )
     )
 
 
-async def _add_inter(s, user, tid, *, play_count=5, last_played=None, satisfaction=0.5,
-                     like_count=0, repeat_count=0, dislike_count=0):
+async def _add_inter(
+    s, user, tid, *, play_count=5, last_played=None, satisfaction=0.5, like_count=0, repeat_count=0, dislike_count=0
+):
     s.add(
         TrackInteraction(
-            user_id=user, track_id=tid, play_count=play_count, satisfaction_score=satisfaction,
+            user_id=user,
+            track_id=tid,
+            play_count=play_count,
+            satisfaction_score=satisfaction,
             last_played_at=last_played if last_played is not None else _now() - _DAY,
-            like_count=like_count, repeat_count=repeat_count, dislike_count=dislike_count,
+            like_count=like_count,
+            repeat_count=repeat_count,
+            dislike_count=dislike_count,
             updated_at=_now(),
         )
     )
@@ -213,7 +239,8 @@ async def test_rebuild_idempotent_within_refresh(monkeypatch):
 
 async def test_rotation_caps_churn_past_refresh(monkeypatch):
     monkeypatch.setattr(
-        user_mixes, "get_config",
+        user_mixes,
+        "get_config",
         lambda: _cfg(target_size=10, min_size=4, min_mixes=1, max_mixes=1, refresh_days=6, max_churn=0.2),
     )
     now = _now()
@@ -255,7 +282,8 @@ async def test_rotation_caps_churn_past_refresh(monkeypatch):
 
 async def test_cluster_gone_archives_mix(monkeypatch):
     monkeypatch.setattr(
-        user_mixes, "get_config",
+        user_mixes,
+        "get_config",
         lambda: _cfg(target_size=14, min_size=5, min_mixes=1, max_mixes=4, refresh_days=6),
     )
     now = _now()
@@ -280,9 +308,7 @@ async def test_cluster_gone_archives_mix(monkeypatch):
         await user_mixes.rebuild_user_mixes(s, "u1", now=now + 7 * _DAY)
     async with _Session() as s:
         active = await user_mixes.get_session_mixes(s, "u1")
-        archived = (
-            await s.execute(select(Mix).where(Mix.user_id == "u1", Mix.state == "archived"))
-        ).scalars().all()
+        archived = (await s.execute(select(Mix).where(Mix.user_id == "u1", Mix.state == "archived"))).scalars().all()
     assert len(active) == 1  # only the A cluster still forms
     assert len(archived) >= 1
 
@@ -309,7 +335,8 @@ async def test_nostalgic_only_after_dormancy(monkeypatch):
 
 async def test_acoustic_fallback_placed_provisional(monkeypatch):
     monkeypatch.setattr(
-        user_mixes, "get_config",
+        user_mixes,
+        "get_config",
         lambda: _cfg(target_size=20, min_size=5, min_mixes=1, max_mixes=2, min_session_vectors=6),
     )
     now = _now()
@@ -324,8 +351,6 @@ async def test_acoustic_fallback_placed_provisional(monkeypatch):
         await s.commit()
     async with _Session() as s:
         res = await user_mixes.rebuild_user_mixes(s, "u1", now=now)
-        provisional = (
-            await s.execute(select(MixTrack).where(MixTrack.provisional.is_(True)))
-        ).scalars().all()
+        provisional = (await s.execute(select(MixTrack).where(MixTrack.provisional.is_(True)))).scalars().all()
     assert res["fallback"] >= 1
     assert any(r.track_id.startswith("F") for r in provisional)

@@ -592,23 +592,57 @@ class MixesConfig(BaseModel):
 
     enabled: bool = Field(False, description="Master switch for the session-mixes surface")
 
-    window_days: int = Field(30, ge=7, le=120, description="Eligibility window: a track must have been played within this many days to enter a mix")
+    window_days: int = Field(
+        30,
+        ge=7,
+        le=120,
+        description="Eligibility window: a track must have been played within this many days to enter a mix",
+    )
     target_size: int = Field(28, ge=10, le=60, description="Target tracks per mix")
     min_size: int = Field(14, ge=4, le=40, description="Clusters smaller than this are dropped")
     max_size: int = Field(38, ge=12, le=80, description="Clusters larger than this are split")
     min_mixes: int = Field(3, ge=1, le=10, description="Floor on mix count")
     max_mixes: int = Field(6, ge=1, le=12, description="Ceiling on mix count")
-    min_session_vectors: int = Field(20, ge=6, le=400, description="Cold-start gate: fewer in-vocab (co-listened) engaged tracks than this -> don't build (client falls back to genre mixes)")
+    min_session_vectors: int = Field(
+        20,
+        ge=6,
+        le=400,
+        description="Cold-start gate: fewer in-vocab (co-listened) engaged tracks than this -> don't build (client falls back to genre mixes)",
+    )
 
-    refresh_days: float = Field(6.0, ge=0.5, le=60, description="Per-mix rotation cadence; a mix's membership is only re-rolled once it is older than this")
-    max_churn: float = Field(0.20, ge=0.0, le=1.0, description="Max fraction of a mix's tracks that may swap on one rotation (enforces the stable ~80% core)")
+    refresh_days: float = Field(
+        6.0,
+        ge=0.5,
+        le=60,
+        description="Per-mix rotation cadence; a mix's membership is only re-rolled once it is older than this",
+    )
+    max_churn: float = Field(
+        0.20,
+        ge=0.0,
+        le=1.0,
+        description="Max fraction of a mix's tracks that may swap on one rotation (enforces the stable ~80% core)",
+    )
     stale_days: float = Field(25.0, ge=1, le=180, description="A mix whose cluster no longer forms is archived")
-    serve_cooldown_days: float = Field(14.0, ge=0, le=120, description="Anti-repeat spacing window (reserved for the temporal serve-cooldown; v1 enforces mostly-disjoint mixes)")
+    serve_cooldown_days: float = Field(
+        14.0,
+        ge=0,
+        le=120,
+        description="Anti-repeat spacing window (reserved for the temporal serve-cooldown; v1 enforces mostly-disjoint mixes)",
+    )
 
-    min_satisfaction: float = Field(0.0, ge=0, le=1, description="Optional floor on normalised satisfaction_score for a track to be mix-eligible")
+    min_satisfaction: float = Field(
+        0.0, ge=0, le=1, description="Optional floor on normalised satisfaction_score for a track to be mix-eligible"
+    )
 
-    nostalgia_dormancy_days: float = Field(45.0, ge=1, le=365, description="An archived mix becomes eligible to resurface as 'nostalgic' once dormant this long")
-    nostalgia_max: int = Field(2, ge=0, le=6, description="Max nostalgic mixes shown at once (0 disables the nostalgic surface)")
+    nostalgia_dormancy_days: float = Field(
+        45.0,
+        ge=1,
+        le=365,
+        description="An archived mix becomes eligible to resurface as 'nostalgic' once dormant this long",
+    )
+    nostalgia_max: int = Field(
+        2, ge=0, le=6, description="Max nostalgic mixes shown at once (0 disables the nostalgic surface)"
+    )
 
 
 # ---------------------------------------------------------------------------
