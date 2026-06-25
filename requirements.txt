@@ -75,6 +75,12 @@ scipy>=1.17.1
 lightgbm>=4.6.0
 scikit-learn>=1.8.0
 
+# Pin BLAS thread count around the offloaded CLAP text-playlist matmul
+# (playlist_service._generate_text_vectorized) so it can't fan out across every
+# core and starve the other asyncio.to_thread users. Ships transitively via
+# scikit-learn today; declared explicitly because we import it directly.
+threadpoolctl>=3.1.0
+
 # Session skip-gram embeddings
 gensim>=4.4.0
 

@@ -13,7 +13,9 @@ when breaking ties or filling gaps.
 
 from __future__ import annotations
 
+import asyncio
 import base64
+import contextlib
 import hashlib
 import json
 import logging
@@ -28,6 +30,47 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.db import Playlist, PlaylistTrack, TrackFeatures, TrackInteraction
 
 logger = logging.getLogger(__name__)
+
+# Optional: pin BLAS to a single thread for the text-ranking matmul so it can't
+# fan out across every core and starve the other asyncio.to_thread users
+# (scanner walk, analysis worker, FAISS build). Falls back to a no-op when
+# threadpoolctl isn't installed — the matmul is a single (N,512)·(512,) matvec,
+# so single-threaded BLAS is plenty and the pin is mostly anti-starvation
+# insurance.
+try:
+    from threadpoolctl import threadpool_limits as _threadpool_limits
+except Exception:  # pragma: no cover - threadpoolctl ships transitively via sklearn
+    _threadpool_limits = None
+
+
+def _blas_limit():
+    """Context manager that caps BLAS threads at 1 (no-op if threadpoolctl absent)."""
+    if _threadpool_limits is not None:
+        return _threadpool_limits(limits=1)
+    return contextlib.nullcontext()
+
+
+# Serialize the offloaded text-ranking work. With a single uvicorn worker, the
+# "Playlists for You" shelf fires ~6 text generations near-simultaneously; left
+# unbounded each would load ~144k CLAP rows (~400 MB) and run a full-catalog
+# matmul at once, spiking memory and holding DB connections — the exact pool
+# exhaustion this fix targets. One-at-a-time keeps peak memory and BLAS usage
+# bounded while the event loop stays free (callers await the semaphore).
+_TEXT_GEN_CONCURRENCY = 1
+_text_sem: asyncio.Semaphore | None = None
+_text_sem_loop: asyncio.AbstractEventLoop | None = None
+
+
+def _text_gen_semaphore() -> asyncio.Semaphore:
+    """Lazily create the text-gen semaphore, rebinding if the running loop
+    changed (each pytest-asyncio test gets a fresh loop; prod has exactly one)."""
+    global _text_sem, _text_sem_loop
+    loop = asyncio.get_running_loop()
+    if _text_sem is None or _text_sem_loop is not loop:
+        _text_sem = asyncio.Semaphore(_TEXT_GEN_CONCURRENCY)
+        _text_sem_loop = loop
+    return _text_sem
+
 
 TASTE_ALPHA = 0.5  # how hard taste tilts each strategy's score. 0 = off, ~0.5 keeps
 # the strategy's intrinsic objective (BPM/energy/key/CLAP) in charge. Tune later.
@@ -382,6 +425,13 @@ def _generate_text(
     Requires ``CLAP_ENABLED=true`` and CLAP embeddings populated on tracks.
     Raises ``ValueError`` (→ 400) when CLAP isn't available so the API
     surfaces the misconfiguration cleanly.
+
+    NOTE: this Python-loop implementation is no longer on the request hot path —
+    ``generate_playlist`` routes ``strategy='text'`` through the vectorized,
+    thread-offloaded :func:`_generate_text_vectorized` (which never blocks the
+    event loop and never hydrates full ORM rows). It is retained as the
+    readable reference and as the oracle the parity test checks the vectorized
+    ranking against.
     """
     from app.core.config import settings
 
@@ -423,6 +473,173 @@ def _generate_text(
 
     scored.sort(key=lambda x: x[0], reverse=True)
     return [tid for _, tid in scored[:max_tracks]]
+
+
+_NO_CLAP_MESSAGE = (
+    "No tracks have CLAP embeddings yet. The CLAP audio backfill is still "
+    "running — poll GET /v1/tracks/clap/stats for coverage, or trigger "
+    "POST /v1/tracks/clap/backfill (admin) if it has not started."
+)
+
+
+def _generate_text_vectorized(
+    track_ids: list[str],
+    clap_b64s: list[str],
+    query_vec: np.ndarray,
+    taste: dict[str, float],
+    max_tracks: int,
+) -> list[str]:
+    """Vectorized equivalent of :func:`_generate_text` — runs in a worker thread.
+
+    Receives only plain values (no ORM rows, no AsyncSession) so it is safe to
+    hand to ``asyncio.to_thread``. Decodes all CLAP payloads into one contiguous
+    ``(N, dim)`` matrix, then does a single matvec + per-row normalize + taste
+    multiply + ``argpartition`` top-k instead of ~144k Python iterations each
+    doing their own ``norm``/``dot``. BLAS is pinned to one thread for the
+    duration. Selection is deterministic: score desc, then ``track_id`` asc.
+
+    Parity contract (locked by ``test_text_vectorized_matches_reference``): for
+    any input this returns the same ranking the reference loop would, modulo the
+    explicit ``track_id`` tiebreak on exact score ties.
+    """
+    dim = int(query_vec.size)
+    expected_bytes = dim * 4  # float32
+
+    # Decode once. Skip undecodable / wrong-sized payloads, matching the
+    # reference loop's `vec.size != query_vec.size: continue` guard.
+    raw_parts: list[bytes] = []
+    valid_ids: list[str] = []
+    for tid, b64 in zip(track_ids, clap_b64s):
+        if not b64:
+            continue
+        try:
+            raw = base64.b64decode(b64)
+        except Exception:
+            continue
+        if len(raw) != expected_bytes:
+            continue
+        raw_parts.append(raw)
+        valid_ids.append(tid)
+
+    if not valid_ids:
+        return []
+
+    with _blas_limit():
+        q = np.ascontiguousarray(query_vec, dtype=np.float32)
+        mat = np.frombuffer(b"".join(raw_parts), dtype=np.float32).reshape(len(valid_ids), dim)
+
+        dots = mat @ q  # (N,)
+        norms = np.linalg.norm(mat, axis=1)  # (N,)
+        safe = norms > 1e-9
+        # cosine where the row has a usable norm, -inf elsewhere (so zero-norm
+        # rows can never win — same exclusion the reference loop applies).
+        cosine = np.full(len(valid_ids), -np.inf, dtype=np.float64)
+        np.divide(dots, norms, out=cosine, where=safe)
+
+        if taste:
+            taste_mult = np.fromiter(
+                (1.0 + TASTE_ALPHA * taste.get(tid, 0.0) for tid in valid_ids),
+                dtype=np.float64,
+                count=len(valid_ids),
+            )
+            cosine *= taste_mult  # taste >= 0 → multiplier >= 1 > 0, so -inf stays -inf
+
+    # Deterministic total order: cosine desc, then track_id asc. The tiebreak
+    # must drive *selection*, not just the final ordering — argpartition would
+    # pick an arbitrary subset among exact ties (e.g. when every candidate has
+    # the same embedding). lexsort's last key is primary, so primary = -cosine
+    # (ascending ⇒ cosine descending) with track_id ascending as the tiebreak;
+    # zero-norm (-inf cosine ⇒ +inf key) rows sort to the very end.
+    ids_arr = np.asarray(valid_ids)
+    order = np.lexsort((ids_arr, -cosine))
+
+    k = min(max_tracks, len(valid_ids))
+    selected: list[str] = []
+    for i in order[: max(k, 0)]:
+        if not np.isfinite(cosine[i]):
+            break  # remaining rows are all -inf (zero-norm); exclude them
+        selected.append(valid_ids[int(i)])
+    return selected
+
+
+async def _load_text_candidates(session: AsyncSession) -> list[tuple[str, str]]:
+    """Load only ``(track_id, clap_embedding)`` for tracks that carry a CLAP vector.
+
+    Deliberately does NOT call :func:`_load_tracks`, which hydrates full ORM rows
+    for every analyzed track across all wide columns (Text embeddings, JSON
+    mood_tags/raw_features, lyrics, ...) — that full-table hydration is the
+    original event-loop blocker / pool exhauster. Selecting two columns as Core
+    rows skips ORM hydration entirely; the base64 strings are decoded later in a
+    worker thread.
+    """
+    result = await session.execute(
+        select(TrackFeatures.track_id, TrackFeatures.clap_embedding).where(TrackFeatures.clap_embedding.isnot(None))
+    )
+    return [(tid, emb) for tid, emb in result.all()]
+
+
+async def _durations_for(session: AsyncSession, track_ids: list[str]) -> dict[str, float]:
+    """Fetch durations for just the selected ids (<= max_tracks rows).
+
+    The text path never loads the full catalog, so it can't build the duration
+    map from in-memory rows like the other strategies — it queries the handful
+    of chosen tracks instead.
+    """
+    if not track_ids:
+        return {}
+    result = await session.execute(
+        select(TrackFeatures.track_id, TrackFeatures.duration).where(TrackFeatures.track_id.in_(track_ids))
+    )
+    return {tid: (dur or 0) for tid, dur in result.all()}
+
+
+async def _generate_text_offloaded(
+    session: AsyncSession,
+    prompt: str,
+    max_tracks: int,
+    taste: dict[str, float],
+) -> list[str]:
+    """Async wrapper for the text strategy: validate + encode on the loop, then
+    run the catalog-wide ranking in a worker thread under the concurrency gate.
+
+    The event loop only ever does small, bounded work here (CLAP text encode +
+    a 2-column candidate query); the ~144k-row decode/matmul is offloaded so it
+    can't block the single uvicorn worker's loop. The semaphore is held across
+    the candidate load *and* the offload so peak memory / connection pressure is
+    one request's worth at a time, not the whole "Playlists for You" burst.
+    """
+    from app.core.config import settings
+
+    if not settings.CLAP_ENABLED:
+        raise PlaylistServiceUnavailableError("'text' strategy requires CLAP_ENABLED=true")
+    if not prompt or not prompt.strip():
+        raise ValueError("params.prompt is required for 'text' strategy")
+
+    from app.services import clap_text
+
+    # Encode on the event loop (not in the worker thread): this single-flights
+    # the CLAP model load via clap_text._load's double-checked lock and keeps the
+    # lru_cache off any concurrent-call path. See app/services/clap_text.py.
+    try:
+        query_vec = clap_text.encode_text(prompt)
+    except Exception as e:
+        raise PlaylistServiceUnavailableError(f"CLAP text encoding failed: {e}") from e
+
+    async with _text_gen_semaphore():
+        candidates = await _load_text_candidates(session)
+        if not candidates:
+            raise PlaylistServiceUnavailableError(_NO_CLAP_MESSAGE)
+        track_ids = [tid for tid, _ in candidates]
+        clap_b64s = [emb for _, emb in candidates]
+        logger.info("Generating 'text' playlist from %d CLAP candidates (offloaded)", len(candidates))
+        selected = await asyncio.to_thread(
+            _generate_text_vectorized, track_ids, clap_b64s, query_vec, taste, max_tracks
+        )
+
+    if not selected:
+        # Candidates existed but none decoded to a usable vector.
+        raise PlaylistServiceUnavailableError(_NO_CLAP_MESSAGE)
+    return selected
 
 
 # ---------------------------------------------------------------------------
@@ -634,43 +851,50 @@ async def generate_playlist(
     tracks while the strategy's sonic objective still dictates order. With
     ``user_id=None`` the behavior is byte-identical to the user-agnostic path.
     """
-    tracks = await _load_tracks(session)
-    if len(tracks) < 5:
-        raise ValueError(f"Not enough analyzed tracks ({len(tracks)}). Need at least 5.")
-
-    logger.info(f"Generating '{strategy}' playlist '{name}' from {len(tracks)} tracks")
-
     # Taste-weight map (per-user engagement) folded into every strategy's score.
     # Bounded by construction (the user's own interactions, not the whole catalog)
     # and biased toward familiar tracks. Empty (no-op) for the user-agnostic /
     # cold-user path.
     taste = await _taste_weights(user_id, session) if user_id else {}
 
-    # Dispatch to strategy
-    if strategy == "flow":
-        track_ids = _generate_flow(tracks, seed_track_id, max_tracks, taste=taste)
-    elif strategy == "mood":
-        mood = (params or {}).get("mood", "happy")
-        track_ids = _generate_mood(tracks, mood, max_tracks, taste=taste)
-    elif strategy == "energy_curve":
-        curve = (params or {}).get("curve", "ramp_up_cool_down")
-        track_ids = _generate_energy_curve(tracks, curve, max_tracks, taste=taste)
-    elif strategy == "key_compatible":
-        track_ids = _generate_key_compatible(tracks, seed_track_id, max_tracks, taste=taste)
-    elif strategy == "path":
-        target = (params or {}).get("target_track_id")
-        track_ids = _generate_path(tracks, seed_track_id, target, max_tracks, taste=taste)
-    elif strategy == "text":
+    if strategy == "text":
+        # Scoped, vectorized, thread-offloaded path. It never hydrates the full
+        # ~180k wide ORM rows and never blocks the event loop with the
+        # catalog-wide CLAP scan — the two confirmed causes of the playlist 500s
+        # / API-wide pool exhaustion. Duration is fetched for just the chosen ids.
         prompt = (params or {}).get("prompt", "")
-        track_ids = _generate_text(tracks, prompt, max_tracks, taste=taste)
+        track_ids = await _generate_text_offloaded(session, prompt, max_tracks, taste=taste)
+        dur_map = await _durations_for(session, track_ids)
     else:
-        raise ValueError(f"Unknown strategy: {strategy}")
+        tracks = await _load_tracks(session)
+        if len(tracks) < 5:
+            raise ValueError(f"Not enough analyzed tracks ({len(tracks)}). Need at least 5.")
+
+        logger.info(f"Generating '{strategy}' playlist '{name}' from {len(tracks)} tracks")
+
+        # Dispatch to strategy
+        if strategy == "flow":
+            track_ids = _generate_flow(tracks, seed_track_id, max_tracks, taste=taste)
+        elif strategy == "mood":
+            mood = (params or {}).get("mood", "happy")
+            track_ids = _generate_mood(tracks, mood, max_tracks, taste=taste)
+        elif strategy == "energy_curve":
+            curve = (params or {}).get("curve", "ramp_up_cool_down")
+            track_ids = _generate_energy_curve(tracks, curve, max_tracks, taste=taste)
+        elif strategy == "key_compatible":
+            track_ids = _generate_key_compatible(tracks, seed_track_id, max_tracks, taste=taste)
+        elif strategy == "path":
+            target = (params or {}).get("target_track_id")
+            track_ids = _generate_path(tracks, seed_track_id, target, max_tracks, taste=taste)
+        else:
+            raise ValueError(f"Unknown strategy: {strategy}")
+
+        dur_map = {t.track_id: t.duration or 0 for t in tracks}
 
     if not track_ids:
         raise ValueError("Strategy produced no tracks")
 
     # Compute total duration
-    dur_map = {t.track_id: t.duration or 0 for t in tracks}
     total_dur = sum(dur_map.get(tid, 0) for tid in track_ids)
 
     # Persist
