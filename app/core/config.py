@@ -121,6 +121,29 @@ class Settings(BaseSettings):
     ANALYSIS_BATCH_SIZE: int = 50  # tracks per job batch
     ANALYSIS_TIMEOUT: int = 300  # seconds before a single file analysis is killed
     RESCAN_INTERVAL_HOURS: int = 6  # how often to check for new files
+
+    # --- Scanner orphan prune (post-scan Phase A2) ---
+    # The scanner is purely additive: it never removes rows for files that have
+    # vanished from disk, so the DB drifts above the real on-disk count (e.g.
+    # ~181k rows vs ~144k files after a beets dedup). Phase A2 closes that gap.
+    #
+    # SAFETY: defaults to REPORT-ONLY. It computes + logs the confirmed-orphan
+    # count every scan but deletes NOTHING until SCANNER_AUTO_PRUNE=true. Verify
+    # one report cycle reports the expected number before enabling deletes.
+    SCANNER_AUTO_PRUNE: bool = False  # False = report-only; True = actually delete orphan rows
+    SCANNER_PRUNE_DELETE_HISTORY: bool = False  # also delete the orphan's listen_events + interactions
+    SCANNER_PRUNE_MIN_FILES: int = 100_000  # absolute floor: skip prune if the walk found fewer (mount/partial guard)
+    SCANNER_PRUNE_MAX_DROP: float = 0.10  # skip if files_found dropped >this fraction vs the last completed scan
+    SCANNER_PRUNE_MAX_FRACTION: float = 0.25  # skip if confirmed orphans exceed this fraction of all rows
+    SCANNER_PRUNE_CHUNK_SIZE: int = 500  # rows deleted + committed per chunk
+
+    # Media-server sync: file-existence guard. Prevents a missing-file ("ghost")
+    # row from stealing a media_server_id that a present-file row currently holds
+    # (the prune above removes ghosts; this guards the window before/while it
+    # runs, and is a no-op once they're gone). Self-disables for a sync if a
+    # sample of currently-linked rows looks mostly-missing (a mount blip), so a
+    # transient unmount can't make every file look like a ghost.
+    MEDIA_SYNC_PRESENCE_GUARD: bool = True
     ANALYSIS_GPU: bool = False  # use ONNX Runtime GPU for TF enrichment pass
     ANALYSIS_GPU_BACKEND: str = ""  # "cuda", "openvino", or "" (auto-detect)
     ANALYSIS_GPU_BATCH_SIZE: int = 64  # mel-spec patches per GPU forward pass

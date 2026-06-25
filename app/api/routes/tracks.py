@@ -156,10 +156,8 @@ async def cleanup_stale_track_ids(
 ):
     import os
 
-    from sqlalchemy import delete as sql_delete
-
     from app.core.audit import audit_log
-    from app.models.db import ListenEvent, TrackInteraction
+    from app.services.library_prune import prune_orphan_track_features
 
     require_admin(_key)
     audit_log("library_cleanup_stale", api_key=_key, detail={"dry_run": dry_run, "pattern": pattern})
@@ -196,25 +194,17 @@ async def cleanup_stale_track_ids(
     deleted_interactions = 0
     deleted_events = 0
     if not dry_run and files_missing:
-        for tf_id, tid, _fp in files_missing:
-            interactions_res = await session.execute(
-                sql_delete(TrackInteraction).where(TrackInteraction.track_id == tid)
-            )
-            deleted_interactions += interactions_res.rowcount or 0
-
-            events_res = await session.execute(sql_delete(ListenEvent).where(ListenEvent.track_id == tid))
-            deleted_events += events_res.rowcount or 0
-
-            tf_res = await session.execute(sql_delete(TrackFeatures).where(TrackFeatures.id == tf_id))
-            deleted_track_features += tf_res.rowcount or 0
-
-        await session.commit()
-        logger.info(
-            "Stale cleanup: deleted %d track_features, %d interactions, %d events",
-            deleted_track_features,
-            deleted_interactions,
-            deleted_events,
+        # Manual one-shot cleanup deletes the orphan's history too (delete_history=True),
+        # matching this endpoint's long-standing behaviour. The unattended scanner
+        # Phase A2 prune uses the same helper but preserves history by default.
+        counts = await prune_orphan_track_features(
+            session,
+            [(tf_id, tid) for tf_id, tid, _fp in files_missing],
+            delete_history=True,
         )
+        deleted_track_features = counts["deleted_track_features"]
+        deleted_interactions = counts["deleted_interactions"]
+        deleted_events = counts["deleted_events"]
 
     return {
         "pattern": pattern,

@@ -23,8 +23,10 @@ Sync flow:
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import logging
+import os
 import re
 import time
 from dataclasses import dataclass, field
@@ -78,6 +80,7 @@ class SyncResult:
     tracks_matched_by_path: int = 0
     tracks_aatd_ambiguous: int = 0  # AATD key had >1 candidate after duration filter
     tracks_duplicate_local: int = 0  # >1 local row resolved to the same server track; only one wins
+    tracks_ghost_link_skipped: int = 0  # missing-file row declined a server_id a present row holds
     errors: list[str] = field(default_factory=list)
     elapsed_s: float = 0.0
 
@@ -542,7 +545,52 @@ async def _refresh_plex(path: str | None = None) -> bool:
         return False
 
 
-async def sync_track_ids(session: AsyncSession) -> SyncResult:
+# File-existence guard tuning (see settings.MEDIA_SYNC_PRESENCE_GUARD).
+_GUARD_MIN_LINKED_SAMPLE = 50  # need at least this many currently-linked rows to judge mount health
+_GUARD_MIN_PRESENT_RATE = 0.5  # below this present-rate among linked rows, assume a mount blip → disable guard
+
+
+async def _resolve_present_paths(rows, present_paths: set[str] | None) -> set[str] | None:
+    """Resolve the set of on-disk-present file paths for the ghost-link guard,
+    or ``None`` to disable the guard for this sync (callers then behave exactly
+    as before).
+
+    - The scanner passes its freshly-walked set, so there's no extra I/O.
+    - A manual sync passes ``None`` → we ``stat`` the distinct paths in a worker
+      thread (off the event loop).
+    - Circuit breaker: if a meaningful sample of *currently-linked* rows looks
+      mostly-missing, a mount is probably blipping (``os.path.isfile`` returns
+      False on ESTALE/ENOTCONN too) — disable the guard so a transient unmount
+      can't reshape every match decision.
+    """
+    if not settings.MEDIA_SYNC_PRESENCE_GUARD:
+        return None
+
+    if present_paths is not None:
+        present = present_paths
+    else:
+        paths = {r.file_path for r in rows if r.file_path}
+
+        def _stat_present(ps: set[str]) -> set[str]:
+            return {p for p in ps if os.path.isfile(p)}
+
+        present = await asyncio.to_thread(_stat_present, paths)
+
+    linked = [r.file_path for r in rows if r.media_server_id and r.file_path]
+    if len(linked) >= _GUARD_MIN_LINKED_SAMPLE:
+        present_rate = sum(1 for p in linked if p in present) / len(linked)
+        if present_rate < _GUARD_MIN_PRESENT_RATE:
+            logger.warning(
+                "Media sync: file-existence guard DISABLED this run — only %.0f%% of %d linked rows are "
+                "present on disk (mount blip?). Falling back to original matcher behaviour.",
+                present_rate * 100,
+                len(linked),
+            )
+            return None
+    return present
+
+
+async def sync_track_ids(session: AsyncSession, present_paths: set[str] | None = None) -> SyncResult:
     """
     Synchronise GrooveIQ track IDs with the configured media server.
 
@@ -552,10 +600,12 @@ async def sync_track_ids(session: AsyncSession) -> SyncResult:
       - Populates title, artist, album from the server metadata.
       - Cascades track_id changes to events, sessions, interactions.
 
+    ``present_paths`` (the scanner's freshly-walked file set) enables the
+    file-existence guard with no extra I/O; when omitted (manual sync) presence
+    is resolved by stat'ing the rows' paths. See :func:`_resolve_present_paths`.
+
     Returns a SyncResult summary.
     """
-    import asyncio
-
     t0 = time.time()
     result = SyncResult(server_type=settings.MEDIA_SERVER_TYPE)
 
@@ -618,6 +668,14 @@ async def sync_track_ids(session: AsyncSession) -> SyncResult:
         )
     ).all()
     grooveiq_music_root = settings.MUSIC_LIBRARY_PATH
+
+    # File-existence guard: which file paths are present on disk (or None to
+    # disable the guard for this sync), plus the current holder of each
+    # media_server_id so a ghost can't take a slot a present row owns.
+    guard_present = await _resolve_present_paths(rows, present_paths)
+    holder_path_of: dict[str, str] = (
+        {r.media_server_id: r.file_path for r in rows if r.media_server_id} if guard_present is not None else {}
+    )
 
     # 4. Build batch updates. Sync is a metadata refresh under the post-#37
     #    schema: it never rewrites track_id, so there's no cross-table cascade.
@@ -719,10 +777,27 @@ async def sync_track_ids(session: AsyncSession) -> SyncResult:
         # along so the dedup pass below can pick the strongest match when
         # multiple local rows resolve to the same server track.
         if r.media_server_id != st.server_id:
-            media_server_id_updates.append(
-                {"tf_id": r.id, "media_server_id": st.server_id, "match_via": match_via or ""}
+            r_present = guard_present is None or (r.file_path in guard_present)
+            holder_path = holder_path_of.get(st.server_id) if guard_present is not None else None
+            ghost_would_steal = (
+                guard_present is not None and not r_present and holder_path is not None and holder_path in guard_present
             )
-            result.media_server_id_updated += 1
+            if ghost_would_steal:
+                # This row's file is gone but the server_id is currently held by
+                # a present-file row. Leave that link alone — step 6's bulk-NULL
+                # would otherwise strip the present row and hand the slot to this
+                # ghost. The prune (Phase A2) removes the ghost row entirely.
+                result.tracks_ghost_link_skipped += 1
+            else:
+                media_server_id_updates.append(
+                    {
+                        "tf_id": r.id,
+                        "media_server_id": st.server_id,
+                        "match_via": match_via or "",
+                        "present": r_present,
+                    }
+                )
+                result.media_server_id_updated += 1
 
     # 4b. Resolve intra-sync collisions on media_server_id.
     #
@@ -739,8 +814,16 @@ async def sync_track_ids(session: AsyncSession) -> SyncResult:
     if media_server_id_updates:
         match_priority = {"mbid": 0, "aatd": 1, "path": 2}
 
-        def _winner_key(upd: dict) -> tuple[int, int]:
-            return (match_priority.get(upd.get("match_via", ""), 99), upd["tf_id"])
+        def _winner_key(upd: dict) -> tuple[int, int, int]:
+            # Present-file rows beat missing-file (ghost) rows; then stronger
+            # match strategy (mbid > aatd > path); then lowest tf_id for
+            # determinism. `present` defaults True so a disabled guard reproduces
+            # the original (priority, tf_id) ordering exactly.
+            return (
+                0 if upd.get("present", True) else 1,
+                match_priority.get(upd.get("match_via", ""), 99),
+                upd["tf_id"],
+            )
 
         groups: dict[str, list[dict]] = {}
         for upd in media_server_id_updates:
