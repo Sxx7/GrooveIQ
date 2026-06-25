@@ -25,33 +25,49 @@ import numpy as np
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.db import Playlist, PlaylistTrack, TrackFeatures
-from app.services.ranker import score_candidates
+from app.models.db import Playlist, PlaylistTrack, TrackFeatures, TrackInteraction
 
 logger = logging.getLogger(__name__)
 
 TASTE_ALPHA = 0.5  # how hard taste tilts each strategy's score. 0 = off, ~0.5 keeps
 # the strategy's intrinsic objective (BPM/energy/key/CLAP) in charge. Tune later.
 
+# Upper bound on how many of the user's tracks carry a taste weight — keeps the
+# lookup cheap regardless of history size.
+_TASTE_POOL_CAP = 8000
+
 
 async def _taste_weights(
     user_id: str,
-    track_ids: list[str],
     session: AsyncSession,
+    *,
+    cap: int = _TASTE_POOL_CAP,
 ) -> dict[str, float]:
-    """Per-track taste relevance in [0,1] for ``user_id``, via the recommend ranker.
+    """Per-track taste weight in [0,1] = the user's own engagement
+    (``satisfaction_score``) for tracks they've actually played.
 
-    Returns ``{}`` when there's nothing to weigh; callers use ``.get(tid, 0.0)``
-    so a cold user (no taste_profile / untrained ranker) degrades to a no-op blend.
-    A constant score set (e.g. untrained fallback) min-max-collapses to all-zero
-    weights — also a no-op, which is the intended cold-start behavior.
+    Tracks the user hasn't engaged with are simply absent, so ``.get(tid, 0.0)``
+    makes them a no-op in the blend — the mix therefore tilts toward FAMILIAR
+    music, which is the goal of personalization here. A cold user with no
+    interactions yields ``{}`` (clean no-op).
+
+    This reads the per-user interaction labels directly (bounded by ``cap``)
+    rather than scoring the whole ~180k-track catalog through the ranker: that
+    earlier approach 500'd on the real catalog (one SQL ``IN(...)`` over every id
+    exceeded asyncpg's 32767 bind-param limit) and, restricted to engaged tracks,
+    min-max-collapsed to no boost when a user's loved tracks scored alike.
     """
-    scored = await score_candidates(user_id, track_ids, session)
-    if not scored:
-        return {}
-    lo = min(s for _, s in scored)
-    span = (max(s for _, s in scored) - lo) or 1.0
-    return {tid: (s - lo) / span for tid, s in scored}
+    rows = await session.execute(
+        select(TrackInteraction.track_id, TrackInteraction.satisfaction_score)
+        .where(TrackInteraction.user_id == user_id)
+        .order_by(TrackInteraction.last_played_at.desc())
+        .limit(cap)
+    )
+    weights: dict[str, float] = {}
+    for tid, sat in rows.all():
+        if sat is not None and sat > 0.0:
+            weights[tid] = float(sat)
+    return weights
 
 
 class PlaylistServiceUnavailableError(Exception):
@@ -624,9 +640,11 @@ async def generate_playlist(
 
     logger.info(f"Generating '{strategy}' playlist '{name}' from {len(tracks)} tracks")
 
-    # One taste-weight map over the whole candidate pool, folded into every
-    # strategy's score. Empty (no-op) for the user-agnostic / cold-user path.
-    taste = await _taste_weights(user_id, [t.track_id for t in tracks], session) if user_id else {}
+    # Taste-weight map (per-user engagement) folded into every strategy's score.
+    # Bounded by construction (the user's own interactions, not the whole catalog)
+    # and biased toward familiar tracks. Empty (no-op) for the user-agnostic /
+    # cold-user path.
+    taste = await _taste_weights(user_id, session) if user_id else {}
 
     # Dispatch to strategy
     if strategy == "flow":
