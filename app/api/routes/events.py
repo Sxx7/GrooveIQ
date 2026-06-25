@@ -120,18 +120,26 @@ async def ingest_event_batch(
 
     accepted = 0
     rejected = 0
+    deferred = 0
     errors: list[str] = []
 
     for i, event in enumerate(batch.events):
         try:
-            await process_event(session, event)
-            accepted += 1
+            # Honor process_event's verdict per event. Previously this counted
+            # every non-exception as accepted, so silently-dropped events
+            # (e.g. unresolvable track_id) were reported as accepted=1 — masking
+            # real data loss. Aggregate the actual accepted/rejected/deferred.
+            res = await process_event(session, event)
+            accepted += res.accepted
+            rejected += res.rejected
+            deferred += res.deferred
+            errors.extend(f"Event[{i}]: {e}" for e in res.errors)
         except Exception as e:
             rejected += 1
             errors.append(f"Event[{i}]: rejected")
             logger.warning("Batch event rejected", extra={"error": str(e), "index": i, "track_id": event.track_id})
 
-    return EventResponse(accepted=accepted, rejected=rejected, errors=errors)
+    return EventResponse(accepted=accepted, rejected=rejected, deferred=deferred, errors=errors)
 
 
 # ---------------------------------------------------------------------------

@@ -18,13 +18,25 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.user_id import validate_user_id
-from app.models.db import ListenEvent, TrackFeatures, User
+from app.models.db import ListenEvent, PendingEvent, TrackFeatures, User
 from app.models.schemas import EventCreate, EventResponse
 
 logger = logging.getLogger(__name__)
 
 # Dedup window: ignore identical (user, track, type) within this many seconds
 _DEDUP_WINDOW_SECONDS = 2
+
+# Event types worth preserving when the track_id can't be resolved yet (the
+# track isn't linked to a TrackFeatures row). These carry taste/heat signal, so
+# we PARK them for later replay instead of dropping. Impressions and pure UI
+# adjustments (pause/resume/seek/volume) are dropped — they only matter with a
+# resolved context and would just be noise for an unlinked track.
+_PARKABLE_EVENT_TYPES = frozenset(
+    {"play_start", "play_end", "skip", "like", "dislike", "rating", "playlist_add", "queue_add", "repeat", "replay"}
+)
+# Bounds so the parking table can't grow without limit if a track never links.
+_PENDING_MAX_ATTEMPTS = 8
+_PENDING_MAX_AGE_DAYS = 14
 
 
 async def _resolve_track_id(session: AsyncSession, supplied: str) -> str | None:
@@ -78,6 +90,27 @@ async def process_event(
     # key on the same value.
     resolved_track_id = await _resolve_track_id(session, event.track_id)
     if resolved_track_id is None:
+        # The client id maps to no TrackFeatures row yet (commonly: the track
+        # isn't linked to the media server — empty media_server_id). For
+        # taste-bearing events, PARK rather than drop, so a user's history of
+        # not-yet-linked tracks isn't silently lost; resolve_pending_events()
+        # replays them once the track is linked. Impressions/UI-noise are dropped.
+        if event.event_type in _PARKABLE_EVENT_TYPES:
+            session.add(
+                PendingEvent(
+                    user_id=event.user_id,
+                    raw_track_id=event.track_id,
+                    event_type=str(event.event_type),
+                    payload=event.model_dump(mode="json"),
+                    created_at=int(time.time()),
+                )
+            )
+            logger.info(
+                "Parked unresolved event for later re-resolution",
+                extra={"track_id": event.track_id, "event_type": str(event.event_type), "user_id": event.user_id},
+            )
+            return EventResponse(accepted=0, rejected=0, deferred=1)
+
         logger.debug(
             "Dropping event with unresolvable track_id",
             extra={"track_id": event.track_id, "event_type": event.event_type},
@@ -225,3 +258,76 @@ async def _upsert_user(session: AsyncSession, user_id: str, now: int) -> None:
         session.add(User(user_id=user_id, last_seen=now))
     else:
         await session.execute(update(User).where(User.user_id == user_id).values(last_seen=now))
+
+
+# ---------------------------------------------------------------------------
+# Parked-event re-resolution
+# ---------------------------------------------------------------------------
+
+
+async def resolve_pending_events(session: AsyncSession, *, limit: int = 2000) -> dict[str, int]:
+    """Replay parked events whose track now resolves to a TrackFeatures row.
+
+    Parked events accumulate when a user plays a track that isn't linked to the
+    media server yet (see ``PendingEvent`` and ``process_event``). Once a library
+    sync backfills the track's ``media_server_id``, the raw client id resolves and
+    we replay the event through the normal ingest path so the listening history is
+    recovered rather than lost. Rows that never link (or fail too many times) are
+    expired so the table stays bounded.
+
+    Returns ``{"resolved", "expired", "still_pending"}`` counts.
+    """
+    now = int(time.time())
+    age_cutoff = now - _PENDING_MAX_AGE_DAYS * 86_400
+
+    rows = (
+        (await session.execute(select(PendingEvent).order_by(PendingEvent.id).limit(limit))).scalars().all()
+    )
+
+    resolved = expired = still_pending = 0
+    for p in rows:
+        if p.created_at < age_cutoff or p.attempts >= _PENDING_MAX_ATTEMPTS:
+            await session.delete(p)
+            expired += 1
+            continue
+
+        tid = await _resolve_track_id(session, p.raw_track_id)
+        if tid is None:
+            p.attempts += 1
+            still_pending += 1
+            continue
+
+        # Track is now linked — replay verbatim through the normal path (which
+        # re-resolves, dedups, and persists). Use model_construct so the original
+        # (now possibly >24h-old) timestamp isn't re-rejected by EventCreate's
+        # validator — the payload was already validated when first ingested.
+        try:
+            await process_event(session, EventCreate.model_construct(**p.payload))
+        except Exception:
+            logger.warning("Failed to replay parked event id=%s", p.id, exc_info=True)
+            p.attempts += 1
+            still_pending += 1
+            continue
+
+        await session.delete(p)
+        resolved += 1
+
+    await session.flush()
+    if resolved or expired:
+        logger.info(
+            "Pending-event re-resolution: %d resolved, %d expired, %d still pending",
+            resolved,
+            expired,
+            still_pending,
+        )
+    return {"resolved": resolved, "expired": expired, "still_pending": still_pending}
+
+
+async def resolve_pending_events_job() -> dict[str, int]:
+    """Scheduler entry point: open a session, re-resolve parked events, commit."""
+    from app.db.session import AsyncSessionLocal
+
+    async with AsyncSessionLocal() as session:
+        result = await resolve_pending_events(session)
+        await session.commit()
+    return result

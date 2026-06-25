@@ -122,6 +122,32 @@ class ListenEvent(Base):
     )
 
 
+class PendingEvent(Base):
+    """A taste-bearing event whose client track_id did NOT resolve to a
+    TrackFeatures row at ingest time (e.g. the track isn't linked to the media
+    server yet — empty ``media_server_id``).
+
+    Such events used to be silently dropped, which lost a user's listening
+    history for any not-yet-linked track. We park them here instead and replay
+    them through the normal ingest path via
+    ``event_service.resolve_pending_events`` once the track gets linked (e.g.
+    after a library sync backfills ``media_server_id``). Impression/UI-noise
+    events are still dropped, not parked.
+    """
+
+    __tablename__ = "pending_events"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(String(128), nullable=False, index=True)
+    # The unresolved client-supplied identifier (Navidrome/Spotify/etc. id).
+    raw_track_id = Column(String(128), nullable=False, index=True)
+    event_type = Column(String(32), nullable=False)
+    # Full EventCreate payload (model_dump), replayed verbatim on re-resolution.
+    payload = Column(JSON, nullable=False)
+    created_at = Column(Integer, nullable=False, default=lambda: int(time.time()))
+    attempts = Column(Integer, nullable=False, default=0)
+
+
 # ---------------------------------------------------------------------------
 # Impression-surface policy (shared by feature_eng / evaluation / recommend)
 # ---------------------------------------------------------------------------

@@ -402,6 +402,9 @@ async def _periodic_recommendation_pipeline(trigger: str = "scheduled") -> None:
     # ── Step definitions ─────────────────────────────────────────────
     # (step_name, display, import_path, callable_name)
     _steps = [
+        # Replay events parked because their track wasn't linked yet — run first so
+        # recovered plays are aggregated by the same pipeline cycle.
+        ("resolve_pending", "Resolve parked events", "app.services.event_service", "resolve_pending_events_job"),
         ("sessionizer", "Sessionizer", "app.services.sessionizer", "run_sessionizer"),
         ("track_scoring", "Track scoring", "app.services.track_scoring", "run_track_scoring"),
         ("taste_profiles", "Taste profiles", "app.services.taste_profile", "run_taste_profile_builder"),

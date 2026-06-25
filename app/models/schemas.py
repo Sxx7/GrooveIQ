@@ -224,6 +224,11 @@ class EventBatch(BaseModel):
 class EventResponse(BaseModel):
     accepted: int = Field(..., description="Number of events accepted.")
     rejected: int = Field(..., description="Number of events rejected (see errors).")
+    deferred: int = Field(
+        0,
+        description="Number of events parked for later re-resolution (track not yet linked to a "
+        "TrackFeatures row). These are NOT lost — they replay once the track is linked.",
+    )
     errors: list[str] = Field(default_factory=list)
 
 
