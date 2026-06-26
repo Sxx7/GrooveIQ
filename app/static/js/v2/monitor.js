@@ -24,6 +24,7 @@
     /* ---- Step metadata (used across Pipeline + Models pages) --------- */
 
     const STEP_META = {
+        resolve_pending:    { icon: '↻',  label: 'Resolve Parked', desc: 'Replays events parked before their track was linked' },
         sessionizer:        { icon: '⏱',  label: 'Sessionizer',    desc: 'Groups raw events into listening sessions' },
         track_scoring:      { icon: '★',  label: 'Scoring',        desc: 'Computes per-track satisfaction scores' },
         taste_profiles:     { icon: '◎',  label: 'Taste Profiles', desc: 'Builds user audio preference profiles' },
@@ -37,7 +38,7 @@
         music_map:          { icon: '◈',  label: 'Music Map',      desc: 'UMAP projection of audio embeddings to 2D' },
     };
     const STEP_ORDER = [
-        'sessionizer', 'track_scoring', 'taste_profiles',
+        'resolve_pending', 'sessionizer', 'track_scoring', 'taste_profiles',
         'collab_filter', 'ranker', 'session_embeddings',
         'lastfm_candidates', 'sasrec', 'session_gru', 'music_map',
     ];
@@ -907,7 +908,7 @@
 
         host.appendChild(GIQ.components.panel({
             title: 'Flow',
-            sub: '10 steps · click any to expand',
+            sub: '11 steps · click any to expand',
             children: flow,
         }));
     }

@@ -34,8 +34,12 @@ class RunStatus(str, Enum):
 
 
 # ── Step names (canonical order) ─────────────────────────────────────
+# MUST mirror the ``_steps`` list in app/workers/scheduler.py (same names,
+# same order): start_run() pre-populates these and step_start() looks them
+# up by name, so a drift here silently bricks the whole pipeline run.
 
 PIPELINE_STEPS = [
+    "resolve_pending",
     "sessionizer",
     "track_scoring",
     "taste_profiles",
@@ -211,7 +215,9 @@ def finish_run(run: PipelineRun) -> None:
 
 def step_start(run: PipelineRun, step_name: str) -> None:
     """Mark a step as running."""
-    step = run.steps[step_name]
+    # setdefault so an executor step missing from PIPELINE_STEPS degrades to an
+    # untracked-but-running step instead of raising KeyError out of the run loop.
+    step = run.steps.setdefault(step_name, StepResult(name=step_name))
     step.status = StepStatus.RUNNING
     step.started_at = time.time()
 
@@ -231,7 +237,7 @@ def step_complete(
     metrics: dict[str, Any] | None = None,
 ) -> None:
     """Mark a step as successfully completed."""
-    step = run.steps[step_name]
+    step = run.steps.setdefault(step_name, StepResult(name=step_name))
     step.status = StepStatus.COMPLETED
     step.ended_at = time.time()
     step.duration_ms = int((step.ended_at - step.started_at) * 1000) if step.started_at else None
@@ -256,7 +262,7 @@ def step_failed(
     error: str,
 ) -> None:
     """Mark a step as failed."""
-    step = run.steps[step_name]
+    step = run.steps.setdefault(step_name, StepResult(name=step_name))
     step.status = StepStatus.FAILED
     step.ended_at = time.time()
     step.duration_ms = int((step.ended_at - step.started_at) * 1000) if step.started_at else None
