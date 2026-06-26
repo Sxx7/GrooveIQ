@@ -76,3 +76,12 @@ def setup_logging():
         logging.basicConfig(level=level, handlers=[handler])
     else:
         logging.basicConfig(level=level, stream=sys.stdout, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+
+    # Quiet httpx's INFO-level request logging. It logs the full request URL —
+    # query string included — on every call, which leaks secrets such as the
+    # Last.fm api_key (e.g. ws.audioscrobbler.com/2.0/?...&api_key=...) into the
+    # app log. These logs are shipped off-box, so the credential would land in
+    # the aggregator in plaintext. WARNING still surfaces genuine httpx problems
+    # while dropping the noisy, secret-bearing per-request lines; outbound
+    # failures are already logged by the callers (see app/services/lastfm_*.py).
+    logging.getLogger("httpx").setLevel(logging.WARNING)
