@@ -74,7 +74,7 @@
         // Initial cards (no last-run data yet — refreshed below)
         const runPipeline = GIQ.components.actionCard({
             name: 'Run Pipeline',
-            description: 'Triggers the full 10-step recommendation pipeline (sessionizer through music_map). Auto-redirects to Monitor → Pipeline.',
+            description: 'Triggers the full 11-step recommendation pipeline (resolve-pending through music_map). Auto-redirects to Monitor → Pipeline.',
             state: 'good',
             monitorPath: '#/monitor/pipeline',
             monitorLabel: 'Pipeline →',
@@ -528,6 +528,35 @@
         panel.className = 'actions-search-panel';
         body.appendChild(panel);
 
+        // Search mode: track multi-search (every backend) vs artist discography
+        // (streamrip only — returns each artist's albums so you can grab a whole
+        // album or queue an artist's entire discography in one click).
+        let searchMode = 'tracks';
+        const modeRow = document.createElement('div');
+        modeRow.className = 'actions-search-modes';
+        const modeBtns = {};
+        [['tracks', 'Tracks'], ['artist', 'Artist']].forEach((pair) => {
+            const b = document.createElement('button');
+            b.type = 'button';
+            b.className = 'vc-btn vc-btn-ghost-sm actions-search-mode-btn';
+            b.textContent = pair[1];
+            if (pair[0] === searchMode) b.classList.add('is-active');
+            b.addEventListener('click', () => setSearchMode(pair[0]));
+            modeBtns[pair[0]] = b;
+            modeRow.appendChild(b);
+        });
+        panel.appendChild(modeRow);
+
+        function setSearchMode(mode) {
+            if (mode === searchMode) return;
+            searchMode = mode;
+            Object.keys(modeBtns).forEach((m) => modeBtns[m].classList.toggle('is-active', m === mode));
+            const isArtist = mode === 'artist';
+            queryInput.placeholder = isArtist ? 'e.g. Radiohead' : 'e.g. Radiohead Creep';
+            backendsRow.style.display = isArtist ? 'none' : '';
+            results.innerHTML = '';
+        }
+
         const form = document.createElement('form');
         form.className = 'actions-search-form';
 
@@ -730,7 +759,64 @@
             });
         }
 
-        form.addEventListener('submit', (ev) => { ev.preventDefault(); runSearch(); });
+        function runArtistSearch() {
+            const q = queryInput.value.trim();
+            if (!q) return;
+            renderLoading(results, 'Looking up artists…');
+            GIQ.api.get('/v1/downloads/search/artist?q=' + encodeURIComponent(q) + '&limit=2&albums_per_artist=100')
+                .then((res) => renderArtistResults(res))
+                .catch((e) => renderError(results, 'Artist search failed: ' + e.message));
+        }
+
+        function renderArtistResults(res) {
+            results.innerHTML = '';
+            const groups = (res && res.groups) || [];
+            if (!groups.length) {
+                results.innerHTML = '<div class="actions-empty">No backends responded.</div>';
+                return;
+            }
+            groups.forEach((grp) => {
+                const groupEl = document.createElement('div');
+                groupEl.className = 'actions-search-group';
+
+                const head = document.createElement('div');
+                head.className = 'actions-search-group-head';
+                const dot = document.createElement('span');
+                dot.className = 'dl-backend-dot';
+                dot.style.background = ({
+                    spotdl: '#4ade80', streamrip: '#fbbf24', spotizerr: '#60a5fa', slskd: '#c084fc',
+                })[grp.backend] || 'var(--ink-3)';
+                head.appendChild(dot);
+                const lbl = document.createElement('b');
+                lbl.textContent = grp.backend;
+                head.appendChild(lbl);
+                const sub = document.createElement('span');
+                sub.className = 'actions-search-group-sub mono';
+                const artists = (grp.ok && grp.artists) || [];
+                if (grp.ok) {
+                    sub.textContent = '(' + artists.length + ' artists)';
+                } else {
+                    sub.textContent = grp.error || 'failed';
+                    sub.classList.add('actions-search-group-error');
+                }
+                head.appendChild(sub);
+                groupEl.appendChild(head);
+
+                artists.forEach((artist) => groupEl.appendChild(_renderArtistCard(grp.backend, artist, reloadRecent)));
+                if (grp.ok && !artists.length) {
+                    const empty = document.createElement('div');
+                    empty.className = 'actions-empty';
+                    empty.textContent = 'No artists matched.';
+                    groupEl.appendChild(empty);
+                }
+                results.appendChild(groupEl);
+            });
+        }
+
+        form.addEventListener('submit', (ev) => {
+            ev.preventDefault();
+            if (searchMode === 'artist') runArtistSearch(); else runSearch();
+        });
 
         // Hydrate parallel-search backend defaults from routing config
         if (GIQ.state.apiKey) {
@@ -854,5 +940,222 @@
         row.appendChild(main);
         row.appendChild(btn);
         return row;
+    }
+
+    /* ── artist-search mode: discography → album / all-albums downloads ── */
+
+    function _albumDownloadBody(backend, artist, album) {
+        // Mirrors the per-track from-handle body but with a kind:'album' handle,
+        // so POST /v1/downloads/from-handle routes it through the album cascade.
+        return {
+            handle: {
+                backend: backend,
+                kind: 'album',
+                service: artist.service || 'qobuz',
+                album_id: album.album_id,
+                artist: artist.name,
+                title: album.title,
+            },
+            track_title: album.title || null,
+            artist_name: artist.name || null,
+            album_name: album.title || null,
+        };
+    }
+
+    function _renderArtistAlbumCard(backend, artist, album, onAfter) {
+        const card = document.createElement('div');
+        card.className = 'actions-album-card';
+
+        const head = document.createElement('div');
+        head.className = 'actions-album-head';
+
+        const cover = document.createElement('div');
+        cover.className = 'actions-album-cover';
+        if (album.cover_url) {
+            const img = document.createElement('img');
+            img.src = album.cover_url;
+            img.alt = '';
+            img.loading = 'lazy';
+            cover.appendChild(img);
+        } else {
+            cover.textContent = '♫';
+        }
+        head.appendChild(cover);
+
+        const info = document.createElement('div');
+        info.className = 'actions-album-info';
+        const title = document.createElement('div');
+        title.className = 'actions-album-title';
+        title.textContent = album.title || '(untitled)';
+        title.title = album.title || '';
+        info.appendChild(title);
+        const meta = document.createElement('div');
+        meta.className = 'actions-album-meta mono';
+        const mp = [];
+        if (album.year) mp.push(album.year);
+        if (album.track_count) mp.push(album.track_count + ' tracks');
+        meta.textContent = mp.join(' · ');
+        info.appendChild(meta);
+
+        const actions = document.createElement('div');
+        actions.className = 'actions-album-actions';
+        const dlBtn = document.createElement('button');
+        dlBtn.type = 'button';
+        dlBtn.className = 'vc-btn vc-btn-primary vc-btn-sm';
+        dlBtn.textContent = 'Download album';
+        dlBtn.title = 'Queue every track on this album via ' + backend;
+        dlBtn.addEventListener('click', () => {
+            dlBtn.disabled = true;
+            dlBtn.textContent = 'Queueing…';
+            GIQ.api.post('/v1/downloads/from-handle', _albumDownloadBody(backend, artist, album)).then(() => {
+                GIQ.components._actionToastWithJump(
+                    'Queued album via ' + backend + '.', '#/monitor/downloads', 'View in Monitor →');
+                dlBtn.disabled = false;
+                dlBtn.textContent = 'Download album';
+                if (typeof onAfter === 'function') onAfter();
+            }).catch((e) => {
+                GIQ.toast('Album download failed: ' + e.message, 'error');
+                dlBtn.disabled = false;
+                dlBtn.textContent = 'Download album';
+            });
+        });
+        actions.appendChild(dlBtn);
+
+        const tracksBtn = document.createElement('button');
+        tracksBtn.type = 'button';
+        tracksBtn.className = 'vc-btn vc-btn-ghost-sm';
+        tracksBtn.textContent = '▸ Tracks';
+        actions.appendChild(tracksBtn);
+        info.appendChild(actions);
+        head.appendChild(info);
+        card.appendChild(head);
+
+        const tracksHost = document.createElement('div');
+        tracksHost.className = 'actions-album-tracks';
+        tracksHost.style.display = 'none';
+        card.appendChild(tracksHost);
+
+        let loaded = false;
+        tracksBtn.addEventListener('click', () => {
+            const open = tracksHost.style.display === 'none';
+            tracksHost.style.display = open ? '' : 'none';
+            tracksBtn.textContent = open ? '▾ Tracks' : '▸ Tracks';
+            if (!open || loaded) return;
+            loaded = true;
+            const service = artist.service || 'qobuz';
+            renderLoading(tracksHost, 'Loading tracks…');
+            GIQ.api.get('/v1/downloads/album-tracks?service=' + encodeURIComponent(service)
+                + '&album_id=' + encodeURIComponent(album.album_id))
+                .then((data) => {
+                    const tracks = (data && data.tracks) || [];
+                    tracksHost.innerHTML = '';
+                    if (!tracks.length) {
+                        tracksHost.innerHTML = '<div class="actions-empty">No tracks returned.</div>';
+                        return;
+                    }
+                    tracks.forEach((t) => tracksHost.appendChild(_renderResultRow(backend, t, onAfter)));
+                })
+                .catch((e) => {
+                    loaded = false;
+                    renderError(tracksHost, 'Failed to load tracks: ' + e.message);
+                });
+        });
+
+        return card;
+    }
+
+    function _renderArtistCard(backend, artist, onAfter) {
+        const albums = (artist.albums || []).slice().sort((a, b) => (b.year || 0) - (a.year || 0));
+
+        const card = document.createElement('div');
+        card.className = 'actions-artist-card';
+
+        const head = document.createElement('div');
+        head.className = 'actions-artist-head';
+        const av = document.createElement('div');
+        av.className = 'actions-artist-avatar';
+        if (artist.image_url) {
+            const img = document.createElement('img');
+            img.src = artist.image_url;
+            img.alt = '';
+            img.loading = 'lazy';
+            av.appendChild(img);
+        } else {
+            av.textContent = '♫';
+        }
+        head.appendChild(av);
+
+        const nameWrap = document.createElement('div');
+        nameWrap.className = 'actions-artist-namewrap';
+        const name = document.createElement('b');
+        name.className = 'actions-artist-name';
+        name.textContent = artist.name || '(unknown)';
+        nameWrap.appendChild(name);
+        const cnt = document.createElement('span');
+        cnt.className = 'actions-artist-count mono';
+        cnt.textContent = albums.length + ' album' + (albums.length === 1 ? '' : 's');
+        nameWrap.appendChild(cnt);
+        head.appendChild(nameWrap);
+
+        if (albums.length) {
+            const allBtn = document.createElement('button');
+            allBtn.type = 'button';
+            allBtn.className = 'vc-btn vc-btn-primary vc-btn-sm actions-artist-all';
+            allBtn.textContent = 'Download all ' + albums.length + ' albums';
+            allBtn.title = 'Queue every listed album via ' + backend;
+            allBtn.addEventListener('click', () => _downloadAllAlbums(backend, artist, albums, allBtn, onAfter));
+            head.appendChild(allBtn);
+        }
+        card.appendChild(head);
+
+        const grid = document.createElement('div');
+        grid.className = 'actions-album-grid';
+        albums.forEach((album) => grid.appendChild(_renderArtistAlbumCard(backend, artist, album, onAfter)));
+        card.appendChild(grid);
+
+        return card;
+    }
+
+    function _downloadAllAlbums(backend, artist, albums, btn, onAfter) {
+        // Two-step confirm — one mis-click shouldn't queue an entire discography.
+        if (btn.dataset.confirming !== '1') {
+            btn.dataset.confirming = '1';
+            btn.dataset.orig = btn.textContent;
+            btn.classList.add('is-confirm');
+            btn.textContent = 'Click again to queue ' + albums.length + ' albums';
+            btn._resetTimer = setTimeout(() => {
+                btn.dataset.confirming = '';
+                btn.classList.remove('is-confirm');
+                btn.textContent = btn.dataset.orig;
+            }, 5000);
+            return;
+        }
+        clearTimeout(btn._resetTimer);
+        btn.dataset.confirming = '';
+        btn.classList.remove('is-confirm');
+        const orig = btn.dataset.orig;
+        btn.disabled = true;
+
+        let done = 0;
+        let failed = 0;
+        let i = 0;
+        const step = () => {
+            if (i >= albums.length) {
+                btn.disabled = false;
+                btn.textContent = orig;
+                const msg = 'Queued ' + done + ' of ' + albums.length + ' albums'
+                    + (failed ? ' (' + failed + ' failed)' : '');
+                GIQ.toast(msg, failed ? 'warning' : 'success');
+                if (typeof onAfter === 'function') onAfter();
+                return;
+            }
+            const album = albums[i++];
+            btn.textContent = 'Queueing ' + i + '/' + albums.length + '…';
+            GIQ.api.post('/v1/downloads/from-handle', _albumDownloadBody(backend, artist, album))
+                .then(() => { done++; })
+                .catch(() => { failed++; })
+                .then(step);
+        };
+        step();
     }
 })();
