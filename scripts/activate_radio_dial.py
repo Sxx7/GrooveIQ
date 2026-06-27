@@ -2,14 +2,29 @@
 """Activate the single-user radio dial on a running GrooveIQ instance.
 
 The radio-dial capability (audit doc §8) ships in code, but the persisted
-algorithm config predates the four new ``PresetConfig`` fields, so they load as
-their no-op *field* defaults (``0.0`` / ``0.6``) and radio runs exactly as before.
-This script publishes a new config version that carries the §8.4 per-tier values.
+algorithm config predates the new ``PresetConfig`` fields, so they load as their
+no-op *field* defaults and radio runs exactly as before. This script publishes a
+new config version that carries the §8.4 per-tier values across **both axes**:
 
-It is a **surgical merge**: it reads the active config, sets *only* the four new
-fields per preset, and re-publishes — every other live value (the owner's tuned
-``novelty_weight``, ``novelty_strength``, source multipliers, etc.) is preserved.
-Re-running is a no-op once the values are in place (idempotent).
+* the four radio-dial levers — ``proven_recall_mult``, ``ranker_blend``,
+  ``familiarity_weight``, ``cooldown_alpha`` (the "how proven" axis), and
+* the anchoring axis — ``seed_anchor_weight`` (hug the seed ↔ roam the user's
+  taste) plus the Discover ``semiknown_fraction`` quota.
+
+Two defects this fixes (both confirmed live, see
+``docs/HANDOFF_radio_two_axis_activation_and_balanced.md``):
+  1. the persisted ``seed_anchor_weight`` was a uniform ``0.5`` for every preset,
+     so even *Familiar* roamed to the global taste instead of following the seed;
+  2. ``balanced.familiarity_weight`` was ``0.0``, so proven supply drained after
+     ~5-7 tracks and the unproven drift pool owned the rest of the session. It is
+     now ``0.30`` (with ``proven_recall_mult`` lifted ``0.8`` -> ``1.0``).
+
+It is a **surgical merge**: it reads the active config, sets *only* the six fields
+in ``_FIELDS`` per preset, and re-publishes — every other live value (the owner's
+tuned ``novelty_filter``, ``novelty_strength``, source multipliers, etc.) is
+preserved. In particular ``discovery`` keeps its live novelty-filtered posture;
+only its ``semiknown_fraction`` is switched on. Re-running is a no-op once the
+values are in place (idempotent).
 
 Usage::
 
@@ -34,15 +49,25 @@ import sys
 import urllib.error
 import urllib.request
 
-# §8.4 per-tier values for the four radio-dial levers. Only these fields are
-# touched; everything else in the persisted config is preserved verbatim.
+# §8.4 per-tier values for both radio dial axes: the four "how proven" levers
+# (proven_recall_mult, ranker_blend, familiarity_weight, cooldown_alpha) plus the
+# two anchoring-axis fields (seed_anchor_weight, semiknown_fraction). Only these
+# six fields are touched; everything else in the persisted config is preserved
+# verbatim. These are the values empirically validated live on the dev instance
+# (see docs/HANDOFF_radio_two_axis_activation_and_balanced.md):
+#   * seed_anchor_weight per-preset (was a uniform 0.5) -> familiar hugs the seed,
+#     balanced/discovery/deep progressively roam the user's taste centroid;
+#   * balanced.familiarity_weight 0.0 -> 0.30 and proven_recall_mult 0.8 -> 1.0,
+#     curing the "proven for 5-7 tracks then all unproven" collapse;
+#   * discovery.semiknown_fraction 0.0 -> 0.30 (semi-known tier on). discovery's
+#     familiarity_weight stays 0.0 and its live novelty_filter is left untouched.
 TARGETS: dict[str, dict[str, float]] = {
-    "familiar":       {"proven_recall_mult": 1.5, "ranker_blend": 0.80, "familiarity_weight": 0.40, "cooldown_alpha": 0.35},
-    "balanced":       {"proven_recall_mult": 0.8, "ranker_blend": 0.65, "familiarity_weight": 0.0,  "cooldown_alpha": 0.40},
-    "discovery":      {"proven_recall_mult": 0.3, "ranker_blend": 0.50, "familiarity_weight": 0.0,  "cooldown_alpha": 0.25},
-    "deep_discovery": {"proven_recall_mult": 0.0, "ranker_blend": 0.40, "familiarity_weight": 0.0,  "cooldown_alpha": 0.15},
+    "familiar":       {"proven_recall_mult": 1.5, "ranker_blend": 0.80, "familiarity_weight": 0.40, "cooldown_alpha": 0.35, "seed_anchor_weight": 0.85, "semiknown_fraction": 0.0},
+    "balanced":       {"proven_recall_mult": 1.0, "ranker_blend": 0.65, "familiarity_weight": 0.30, "cooldown_alpha": 0.40, "seed_anchor_weight": 0.25, "semiknown_fraction": 0.0},
+    "discovery":      {"proven_recall_mult": 0.3, "ranker_blend": 0.50, "familiarity_weight": 0.0,  "cooldown_alpha": 0.25, "seed_anchor_weight": 0.20, "semiknown_fraction": 0.30},
+    "deep_discovery": {"proven_recall_mult": 0.0, "ranker_blend": 0.40, "familiarity_weight": 0.0,  "cooldown_alpha": 0.15, "seed_anchor_weight": 0.15, "semiknown_fraction": 0.0},
 }
-_FIELDS = ["proven_recall_mult", "ranker_blend", "familiarity_weight", "cooldown_alpha"]
+_FIELDS = ["proven_recall_mult", "ranker_blend", "familiarity_weight", "cooldown_alpha", "seed_anchor_weight", "semiknown_fraction"]
 
 
 def _request(method: str, url: str, api_key: str, body: dict | None = None) -> dict:
