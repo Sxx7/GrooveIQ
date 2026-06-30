@@ -164,7 +164,7 @@ class RadioConfig(BaseModel):
     source_cf: float = Field(0.4, ge=0, le=5, description="Score multiplier for collaborative filtering candidates")
     source_artist: float = Field(0.8, ge=0, le=5, description="Score multiplier for same-artist candidates")
     feedback_like_weight: float = Field(1.5, ge=0, le=5, description="Attraction weight when user likes a track")
-    feedback_dislike_weight: float = Field(1.0, ge=0, le=5, description="Repulsion weight when user dislikes a track")
+    feedback_dislike_weight: float = Field(2.0, ge=0, le=5, description="Repulsion weight when user dislikes a track")
     feedback_skip_weight: float = Field(0.5, ge=0, le=5, description="Mild repulsion weight when user skips a track")
     feedback_decay: float = Field(0.9, ge=0.1, le=1, description="Exponential decay for older feedback signals")
     session_ttl_hours: float = Field(

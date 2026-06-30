@@ -14,7 +14,7 @@ import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
@@ -825,6 +825,61 @@ async def suppress_track(
     session.add(ListenEvent(user_id=user_id, track_id=track_id, event_type="suppress", timestamp=int(time.time())))
     await session.commit()
     return {"status": "suppressed", "user_id": user_id, "track_id": track_id}
+
+
+@router.post(
+    "/users/{user_id}/tracks/{track_id}/undislike",
+    summary="Reverse a hard-dislike (re-allow a track for recommendations)",
+    description=(
+        "Clears an explicit hard-dislike: zeroes `dislike_count` on the user's "
+        "TrackInteraction so the track becomes eligible for candidate generation, "
+        "mixes, and radio again, and drops it from any live radio session's in-session "
+        "dislike set. This is the honest reversal of the explicit thumbs-down — do not "
+        "emulate it with a `like` (that overshoots positive and leaves the track excluded)."
+    ),
+)
+async def undislike_track(
+    user_id: str,
+    track_id: str = Path(..., max_length=128),
+    session: AsyncSession = Depends(get_session),
+    _key: str = Depends(require_api_key),
+):
+    validate_user_id(user_id)
+    check_user_access(_key, user_id)
+
+    # Accept either the internal track_id or a media_server_id (iOS clients hold the latter).
+    resolved = (
+        await session.execute(
+            select(TrackFeatures.track_id).where(
+                or_(TrackFeatures.track_id == track_id, TrackFeatures.media_server_id == track_id)
+            )
+        )
+    ).scalar_one_or_none()
+    internal_id = resolved or track_id
+
+    # Zero the dislike directly. dislike_count is otherwise batch-managed and only ever
+    # increments; this is the sole decrement path. The pipeline's max_event_id watermark
+    # means already-processed dislike events won't re-raise it.
+    await session.execute(
+        update(TrackInteraction)
+        .where(TrackInteraction.user_id == user_id, TrackInteraction.track_id == internal_id)
+        .values(dislike_count=0)
+    )
+    await session.commit()
+
+    # Best-effort: drop it from any live radio session's in-session dislike set. Cross-session
+    # exclusion is governed by the DB dislike_count we just cleared (radio re-queries it per /next).
+    try:
+        from app.services import radio as radio_service
+
+        for info in radio_service.list_sessions(user_id):
+            s = radio_service.get_session(info["session_id"])
+            if s is not None:
+                s.disliked.discard(internal_id)
+    except Exception:  # pragma: no cover - best effort
+        logger.debug("undislike: radio session cleanup skipped", exc_info=True)
+
+    return {"status": "undisliked", "user_id": user_id, "track_id": internal_id}
 
 
 @router.get(
