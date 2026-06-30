@@ -590,6 +590,158 @@ async def _resolve_present_paths(rows, present_paths: set[str] | None) -> set[st
     return present
 
 
+# ---------------------------------------------------------------------------
+# Reliable, coalescing library rescan
+# ---------------------------------------------------------------------------
+#
+# Navidrome's Subsonic startScan is fire-and-forget AND non-queuing: a trigger
+# that arrives while a scan is already running is silently dropped, and an
+# in-progress scan won't pick up a file that landed after the scanner already
+# walked its folder. With downloads completing in quick succession — and the
+# music library on NFS, where Navidrome's inotify watcher can't see writes made
+# by other hosts — that race strands freshly-downloaded tracks unindexed.
+#
+# request_library_rescan() removes the race with a single-flight, trailing-edge
+# coordinator: wait for any in-progress scan to finish (so our trigger is never
+# dropped), fire a scan, wait for THAT scan to complete, and — if more rescans
+# were requested meanwhile — run exactly one more. N rapid downloads collapse
+# into 1-2 guaranteed-complete scans instead of N dropped triggers.
+
+_RESCAN_POLL_INTERVAL_S = 3.0
+_RESCAN_IDLE_TIMEOUT_S = 360.0      # max wait for an in-progress scan to clear
+_RESCAN_COMPLETE_TIMEOUT_S = 360.0  # max wait for our own scan to finish
+
+_rescan_pending = False
+_rescan_task: asyncio.Task | None = None
+
+
+def request_library_rescan() -> None:
+    """Request a media-server rescan guaranteed to run to completion AFTER this
+    call. Coalescing + single-flight: safe to call once per completed download;
+    overlapping calls collapse into the minimum number of scans.
+
+    Non-blocking — schedules a background coordinator on the running event loop.
+    Plex (no scan-status API) degrades to one best-effort refresh per drain.
+    """
+    global _rescan_pending, _rescan_task
+    _rescan_pending = True
+    if _rescan_task is not None and not _rescan_task.done():
+        return
+    _rescan_task = asyncio.create_task(_rescan_loop())
+
+
+async def _rescan_loop() -> None:
+    """Drain rescan requests one clean scan at a time until none remain."""
+    global _rescan_pending
+    if settings.MEDIA_SERVER_TYPE.lower().strip() != "navidrome":
+        # No scan-status API to coordinate on — one best-effort refresh.
+        _rescan_pending = False
+        await refresh_library()
+        return
+    while _rescan_pending:
+        _rescan_pending = False
+        try:
+            await _run_one_navidrome_rescan()
+        except Exception as exc:  # never let the coordinator die silently
+            logger.warning("Library rescan coordinator error: %s", exc)
+            break
+
+
+async def _run_one_navidrome_rescan() -> None:
+    # 1. Wait until any in-progress scan finishes, else our startScan is dropped.
+    if not await _wait_until_scan_idle(_RESCAN_IDLE_TIMEOUT_S):
+        logger.warning(
+            "Rescan: Navidrome still scanning after %.0fs; triggering anyway",
+            _RESCAN_IDLE_TIMEOUT_S,
+        )
+    # 2. Record the last completed scan, then fire a fresh one.
+    before = await _navidrome_scan_status()
+    before_last = before.get("lastScan") if before else None
+    if not await _refresh_navidrome():
+        return
+    # 3. Wait for OUR scan to complete, so a file that lands now is covered by
+    #    the next drain rather than missed by this one.
+    await _wait_for_new_scan(before_last, _RESCAN_COMPLETE_TIMEOUT_S)
+
+
+async def _wait_until_scan_idle(timeout_s: float) -> bool:
+    """Poll until Navidrome reports it isn't scanning. True if idle; False on
+    timeout. Unavailable status counts as idle so the caller proceeds."""
+    waited = 0.0
+    while waited < timeout_s:
+        st = await _navidrome_scan_status()
+        if st is None or not st.get("scanning", False):
+            return True
+        await asyncio.sleep(_RESCAN_POLL_INTERVAL_S)
+        waited += _RESCAN_POLL_INTERVAL_S
+    return False
+
+
+async def _wait_for_new_scan(before_last: str | None, timeout_s: float) -> bool:
+    """Poll until a scan newer than ``before_last`` has completed (not scanning
+    AND lastScan advanced). True on success; False on timeout/unavailable."""
+    waited = 0.0
+    while waited < timeout_s:
+        await asyncio.sleep(_RESCAN_POLL_INTERVAL_S)
+        waited += _RESCAN_POLL_INTERVAL_S
+        st = await _navidrome_scan_status()
+        if st is None:
+            return False
+        if not st.get("scanning", False) and st.get("lastScan") != before_last:
+            logger.info(
+                "Rescan: Navidrome scan completed (lastScan=%s, count=%s)",
+                st.get("lastScan"),
+                st.get("count"),
+            )
+            return True
+    logger.warning("Rescan: timed out waiting for Navidrome scan to complete")
+    return False
+
+
+async def _navidrome_scan_status() -> dict | None:
+    """Return ``{'scanning': bool, 'count': int, 'lastScan': str}`` from
+    Navidrome's Subsonic ``getScanStatus.view``, or None if unavailable."""
+    if settings.MEDIA_SERVER_TYPE.lower().strip() != "navidrome":
+        return None
+    if not settings.MEDIA_SERVER_URL or not settings.MEDIA_SERVER_USER:
+        return None
+
+    import secrets as _secrets
+
+    from app.core.credentials import get_media_server_password
+
+    password = get_media_server_password()
+    if not password:
+        return None
+    base = settings.MEDIA_SERVER_URL.rstrip("/")
+    salt = _secrets.token_hex(8)
+    token = hashlib.md5((password + salt).encode()).hexdigest()  # nosemgrep
+    params = {
+        "u": settings.MEDIA_SERVER_USER,
+        "t": token,
+        "s": salt,
+        "v": "1.16.1",
+        "c": "grooveiq",
+        "f": "json",
+    }
+    try:
+        async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT, verify=True) as client:
+            resp = await client.get(f"{base}/rest/getScanStatus.view", params=params)
+            resp.raise_for_status()
+            sub = resp.json().get("subsonic-response", {})
+            if sub.get("status") != "ok":
+                return None
+            ss = sub.get("scanStatus", {})
+            return {
+                "scanning": bool(ss.get("scanning", False)),
+                "count": int(ss.get("count", 0) or 0),
+                "lastScan": ss.get("lastScan"),
+            }
+    except Exception as exc:
+        logger.debug("Navidrome getScanStatus error: %s", exc)
+        return None
+
+
 async def sync_track_ids(session: AsyncSession, present_paths: set[str] | None = None) -> SyncResult:
     """
     Synchronise GrooveIQ track IDs with the configured media server.

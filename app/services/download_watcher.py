@@ -296,17 +296,16 @@ async def _trigger_post_download_refresh(task_id: str) -> None:
     """
     # 1. Media server refresh (Plex partial, Navidrome full).
     try:
-        from app.services.media_server import is_configured, refresh_library
+        from app.services.media_server import is_configured, request_library_rescan
 
         if is_configured():
-            ok = await refresh_library()
-            if ok:
-                logger.info("Download %s: media server scan triggered", task_id)
-            else:
-                logger.warning(
-                    "Download %s: media server scan trigger returned false",
-                    task_id,
-                )
+            # Coalescing single-flight rescan: waits for any in-progress scan to
+            # finish, fires one, then waits for it to complete (re-running if more
+            # downloads land meanwhile) so rapid downloads aren't dropped by
+            # Navidrome's non-queuing startScan. Non-blocking — runs in the
+            # background on the event loop.
+            request_library_rescan()
+            logger.info("Download %s: media server rescan requested", task_id)
         else:
             logger.debug(
                 "Download %s: no media server configured, skipping refresh",
