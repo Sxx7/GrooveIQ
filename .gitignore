@@ -45,3 +45,8 @@ handoff.md
 # GUI rebuild planning + handoffs — kept on disk but not in repo.
 gui-rework-plan.md
 docs/rebuild/
+
+# Per-feature handoff scratch notes — local working notes, not committed.
+# (docs/HANDOFF_lyrics.md predates this rule and stays tracked.)
+docs/HANDOFF_*.md
+!docs/HANDOFF_lyrics.md
