@@ -987,3 +987,46 @@ class ReplayRequest(BaseModel):
         if v not in ("rerank_only", "full"):
             raise ValueError("mode must be 'rerank_only' or 'full'")
         return v
+
+
+# ---------------------------------------------------------------------------
+# Follows  (new-release notifications initiative, P0)
+# ---------------------------------------------------------------------------
+
+
+class FollowCreateRequest(BaseModel):
+    artist_name: str = Field(..., min_length=1, max_length=512)
+    artist_mbid: str | None = Field(None, max_length=36)
+    source: str = Field("user", max_length=16)
+
+
+class FollowArtistOut(BaseModel):
+    artist_mbid: str | None = None
+    artist_name: str
+    resolved: bool
+
+
+class FollowOut(BaseModel):
+    id: int
+    user_id: str
+    artist_mbid: str | None = None
+    artist_name: str
+    image_url: str | None = None
+    source: str
+    followed_at: int
+
+
+class FollowResponse(BaseModel):
+    follow: FollowOut
+    artist: FollowArtistOut
+
+
+class FollowListItem(BaseModel):
+    artist_mbid: str | None = None
+    artist_name: str
+    image_url: str | None = None
+    followed_at: int
+
+
+class FollowListResponse(BaseModel):
+    follows: list[FollowListItem] = Field(default_factory=list)

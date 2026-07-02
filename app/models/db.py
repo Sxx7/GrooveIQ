@@ -1203,3 +1203,55 @@ class MixTrack(Base):
         Index("ix_mix_track_pos", "mix_id", "position"),
         Index("ix_mix_track_tid", "mix_id", "track_id"),
     )
+
+
+# ---------------------------------------------------------------------------
+# Followed artists  (new-release notifications initiative, P0)
+# ---------------------------------------------------------------------------
+
+
+class FollowedArtist(Base):
+    """Per-user follow edge (soft-delete). NULL unfollowed_at = active follow.
+
+    Uniqueness per (user_id, coalesce(artist_mbid, artist_name_norm)) is
+    enforced at the app layer (follow_service upsert), not a DB constraint,
+    because SQLite/PG differ on partial/coalesce unique indexes. The composite
+    index below serves the name-fallback upsert + the GET /follows read.
+    """
+
+    __tablename__ = "followed_artists"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(String(128), nullable=False, index=True)
+    artist_mbid = Column(String(36), nullable=True, index=True)  # MusicBrainz artist MBID
+    artist_name = Column(String(512), nullable=False)
+    artist_name_norm = Column(String(512), nullable=False, index=True)
+    image_url = Column(String(1024), nullable=True)
+    source = Column(String(16), nullable=False, default="user")  # "user" | future "auto"
+    followed_at = Column(Integer, nullable=False, default=lambda: int(time.time()))
+    unfollowed_at = Column(Integer, nullable=True)  # soft delete; NULL = active
+
+    __table_args__ = (Index("ix_followed_user_norm", "user_id", "artist_name_norm"),)
+
+
+class MonitoredArtist(Base):
+    """Global watch set — one row per artist across all users (dedup).
+
+    The P1 detection loop iterates THIS table, so N followers of one artist =
+    1 poll + 1 acquisition. active_follower_count is maintained on
+    follow/unfollow. artist_name_norm is the canonical key when no MBID is
+    known; both it and artist_mbid are unique (NULLs distinct on SQLite + PG).
+    """
+
+    __tablename__ = "monitored_artists"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    artist_mbid = Column(String(36), nullable=True, unique=True)
+    artist_name_norm = Column(String(512), nullable=False, unique=True)
+    artist_name = Column(String(512), nullable=False)
+    lidarr_artist_id = Column(Integer, nullable=True)
+    lidarr_monitored = Column(Boolean, nullable=False, default=False)
+    last_poll_at = Column(Integer, nullable=True)  # streamrip poll watermark (P1)
+    last_seen_release_date = Column(Integer, nullable=True)  # newest release seen (P1)
+    active_follower_count = Column(Integer, nullable=False, default=0)
+    created_at = Column(Integer, nullable=False, default=lambda: int(time.time()))

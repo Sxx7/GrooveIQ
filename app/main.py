@@ -24,6 +24,7 @@ from app.api.routes import (
     download_routing,
     downloads,
     events,
+    follows,
     health,
     integrations,
     lastfm,
@@ -237,6 +238,7 @@ app.include_router(health.router, tags=["health"])
 app.include_router(events.router, prefix="/v1", tags=["events"])
 app.include_router(tracks.router, prefix="/v1", tags=["tracks"])
 app.include_router(users.router, prefix="/v1", tags=["users"])
+app.include_router(follows.router, prefix="/v1", tags=["follows"])
 app.include_router(playlists.router, prefix="/v1", tags=["playlists"])
 app.include_router(stats.router, prefix="/v1", tags=["stats"])
 app.include_router(recommend.router, prefix="/v1", tags=["recommendations"])
