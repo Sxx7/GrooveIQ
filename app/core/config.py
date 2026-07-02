@@ -290,6 +290,18 @@ class Settings(BaseSettings):
     DISCOVERY_SIMILAR_LIMIT: int = 20  # similar artists per seed from Last.fm
 
     # ------------------------------------------------------------------
+    # Followed-artist release detection (P1) — OFF by default
+    # ------------------------------------------------------------------
+    FOLLOW_SCAN_ENABLED: bool = False           # master toggle for the detection loop
+    FOLLOW_SCAN_CRON: str = "0 */6 * * *"       # every 6h (overview §6.2: 4–6h)
+    FOLLOW_SCAN_POLL_INTERVAL_HOURS: int = 6    # per-artist watermark: skip if polled < this ago
+    FOLLOW_ALBUMS_PER_ARTIST: int = 50          # streamrip search_artist(albums_per_artist=…)
+    NEW_RELEASE_WINDOW_DAYS: int = 60           # candidate + eligibility recency window
+    FOLLOW_GRACE_DAYS: int = 30                 # back-catalog grace before followed_at
+    FOLLOW_MAX_ELIGIBLE_PER_RUN: int = 5        # cap eligible notifications / user / reconcile run
+    FOLLOW_AVAILABILITY_MIN_FRACTION: float = 0.0  # 0.0 ⇒ ≥1 available track marks a release available
+
+    # ------------------------------------------------------------------
     # Charts (Last.fm)
     # ------------------------------------------------------------------
     CHARTS_ENABLED: bool = False  # master toggle for periodic chart builds
@@ -518,6 +530,15 @@ class Settings(BaseSettings):
     @property
     def discovery_enabled(self) -> bool:
         return bool(self.LASTFM_API_KEY and self.LIDARR_URL and self.LIDARR_API_KEY)
+
+    @property
+    def follow_scan_enabled(self) -> bool:
+        # Mirror discovery_enabled: on only when the toggle is set AND a detector
+        # backend is configured (streamrip primary, Lidarr backstop).
+        return bool(
+            self.FOLLOW_SCAN_ENABLED
+            and (self.STREAMRIP_API_URL or (self.LIDARR_URL and self.LIDARR_API_KEY))
+        )
 
     @property
     def lastfm_user_enabled(self) -> bool:

@@ -13,11 +13,30 @@ import time
 from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import settings
 from app.core.security import require_admin, require_api_key
 from app.db.session import get_session
 from app.services.analysis_health import overall_status, run_invariants
 
 router = APIRouter()
+
+
+@router.post(
+    "/admin/follow-scan",
+    summary="Run followed-artist release scan + reconciler once (dev/QA)",
+)
+async def trigger_follow_scan(_key: str = Depends(require_api_key)):
+    """Run the detection loop + availability reconciler synchronously. Admin-gated."""
+    require_admin(_key)
+    if not settings.follow_scan_enabled:
+        return {
+            "status": "error",
+            "message": "Follow-scan not enabled. Set FOLLOW_SCAN_ENABLED=true and configure a detector backend.",
+        }
+    from app.workers.scheduler import run_follow_scan_now
+
+    result = await run_follow_scan_now()
+    return {"status": "completed", "result": result}
 
 
 @router.get(

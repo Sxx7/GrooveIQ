@@ -339,6 +339,18 @@ async def _run_scan(scan_id: int) -> None:
             current_file=None,
             scan_ended_at=int(time.time()),
         )
+
+        # P1: reconcile followed-artist releases that just became streamable
+        # (media_server_id was set in phase B above). Best-effort, never fatal.
+        try:
+            if settings.follow_scan_enabled:
+                from app.services.release_scan import reconcile_available_releases
+
+                rec = await reconcile_available_releases()
+                logger.info(f"[Scan {scan_id}] Post-scan follow-reconcile: {rec}")
+        except Exception as e:
+            logger.error(f"[Scan {scan_id}] Follow-reconcile failed: {e}")
+
         logger.info(
             f"[Scan {scan_id}] Complete in {elapsed}s: "
             f"{counters['ok']} analyzed, {counters['skipped']} skipped (unchanged), "

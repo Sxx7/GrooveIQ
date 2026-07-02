@@ -1255,3 +1255,66 @@ class MonitoredArtist(Base):
     last_seen_release_date = Column(Integer, nullable=True)  # newest release seen (P1)
     active_follower_count = Column(Integer, nullable=False, default=0)
     created_at = Column(Integer, nullable=False, default=lambda: int(time.time()))
+
+
+# ---------------------------------------------------------------------------
+# Release events + per-user feed  (new-release notifications initiative, P1)
+# ---------------------------------------------------------------------------
+
+
+class ReleaseEvent(Base):
+    """Global, one row per detected release (overview §4.3).
+
+    `available_at` is stamped ONLY when the release's tracks have
+    `media_server_id` (i.e. are streamable) — the structural "only notify for
+    playable music" guarantee. Notifications fan out from that transition.
+    """
+
+    __tablename__ = "release_events"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    release_key = Column(String(255), nullable=False, unique=True, index=True)  # rg_mbid | artist|album|year
+    release_group_mbid = Column(String(36), nullable=True)
+    artist_mbid = Column(String(36), nullable=True, index=True)
+    artist_name = Column(String(512), nullable=False)
+    artist_name_norm = Column(String(512), nullable=True)  # reconciler join key (composite index below)
+    album_title = Column(String(512), nullable=False)
+    album_title_norm = Column(String(512), nullable=True)
+    kind = Column(String(16), nullable=False, default="album")  # album|ep|single
+    first_release_date = Column(Integer, nullable=True)  # epoch; day-precision from streamrip release_date
+    detected_at = Column(Integer, nullable=False, default=lambda: int(time.time()))
+    acquisition_state = Column(String(16), nullable=False, index=True)  # pending|downloading|imported|unavailable|failed
+    available_at = Column(Integer, nullable=True, index=True)  # set ONLY when tracks have media_server_id
+    track_count_total = Column(Integer, nullable=True)
+    track_count_available = Column(Integer, nullable=False, default=0)
+    cover_url = Column(String(1024), nullable=True)
+    source = Column(String(24), nullable=False)  # streamrip_poll|lidarr
+    last_acq_task_id = Column(String(64), nullable=True)  # streamrip/download task id from the cascade
+    created_at = Column(Integer, nullable=False, default=lambda: int(time.time()))
+    updated_at = Column(Integer, nullable=False, default=lambda: int(time.time()))
+
+    __table_args__ = (
+        Index("ix_release_events_reconcile", "artist_name_norm", "album_title_norm"),
+    )
+
+
+class UserReleaseNotification(Base):
+    """Per-user fanout + feed rows (overview §4.4). Idempotent via the unique
+    (user_id, release_event_id). P1 sets the feed read-state (`seen_at`);
+    `dispatch_state`/`notified_at` are P2 (push)."""
+
+    __tablename__ = "user_release_notifications"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(String(64), nullable=False, index=True)
+    release_event_id = Column(Integer, ForeignKey("release_events.id"), nullable=False, index=True)
+    created_at = Column(Integer, nullable=False, default=lambda: int(time.time()))
+    eligible = Column(Boolean, nullable=False, default=True)  # passed back-catalog guard (§6.4)
+    dispatch_state = Column(String(16), nullable=False, default="pending")  # pending|sent|failed|suppressed (P2)
+    notified_at = Column(Integer, nullable=True)  # P2
+    seen_at = Column(Integer, nullable=True)  # feed read-state
+
+    __table_args__ = (
+        Index("uq_urn_user_release", "user_id", "release_event_id", unique=True),
+        Index("ix_urn_user_seen", "user_id", "seen_at"),
+    )

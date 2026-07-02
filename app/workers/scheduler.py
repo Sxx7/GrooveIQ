@@ -86,6 +86,26 @@ async def start_scheduler() -> None:
             replace_existing=True,
         )
 
+    # Followed-artist release detection (P1) — new-release feed + (P2) push.
+    if settings.follow_scan_enabled:
+        fs_cron = settings.FOLLOW_SCAN_CRON.split()
+        _scheduler.add_job(
+            _periodic_follow_scan,
+            trigger=CronTrigger(
+                minute=fs_cron[0],
+                hour=fs_cron[1],
+                day=fs_cron[2],
+                month=fs_cron[3],
+                day_of_week=fs_cron[4],
+                timezone="UTC",
+            ),
+            id="followed_artist_release_scan",
+            replace_existing=True,
+            coalesce=True,
+            max_instances=1,
+            misfire_grace_time=300,
+        )
+
     # Charts rebuild (Last.fm) — wall-clock daily cron, not an interval timer.
     # An IntervalTrigger in the MemoryJobStore resets on every container
     # restart, so frequent deploys kept deferring the next build (builds only
@@ -458,6 +478,25 @@ async def run_discovery_now() -> dict:
     from app.services.discovery import run_discovery_pipeline
 
     return await run_discovery_pipeline()
+
+
+async def _periodic_follow_scan() -> None:
+    """Detect new releases for followed artists, then reconcile availability."""
+    try:
+        from app.services.release_scan import reconcile_available_releases, run_follow_scan
+
+        det = await run_follow_scan()
+        rec = await reconcile_available_releases()
+        logger.info("Follow-scan done: detect=%s reconcile=%s", det, rec)
+    except Exception:
+        logger.error(f"Follow-scan failed: {traceback.format_exc()}")
+
+
+async def run_follow_scan_now() -> dict:
+    """Run the detection loop + reconciler on demand (admin endpoint / QA)."""
+    from app.services.release_scan import run_follow_scan_and_reconcile
+
+    return await run_follow_scan_and_reconcile()
 
 
 async def _periodic_fill_library() -> None:

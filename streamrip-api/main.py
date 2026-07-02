@@ -345,6 +345,7 @@ def _normalize_artist_release(alb: Any, release_type: str) -> Optional[Dict[str,
         "album_id": aid,
         "title": alb.get("title") or "",
         "year": year,
+        "release_date": rel,  # full ISO date string ("" if unknown); `year` is the coarse fallback
         "cover_url": cover,
         "track_count": alb.get("tracks_count"),
         "duration": alb.get("duration"),
@@ -520,6 +521,7 @@ async def _do_album_tracks(service: str, album_id: str) -> Dict[str, Any]:
             "album_id": album_id,
             "album_title": meta.get("title") or "",
             "album_year": year,
+            "release_date": rel,  # full ISO date string ("" if unknown)
             "artist": artist_name,
             "cover_url": cover,
             "tracks": tracks_out,
