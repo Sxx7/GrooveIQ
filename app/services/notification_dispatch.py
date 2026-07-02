@@ -1,15 +1,22 @@
 """GrooveIQ – new-release notification dispatch (overview §6.5).
 
 Consumes ``user_release_notifications`` rows that are ``eligible`` + ``pending``,
-builds a message from ``release_events.kind``, fans out to each active device
-(the stateless relay for APNs tokens, Apprise for generic URLs), stamps
-``dispatch_state``/``notified_at``, prunes 410-Unregistered tokens, and applies a
-simple age-capped retry. Everything is gated by ``settings.push_enabled`` at the
-callers (the reconciler after fan-out + a scheduler backstop tick).
+builds a message from ``release_events.kind``, fans out to each active device's
+Apprise channels, stamps ``dispatch_state``/``notified_at``, and applies a simple
+age-capped retry. Gated by ``settings.push_enabled`` at the callers (the
+reconciler after fan-out + a scheduler backstop tick).
 
-Apprise is an OPTIONAL dependency, imported lazily inside ``_apprise_notify`` so
-grooveiq installs and runs without it — the generic-channel path simply no-ops
-(logs + returns False) when the lib is absent.
+Delivery is **Apprise-only**. A user's iOS device registers a per-device
+*capability URL* minted by the APN relay (``jsons://<relay>/v1/apprise/<id>``) as
+one of its ``apprise_urls``; the relay holds Ampster's ``.p8`` and pushes to APNs.
+grooveiq holds **no** Apple credentials and **no** relay shared secret — the
+capability lives entirely in the URL the user registered (per-user, self-service),
+which is why a self-hosted, multi-user grooveiq needs no operator secret. Non-iOS
+channels (ntfy/telegram/...) ride the exact same path.
+
+Apprise is a required dependency; the import is still guarded inside
+``_apprise_notify`` so a broken install degrades to "no delivery" (logs + returns
+False) instead of crashing the dispatch run.
 """
 from __future__ import annotations
 
@@ -23,7 +30,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.models.db import Device, ReleaseEvent, UserReleaseNotification  # P1-owned models
-from app.services.relay_client import RelayError, get_relay_client
 
 logger = logging.getLogger(__name__)
 
@@ -63,119 +69,63 @@ async def dispatch_pending(session: AsyncSession, *, limit: int = 200) -> dict[s
     if not rows:
         return {"processed": 0}
 
-    relay = get_relay_client()
-    sent = failed = suppressed = pruned = 0
-    try:
-        for notif, release in rows:
-            devices = (
-                await session.execute(
-                    select(Device).where(
-                        Device.user_id == notif.user_id,
-                        Device.notif_new_releases.is_(True),
-                        Device.disabled_at.is_(None),
-                    )
-                )
-            ).scalars().all()
+    sent = failed = suppressed = 0
+    for notif, release in rows:
+        urls = await _channels_for(session, notif.user_id)
+        if not urls:
+            notif.dispatch_state = "suppressed"  # nothing to deliver to; never retried
+            suppressed += 1
+            continue
 
-            if not devices:
-                notif.dispatch_state = "suppressed"  # nothing to deliver to; never retried
-                suppressed += 1
-                continue
+        title, body = build_message(release)
+        # Apprise is a sync lib → offload to a thread so it can't block the loop.
+        ok = await asyncio.to_thread(_apprise_notify, urls, title, body)
 
-            title, body = build_message(release)
-            data = {
-                "type": "new_release",
-                "release_event_id": release.id,
-                "artist_mbid": release.artist_mbid,
-                "release_key": release.release_key,
-            }
-            collapse_id = f"release-{release.id}"
+        if ok:
+            notif.dispatch_state = "sent"
+            notif.notified_at = now
+            sent += 1
+        else:
+            # Retryable: leave 'pending' for the backstop tick — unless the row has
+            # aged past the cap, in which case give up (no dispatch_attempts column
+            # on the P1 table, so cap by age; overview §6.5 step 4).
+            age_h = (now - (notif.created_at or now)) / 3600.0
+            if age_h >= settings.DISPATCH_MAX_AGE_HOURS:
+                notif.dispatch_state = "failed"
+            failed += 1
 
-            token_env = {d.apns_token: d.apns_environment for d in devices if d.apns_token}
-            apprise_urls: list[str] = []
-            for d in devices:
-                if d.apprise_urls:
-                    apprise_urls.extend(d.apprise_urls)
-
-            delivered_any = False
-            transient_error = False
-
-            # --- Native APNs via the stateless relay (grouped by environment) ---
-            if token_env and relay is not None:
-                for env in sorted(set(token_env.values())):
-                    grp = [t for t, e in token_env.items() if e == env]
-                    notification = {
-                        "title": title, "body": body, "sound": "default",
-                        "thread_id": "new-releases", "badge": 1, "data": data,
-                    }
-                    try:
-                        results = await relay.push(
-                            tokens=grp, environment=env,
-                            notification=notification, collapse_id=collapse_id,
-                        )
-                    except RelayError as exc:
-                        logger.warning("relay push failed (env=%s): %s", env, exc)
-                        transient_error = True
-                        continue
-                    for r in results:
-                        if r.get("status") == 200:
-                            delivered_any = True
-                        elif r.get("status") == 410:  # Unregistered → prune the token
-                            await _disable_token(session, r.get("token"), now)
-                            pruned += 1
-
-            # --- Generic channels via Apprise (sync lib → offload to a thread) ---
-            if apprise_urls and settings.APPRISE_ENABLED:
-                ok = await asyncio.to_thread(_apprise_notify, apprise_urls, title, body)
-                delivered_any = delivered_any or ok
-                transient_error = transient_error or (not ok)
-
-            if delivered_any:
-                notif.dispatch_state = "sent"
-                notif.notified_at = now
-                sent += 1
-            elif transient_error:
-                # Retryable: leave 'pending' for the backstop tick — unless the row
-                # has aged past the cap, in which case give up (no dispatch_attempts
-                # column on the P1 table, so cap by age; overview §6.5 step 4).
-                age_h = (now - (notif.created_at or now)) / 3600.0
-                if age_h >= settings.DISPATCH_MAX_AGE_HOURS:
-                    notif.dispatch_state = "failed"
-                failed += 1
-            else:
-                notif.dispatch_state = "failed"  # devices existed but nothing could be delivered
-                failed += 1
-
-        await session.commit()
-    finally:
-        if relay is not None:
-            await relay.close()
-
-    return {"processed": len(rows), "sent": sent, "failed": failed,
-            "suppressed": suppressed, "pruned": pruned}
+    await session.commit()
+    return {"processed": len(rows), "sent": sent, "failed": failed, "suppressed": suppressed}
 
 
-async def _disable_token(session: AsyncSession, token: str | None, now: int) -> None:
-    """Soft-disable a device whose token the relay reported as 410 Unregistered."""
-    if not token:
-        return
-    dev = (
-        await session.execute(select(Device).where(Device.apns_token == token))
-    ).scalar_one_or_none()
-    if dev is not None:
-        dev.disabled_at = now
+async def _channels_for(session: AsyncSession, user_id: str) -> list[str]:
+    """Collect the Apprise URLs of a user's active, opted-in devices."""
+    devices = (
+        await session.execute(
+            select(Device).where(
+                Device.user_id == user_id,
+                Device.notif_new_releases.is_(True),
+                Device.disabled_at.is_(None),
+            )
+        )
+    ).scalars().all()
+    urls: list[str] = []
+    for d in devices:
+        if d.apprise_urls:
+            urls.extend(d.apprise_urls)
+    return urls
 
 
 def _apprise_notify(urls: list[str], title: str, body: str) -> bool:
     """Sync Apprise call — run under ``asyncio.to_thread``. Never raises.
 
-    ``apprise`` is an optional dependency: a missing import (or any per-URL
-    failure) returns False so a bad channel can't wedge the whole dispatch run.
+    A missing import (broken install) or any per-URL failure returns False so a
+    bad channel can't wedge the whole dispatch run.
     """
     try:
-        import apprise  # optional dependency, imported lazily on use
+        import apprise
     except ImportError:
-        logger.warning("apprise not installed; skipping %d generic channel(s)", len(urls))
+        logger.warning("apprise not installed; skipping %d channel(s)", len(urls))
         return False
     try:
         ap = apprise.Apprise()

@@ -1,12 +1,15 @@
 """GrooveIQ – device / notification-target registration routes (P2).
 
-grooveiq owns the APNs device-token registry; the relay is stateless. A device
-registers the token(s) it wants pushes on (native APNs and/or Apprise URLs).
+Per-user, self-service registration of a notification channel. Delivery is
+Apprise-only: an iOS device registers the per-device capability URL minted by the
+APN relay (as an ``apprise_urls`` entry); grooveiq holds no Apple creds / relay
+secret. This is a normal per-user endpoint (api-key + user_id), NOT admin — so
+any user on a multi-user instance can enable push without operator involvement.
 
 Trust (overview §7): a device may only register/list/delete for the ``user_id``
 it presents, and must carry the app api-key like every other route. Residual
 risk (someone who knows another user's id AND the app api-key could register a
-token against them) is accepted at this ~5–10-user scale; a per-user
+channel against them) is accepted at this ~5–10-user scale; a per-user
 registration token is deferred.
 
 DELETE returns ``200 + a JSON body`` (not 204): the iOS Alamofire client throws
@@ -42,11 +45,27 @@ async def register_device(
 
     device: Device | None = None
     if body.apns_token:
-        # Upsert by the unique apns_token (overview §5): the constraint is the
-        # guard, not a check-then-insert race.
+        # Upsert by the unique apns_token (legacy native path): the constraint is
+        # the guard, not a check-then-insert race.
         device = (
             await session.execute(select(Device).where(Device.apns_token == body.apns_token))
         ).scalar_one_or_none()
+    elif body.apprise_urls:
+        # Apprise-only device (e.g. the relay capability URL): dedup by the stable
+        # URL so the app's per-launch re-register updates one row instead of piling
+        # up (no unique apns_token to key on). URLs are per-device + unguessable.
+        incoming = set(body.apprise_urls)
+        candidates = (
+            await session.execute(
+                select(Device).where(
+                    Device.user_id == body.user_id, Device.apns_token.is_(None)
+                )
+            )
+        ).scalars().all()
+        for d in candidates:
+            if d.apprise_urls and incoming.intersection(d.apprise_urls):
+                device = d
+                break
 
     if device is None:
         device = Device(user_id=body.user_id, apns_token=body.apns_token)

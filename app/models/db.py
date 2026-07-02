@@ -1328,11 +1328,12 @@ class UserReleaseNotification(Base):
 class Device(Base):
     """A registered notification target for a user (overview §4.5).
 
-    grooveiq owns the APNs device-token registry; the relay is stateless and
-    holds no tokens. One row per device (unique ``apns_token``). ``apprise_urls``
-    holds optional user-supplied channels (ntfy/telegram/pushover/email/webhook).
-    ``disabled_at`` is stamped when the relay reports 410 Unregistered so a dead
-    token is never retried until a fresh register clears it.
+    Delivery is Apprise-only: ``apprise_urls`` holds the device's channels — for
+    iOS that's the per-device capability URL minted by the APN relay
+    (``jsons://<relay>/v1/apprise/<id>``), plus any user-supplied
+    ntfy/telegram/pushover/... targets. grooveiq holds no Apple creds. The legacy
+    ``apns_token`` column is retained (nullable, unique) but no longer used for
+    delivery; ``disabled_at`` soft-deletes a device.
     """
 
     __tablename__ = "devices"

@@ -1,9 +1,12 @@
-"""GrooveIQ – Tests for new-release notification dispatch (P2, h30).
+"""GrooveIQ – Tests for new-release notification dispatch (P2).
 
 Seeds a Device + P1 ReleaseEvent + eligible/pending UserReleaseNotification in
-in-memory SQLite and drives ``dispatch_pending`` directly, with the relay and
-Apprise mocked — no network, and no dependency on ``apprise`` being installed
-(``_apprise_notify`` is monkeypatched wherever the generic path is exercised).
+in-memory SQLite and drives ``dispatch_pending`` directly, with Apprise mocked —
+no network, and no dependency on ``apprise`` being installed (``_apprise_notify``
+is monkeypatched wherever delivery is exercised).
+
+Delivery is Apprise-only: an iOS device's ``apprise_urls`` holds the relay
+capability URL; grooveiq holds no Apple creds / relay secret.
 
 Run with:  .venv-test/bin/pytest tests/test_notification_dispatch.py -v
 """
@@ -22,7 +25,6 @@ import app.services.notification_dispatch as nd
 from app.core.config import settings
 from app.models.db import Base, Device, ReleaseEvent, UserReleaseNotification
 from app.services.notification_dispatch import build_message, dispatch_pending
-from app.services.relay_client import RelayError
 
 TEST_DB_URL = "sqlite+aiosqlite:///:memory:"
 _test_engine = create_async_engine(TEST_DB_URL, connect_args={"check_same_thread": False})
@@ -40,26 +42,16 @@ async def setup_db():
 
 @pytest.fixture(autouse=True)
 def _enable_push(monkeypatch):
-    # push_enabled = PUSH_ENABLED and (relay_ok or APPRISE_ENABLED); APPRISE_ENABLED
-    # defaults True, so flipping the master switch is enough. Individual tests that
-    # want the disabled path override this back to False.
+    # push_enabled = PUSH_ENABLED and APPRISE_ENABLED; APPRISE_ENABLED defaults
+    # True, so flipping the master switch is enough. The disabled-path test
+    # overrides PUSH_ENABLED back to False.
     monkeypatch.setattr(settings, "PUSH_ENABLED", True, raising=False)
 
 
-class _FakeRelay:
-    def __init__(self, results=None, exc=None):
-        self._results = results or []
-        self._exc = exc
-        self.calls: list[dict] = []
-
-    async def push(self, *, tokens, environment, notification, collapse_id=None):
-        self.calls.append({"tokens": tokens, "environment": environment, "collapse_id": collapse_id})
-        if self._exc is not None:
-            raise self._exc
-        return self._results
-
-    async def close(self):
-        pass
+@pytest.fixture(autouse=True)
+def _apprise_ok(monkeypatch):
+    # Default: Apprise "delivers". Tests that need a failure override this.
+    monkeypatch.setattr(nd, "_apprise_notify", lambda urls, title, body: True)
 
 
 async def _seed(
@@ -108,11 +100,6 @@ async def _urn(urn_id: int) -> UserReleaseNotification:
         )).scalar_one()
 
 
-async def _device_by_token(token: str) -> Device:
-    async with _TestSession() as s:
-        return (await s.execute(select(Device).where(Device.apns_token == token))).scalar_one()
-
-
 # ── build_message ────────────────────────────────────────────────────────────
 
 
@@ -128,10 +115,10 @@ def test_build_message_kinds():
 # ── dispatch ─────────────────────────────────────────────────────────────────
 
 
-async def test_relay_success_marks_sent(monkeypatch):
-    _, urn_id = await _seed(apns_token="tok")
-    fake = _FakeRelay(results=[{"token": "tok", "status": 200}])
-    monkeypatch.setattr(nd, "get_relay_client", lambda: fake)
+async def test_apprise_delivery_marks_sent(monkeypatch):
+    _, urn_id = await _seed(apprise_urls=["jsons://relay/v1/apprise/abc"])
+    calls: list[tuple] = []
+    monkeypatch.setattr(nd, "_apprise_notify", lambda urls, title, body: calls.append((urls, title)) or True)
 
     async with _TestSession() as s:
         summary = await dispatch_pending(s)
@@ -140,34 +127,12 @@ async def test_relay_success_marks_sent(monkeypatch):
     row = await _urn(urn_id)
     assert row.dispatch_state == "sent"
     assert row.notified_at is not None
-    assert fake.calls and fake.calls[0]["collapse_id"].startswith("release-")
+    assert calls and calls[0][0] == ["jsons://relay/v1/apprise/abc"]
 
 
-async def test_410_prunes_token(monkeypatch):
-    await _seed(apns_token="dead")
-    fake = _FakeRelay(results=[{"token": "dead", "status": 410, "reason": "Unregistered"}])
-    monkeypatch.setattr(nd, "get_relay_client", lambda: fake)
-
-    async with _TestSession() as s:
-        summary = await dispatch_pending(s)
-
-    assert summary["pruned"] == 1
-    assert (await _device_by_token("dead")).disabled_at is not None
-
-    # a second run finds no active device for that user → suppressed, no relay call
-    fake2 = _FakeRelay(results=[{"token": "dead", "status": 200}])
-    monkeypatch.setattr(nd, "get_relay_client", lambda: fake2)
-    async with _TestSession() as s:
-        # the first run already left the row 'failed' (nothing delivered), so
-        # nothing is pending now — assert the pruned device is excluded regardless.
-        await dispatch_pending(s)
-    assert fake2.calls == []
-
-
-async def test_relay_transient_error_stays_pending(monkeypatch):
-    _, urn_id = await _seed(apns_token="tok")
-    fake = _FakeRelay(exc=RelayError("boom"))
-    monkeypatch.setattr(nd, "get_relay_client", lambda: fake)
+async def test_apprise_failure_stays_pending(monkeypatch):
+    _, urn_id = await _seed(apprise_urls=["ntfy://topic"])
+    monkeypatch.setattr(nd, "_apprise_notify", lambda urls, title, body: False)
 
     async with _TestSession() as s:
         summary = await dispatch_pending(s)
@@ -176,10 +141,10 @@ async def test_relay_transient_error_stays_pending(monkeypatch):
     assert (await _urn(urn_id)).dispatch_state == "pending"  # retryable, not failed
 
 
-async def test_transient_error_past_age_cap_fails(monkeypatch):
+async def test_apprise_failure_past_age_cap_fails(monkeypatch):
     old = int(time.time()) - 48 * 3600  # older than DISPATCH_MAX_AGE_HOURS (24)
-    _, urn_id = await _seed(apns_token="tok", created_at=old)
-    monkeypatch.setattr(nd, "get_relay_client", lambda: _FakeRelay(exc=RelayError("boom")))
+    _, urn_id = await _seed(apprise_urls=["ntfy://topic"], created_at=old)
+    monkeypatch.setattr(nd, "_apprise_notify", lambda urls, title, body: False)
 
     async with _TestSession() as s:
         await dispatch_pending(s)
@@ -187,21 +152,30 @@ async def test_transient_error_past_age_cap_fails(monkeypatch):
     assert (await _urn(urn_id)).dispatch_state == "failed"  # aged out → give up
 
 
-async def test_apprise_path_marks_sent(monkeypatch):
-    _, urn_id = await _seed(apprise_urls=["ntfy://topic"])
-    monkeypatch.setattr(nd, "get_relay_client", lambda: None)  # no relay
-    monkeypatch.setattr(nd, "_apprise_notify", lambda urls, title, body: True)
+async def test_no_channels_suppressed():
+    # A device with only an apns_token (no apprise_urls) has nothing to deliver to
+    # in the Apprise-only model → suppressed, never retried.
+    _, urn_id = await _seed(apns_token="tok", apprise_urls=None)
 
     async with _TestSession() as s:
         summary = await dispatch_pending(s)
 
-    assert summary["sent"] == 1
-    assert (await _urn(urn_id)).dispatch_state == "sent"
+    assert summary["suppressed"] == 1
+    assert (await _urn(urn_id)).dispatch_state == "suppressed"
 
 
-async def test_no_active_device_suppressed(monkeypatch):
-    _, urn_id = await _seed(apns_token="tok", disabled_at=123)  # device exists but disabled
-    monkeypatch.setattr(nd, "get_relay_client", lambda: _FakeRelay())
+async def test_notif_toggle_off_suppressed():
+    _, urn_id = await _seed(apprise_urls=["ntfy://topic"], notif=False)
+
+    async with _TestSession() as s:
+        summary = await dispatch_pending(s)
+
+    assert summary["suppressed"] == 1
+    assert (await _urn(urn_id)).dispatch_state == "suppressed"
+
+
+async def test_disabled_device_suppressed():
+    _, urn_id = await _seed(apprise_urls=["ntfy://topic"], disabled_at=123)
 
     async with _TestSession() as s:
         summary = await dispatch_pending(s)
@@ -211,7 +185,7 @@ async def test_no_active_device_suppressed(monkeypatch):
 
 
 async def test_disabled_feature_skips(monkeypatch):
-    _, urn_id = await _seed(apns_token="tok")
+    _, urn_id = await _seed(apprise_urls=["ntfy://topic"])
     monkeypatch.setattr(settings, "PUSH_ENABLED", False, raising=False)
 
     async with _TestSession() as s:
@@ -221,9 +195,8 @@ async def test_disabled_feature_skips(monkeypatch):
     assert (await _urn(urn_id)).dispatch_state == "pending"  # untouched
 
 
-async def test_idempotent_second_run_processes_nothing(monkeypatch):
-    await _seed(apns_token="tok")
-    monkeypatch.setattr(nd, "get_relay_client", lambda: _FakeRelay(results=[{"token": "tok", "status": 200}]))
+async def test_idempotent_second_run_processes_nothing():
+    await _seed(apprise_urls=["ntfy://topic"])
 
     async with _TestSession() as s:
         first = await dispatch_pending(s)

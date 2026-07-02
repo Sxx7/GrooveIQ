@@ -90,6 +90,10 @@ umap-learn>=0.5.12
 # HTTP client (used by discovery pipeline + tests)
 httpx==0.28.*
 
+# New-release push delivery (P2) — fans out to each device's Apprise channel
+# (the relay capability URL + any user-supplied ntfy/telegram/... targets).
+apprise>=1.9,<2
+
 # Testing
 # pytest >=9.0.3 fixes CVE-2025-71176 (predictable /tmp/pytest-of-{user} path).
 pytest>=9.0.3,<10

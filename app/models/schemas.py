@@ -1038,10 +1038,11 @@ class FollowListResponse(BaseModel):
 
 
 class DeviceRegister(BaseModel):
-    """POST /v1/devices — register (upsert) a notification target.
+    """POST /v1/devices — register (upsert) a notification channel.
 
-    A device supplies an APNs token (native push via the relay) and/or a list of
-    Apprise URLs (ntfy/telegram/...). At least one target is required.
+    A device supplies a list of Apprise URLs (the iOS device's relay capability
+    URL, and/or user-supplied ntfy/telegram/... targets). The legacy ``apns_token``
+    is still accepted but no longer used for delivery. At least one target is required.
     """
 
     user_id: str = Field(..., min_length=1, max_length=128, description="Your media server's user identifier.")

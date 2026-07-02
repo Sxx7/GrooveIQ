@@ -133,6 +133,22 @@ async def test_register_apprise_only(client: AsyncClient):
     assert rows[0].apprise_urls == ["ntfy://topic"]
 
 
+async def test_reregister_same_apprise_url_is_idempotent(client: AsyncClient):
+    # The app re-registers its stable relay capability URL on each launch; dedup
+    # by the URL so it updates one row instead of piling up (no apns_token to key on).
+    url = "jsons://relay.example/v1/apprise/cap-id-123"
+    first = await client.post("/v1/devices", json={"user_id": "alice", "apprise_urls": [url]})
+    second = await client.post(
+        "/v1/devices", json={"user_id": "alice", "apprise_urls": [url], "notif_new_releases": False}
+    )
+    assert second.status_code == 200
+    assert second.json()["device_id"] == first.json()["device_id"]  # same row
+
+    rows = await _device_rows("alice")
+    assert len(rows) == 1                       # not duplicated
+    assert rows[0].notif_new_releases is False  # updated
+
+
 async def test_register_requires_a_target(client: AsyncClient):
     resp = await client.post("/v1/devices", json={"user_id": "alice"})
     assert resp.status_code == 422  # pydantic model_validator: needs token and/or urls

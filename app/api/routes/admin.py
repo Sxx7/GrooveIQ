@@ -45,12 +45,12 @@ async def trigger_follow_scan(_key: str = Depends(require_api_key)):
 )
 async def trigger_follow_dispatch(_key: str = Depends(require_api_key)):
     """Run the push dispatch step synchronously. Admin-gated. Off unless
-    PUSH_ENABLED and a transport (relay or Apprise) is configured."""
+    PUSH_ENABLED (Apprise is the delivery transport)."""
     require_admin(_key)
     if not settings.push_enabled:
         return {
             "status": "error",
-            "message": "Push not enabled. Set PUSH_ENABLED=true and configure RELAY_BASE/RELAY_SHARED_SECRET or Apprise.",
+            "message": "Push not enabled. Set PUSH_ENABLED=true (delivery is via Apprise; APPRISE_ENABLED defaults true).",
         }
     from app.workers.scheduler import run_dispatch_now
 
