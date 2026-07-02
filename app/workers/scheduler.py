@@ -106,6 +106,21 @@ async def start_scheduler() -> None:
             misfire_grace_time=300,
         )
 
+    # New-release push dispatch (P2) — backstop tick. The reconciler dispatches
+    # inline after fan-out (low latency); this tick retries transient relay
+    # failures and drains rows created while no relay was configured. Off by
+    # default (settings.push_enabled).
+    if settings.push_enabled:
+        _scheduler.add_job(
+            _dispatch_notifications_tick,
+            trigger=IntervalTrigger(minutes=max(1, settings.PUSH_DISPATCH_POLL_MINUTES)),
+            id="notification_dispatch_tick",
+            replace_existing=True,
+            coalesce=True,
+            max_instances=1,
+            misfire_grace_time=300,
+        )
+
     # Charts rebuild (Last.fm) — wall-clock daily cron, not an interval timer.
     # An IntervalTrigger in the MemoryJobStore resets on every container
     # restart, so frequent deploys kept deferring the next build (builds only
@@ -497,6 +512,27 @@ async def run_follow_scan_now() -> dict:
     from app.services.release_scan import run_follow_scan_and_reconcile
 
     return await run_follow_scan_and_reconcile()
+
+
+async def _dispatch_notifications_tick() -> None:
+    """Backstop drain of eligible+pending new-release notifications (P2)."""
+    try:
+        from app.services.notification_dispatch import dispatch_pending
+
+        async with AsyncSessionLocal() as session:
+            summary = await dispatch_pending(session)
+        if isinstance(summary, dict) and summary.get("processed"):
+            logger.info("Notification dispatch tick: %s", summary)
+    except Exception:
+        logger.error(f"Notification dispatch tick failed: {traceback.format_exc()}")
+
+
+async def run_dispatch_now() -> dict:
+    """Drain pending new-release notifications on demand (admin endpoint / QA)."""
+    from app.services.notification_dispatch import dispatch_pending
+
+    async with AsyncSessionLocal() as session:
+        return await dispatch_pending(session)
 
 
 async def _periodic_fill_library() -> None:

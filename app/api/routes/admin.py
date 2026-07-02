@@ -39,6 +39,25 @@ async def trigger_follow_scan(_key: str = Depends(require_api_key)):
     return {"status": "completed", "result": result}
 
 
+@router.post(
+    "/admin/follow-dispatch",
+    summary="Drain pending new-release notifications once (dev/QA, P2)",
+)
+async def trigger_follow_dispatch(_key: str = Depends(require_api_key)):
+    """Run the push dispatch step synchronously. Admin-gated. Off unless
+    PUSH_ENABLED and a transport (relay or Apprise) is configured."""
+    require_admin(_key)
+    if not settings.push_enabled:
+        return {
+            "status": "error",
+            "message": "Push not enabled. Set PUSH_ENABLED=true and configure RELAY_BASE/RELAY_SHARED_SECRET or Apprise.",
+        }
+    from app.workers.scheduler import run_dispatch_now
+
+    result = await run_dispatch_now()
+    return {"status": "completed", "result": result}
+
+
 @router.get(
     "/admin/analysis-health",
     summary="Library-wide invariants over track_features (Layer 3)",

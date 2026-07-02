@@ -1318,3 +1318,32 @@ class UserReleaseNotification(Base):
         Index("uq_urn_user_release", "user_id", "release_event_id", unique=True),
         Index("ix_urn_user_seen", "user_id", "seen_at"),
     )
+
+
+# ---------------------------------------------------------------------------
+# Notification devices  (new-release push initiative, P2)
+# ---------------------------------------------------------------------------
+
+
+class Device(Base):
+    """A registered notification target for a user (overview §4.5).
+
+    grooveiq owns the APNs device-token registry; the relay is stateless and
+    holds no tokens. One row per device (unique ``apns_token``). ``apprise_urls``
+    holds optional user-supplied channels (ntfy/telegram/pushover/email/webhook).
+    ``disabled_at`` is stamped when the relay reports 410 Unregistered so a dead
+    token is never retried until a fresh register clears it.
+    """
+
+    __tablename__ = "devices"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(String(128), nullable=False, index=True)
+    platform = Column(String(16), nullable=False, default="ios")
+    apns_token = Column(String(200), nullable=True, unique=True, index=True)
+    apns_environment = Column(String(16), nullable=False, default="production")  # sandbox|production
+    apprise_urls = Column(JSON, nullable=True)  # list[str] of Apprise target URLs
+    notif_new_releases = Column(Boolean, nullable=False, default=True)
+    created_at = Column(Integer, nullable=False, default=lambda: int(time.time()))
+    last_seen_at = Column(Integer, nullable=False, default=lambda: int(time.time()))  # refreshed on re-register
+    disabled_at = Column(Integer, nullable=True)  # set on 410 Unregistered (soft-delete)

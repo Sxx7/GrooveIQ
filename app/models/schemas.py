@@ -1030,3 +1030,37 @@ class FollowListItem(BaseModel):
 
 class FollowListResponse(BaseModel):
     follows: list[FollowListItem] = Field(default_factory=list)
+
+
+# ---------------------------------------------------------------------------
+# Notification devices (new-release push initiative, P2)
+# ---------------------------------------------------------------------------
+
+
+class DeviceRegister(BaseModel):
+    """POST /v1/devices — register (upsert) a notification target.
+
+    A device supplies an APNs token (native push via the relay) and/or a list of
+    Apprise URLs (ntfy/telegram/...). At least one target is required.
+    """
+
+    user_id: str = Field(..., min_length=1, max_length=128, description="Your media server's user identifier.")
+    platform: str = Field("ios", max_length=16)
+    apns_token: str | None = Field(None, min_length=1, max_length=200, description="Hex APNs device token.")
+    apns_environment: str = Field("production", pattern="^(sandbox|production)$")
+    apprise_urls: list[str] | None = Field(None, max_length=32, description="Optional Apprise target URLs.")
+    notif_new_releases: bool = Field(True)
+
+    @model_validator(mode="after")
+    def _need_a_target(self) -> DeviceRegister:
+        if not self.apns_token and not self.apprise_urls:
+            raise ValueError("device must supply apns_token and/or apprise_urls")
+        return self
+
+
+class DeviceDelete(BaseModel):
+    apns_token: str = Field(..., min_length=1, max_length=200)
+
+
+class NotificationSettingsUpdate(BaseModel):
+    notif_new_releases: bool

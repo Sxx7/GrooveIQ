@@ -290,7 +290,15 @@ async def reconcile_available_releases() -> dict[str, Any]:
 
         await session.commit()
 
-    return {"reconciled": reconciled, "notifications_created": notifications_created}
+    result: dict[str, Any] = {"reconciled": reconciled, "notifications_created": notifications_created}
+    # Low-latency push (P2): dispatch the freshly-created pending notifications in
+    # a fresh session. Gated + off by default; the scheduler backstop tick retries
+    # transient failures and covers rows created before a relay was configured.
+    if settings.push_enabled and notifications_created:
+        from app.services.notification_dispatch import dispatch_pending
+        async with AsyncSessionLocal() as dispatch_session:
+            result["dispatched"] = await dispatch_pending(dispatch_session)
+    return result
 
 
 async def _fanout(

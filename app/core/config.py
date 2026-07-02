@@ -302,6 +302,19 @@ class Settings(BaseSettings):
     FOLLOW_AVAILABILITY_MIN_FRACTION: float = 0.0  # 0.0 ⇒ ≥1 available track marks a release available
 
     # ------------------------------------------------------------------
+    # New-release push dispatch (P2) — off by default (overview §10).
+    # grooveiq owns the device-token registry; native APNs goes through a
+    # stateless self-hosted relay holding Ampster's .p8. No Apple creds here.
+    # ------------------------------------------------------------------
+    PUSH_ENABLED: bool = False              # master switch for dispatch + the backstop tick
+    RELAY_BASE: str = ""                    # e.g. https://<relay-host> (stateless APN relay, overview §8)
+    RELAY_SHARED_SECRET: str = ""           # Bearer token grooveiq↔relay (overview §7); never logged
+    PUSH_DISPATCH_POLL_MINUTES: int = 5     # backstop tick cadence (mirrors LYRICS_DRAIN_POLL_MINUTES)
+    DISPATCH_MAX_AGE_HOURS: int = 24        # give up + mark 'failed' after this (retry-cap fallback)
+    APPRISE_ENABLED: bool = True            # honour user apprise_urls when present (import-guarded, optional dep)
+    APPRISE_TIMEOUT_S: float = 10.0         # per-notify soft budget (informational; Apprise owns real timeouts)
+
+    # ------------------------------------------------------------------
     # Charts (Last.fm)
     # ------------------------------------------------------------------
     CHARTS_ENABLED: bool = False  # master toggle for periodic chart builds
@@ -541,6 +554,13 @@ class Settings(BaseSettings):
         )
 
     @property
+    def push_enabled(self) -> bool:
+        """Dispatch is live when the master switch is on AND at least one transport
+        is usable: the relay (RELAY_BASE + RELAY_SHARED_SECRET) or Apprise."""
+        relay_ok = bool(self.RELAY_BASE and self.RELAY_SHARED_SECRET)
+        return bool(self.PUSH_ENABLED and (relay_ok or self.APPRISE_ENABLED))
+
+    @property
     def lastfm_user_enabled(self) -> bool:
         """True when per-user Last.fm features (profile pull, scrobbling) are configured."""
         return bool(self.LASTFM_ENABLED and self.LASTFM_API_KEY and self.LASTFM_API_SECRET)
@@ -634,6 +654,7 @@ class Settings(BaseSettings):
         _validate_service_url(self.SPOTIZERR_URL, "SPOTIZERR_URL")
         _validate_service_url(self.SLSKD_URL, "SLSKD_URL")
         _validate_service_url(self.AB_LOOKUP_URL, "AB_LOOKUP_URL")
+        _validate_service_url(self.RELAY_BASE, "RELAY_BASE")  # RELAY_SHARED_SECRET is a bearer, not a URL
 
         # --- HTTP cleartext warnings ---
         if self.MEDIA_SERVER_URL and self.MEDIA_SERVER_URL.startswith("http://"):
