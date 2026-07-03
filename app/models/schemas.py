@@ -1084,3 +1084,11 @@ class NotificationSettingsUpdate(BaseModel):
         ge=1,
         description="Scope the toggle to one device; omitted → all of the user's devices.",
     )
+
+
+class NotificationTest(BaseModel):
+    device_id: int | None = Field(
+        None,
+        ge=1,
+        description="Scope the test to one device; omitted → all of the user's active channels.",
+    )

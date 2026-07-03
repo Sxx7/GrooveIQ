@@ -28,7 +28,13 @@ from app.core.security import check_user_access, require_api_key
 from app.core.user_id import validate_user_id
 from app.db.session import get_session
 from app.models.db import Device
-from app.models.schemas import DeviceDelete, DeviceRegister, NotificationSettingsUpdate
+from app.models.schemas import (
+    DeviceDelete,
+    DeviceRegister,
+    NotificationSettingsUpdate,
+    NotificationTest,
+)
+from app.services.notification_dispatch import send_test_notification
 
 router = APIRouter()
 
@@ -164,3 +170,23 @@ async def patch_notification_settings(
         d.notif_new_releases = body.notif_new_releases
     await session.commit()
     return await get_notification_settings(user_id=user_id, session=session, _key=_key)
+
+
+@router.post(
+    "/users/{user_id}/notification-settings/test",
+    summary="Send a test notification to a user's channels",
+)
+async def test_notification(
+    user_id: str = Path(..., min_length=1, max_length=128),
+    body: NotificationTest | None = None,
+    session: AsyncSession = Depends(get_session),
+    _key: str = Depends(require_api_key),
+):
+    """Fire an immediate test push. Ignores the ``PUSH_ENABLED`` master switch and
+    the per-device mute so a channel can be verified during setup — returns
+    ``{sent, channels}`` (``sent=False, channels=0`` when the user has none)."""
+    validate_user_id(user_id)
+    check_user_access(_key, user_id)
+    return await send_test_notification(
+        session, user_id, device_id=body.device_id if body else None
+    )

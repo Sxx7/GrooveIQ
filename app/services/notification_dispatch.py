@@ -116,6 +116,32 @@ async def _channels_for(session: AsyncSession, user_id: str) -> list[str]:
     return urls
 
 
+async def send_test_notification(
+    session: AsyncSession, user_id: str, *, device_id: int | None = None
+) -> dict[str, Any]:
+    """Send an immediate test push to a user's channels — used by the dashboard's
+    "Send test" button. Deliberately independent of the ``PUSH_ENABLED`` master
+    switch and the per-device ``notif_new_releases`` mute, so an operator can
+    verify a channel during setup or while it's muted. Soft-deleted devices
+    (``disabled_at``) are skipped; ``device_id`` scopes the test to one device.
+    """
+    query = select(Device).where(Device.user_id == user_id, Device.disabled_at.is_(None))
+    if device_id is not None:
+        query = query.where(Device.id == device_id)
+    devices = (await session.execute(query)).scalars().all()
+    urls: list[str] = []
+    for d in devices:
+        if d.apprise_urls:
+            urls.extend(d.apprise_urls)
+    if not urls:
+        return {"sent": False, "channels": 0, "reason": "no_channels"}
+
+    title = "GrooveIQ test"
+    body = "Test notification from GrooveIQ — if you can see this, your channel works."
+    ok = await asyncio.to_thread(_apprise_notify, urls, title, body)
+    return {"sent": bool(ok), "channels": len(urls)}
+
+
 def _apprise_notify(urls: list[str], title: str, body: str) -> bool:
     """Sync Apprise call — run under ``asyncio.to_thread``. Never raises.
 

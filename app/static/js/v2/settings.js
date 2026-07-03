@@ -1895,6 +1895,36 @@
                 list.className = 'notif-list';
                 devices.forEach(d => list.appendChild(notifRow(d)));
                 body.appendChild(list);
+
+                const actions = document.createElement('div');
+                actions.style.cssText = 'margin-top:12px';
+                const testBtn = document.createElement('button');
+                testBtn.type = 'button';
+                testBtn.className = 'vc-btn vc-btn-ghost';
+                testBtn.textContent = 'Send test notification';
+                testBtn.title = 'Fires a test push now — ignores the mute + the server master switch.';
+                testBtn.addEventListener('click', async () => {
+                    const restore = testBtn.textContent;
+                    testBtn.disabled = true;
+                    testBtn.textContent = 'Sending…';
+                    try {
+                        const r = await GIQ.api.post('/v1/users/' + encodeURIComponent(userId) + '/notification-settings/test', {});
+                        if (r && r.sent) {
+                            GIQ.toast('Test sent to ' + r.channels + (r.channels === 1 ? ' channel' : ' channels'), 'success');
+                        } else if (r && r.channels === 0) {
+                            GIQ.toast('No channels to test', 'warning');
+                        } else {
+                            GIQ.toast('Test failed — check the URL and the server\'s Apprise config', 'error');
+                        }
+                    } catch (e) {
+                        GIQ.toast('Test failed: ' + e.message, 'error');
+                    } finally {
+                        testBtn.disabled = false;
+                        testBtn.textContent = restore;
+                    }
+                });
+                actions.appendChild(testBtn);
+                body.appendChild(actions);
             }
 
             body.appendChild(notifAddForm());

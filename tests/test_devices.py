@@ -221,6 +221,37 @@ async def test_patch_scoped_to_one_device(client: AsyncClient):
     assert all(v for k, v in by_id.items() if k != only)  # the other left untouched
 
 
+async def test_send_test_notification_hits_apprise(client: AsyncClient, monkeypatch):
+    from app.services import notification_dispatch as nd
+
+    seen: dict = {}
+
+    def _fake(urls, title, body):
+        seen["urls"] = urls
+        seen["title"] = title
+        return True
+
+    monkeypatch.setattr(nd, "_apprise_notify", _fake)
+
+    # notif muted → the test must still fire (it verifies the channel, ignoring mute)
+    await client.post(
+        "/v1/devices",
+        json={"user_id": "alice", "apprise_urls": ["ntfy://topic"], "notif_new_releases": False},
+    )
+    resp = await client.post("/v1/users/alice/notification-settings/test", json={})
+    assert resp.status_code == 200
+    assert resp.json() == {"sent": True, "channels": 1}
+    assert seen["urls"] == ["ntfy://topic"]
+    assert "GrooveIQ" in seen["title"]
+
+
+async def test_send_test_notification_no_channels(client: AsyncClient):
+    resp = await client.post("/v1/users/alice/notification-settings/test", json={})
+    assert resp.status_code == 200
+    assert resp.json()["sent"] is False
+    assert resp.json()["channels"] == 0
+
+
 async def test_notification_settings_list_and_patch(client: AsyncClient):
     await client.post("/v1/devices", json={"user_id": "alice", "apns_token": "t1"})
     await client.post("/v1/devices", json={"user_id": "alice", "apns_token": "t2"})
