@@ -111,7 +111,7 @@ GIQ.api = {
     post(path, body) { return _request('POST', path, body || {}); },
     put(path, body) { return _request('PUT', path, body || {}); },
     patch(path, body) { return _request('PATCH', path, body || {}); },
-    del(path) { return _request('DELETE', path); },
+    del(path, body) { return _request('DELETE', path, body); },
 
     /* Validate the current key against /health (no auth required, but we
      * include it so the server records the key was used). Returns a bool.

@@ -1695,6 +1695,9 @@
 
         // Last.fm card
         host.appendChild(buildLastfmCard(profile, reload));
+
+        // Notifications card (per-user Apprise channels + new-release toggle)
+        host.appendChild(buildNotificationsCard(profile));
     }
 
     function buildLastfmCard(profile, reload) {
@@ -1818,6 +1821,206 @@
         b.textContent = label;
         b.addEventListener('click', onClick);
         return b;
+    }
+
+    /* Per-user notification channels (Apprise). Mirrors buildLastfmCard: a panel
+     * with a live list of the user's push channels, a per-channel mute toggle, a
+     * remove button, and an "add Apprise URL" form. Backend is frontend-agnostic —
+     * any Apprise URL (ntfy/telegram/discord/... or an Ampster relay capability
+     * URL) is a valid channel; this makes notifications configurable without the
+     * iOS app. Calls: GET/PATCH /v1/users/{id}/notification-settings, POST/DELETE
+     * /v1/devices (all per-user, scoped by the selected user_id). */
+    function buildNotificationsCard(profile) {
+        const userId = profile.user_id;
+
+        const card = document.createElement('section');
+        card.className = 'panel user-notif-card';
+
+        const head = document.createElement('div');
+        head.className = 'panel-head';
+        const headLeft = document.createElement('div');
+        headLeft.className = 'panel-head-left';
+        const titleRow = document.createElement('div');
+        titleRow.className = 'panel-title-row';
+        const t = document.createElement('div');
+        t.className = 'panel-title';
+        t.textContent = 'Notifications';
+        titleRow.appendChild(t);
+        const badge = document.createElement('span');
+        badge.className = 'vc-badge vc-badge-modified';
+        badge.textContent = '…';
+        titleRow.appendChild(badge);
+        headLeft.appendChild(titleRow);
+        const sub = document.createElement('div');
+        sub.className = 'panel-sub muted';
+        sub.textContent = 'New-release push channels (Apprise). Add any ntfy / Telegram / Discord / webhook URL, or an Ampster relay link.';
+        headLeft.appendChild(sub);
+        head.appendChild(headLeft);
+        card.appendChild(head);
+
+        const body = document.createElement('div');
+        body.className = 'panel-body user-notif-body';
+        body.innerHTML = '<div class="vc-loading">Loading channels…</div>';
+        card.appendChild(body);
+
+        function load() {
+            GIQ.api.get('/v1/users/' + encodeURIComponent(userId) + '/notification-settings')
+                .then(render)
+                .catch(e => {
+                    body.innerHTML = '<div class="vc-empty">Failed to load channels: ' + esc(e.message) + '</div>';
+                });
+        }
+
+        function render(settings) {
+            body.innerHTML = '';
+            const devices = (settings && settings.devices) || [];
+            const activeCount = devices.filter(d => d.notif_new_releases).length;
+
+            if (!devices.length) {
+                badge.className = 'vc-badge vc-badge-modified';
+                badge.textContent = 'no channels';
+            } else {
+                badge.className = 'vc-badge ' + (activeCount ? 'vc-badge-active' : 'vc-badge-modified');
+                badge.textContent = activeCount ? activeCount + ' active' : 'all muted';
+            }
+
+            if (!devices.length) {
+                const empty = document.createElement('div');
+                empty.className = 'muted';
+                empty.style.cssText = 'padding:4px 0 12px';
+                empty.textContent = 'No channels yet. Add an Apprise URL below to receive new-release notifications.';
+                body.appendChild(empty);
+            } else {
+                const list = document.createElement('div');
+                list.className = 'notif-list';
+                devices.forEach(d => list.appendChild(notifRow(d)));
+                body.appendChild(list);
+            }
+
+            body.appendChild(notifAddForm());
+        }
+
+        function notifRow(d) {
+            const row = document.createElement('div');
+            row.className = 'notif-channel-row';
+            row.style.cssText = 'display:flex;align-items:center;gap:12px;padding:10px 0;border-top:1px solid var(--stroke-1,rgba(255,255,255,0.08))';
+
+            const info = document.createElement('div');
+            info.style.cssText = 'flex:1;min-width:0';
+            const urls = (d.apprise_urls && d.apprise_urls.length)
+                ? d.apprise_urls
+                : (d.apns_token ? ['native APNs (relay / device token)'] : ['(no target)']);
+            const url = document.createElement('div');
+            url.className = 'mono';
+            url.style.cssText = 'overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px';
+            url.textContent = urls[0] + (urls.length > 1 ? '  +' + (urls.length - 1) + ' more' : '');
+            url.title = urls.join('\n');
+            info.appendChild(url);
+            const meta = document.createElement('div');
+            meta.className = 'muted';
+            meta.style.cssText = 'font-size:11px;margin-top:2px';
+            meta.textContent = (d.platform || 'device')
+                + (d.apns_token && d.apns_environment ? ' · ' + d.apns_environment : '')
+                + (d.notif_new_releases ? '' : ' · muted');
+            info.appendChild(meta);
+            row.appendChild(info);
+
+            const toggleLbl = document.createElement('label');
+            toggleLbl.className = 'lbf-toggle-inline';
+            const cb = document.createElement('input');
+            cb.type = 'checkbox';
+            cb.checked = !!d.notif_new_releases;
+            const cbText = document.createElement('span');
+            cbText.className = 'muted';
+            cbText.textContent = cb.checked ? 'on' : 'muted';
+            cb.addEventListener('change', async () => {
+                cb.disabled = true;
+                try {
+                    await GIQ.api.patch('/v1/users/' + encodeURIComponent(userId) + '/notification-settings',
+                        { notif_new_releases: cb.checked, device_id: d.device_id });
+                    GIQ.toast('Channel ' + (cb.checked ? 'unmuted' : 'muted'), 'success');
+                    load();
+                } catch (e) {
+                    GIQ.toast('Update failed: ' + e.message, 'error');
+                    cb.checked = !cb.checked;
+                    cb.disabled = false;
+                }
+            });
+            toggleLbl.appendChild(cb);
+            toggleLbl.appendChild(cbText);
+            row.appendChild(toggleLbl);
+
+            const rm = document.createElement('button');
+            rm.type = 'button';
+            rm.className = 'vc-btn vc-btn-ghost-sm';
+            rm.textContent = 'Remove';
+            rm.addEventListener('click', async () => {
+                if (!confirm('Remove this notification channel for ' + userId + '?')) return;
+                rm.disabled = true;
+                try {
+                    await GIQ.api.del('/v1/devices', { device_id: d.device_id });
+                    GIQ.toast('Channel removed', 'success');
+                    load();
+                } catch (e) {
+                    GIQ.toast('Remove failed: ' + e.message, 'error');
+                    rm.disabled = false;
+                }
+            });
+            row.appendChild(rm);
+            return row;
+        }
+
+        function notifAddForm() {
+            const wrap = document.createElement('div');
+            wrap.style.cssText = 'margin-top:14px';
+            const form = document.createElement('div');
+            form.className = 'lastfm-connect-form';
+            const input = document.createElement('input');
+            input.type = 'text';
+            input.className = 'vc-num';
+            input.style.cssText = 'flex:1;min-width:240px';
+            input.placeholder = 'Apprise URL — ntfy://ntfy.sh/topic, tgram://token/chatid, discord://…';
+            const addBtn = document.createElement('button');
+            addBtn.type = 'button';
+            addBtn.className = 'vc-btn vc-btn-primary';
+            addBtn.textContent = 'Add channel';
+            async function submit() {
+                const raw = input.value.trim();
+                if (!raw) { GIQ.toast('Enter an Apprise URL', 'warning'); return; }
+                addBtn.disabled = true;
+                try {
+                    await GIQ.api.post('/v1/devices', {
+                        user_id: userId,
+                        platform: 'web',
+                        apprise_urls: [raw],
+                        notif_new_releases: true,
+                    });
+                    input.value = '';
+                    GIQ.toast('Channel added', 'success');
+                    load();
+                } catch (e) {
+                    GIQ.toast('Add failed: ' + e.message, 'error');
+                } finally {
+                    addBtn.disabled = false;
+                }
+            }
+            addBtn.addEventListener('click', submit);
+            input.addEventListener('keydown', (e) => { if (e.key === 'Enter') submit(); });
+            form.appendChild(input);
+            form.appendChild(addBtn);
+            wrap.appendChild(form);
+
+            const hint = document.createElement('p');
+            hint.className = 'muted';
+            hint.style.cssText = 'font-size:11px;margin-top:8px';
+            hint.innerHTML = 'Any <a href="https://github.com/caronc/apprise/wiki" target="_blank" rel="noopener">Apprise</a>-supported service works — the frontend never matters. '
+                + 'Delivery needs the server\'s <span class="mono">PUSH_ENABLED</span> + <span class="mono">APPRISE_ENABLED</span>.';
+            wrap.appendChild(hint);
+            return wrap;
+        }
+
+        load();
+        return card;
     }
 
     function showEditUserModal(profile, onSaved) {

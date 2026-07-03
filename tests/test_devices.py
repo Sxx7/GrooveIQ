@@ -181,6 +181,46 @@ async def test_delete_unknown_token_is_idempotent(client: AsyncClient):
     assert resp.json()["disabled"] == 0
 
 
+async def test_delete_by_device_id_soft_deletes(client: AsyncClient):
+    # An Apprise-only channel (e.g. added from the dashboard) has no apns_token,
+    # so it can only be removed by its device_id.
+    reg = await client.post("/v1/devices", json={"user_id": "alice", "apprise_urls": ["ntfy://topic"]})
+    device_id = reg.json()["device_id"]
+
+    resp = await client.request("DELETE", "/v1/devices", json={"device_id": device_id})
+    assert resp.status_code == 200
+    assert resp.json()["disabled"] == 1
+
+    rows = await _device_rows()
+    assert rows[0].disabled_at is not None
+
+
+async def test_delete_unknown_device_id_is_idempotent(client: AsyncClient):
+    resp = await client.request("DELETE", "/v1/devices", json={"device_id": 999999})
+    assert resp.status_code == 200
+    assert resp.json()["disabled"] == 0
+
+
+async def test_delete_requires_an_identifier(client: AsyncClient):
+    resp = await client.request("DELETE", "/v1/devices", json={})
+    assert resp.status_code == 422  # model_validator: needs device_id and/or apns_token
+
+
+async def test_patch_scoped_to_one_device(client: AsyncClient):
+    a = await client.post("/v1/devices", json={"user_id": "alice", "apns_token": "t1"})
+    await client.post("/v1/devices", json={"user_id": "alice", "apns_token": "t2"})
+    only = a.json()["device_id"]
+
+    patched = await client.patch(
+        "/v1/users/alice/notification-settings",
+        json={"notif_new_releases": False, "device_id": only},
+    )
+    assert patched.status_code == 200
+    by_id = {d["device_id"]: d["notif_new_releases"] for d in patched.json()["devices"]}
+    assert by_id[only] is False                         # scoped device flipped
+    assert all(v for k, v in by_id.items() if k != only)  # the other left untouched
+
+
 async def test_notification_settings_list_and_patch(client: AsyncClient):
     await client.post("/v1/devices", json={"user_id": "alice", "apns_token": "t1"})
     await client.post("/v1/devices", json={"user_id": "alice", "apns_token": "t2"})

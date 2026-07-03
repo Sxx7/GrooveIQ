@@ -83,17 +83,23 @@ async def register_device(
     return {"device_id": device.id}
 
 
-@router.delete("/devices", summary="Unregister a device by token")
+@router.delete("/devices", summary="Unregister a device by id or token")
 async def delete_device(
     body: DeviceDelete,
     session: AsyncSession = Depends(get_session),
     _key: str = Depends(require_api_key),
 ):
-    """Soft-delete by token (200 + body; re-register reactivates). Idempotent:
-    an unknown token is still 200."""
-    device = (
-        await session.execute(select(Device).where(Device.apns_token == body.apns_token))
-    ).scalar_one_or_none()
+    """Soft-delete by ``device_id`` (any channel, incl. Apprise-only rows) or the
+    legacy ``apns_token`` (200 + body; a re-register reactivates a token row).
+    Idempotent: an unknown id/token is still 200."""
+    if body.device_id is not None:
+        device = (
+            await session.execute(select(Device).where(Device.id == body.device_id))
+        ).scalar_one_or_none()
+    else:
+        device = (
+            await session.execute(select(Device).where(Device.apns_token == body.apns_token))
+        ).scalar_one_or_none()
     if device is None:
         return {"status": "ok", "disabled": 0}  # idempotent — nothing to remove
     check_user_access(_key, device.user_id)
@@ -137,7 +143,7 @@ async def get_notification_settings(
 
 @router.patch(
     "/users/{user_id}/notification-settings",
-    summary="Toggle new-release notifications for all of a user's devices",
+    summary="Toggle new-release notifications for a user's devices",
 )
 async def patch_notification_settings(
     body: NotificationSettingsUpdate,
@@ -145,11 +151,15 @@ async def patch_notification_settings(
     session: AsyncSession = Depends(get_session),
     _key: str = Depends(require_api_key),
 ):
+    """Flip ``notif_new_releases`` on all of the user's devices, or just one when
+    ``device_id`` is given. The ``user_id`` filter also scopes the id lookup, so a
+    device_id belonging to another user is a safe no-op."""
     validate_user_id(user_id)
     check_user_access(_key, user_id)
-    devices = (
-        await session.execute(select(Device).where(Device.user_id == user_id))
-    ).scalars().all()
+    query = select(Device).where(Device.user_id == user_id)
+    if body.device_id is not None:
+        query = query.where(Device.id == body.device_id)
+    devices = (await session.execute(query)).scalars().all()
     for d in devices:
         d.notif_new_releases = body.notif_new_releases
     await session.commit()

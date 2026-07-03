@@ -1060,8 +1060,27 @@ class DeviceRegister(BaseModel):
 
 
 class DeviceDelete(BaseModel):
-    apns_token: str = Field(..., min_length=1, max_length=200)
+    """DELETE /v1/devices — unregister a channel.
+
+    Identify it by ``device_id`` (works for any channel, including Apprise-only
+    rows that have no token — e.g. one added from the dashboard) or by the legacy
+    ``apns_token``. At least one is required.
+    """
+
+    device_id: int | None = Field(None, ge=1, description="Device row id (from notification-settings).")
+    apns_token: str | None = Field(None, min_length=1, max_length=200)
+
+    @model_validator(mode="after")
+    def _need_an_identifier(self) -> DeviceDelete:
+        if self.device_id is None and not self.apns_token:
+            raise ValueError("delete must supply device_id and/or apns_token")
+        return self
 
 
 class NotificationSettingsUpdate(BaseModel):
     notif_new_releases: bool
+    device_id: int | None = Field(
+        None,
+        ge=1,
+        description="Scope the toggle to one device; omitted → all of the user's devices.",
+    )
