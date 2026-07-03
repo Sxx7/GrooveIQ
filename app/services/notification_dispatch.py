@@ -137,7 +137,7 @@ async def send_test_notification(
         return {"sent": False, "channels": 0, "reason": "no_channels"}
 
     title = "GrooveIQ test"
-    body = "Test notification from GrooveIQ — if you can see this, your channel works."
+    body = "Test notification from GrooveIQ. If you can see this, your channel works."
     ok = await asyncio.to_thread(_apprise_notify, urls, title, body)
     return {"sent": bool(ok), "channels": len(urls)}
 

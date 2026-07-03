@@ -1902,7 +1902,7 @@
                 testBtn.type = 'button';
                 testBtn.className = 'vc-btn vc-btn-ghost';
                 testBtn.textContent = 'Send test notification';
-                testBtn.title = 'Fires a test push now — ignores the mute + the server master switch.';
+                testBtn.title = 'Fires a test push now, ignoring the mute and the server master switch.';
                 testBtn.addEventListener('click', async () => {
                     const restore = testBtn.textContent;
                     testBtn.disabled = true;
@@ -1914,7 +1914,7 @@
                         } else if (r && r.channels === 0) {
                             GIQ.toast('No channels to test', 'warning');
                         } else {
-                            GIQ.toast('Test failed — check the URL and the server\'s Apprise config', 'error');
+                            GIQ.toast('Test failed. Check the URL and the server\'s Apprise config.', 'error');
                         }
                     } catch (e) {
                         GIQ.toast('Test failed: ' + e.message, 'error');
@@ -2009,7 +2009,7 @@
             input.type = 'text';
             input.className = 'vc-num';
             input.style.cssText = 'flex:1;min-width:240px';
-            input.placeholder = 'Apprise URL — ntfy://ntfy.sh/topic, tgram://token/chatid, discord://…';
+            input.placeholder = 'Apprise URL, e.g. ntfy://ntfy.sh/topic, tgram://token/chatid, discord://…';
             const addBtn = document.createElement('button');
             addBtn.type = 'button';
             addBtn.className = 'vc-btn vc-btn-primary';
@@ -2043,7 +2043,7 @@
             const hint = document.createElement('p');
             hint.className = 'muted';
             hint.style.cssText = 'font-size:11px;margin-top:8px';
-            hint.innerHTML = 'Any <a href="https://github.com/caronc/apprise/wiki" target="_blank" rel="noopener">Apprise</a>-supported service works — the frontend never matters. '
+            hint.innerHTML = 'Any <a href="https://github.com/caronc/apprise/wiki" target="_blank" rel="noopener">Apprise</a>-supported service works, so the frontend never matters. '
                 + 'Delivery needs the server\'s <span class="mono">PUSH_ENABLED</span> + <span class="mono">APPRISE_ENABLED</span>.';
             wrap.appendChild(hint);
             return wrap;
