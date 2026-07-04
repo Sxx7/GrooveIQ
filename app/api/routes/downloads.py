@@ -473,6 +473,7 @@ async def create_download(
         album_name=body.album_name,
         cover_url=body.cover_url,
         api_key=_key,
+        user_id=body.user_id,
     )
 
     if not cascade.success:
@@ -524,6 +525,7 @@ async def create_download_from_handle(
         album_name=body.album_name,
         cover_url=body.cover_url,
         api_key=_key,
+        user_id=body.user_id,
     )
 
     if not cascade.success:
@@ -548,6 +550,7 @@ async def _persist_cascade_request(
     album_name: str | None,
     cover_url: str | None,
     api_key: str,
+    user_id: str | None = None,
 ) -> DownloadRequest:
     """Write a DownloadRequest row from the cascade outcome."""
     last = cascade.attempts[-1] if cascade.attempts else None
@@ -579,6 +582,7 @@ async def _persist_cascade_request(
         slskd_transfer_id=slskd_transfer_id,
         attempts=[a.to_dict() for a in cascade.attempts] or None,
         requested_by=hash_key(api_key)[:16] if api_key != "anonymous" else None,
+        user_id=user_id or None,
         error_message=err_msg,
         updated_at=int(time.time()),
     )

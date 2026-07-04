@@ -352,6 +352,20 @@ async def _run_scan(scan_id: int) -> None:
         except Exception as e:
             logger.error(f"[Scan {scan_id}] Follow-reconcile failed: {e}")
 
+        # P4 (goal C): notify about newly-added media of ANY origin. Runs AFTER
+        # the follow reconciler so a followed-artist new release (goal A) claims
+        # the album's dedup key first and the newly-added push for the same album
+        # is suppressed (goal D precedence: new_release > newly_added). Downloads
+        # (goal B) already claimed their key before this scan's rescan.
+        try:
+            if settings.NOTIFY_NEW_MEDIA_ENABLED:
+                from app.services.new_media_notify import notify_newly_added_media
+
+                nm = await notify_newly_added_media()
+                logger.info(f"[Scan {scan_id}] Post-scan newly-added: {nm}")
+        except Exception as e:
+            logger.error(f"[Scan {scan_id}] Newly-added notify failed: {e}")
+
         logger.info(
             f"[Scan {scan_id}] Complete in {elapsed}s: "
             f"{counters['ok']} analyzed, {counters['skipped']} skipped (unchanged), "

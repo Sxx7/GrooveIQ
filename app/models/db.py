@@ -242,6 +242,12 @@ class TrackFeatures(Base):
     # Last successful ffmpeg pre-flight decode (or successful analysis) for the
     # current file_hash. Lets the scanner skip re-validating unchanged files.
     bitstream_validated_at = Column(Integer, nullable=True)
+    # Newly-added-media notification marker (goal C): epoch this row was
+    # considered for a "new media" push (or baselined). NULL = not yet
+    # considered. Only set once the track is playable (media_server_id present),
+    # so a track that becomes streamable in a LATER scan is still caught — the
+    # per-track marker, not a global time cursor, is the checkpoint.
+    new_media_notified_at = Column(Integer, nullable=True)
 
     # --- Rhythm ---
     bpm = Column(Float, nullable=True, index=True)
@@ -769,6 +775,10 @@ class DownloadRequest(Base):
 
     # Who requested it
     requested_by = Column(String(128), nullable=True)  # API key identity
+    # Requesting user (goal B): the media-server user_id the client sends so a
+    # "download finished" push can target the person who started it. NULL for
+    # chart/auto acquisitions with no requesting user (they surface via goal C).
+    user_id = Column(String(128), nullable=True, index=True)
 
     error_message = Column(Text, nullable=True)
     created_at = Column(Integer, nullable=False, default=lambda: int(time.time()))
@@ -1348,3 +1358,83 @@ class Device(Base):
     created_at = Column(Integer, nullable=False, default=lambda: int(time.time()))
     last_seen_at = Column(Integer, nullable=False, default=lambda: int(time.time()))  # refreshed on re-register
     disabled_at = Column(Integer, nullable=True)  # set on 410 Unregistered (soft-delete)
+
+    # --- Per-type notification preferences (multi-type outbox, P2) ---
+    # notif_new_releases (above) is the original per-device toggle; these extend
+    # it as new event types land. A device that predates a column reads the
+    # server-side default (opt-in), matching the shipped iOS toggles. The
+    # dispatcher maps event_type -> the matching column via NOTIF_PREF_COLUMNS.
+    notif_new_media = Column(Boolean, nullable=False, default=True)  # goal C: newly-added media, any origin
+    notif_download_finished = Column(Boolean, nullable=False, default=True)  # goal B: your manual download completed
+    notif_recommendations = Column(Boolean, nullable=False, default=True)  # goal F: a fresh recommendation mix
+    # Stable per-frontend identity (goal E): iOS UIDevice.identifierForVendor.
+    # Lets prefs survive a capability-URL rotation and the app label its devices;
+    # NULL for legacy rows registered before the client sent it (URL-dedup path).
+    device_guid = Column(String(64), nullable=True, index=True)
+    device_name = Column(String(128), nullable=True)  # human label, e.g. "Simon's iPhone"
+
+
+# ---------------------------------------------------------------------------
+# Generic notification outbox  (multi-type notifications initiative, P1)
+# ---------------------------------------------------------------------------
+
+
+class NotificationEvent(Base):
+    """Global, one row per notifiable occurrence — the producer-agnostic outbox.
+
+    Any feature (a followed artist's new release, a finished manual download,
+    newly-added media of any origin, a fresh recommendation mix) emits ONE event
+    here; per-user fan-out lives in ``notification_deliveries``. The message is
+    captured on the event at emit time (``title``/``body``/``data``) so each
+    producer owns its own copy and the dispatcher stays fully type-agnostic —
+    adding a new notification type is a new producer, no dispatch plumbing.
+
+    ``dedup_key`` is the cross-type collision key (e.g. ``norm(artist)|norm(album)``):
+    two events naming the same media share the key, and the per-user unique on
+    ``notification_deliveries`` lets only the first reach a given user (goal D).
+    """
+
+    __tablename__ = "notification_events"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    # new_release | download_completed | newly_added | recommendation | ...
+    event_type = Column(String(32), nullable=False, index=True)
+    dedup_key = Column(String(255), nullable=True, index=True)  # media identity; NULL = never dedup (e.g. recos)
+    title = Column(String(255), nullable=False)
+    body = Column(String(1024), nullable=False)
+    data = Column(JSON, nullable=True)  # deep-link payload forwarded to Apprise/APNs (type + ids)
+    created_at = Column(Integer, nullable=False, default=lambda: int(time.time()))
+
+
+class NotificationDelivery(Base):
+    """Per-user fan-out + dispatch state for a :class:`NotificationEvent` (P1).
+
+    One row per (user, event) we intend to push. ``UNIQUE(user_id, dedup_key)``
+    is the dedup guarantee (goal D): across ALL event types, a user gets at most
+    one delivery per media identity — the first writer wins and later collisions
+    are swallowed (download precedence is achieved by emitting the download event
+    before the scan's newly-added event). A NULL ``dedup_key`` opts out of dedup
+    (many NULLs stay distinct on SQLite + PG), e.g. recommendations.
+
+    Retry is attempt-counted with exponential backoff (``attempt_count`` /
+    ``next_retry_at``); ``DISPATCH_MAX_AGE_HOURS`` is the final give-up cap.
+    """
+
+    __tablename__ = "notification_deliveries"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(String(128), nullable=False, index=True)
+    event_id = Column(Integer, ForeignKey("notification_events.id"), nullable=False, index=True)
+    event_type = Column(String(32), nullable=False)  # denormalized for per-type channel filtering without a join
+    dedup_key = Column(String(255), nullable=True)  # copied from the event; unique per user when non-NULL
+    dispatch_state = Column(String(16), nullable=False, default="pending")  # pending|sent|failed|suppressed
+    attempt_count = Column(Integer, nullable=False, default=0)
+    next_retry_at = Column(Integer, nullable=True)  # earliest next attempt (backoff); NULL = ready now
+    last_error = Column(String(255), nullable=True)
+    notified_at = Column(Integer, nullable=True)
+    created_at = Column(Integer, nullable=False, default=lambda: int(time.time()))
+
+    __table_args__ = (
+        Index("uq_notif_delivery_user_dedup", "user_id", "dedup_key", unique=True),
+        Index("ix_notif_delivery_state", "dispatch_state", "next_retry_at"),
+    )

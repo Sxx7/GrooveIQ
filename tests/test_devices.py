@@ -262,3 +262,90 @@ async def test_notification_settings_list_and_patch(client: AsyncClient):
     patched = await client.patch("/v1/users/alice/notification-settings", json={"notif_new_releases": False})
     assert patched.status_code == 200
     assert all(not d["notif_new_releases"] for d in patched.json()["devices"])
+
+
+# ── P2: per-type prefs + stable device identity (goal E) ─────────────────────
+
+
+async def test_register_persists_all_prefs_and_identity(client: AsyncClient):
+    resp = await client.post(
+        "/v1/devices",
+        json={
+            "user_id": "alice",
+            "apprise_urls": ["jsons://relay/v1/apprise/cap1"],
+            "notif_new_media": False,
+            "notif_download_finished": True,
+            "notif_recommendations": False,
+            "device_guid": "GUID-1",
+            "device_name": "Alice iPhone",
+        },
+    )
+    assert resp.status_code == 200
+    rows = await _device_rows("alice")
+    assert len(rows) == 1
+    d = rows[0]
+    assert d.device_guid == "GUID-1"
+    assert d.device_name == "Alice iPhone"
+    assert d.notif_new_media is False
+    assert d.notif_download_finished is True
+    assert d.notif_recommendations is False
+
+    got = await client.get("/v1/users/alice/notification-settings")
+    view = got.json()["devices"][0]
+    assert view["device_guid"] == "GUID-1"
+    assert view["device_name"] == "Alice iPhone"
+    assert view["notif_new_media"] is False
+    assert view["notif_download_finished"] is True
+
+
+async def test_device_guid_upsert_survives_url_rotation(client: AsyncClient):
+    # Same device_guid, a rotated capability URL → the SAME row, prefs preserved.
+    first = await client.post(
+        "/v1/devices",
+        json={
+            "user_id": "alice",
+            "apprise_urls": ["jsons://relay/v1/apprise/OLD"],
+            "device_guid": "GUID-1",
+            "notif_new_media": False,
+        },
+    )
+    second = await client.post(
+        "/v1/devices",
+        json={
+            "user_id": "alice",
+            "apprise_urls": ["jsons://relay/v1/apprise/NEW"],
+            "device_guid": "GUID-1",
+        },
+    )
+    assert second.json()["device_id"] == first.json()["device_id"]  # reconciled by guid
+    rows = await _device_rows("alice")
+    assert len(rows) == 1
+    assert rows[0].apprise_urls == ["jsons://relay/v1/apprise/NEW"]  # URL rotated in
+
+
+async def test_patch_partial_leaves_other_prefs_untouched(client: AsyncClient):
+    await client.post(
+        "/v1/devices",
+        json={"user_id": "alice", "apns_token": "t1", "notif_new_releases": True, "notif_new_media": True},
+    )
+    patched = await client.patch("/v1/users/alice/notification-settings", json={"notif_new_media": False})
+    assert patched.status_code == 200
+    d = patched.json()["devices"][0]
+    assert d["notif_new_media"] is False  # changed
+    assert d["notif_new_releases"] is True  # untouched by a partial update
+
+
+async def test_patch_requires_a_pref(client: AsyncClient):
+    await client.post("/v1/devices", json={"user_id": "alice", "apns_token": "t1"})
+    resp = await client.patch("/v1/users/alice/notification-settings", json={"device_id": 1})
+    assert resp.status_code == 422  # no pref field supplied
+
+
+async def test_notification_types_endpoint(client: AsyncClient):
+    resp = await client.get("/v1/notification-types")
+    assert resp.status_code == 200
+    keys = {t["key"] for t in resp.json()["types"]}
+    assert keys == {"new_releases", "new_media", "downloads", "recommendations"}
+    for t in resp.json()["types"]:
+        assert t["pref_field"].startswith("notif_")
+        assert t["label"] and t["description"]

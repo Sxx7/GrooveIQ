@@ -309,7 +309,13 @@ async def _fanout(session: AsyncSession, ev: ReleaseEvent, now: int, eligible_co
     """Create UserReleaseNotification rows for each active follower of ev's
     artist, applying the eligibility guard (§6.4) + per-run cap (``eligible_count``
     is shared across the whole reconcile run, so it caps per user per run).
-    Idempotent via the unique (user_id, release_event_id). Returns new-row count."""
+    Idempotent via the unique (user_id, release_event_id). Returns new-row count.
+
+    ``user_release_notifications`` remains the in-app FEED (``seen_at``/``eligible``);
+    the actual PUSH now flows through the generic outbox (P1): each eligible
+    follower also gets a ``notification_deliveries`` row via ``emit_notification``,
+    keyed on the media dedup key so a later same-album download/newly-added event
+    for the same user is suppressed (goal D)."""
     match = [FollowedArtist.artist_name_norm == ev.artist_name_norm]
     if ev.artist_mbid:
         match.append(FollowedArtist.artist_mbid == ev.artist_mbid)
@@ -328,6 +334,7 @@ async def _fanout(session: AsyncSession, ev: ReleaseEvent, now: int, eligible_co
 
     window_cutoff = now - settings.NEW_RELEASE_WINDOW_DAYS * 86400
     created = 0
+    eligible_uids: list[str] = []
     for f in followers:
         eligible = (
             ev.first_release_date is not None
@@ -353,8 +360,31 @@ async def _fanout(session: AsyncSession, ev: ReleaseEvent, now: int, eligible_co
                 session.add(urn)
                 await session.flush()
             created += 1
+            if eligible:
+                eligible_uids.append(f.user_id)
         except IntegrityError:
             pass  # already notified for this (user, release) — idempotent
+
+    # Push fan-out through the generic outbox (goal A becomes its first producer).
+    if eligible_uids:
+        from app.services.notification_dispatch import build_message, emit_notification, media_dedup_key
+
+        title, body = build_message(ev)
+        await emit_notification(
+            session,
+            event_type="new_release",
+            title=title,
+            body=body,
+            user_ids=eligible_uids,
+            dedup_key=media_dedup_key(ev.artist_name, ev.album_title),
+            data={
+                "type": "new_release",
+                "release_event_id": ev.id,
+                "artist_mbid": ev.artist_mbid,
+                "release_key": ev.release_key,
+            },
+            now=now,
+        )
     return created
 
 
