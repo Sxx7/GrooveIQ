@@ -4,6 +4,7 @@ Serves the per-user "New releases" feed: notifications (eligible) joined to
 release_events that are actually available (``available_at IS NOT NULL``),
 newest-available first. Read-state is stamped via ``/feed/seen``.
 """
+
 from __future__ import annotations
 
 import logging

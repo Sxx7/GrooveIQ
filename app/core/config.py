@@ -140,7 +140,9 @@ class Settings(BaseSettings):
     SCANNER_PRUNE_DELETE_HISTORY: bool = False  # also delete the orphan's listen_events + interactions
     SCANNER_PRUNE_MIN_FILES: int = 10  # token floor: skip if the walk found fewer (empty/partial mount). MAX_FRACTION is the primary mount-loss guard
     SCANNER_PRUNE_MAX_DROP: float = 0.10  # skip if files_found dropped >this fraction vs the last completed scan
-    SCANNER_PRUNE_MAX_FRACTION: float = 0.25  # primary guard: skip if confirmed orphans exceed this fraction of all rows
+    SCANNER_PRUNE_MAX_FRACTION: float = (
+        0.25  # primary guard: skip if confirmed orphans exceed this fraction of all rows
+    )
     SCANNER_PRUNE_CHUNK_SIZE: int = 500  # rows deleted + committed per chunk
 
     # --- Scanner move reconciliation ---
@@ -306,13 +308,13 @@ class Settings(BaseSettings):
     # ------------------------------------------------------------------
     # Followed-artist release detection (P1) — OFF by default
     # ------------------------------------------------------------------
-    FOLLOW_SCAN_ENABLED: bool = False           # master toggle for the detection loop
-    FOLLOW_SCAN_CRON: str = "0 */6 * * *"       # every 6h (overview §6.2: 4–6h)
-    FOLLOW_SCAN_POLL_INTERVAL_HOURS: int = 6    # per-artist watermark: skip if polled < this ago
-    FOLLOW_ALBUMS_PER_ARTIST: int = 50          # streamrip search_artist(albums_per_artist=…)
-    NEW_RELEASE_WINDOW_DAYS: int = 60           # candidate + eligibility recency window
-    FOLLOW_GRACE_DAYS: int = 30                 # back-catalog grace before followed_at
-    FOLLOW_MAX_ELIGIBLE_PER_RUN: int = 5        # cap eligible notifications / user / reconcile run
+    FOLLOW_SCAN_ENABLED: bool = False  # master toggle for the detection loop
+    FOLLOW_SCAN_CRON: str = "0 */6 * * *"  # every 6h (overview §6.2: 4–6h)
+    FOLLOW_SCAN_POLL_INTERVAL_HOURS: int = 6  # per-artist watermark: skip if polled < this ago
+    FOLLOW_ALBUMS_PER_ARTIST: int = 50  # streamrip search_artist(albums_per_artist=…)
+    NEW_RELEASE_WINDOW_DAYS: int = 60  # candidate + eligibility recency window
+    FOLLOW_GRACE_DAYS: int = 30  # back-catalog grace before followed_at
+    FOLLOW_MAX_ELIGIBLE_PER_RUN: int = 5  # cap eligible notifications / user / reconcile run
     FOLLOW_AVAILABILITY_MIN_FRACTION: float = 0.0  # 0.0 ⇒ ≥1 available track marks a release available
 
     # ------------------------------------------------------------------
@@ -322,11 +324,11 @@ class Settings(BaseSettings):
     # apprise_urls. No Apple creds and no relay shared secret live here — a
     # self-hosted, multi-user grooveiq needs no operator secret.
     # ------------------------------------------------------------------
-    PUSH_ENABLED: bool = False              # master switch for dispatch + the backstop tick
-    PUSH_DISPATCH_POLL_MINUTES: int = 5     # backstop tick cadence (mirrors LYRICS_DRAIN_POLL_MINUTES)
-    DISPATCH_MAX_AGE_HOURS: int = 24        # give up + mark 'failed' after this (retry-cap fallback)
-    APPRISE_ENABLED: bool = True            # deliver via Apprise (required dep; guard degrades to no-op)
-    APPRISE_TIMEOUT_S: float = 10.0         # per-notify soft budget (informational; Apprise owns real timeouts)
+    PUSH_ENABLED: bool = False  # master switch for dispatch + the backstop tick
+    PUSH_DISPATCH_POLL_MINUTES: int = 5  # backstop tick cadence (mirrors LYRICS_DRAIN_POLL_MINUTES)
+    DISPATCH_MAX_AGE_HOURS: int = 24  # give up + mark 'failed' after this (retry-cap fallback)
+    APPRISE_ENABLED: bool = True  # deliver via Apprise (required dep; guard degrades to no-op)
+    APPRISE_TIMEOUT_S: float = 10.0  # per-notify soft budget (informational; Apprise owns real timeouts)
 
     # ------------------------------------------------------------------
     # Charts (Last.fm)
@@ -562,10 +564,7 @@ class Settings(BaseSettings):
     def follow_scan_enabled(self) -> bool:
         # Mirror discovery_enabled: on only when the toggle is set AND a detector
         # backend is configured (streamrip primary, Lidarr backstop).
-        return bool(
-            self.FOLLOW_SCAN_ENABLED
-            and (self.STREAMRIP_API_URL or (self.LIDARR_URL and self.LIDARR_API_KEY))
-        )
+        return bool(self.FOLLOW_SCAN_ENABLED and (self.STREAMRIP_API_URL or (self.LIDARR_URL and self.LIDARR_API_KEY)))
 
     @property
     def push_enabled(self) -> bool:

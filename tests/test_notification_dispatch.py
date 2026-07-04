@@ -55,9 +55,17 @@ def _apprise_ok(monkeypatch):
 
 
 async def _seed(
-    *, user_id="alice", kind="album", apns_token=None, apns_env="production",
-    apprise_urls=None, notif=True, disabled_at=None, eligible=True,
-    dispatch_state="pending", created_at=None,
+    *,
+    user_id="alice",
+    kind="album",
+    apns_token=None,
+    apns_env="production",
+    apprise_urls=None,
+    notif=True,
+    disabled_at=None,
+    eligible=True,
+    dispatch_state="pending",
+    created_at=None,
 ) -> tuple[int, int]:
     now = int(time.time())
     async with _TestSession() as s:
@@ -79,14 +87,24 @@ async def _seed(
         s.add(ev)
         await s.flush()
         if apns_token is not None or apprise_urls is not None:
-            s.add(Device(
-                user_id=user_id, apns_token=apns_token, apns_environment=apns_env,
-                apprise_urls=apprise_urls, notif_new_releases=notif,
-                created_at=now, last_seen_at=now, disabled_at=disabled_at,
-            ))
+            s.add(
+                Device(
+                    user_id=user_id,
+                    apns_token=apns_token,
+                    apns_environment=apns_env,
+                    apprise_urls=apprise_urls,
+                    notif_new_releases=notif,
+                    created_at=now,
+                    last_seen_at=now,
+                    disabled_at=disabled_at,
+                )
+            )
         urn = UserReleaseNotification(
-            user_id=user_id, release_event_id=ev.id, eligible=eligible,
-            dispatch_state=dispatch_state, created_at=created_at if created_at is not None else now,
+            user_id=user_id,
+            release_event_id=ev.id,
+            eligible=eligible,
+            dispatch_state=dispatch_state,
+            created_at=created_at if created_at is not None else now,
         )
         s.add(urn)
         await s.commit()
@@ -95,9 +113,9 @@ async def _seed(
 
 async def _urn(urn_id: int) -> UserReleaseNotification:
     async with _TestSession() as s:
-        return (await s.execute(
-            select(UserReleaseNotification).where(UserReleaseNotification.id == urn_id)
-        )).scalar_one()
+        return (
+            await s.execute(select(UserReleaseNotification).where(UserReleaseNotification.id == urn_id))
+        ).scalar_one()
 
 
 # ── build_message ────────────────────────────────────────────────────────────

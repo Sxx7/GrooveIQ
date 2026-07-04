@@ -608,7 +608,7 @@ async def _resolve_present_paths(rows, present_paths: set[str] | None) -> set[st
 # into 1-2 guaranteed-complete scans instead of N dropped triggers.
 
 _RESCAN_POLL_INTERVAL_S = 3.0
-_RESCAN_IDLE_TIMEOUT_S = 360.0      # max wait for an in-progress scan to clear
+_RESCAN_IDLE_TIMEOUT_S = 360.0  # max wait for an in-progress scan to clear
 _RESCAN_COMPLETE_TIMEOUT_S = 360.0  # max wait for our own scan to finish
 
 _rescan_pending = False

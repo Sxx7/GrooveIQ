@@ -140,9 +140,7 @@ async def test_follow_persists_without_lidarr(client: AsyncClient):
 
 async def test_follow_with_supplied_mbid(client: AsyncClient):
     mbid = "11111111-1111-1111-1111-111111111111"
-    resp = await client.post(
-        "/v1/users/alice/follows", json={"artist_name": "Autechre", "artist_mbid": mbid}
-    )
+    resp = await client.post("/v1/users/alice/follows", json={"artist_name": "Autechre", "artist_mbid": mbid})
     assert resp.status_code == 200
     body = resp.json()
     assert body["artist"]["resolved"] is True

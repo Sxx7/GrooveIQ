@@ -18,6 +18,7 @@ Apprise is a required dependency; the import is still guarded inside
 ``_apprise_notify`` so a broken install degrades to "no delivery" (logs + returns
 False) instead of crashing the dispatch run.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -101,14 +102,18 @@ async def dispatch_pending(session: AsyncSession, *, limit: int = 200) -> dict[s
 async def _channels_for(session: AsyncSession, user_id: str) -> list[str]:
     """Collect the Apprise URLs of a user's active, opted-in devices."""
     devices = (
-        await session.execute(
-            select(Device).where(
-                Device.user_id == user_id,
-                Device.notif_new_releases.is_(True),
-                Device.disabled_at.is_(None),
+        (
+            await session.execute(
+                select(Device).where(
+                    Device.user_id == user_id,
+                    Device.notif_new_releases.is_(True),
+                    Device.disabled_at.is_(None),
+                )
             )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     urls: list[str] = []
     for d in devices:
         if d.apprise_urls:

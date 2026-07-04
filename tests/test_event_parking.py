@@ -145,7 +145,9 @@ async def test_still_unlinked_event_stays_parked_and_counts_attempt():
 async def test_pending_expires_when_too_old():
     async with _Session() as s:
         old = int(time.time()) - (_PENDING_MAX_AGE_DAYS + 1) * 86_400
-        s.add(PendingEvent(user_id="alice", raw_track_id="NAVID-old", event_type="play_start", payload={}, created_at=old))
+        s.add(
+            PendingEvent(user_id="alice", raw_track_id="NAVID-old", event_type="play_start", payload={}, created_at=old)
+        )
         await s.flush()
         out = await resolve_pending_events(s)
         assert out["expired"] == 1

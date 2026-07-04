@@ -6,6 +6,7 @@ monitored-artist row (dedup across users), and (3) best-effort Lidarr
 artist MBID/image is *best-effort and never blocks the follow* — a follow
 persists even when Lidarr/streamrip are down or disabled (overview §5, §10).
 """
+
 from __future__ import annotations
 
 import logging
@@ -47,7 +48,7 @@ async def _resolve_artist(artist_name: str, given_mbid: str | None) -> dict[str,
                 if fid:
                     out["mbid"] = fid
                 # Lidarr sometimes returns remoteImages; grab a URL if present.
-                for img in (lookup.get("images") or []):
+                for img in lookup.get("images") or []:
                     if img.get("remoteUrl"):
                         out["image_url"] = img["remoteUrl"]
                         break
@@ -71,9 +72,7 @@ async def _resolve_artist(artist_name: str, given_mbid: str | None) -> dict[str,
     return out
 
 
-async def _ensure_monitored(
-    session: AsyncSession, *, artist_name: str, norm: str, mbid: str | None
-) -> MonitoredArtist:
+async def _ensure_monitored(session: AsyncSession, *, artist_name: str, norm: str, mbid: str | None) -> MonitoredArtist:
     """Upsert the global monitored_artists row; wire Lidarr monitor if new.
 
     Idempotent. Matches on MBID first, then on artist_name_norm. The counter
@@ -87,9 +86,7 @@ async def _ensure_monitored(
         ).scalar_one_or_none()
     if row is None:
         row = (
-            await session.execute(
-                select(MonitoredArtist).where(MonitoredArtist.artist_name_norm == norm)
-            )
+            await session.execute(select(MonitoredArtist).where(MonitoredArtist.artist_name_norm == norm))
         ).scalar_one_or_none()
 
     if row is None:
@@ -152,9 +149,7 @@ async def follow_artist(
         if mbid:
             edge = (
                 await session.execute(
-                    select(FollowedArtist).where(
-                        FollowedArtist.user_id == user_id, FollowedArtist.artist_mbid == mbid
-                    )
+                    select(FollowedArtist).where(FollowedArtist.user_id == user_id, FollowedArtist.artist_mbid == mbid)
                 )
             ).scalar_one_or_none()
         if edge is None:
@@ -170,9 +165,14 @@ async def follow_artist(
 
         if edge is None:
             edge = FollowedArtist(
-                user_id=user_id, artist_mbid=mbid, artist_name=artist_name,
-                artist_name_norm=norm, image_url=resolved["image_url"],
-                source=source, followed_at=int(time.time()), unfollowed_at=None,
+                user_id=user_id,
+                artist_mbid=mbid,
+                artist_name=artist_name,
+                artist_name_norm=norm,
+                image_url=resolved["image_url"],
+                source=source,
+                followed_at=int(time.time()),
+                unfollowed_at=None,
             )
             session.add(edge)
         else:
@@ -200,12 +200,18 @@ async def follow_artist(
     await session.refresh(edge)
     return {
         "follow": {
-            "id": edge.id, "user_id": edge.user_id, "artist_mbid": edge.artist_mbid,
-            "artist_name": edge.artist_name, "image_url": edge.image_url,
-            "source": edge.source, "followed_at": edge.followed_at,
+            "id": edge.id,
+            "user_id": edge.user_id,
+            "artist_mbid": edge.artist_mbid,
+            "artist_name": edge.artist_name,
+            "image_url": edge.image_url,
+            "source": edge.source,
+            "followed_at": edge.followed_at,
         },
         "artist": {
-            "artist_mbid": mbid, "artist_name": artist_name, "resolved": mbid is not None,
+            "artist_mbid": mbid,
+            "artist_name": artist_name,
+            "resolved": mbid is not None,
         },
     }
 
@@ -215,15 +221,18 @@ async def unfollow_artist(session: AsyncSession, *, user_id: str, artist_key: st
     active_follower_count. Leaves Lidarr monitor in place while other followers
     remain. Returns True if an active edge was found & soft-deleted."""
     edge = (
-        await session.execute(
-            select(FollowedArtist).where(
-                FollowedArtist.user_id == user_id,
-                FollowedArtist.unfollowed_at.is_(None),
-                (FollowedArtist.artist_mbid == artist_key)
-                | (FollowedArtist.artist_name_norm == artist_key),
+        (
+            await session.execute(
+                select(FollowedArtist).where(
+                    FollowedArtist.user_id == user_id,
+                    FollowedArtist.unfollowed_at.is_(None),
+                    (FollowedArtist.artist_mbid == artist_key) | (FollowedArtist.artist_name_norm == artist_key),
+                )
             )
         )
-    ).scalars().first()
+        .scalars()
+        .first()
+    )
     if edge is None:
         return False
 
@@ -256,13 +265,17 @@ async def unfollow_all(session: AsyncSession, *, user_id: str) -> int:
     a second call finds nothing active and returns 0. Returns the count removed.
     """
     edges = (
-        await session.execute(
-            select(FollowedArtist).where(
-                FollowedArtist.user_id == user_id,
-                FollowedArtist.unfollowed_at.is_(None),
+        (
+            await session.execute(
+                select(FollowedArtist).where(
+                    FollowedArtist.user_id == user_id,
+                    FollowedArtist.unfollowed_at.is_(None),
+                )
             )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     if not edges:
         return 0
 
@@ -272,9 +285,7 @@ async def unfollow_all(session: AsyncSession, *, user_id: str) -> int:
         mon = None
         if edge.artist_mbid:
             mon = (
-                await session.execute(
-                    select(MonitoredArtist).where(MonitoredArtist.artist_mbid == edge.artist_mbid)
-                )
+                await session.execute(select(MonitoredArtist).where(MonitoredArtist.artist_mbid == edge.artist_mbid))
             ).scalar_one_or_none()
         if mon is None:
             mon = (
@@ -291,14 +302,22 @@ async def unfollow_all(session: AsyncSession, *, user_id: str) -> int:
 
 async def list_follows(session: AsyncSession, *, user_id: str) -> list[dict[str, Any]]:
     rows = (
-        await session.execute(
-            select(FollowedArtist)
-            .where(FollowedArtist.user_id == user_id, FollowedArtist.unfollowed_at.is_(None))
-            .order_by(FollowedArtist.followed_at.desc())
+        (
+            await session.execute(
+                select(FollowedArtist)
+                .where(FollowedArtist.user_id == user_id, FollowedArtist.unfollowed_at.is_(None))
+                .order_by(FollowedArtist.followed_at.desc())
+            )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     return [
-        {"artist_mbid": r.artist_mbid, "artist_name": r.artist_name,
-         "image_url": r.image_url, "followed_at": r.followed_at}
+        {
+            "artist_mbid": r.artist_mbid,
+            "artist_name": r.artist_name,
+            "image_url": r.image_url,
+            "followed_at": r.followed_at,
+        }
         for r in rows
     ]

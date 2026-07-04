@@ -72,11 +72,7 @@ if _APP_OK:
                     analysis_version="1",
                 )
             )
-            s.add(
-                TrackInteraction(
-                    user_id=user_id, track_id=track_id, dislike_count=dislike_count, updated_at=_NOW
-                )
-            )
+            s.add(TrackInteraction(user_id=user_id, track_id=track_id, dislike_count=dislike_count, updated_at=_NOW))
             await s.commit()
 
     async def _dislike_count(user_id, track_id):

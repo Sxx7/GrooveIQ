@@ -14,6 +14,7 @@ Everything is idempotent (``release_key`` unique for detection; the
 ``(user_id, release_event_id)`` unique for fanout). Off unless
 ``settings.follow_scan_enabled``.
 """
+
 from __future__ import annotations
 
 import logging
@@ -115,15 +116,19 @@ async def run_follow_scan() -> dict[str, Any]:
 
     async with AsyncSessionLocal() as session:
         due = (
-            await session.execute(
-                select(MonitoredArtist).where(
-                    or_(
-                        MonitoredArtist.last_poll_at.is_(None),
-                        MonitoredArtist.last_poll_at <= poll_cutoff,
+            (
+                await session.execute(
+                    select(MonitoredArtist).where(
+                        or_(
+                            MonitoredArtist.last_poll_at.is_(None),
+                            MonitoredArtist.last_poll_at <= poll_cutoff,
+                        )
                     )
                 )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         if not due:
             return {"detected": 0, "acquired": 0, "artists_polled": 0}
 
@@ -166,9 +171,7 @@ async def run_follow_scan() -> dict[str, Any]:
                         album_norm = _norm(album_title)
                         rkey = _release_key(artist_norm, album_norm, yr, None)
                         exists = (
-                            await session.execute(
-                                select(ReleaseEvent.id).where(ReleaseEvent.release_key == rkey)
-                            )
+                            await session.execute(select(ReleaseEvent.id).where(ReleaseEvent.release_key == rkey))
                         ).scalar_one_or_none()
                         if exists is not None:
                             newest_epoch = max(newest_epoch, epoch)
@@ -252,10 +255,10 @@ async def reconcile_available_releases() -> dict[str, Any]:
 
     async with AsyncSessionLocal() as session:
         pending = (
-            await session.execute(
-                select(ReleaseEvent).where(ReleaseEvent.acquisition_state != "imported")
-            )
-        ).scalars().all()
+            (await session.execute(select(ReleaseEvent).where(ReleaseEvent.acquisition_state != "imported")))
+            .scalars()
+            .all()
+        )
 
         eligible_count: dict[str, int] = {}  # shared across evs → the cap is per-user, per-RUN
         for ev in pending:
@@ -296,14 +299,13 @@ async def reconcile_available_releases() -> dict[str, Any]:
     # transient failures and covers rows created before a relay was configured.
     if settings.push_enabled and notifications_created:
         from app.services.notification_dispatch import dispatch_pending
+
         async with AsyncSessionLocal() as dispatch_session:
             result["dispatched"] = await dispatch_pending(dispatch_session)
     return result
 
 
-async def _fanout(
-    session: AsyncSession, ev: ReleaseEvent, now: int, eligible_count: dict[str, int]
-) -> int:
+async def _fanout(session: AsyncSession, ev: ReleaseEvent, now: int, eligible_count: dict[str, int]) -> int:
     """Create UserReleaseNotification rows for each active follower of ev's
     artist, applying the eligibility guard (§6.4) + per-run cap (``eligible_count``
     is shared across the whole reconcile run, so it caps per user per run).
@@ -312,13 +314,17 @@ async def _fanout(
     if ev.artist_mbid:
         match.append(FollowedArtist.artist_mbid == ev.artist_mbid)
     followers = (
-        await session.execute(
-            select(FollowedArtist).where(
-                FollowedArtist.unfollowed_at.is_(None),
-                or_(*match),
+        (
+            await session.execute(
+                select(FollowedArtist).where(
+                    FollowedArtist.unfollowed_at.is_(None),
+                    or_(*match),
+                )
             )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
 
     window_cutoff = now - settings.NEW_RELEASE_WINDOW_DAYS * 86400
     created = 0

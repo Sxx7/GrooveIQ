@@ -1,4 +1,5 @@
 """GrooveIQ -- Followed-artists routes (P0)."""
+
 from __future__ import annotations
 
 import logging
@@ -27,11 +28,14 @@ async def follow(
     session: AsyncSession = Depends(get_session),
     _key: str = Depends(require_api_key),
 ):
-    validate_user_id(user_id)          # 400 on malformed (user_id.py:45)
-    check_user_access(_key, user_id)   # 403 when API_KEY_USERS binds keys (security.py:223)
+    validate_user_id(user_id)  # 400 on malformed (user_id.py:45)
+    check_user_access(_key, user_id)  # 403 when API_KEY_USERS binds keys (security.py:223)
     return await follow_service.follow_artist(
-        session, user_id=user_id, artist_name=body.artist_name,
-        artist_mbid=body.artist_mbid, source=body.source,
+        session,
+        user_id=user_id,
+        artist_name=body.artist_name,
+        artist_mbid=body.artist_mbid,
+        source=body.source,
     )
 
 

@@ -160,16 +160,27 @@ def _payload(name: str, albums: list[dict], service: str = "qobuz") -> None:
 
 async def _seed_monitored(name: str, mbid: str | None = None) -> None:
     async with _TestSession() as s:
-        s.add(MonitoredArtist(artist_mbid=mbid, artist_name_norm=name.lower(), artist_name=name, created_at=int(time.time())))
+        s.add(
+            MonitoredArtist(
+                artist_mbid=mbid, artist_name_norm=name.lower(), artist_name=name, created_at=int(time.time())
+            )
+        )
         await s.commit()
 
 
 async def _seed_follow(user_id: str, name: str, mbid: str | None = None, followed_days_ago: int = 5) -> None:
     async with _TestSession() as s:
-        s.add(FollowedArtist(
-            user_id=user_id, artist_mbid=mbid, artist_name=name, artist_name_norm=name.lower(),
-            source="user", followed_at=int(time.time()) - followed_days_ago * 86400, unfollowed_at=None,
-        ))
+        s.add(
+            FollowedArtist(
+                user_id=user_id,
+                artist_mbid=mbid,
+                artist_name=name,
+                artist_name_norm=name.lower(),
+                source="user",
+                followed_at=int(time.time()) - followed_days_ago * 86400,
+                unfollowed_at=None,
+            )
+        )
         await s.commit()
 
 
@@ -177,7 +188,11 @@ async def _seed_track(artist: str, album: str, media_server_id: str | None) -> N
     async with _TestSession() as s:
         # track_id must be unique; derive from artist/album/msid
         tid = f"{artist}:{album}:{media_server_id}".lower()
-        s.add(TrackFeatures(track_id=tid, file_path=f"/m/{tid}.mp3", artist=artist, album=album, media_server_id=media_server_id))
+        s.add(
+            TrackFeatures(
+                track_id=tid, file_path=f"/m/{tid}.mp3", artist=artist, album=album, media_server_id=media_server_id
+            )
+        )
         await s.commit()
 
 
@@ -209,10 +224,13 @@ async def test_detection_insert_and_dedup():
 
 async def test_candidate_window_filter():
     await _seed_monitored("Old Artist")
-    _payload("Old Artist", [
-        _album("old1", "Ancient LP", "2015-07-17"),   # far outside the 60-day window
-        _album("new1", "Fresh EP", _recent(3), track_count=3),
-    ])
+    _payload(
+        "Old Artist",
+        [
+            _album("old1", "Ancient LP", "2015-07-17"),  # far outside the 60-day window
+            _album("new1", "Fresh EP", _recent(3), track_count=3),
+        ],
+    )
     res = await release_scan.run_follow_scan()
     assert res["detected"] == 1  # only the fresh one
     evs = await _rows(ReleaseEvent)
@@ -306,11 +324,14 @@ async def test_per_run_cap(monkeypatch):
     monkeypatch.setattr(settings, "FOLLOW_MAX_ELIGIBLE_PER_RUN", 2, raising=False)
     await _seed_monitored("Prolific")
     await _seed_follow("erin", "Prolific", followed_days_ago=90)
-    _payload("Prolific", [
-        _album("p1", "One", _recent(3)),
-        _album("p2", "Two", _recent(4)),
-        _album("p3", "Three", _recent(5)),
-    ])
+    _payload(
+        "Prolific",
+        [
+            _album("p1", "One", _recent(3)),
+            _album("p2", "Two", _recent(4)),
+            _album("p3", "Three", _recent(5)),
+        ],
+    )
     await release_scan.run_follow_scan()
     for alb in ("One", "Two", "Three"):
         await _seed_track("Prolific", alb, media_server_id=f"nav-{alb}")

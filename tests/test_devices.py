@@ -118,15 +118,13 @@ async def test_reregister_same_token_is_idempotent(client: AsyncClient):
     assert second.json()["device_id"] == first.json()["device_id"]  # same row
 
     rows = await _device_rows()
-    assert len(rows) == 1                       # not duplicated
-    assert rows[0].disabled_at is None          # cleared on re-register
+    assert len(rows) == 1  # not duplicated
+    assert rows[0].disabled_at is None  # cleared on re-register
     assert rows[0].notif_new_releases is False  # updated
 
 
 async def test_register_apprise_only(client: AsyncClient):
-    resp = await client.post(
-        "/v1/devices", json={"user_id": "alice", "apprise_urls": ["ntfy://topic"]}
-    )
+    resp = await client.post("/v1/devices", json={"user_id": "alice", "apprise_urls": ["ntfy://topic"]})
     assert resp.status_code == 200
     rows = await _device_rows("alice")
     assert rows[0].apns_token is None
@@ -145,7 +143,7 @@ async def test_reregister_same_apprise_url_is_idempotent(client: AsyncClient):
     assert second.json()["device_id"] == first.json()["device_id"]  # same row
 
     rows = await _device_rows("alice")
-    assert len(rows) == 1                       # not duplicated
+    assert len(rows) == 1  # not duplicated
     assert rows[0].notif_new_releases is False  # updated
 
 
@@ -217,7 +215,7 @@ async def test_patch_scoped_to_one_device(client: AsyncClient):
     )
     assert patched.status_code == 200
     by_id = {d["device_id"]: d["notif_new_releases"] for d in patched.json()["devices"]}
-    assert by_id[only] is False                         # scoped device flipped
+    assert by_id[only] is False  # scoped device flipped
     assert all(v for k, v in by_id.items() if k != only)  # the other left untouched
 
 
@@ -261,8 +259,6 @@ async def test_notification_settings_list_and_patch(client: AsyncClient):
     assert len(got.json()["devices"]) == 2
     assert all(d["notif_new_releases"] for d in got.json()["devices"])
 
-    patched = await client.patch(
-        "/v1/users/alice/notification-settings", json={"notif_new_releases": False}
-    )
+    patched = await client.patch("/v1/users/alice/notification-settings", json={"notif_new_releases": False})
     assert patched.status_code == 200
     assert all(not d["notif_new_releases"] for d in patched.json()["devices"])

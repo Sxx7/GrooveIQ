@@ -1283,7 +1283,9 @@ class ReleaseEvent(Base):
     kind = Column(String(16), nullable=False, default="album")  # album|ep|single
     first_release_date = Column(Integer, nullable=True)  # epoch; day-precision from streamrip release_date
     detected_at = Column(Integer, nullable=False, default=lambda: int(time.time()))
-    acquisition_state = Column(String(16), nullable=False, index=True)  # pending|downloading|imported|unavailable|failed
+    acquisition_state = Column(
+        String(16), nullable=False, index=True
+    )  # pending|downloading|imported|unavailable|failed
     available_at = Column(Integer, nullable=True, index=True)  # set ONLY when tracks have media_server_id
     track_count_total = Column(Integer, nullable=True)
     track_count_available = Column(Integer, nullable=False, default=0)
@@ -1293,9 +1295,7 @@ class ReleaseEvent(Base):
     created_at = Column(Integer, nullable=False, default=lambda: int(time.time()))
     updated_at = Column(Integer, nullable=False, default=lambda: int(time.time()))
 
-    __table_args__ = (
-        Index("ix_release_events_reconcile", "artist_name_norm", "album_title_norm"),
-    )
+    __table_args__ = (Index("ix_release_events_reconcile", "artist_name_norm", "album_title_norm"),)
 
 
 class UserReleaseNotification(Base):

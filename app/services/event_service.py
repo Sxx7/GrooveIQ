@@ -280,9 +280,7 @@ async def resolve_pending_events(session: AsyncSession, *, limit: int = 2000) ->
     now = int(time.time())
     age_cutoff = now - _PENDING_MAX_AGE_DAYS * 86_400
 
-    rows = (
-        (await session.execute(select(PendingEvent).order_by(PendingEvent.id).limit(limit))).scalars().all()
-    )
+    rows = (await session.execute(select(PendingEvent).order_by(PendingEvent.id).limit(limit))).scalars().all()
 
     resolved = expired = still_pending = 0
     for p in rows:
