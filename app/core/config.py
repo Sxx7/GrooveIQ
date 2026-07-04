@@ -328,10 +328,18 @@ class Settings(BaseSettings):
     # self-hosted, multi-user grooveiq needs no operator secret.
     # ------------------------------------------------------------------
     PUSH_ENABLED: bool = False  # master switch for dispatch + the backstop tick
-    PUSH_DISPATCH_POLL_MINUTES: int = 5  # backstop tick cadence (mirrors LYRICS_DRAIN_POLL_MINUTES)
+    # Backstop tick cadence. Kept tight (1 min) so a push that failed on the
+    # low-latency inline path — e.g. an Apprise POST that timed out while a
+    # library scan congested the loop (issue #150) — is retried within ~a minute
+    # rather than lingering minutes until the next tick.
+    PUSH_DISPATCH_POLL_MINUTES: int = 1
     DISPATCH_MAX_AGE_HOURS: int = 24  # give up + mark 'failed' after this (retry-cap fallback)
     APPRISE_ENABLED: bool = True  # deliver via Apprise (required dep; guard degrades to no-op)
-    APPRISE_TIMEOUT_S: float = 10.0  # per-notify soft budget (informational; Apprise owns real timeouts)
+    # Hard ceiling on how long one notify may block the dispatcher. Apprise's HTTP
+    # plugins carry their own ~4-8s socket timeouts, but a wedged relay connection
+    # could still hang the call (and, inline, the watcher coroutine) indefinitely;
+    # on timeout the delivery stays pending and the backstop retries it.
+    APPRISE_TIMEOUT_S: float = 10.0
     # Generic-outbox retry (P1): attempt-counted exponential backoff on the
     # notification_deliveries table. A transient Apprise/relay failure re-arms
     # next_retry_at = now + min(BACKOFF_MAX, BASE * 2**(attempt-1)); after

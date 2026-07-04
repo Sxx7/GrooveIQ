@@ -270,8 +270,9 @@ async def dispatch_pending(session: AsyncSession, *, limit: int = 200) -> dict[s
                 suppressed += 1
                 continue
 
-            # Apprise is a sync lib → offload to a thread so it can't block the loop.
-            ok = await asyncio.to_thread(_apprise_notify, urls, event.title, event.body)
+            # Apprise is a sync lib → offload to a thread (bounded by
+            # APPRISE_TIMEOUT_S) so it can't block the loop or hang on a wedged relay.
+            ok = await _apprise_notify_bounded(urls, event.title, event.body)
             if ok:
                 delivery.dispatch_state = "sent"
                 delivery.notified_at = now
@@ -313,7 +314,9 @@ async def _channels_for(session: AsyncSession, user_id: str, event_type: str) ->
     else:
         # Unknown type (no producer should hit this) → fail OPEN to all active
         # devices rather than silently drop a new notification type.
-        logger.warning("dispatch: unknown event_type %r has no pref column; delivering to all active devices", event_type)
+        logger.warning(
+            "dispatch: unknown event_type %r has no pref column; delivering to all active devices", event_type
+        )
     devices = (await session.execute(query)).scalars().all()
     urls: list[str] = []
     for d in devices:
@@ -344,8 +347,33 @@ async def send_test_notification(
 
     title = "GrooveIQ test"
     body = "Test notification from GrooveIQ. If you can see this, your channel works."
-    ok = await asyncio.to_thread(_apprise_notify, urls, title, body)
+    ok = await _apprise_notify_bounded(urls, title, body)
     return {"sent": bool(ok), "channels": len(urls)}
+
+
+async def _apprise_notify_bounded(urls: list[str], title: str, body: str) -> bool:
+    """Run the sync Apprise call off the loop, bounded by ``APPRISE_TIMEOUT_S``.
+
+    Apprise's HTTP plugins carry their own socket timeouts, but a wedged relay
+    connection could still hang a thread-pool worker — and, on the inline
+    dispatch path, the caller's coroutine — indefinitely. ``wait_for`` caps how
+    long we block; a timeout is treated as a transient failure so the delivery
+    stays pending and the backstop tick retries it. The worker thread may still
+    finish in the background, so a genuine >timeout call could double-send —
+    acceptable versus hanging dispatch, and rare because Apprise's own timeouts
+    (~4-8s) almost always fire first (issue #150)."""
+    try:
+        return await asyncio.wait_for(
+            asyncio.to_thread(_apprise_notify, urls, title, body),
+            timeout=max(1.0, settings.APPRISE_TIMEOUT_S),
+        )
+    except TimeoutError:
+        logger.warning(
+            "apprise notify exceeded %.1fs budget for %d channel(s); deferring to backstop",
+            settings.APPRISE_TIMEOUT_S,
+            len(urls),
+        )
+        return False
 
 
 def _apprise_notify(urls: list[str], title: str, body: str) -> bool:
