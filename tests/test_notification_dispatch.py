@@ -325,6 +325,41 @@ async def test_idempotent_second_run_processes_nothing():
     assert second == {"processed": 0}  # already sent → filtered out
 
 
+async def test_duplicate_url_across_devices_sent_once(monkeypatch):
+    # Regression: two active device rows sharing ONE capability URL (a pre-guid
+    # row + its re-registration) must not deliver the same push twice.
+    now = int(time.time())
+    async with _TestSession() as s:
+        ev = NotificationEvent(event_type="new_release", dedup_key="a|b", title="t", body="b", created_at=now)
+        s.add(ev)
+        await s.flush()
+        for _ in range(2):
+            s.add(
+                Device(
+                    user_id="alice",
+                    apprise_urls=["jsons://relay/same-cap"],
+                    created_at=now,
+                    last_seen_at=now,
+                    **_ALL_PREFS,
+                )
+            )
+        s.add(
+            NotificationDelivery(
+                user_id="alice", event_id=ev.id, event_type="new_release", dedup_key="a|b",
+                dispatch_state="pending", created_at=now,
+            )
+        )
+        await s.commit()
+
+    captured: list[list[str]] = []
+    monkeypatch.setattr(nd, "_apprise_notify", lambda urls, title, body: captured.append(list(urls)) or True)
+    async with _TestSession() as s:
+        summary = await dispatch_pending(s)
+
+    assert summary["sent"] == 1
+    assert captured == [["jsons://relay/same-cap"]]  # deduped to a single target
+
+
 # ── producer: emit_notification + dedup ──────────────────────────────────────
 
 

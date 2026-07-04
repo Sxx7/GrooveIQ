@@ -319,7 +319,9 @@ async def _channels_for(session: AsyncSession, user_id: str, event_type: str) ->
     for d in devices:
         if d.apprise_urls:
             urls.extend(d.apprise_urls)
-    return urls
+    # Dedupe across devices: two rows can share one capability URL (a pre-guid row
+    # + its re-registration), which would otherwise push the same device twice.
+    return list(dict.fromkeys(urls))
 
 
 async def send_test_notification(
@@ -359,7 +361,10 @@ def _apprise_notify(urls: list[str], title: str, body: str) -> bool:
         return False
     try:
         ap = apprise.Apprise()
-        for u in urls:
+        # Dedupe: a user can have two device rows sharing one capability URL
+        # (e.g. a pre-device_guid row + its re-registration), and Apprise treats
+        # repeats as distinct targets — which would deliver the same push twice.
+        for u in dict.fromkeys(urls):
             ap.add(u)
         return bool(ap.notify(title=title, body=body))
     except Exception as exc:  # a bad user URL must not crash the dispatch run

@@ -323,6 +323,21 @@ async def test_device_guid_upsert_survives_url_rotation(client: AsyncClient):
     assert rows[0].apprise_urls == ["jsons://relay/v1/apprise/NEW"]  # URL rotated in
 
 
+async def test_guid_registration_adopts_pre_guid_url_row(client: AsyncClient):
+    # Regression: a pre-device_guid row (old app) + the rebuilt app re-registering
+    # the SAME URL but now WITH a guid must adopt the one row, not create a second
+    # row sharing the URL (which doubled every push).
+    url = "jsons://relay/v1/apprise/shared-cap"
+    first = await client.post("/v1/devices", json={"user_id": "alice", "apprise_urls": [url]})
+    second = await client.post(
+        "/v1/devices", json={"user_id": "alice", "apprise_urls": [url], "device_guid": "GUID-X"}
+    )
+    assert second.json()["device_id"] == first.json()["device_id"]  # adopted, not duplicated
+    rows = await _device_rows("alice")
+    assert len(rows) == 1
+    assert rows[0].device_guid == "GUID-X"  # guid stamped onto the adopted row
+
+
 async def test_patch_partial_leaves_other_prefs_untouched(client: AsyncClient):
     await client.post(
         "/v1/devices",

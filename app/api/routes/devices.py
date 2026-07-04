@@ -92,10 +92,13 @@ async def register_device(
         device = (
             await session.execute(select(Device).where(Device.apns_token == body.apns_token))
         ).scalar_one_or_none()
-    if device is None and not body.device_guid and body.apprise_urls:
-        # Apprise-only device with no stable id (e.g. the relay capability URL):
-        # dedup by the URL so the app's per-launch re-register updates one row
-        # instead of piling up. URLs are per-device + unguessable.
+    if device is None and body.apprise_urls:
+        # Fall back to the capability URL (per-device + unguessable): dedup by it
+        # so a per-launch re-register updates one row instead of piling up. This
+        # ALSO runs when a device_guid was supplied but matched nothing yet, so a
+        # newly-guid-aware client adopts its existing pre-guid row (the guid is
+        # then stamped on below) instead of creating a duplicate that shares the
+        # same URL — which would double every push.
         incoming = set(body.apprise_urls)
         candidates = (
             (await session.execute(select(Device).where(Device.user_id == body.user_id, Device.apns_token.is_(None))))
