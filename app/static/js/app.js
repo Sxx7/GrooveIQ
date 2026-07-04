@@ -442,7 +442,7 @@ function renderDashboard(stats, users, events, model) {
   h += '<div class="card"><div class="card-header">Top Tracks (24h)</div><div class="card-body">';
   var tt = stats.top_tracks_24h || [];
   if (!tt.length) { h += '<div class="empty">No track activity in the last 24 hours</div>'; }
-  else { h += '<table><tr><th>Track</th><th>Events</th></tr>'; for (var i = 0; i < tt.length; i++) { var name = (tt[i].artist && tt[i].title) ? esc(tt[i].artist) + ' \u2014 ' + esc(tt[i].title) : tt[i].title ? esc(tt[i].title) : esc(tt[i].track_id); h += '<tr><td class="truncate" title="ID: ' + esc(tt[i].track_id) + '">' + name + '</td><td>' + tt[i].events + '</td></tr>'; } h += '</table>'; }
+  else { h += '<table><tr><th>Track</th><th>Plays</th></tr>'; for (var i = 0; i < tt.length; i++) { var name = (tt[i].artist && tt[i].title) ? esc(tt[i].artist) + ' \u2014 ' + esc(tt[i].title) : tt[i].title ? esc(tt[i].title) : esc(tt[i].track_id); h += '<tr><td class="truncate" title="ID: ' + esc(tt[i].track_id) + '">' + name + '</td><td>' + tt[i].plays + '</td></tr>'; } h += '</table>'; }
   h += '</div></div>';
   h += '</div>'; // close grid-2
 

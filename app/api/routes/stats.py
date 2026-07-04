@@ -87,7 +87,11 @@ async def get_stats(
     ).all()
     event_types = {row[0]: row[1] for row in type_rows}
 
-    # Top tracks (last 24h by event count), enriched with metadata
+    # Top tracks (last 24h by play_end count), enriched with metadata.
+    # Filter to play_end so the panel reflects genuine listens — without it the
+    # count conflates every event type (skips, pauses, volume, seeks, and
+    # especially reco_impression), which massively over-ranks merely-surfaced
+    # tracks. play_end (past the 5% ingest noise filter) == an actual play.
     track_rows = (
         await session.execute(
             select(
@@ -97,13 +101,16 @@ async def get_stats(
                 TrackFeatures.artist,
             )
             .outerjoin(TrackFeatures, ListenEvent.track_id == TrackFeatures.track_id)
-            .where(ListenEvent.timestamp >= day_ago)
+            .where(
+                ListenEvent.timestamp >= day_ago,
+                ListenEvent.event_type == "play_end",
+            )
             .group_by(ListenEvent.track_id, TrackFeatures.title, TrackFeatures.artist)
             .order_by(func.count(ListenEvent.id).desc())
             .limit(10)
         )
     ).all()
-    top_tracks = [{"track_id": r[0], "events": r[1], "title": r[2], "artist": r[3]} for r in track_rows]
+    top_tracks = [{"track_id": r[0], "plays": r[1], "title": r[2], "artist": r[3]} for r in track_rows]
 
     # Latest scan
     scan_row = (

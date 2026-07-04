@@ -357,7 +357,7 @@
     function renderOverviewTopTracks(host, state) {
         host.innerHTML = '';
         const tracks = (state.stats?.top_tracks_24h) || [];
-        const max = tracks.reduce((m, t) => Math.max(m, t.events || 0), 1);
+        const max = tracks.reduce((m, t) => Math.max(m, t.plays || 0), 1);
 
         const list = document.createElement('div');
         list.className = 'top-tracks-list';
@@ -369,7 +369,7 @@
                 row.className = 'top-track-row';
                 const title = t.title || t.track_id || '—';
                 const artist = t.artist || '—';
-                const n = t.events || 0;
+                const n = t.plays || 0;
                 const pct = Math.max(2, Math.min(100, (n / max) * 100));
                 row.innerHTML = '<div class="rank-chip">' + (i + 1) + '</div>'
                     + '<div class="top-track-meta">'
