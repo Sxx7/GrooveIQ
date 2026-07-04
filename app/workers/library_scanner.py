@@ -32,6 +32,7 @@ from app.core.config import settings
 from app.db.session import AsyncSessionLocal
 from app.models.db import LibraryScanState, ScanLog, TrackFeatures
 from app.services.audio_analysis import ANALYSIS_VERSION, compute_file_hash, generate_track_id
+from app.services.library_reconcile import find_moved_row, migrate_track_id
 
 logger = logging.getLogger(__name__)
 
@@ -618,6 +619,28 @@ async def _upsert_track_features(session: AsyncSession, data: dict) -> None:
 
     result = await session.execute(select(TrackFeatures).where(TrackFeatures.track_id == track_id))
     existing = result.scalar_one_or_none()
+
+    # Move reconciliation (beets et al.): a moved/retagged file arrives at a new
+    # path -> a new path-derived track_id, so the lookup above misses. If the file
+    # carries a MusicBrainz id matching an existing row whose file has vanished,
+    # it's the same recording moved: repoint that row and migrate its listening
+    # history onto the new id, rather than inserting a duplicate + stranding the
+    # old row's history on an orphan that the next prune would delete.
+    if existing is None and settings.SCANNER_RECONCILE_MOVES:
+        moved = await find_moved_row(session, data.get("musicbrainz_track_id"), track_id)
+        if moved is not None:
+            migrated = await migrate_track_id(session, moved.track_id, track_id)
+            logger.info(
+                "[reconcile] moved %s -> %s (mbid=%s): %s -> %s; history %s",
+                moved.track_id,
+                track_id,
+                data.get("musicbrainz_track_id"),
+                moved.file_path,
+                file_path,
+                migrated,
+            )
+            moved.track_id = track_id
+            existing = moved
 
     if existing is None:
         row = TrackFeatures(track_id=track_id, **{k: v for k, v in data.items() if hasattr(TrackFeatures, k)})

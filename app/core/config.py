@@ -143,6 +143,14 @@ class Settings(BaseSettings):
     SCANNER_PRUNE_MAX_FRACTION: float = 0.25  # primary guard: skip if confirmed orphans exceed this fraction of all rows
     SCANNER_PRUNE_CHUNK_SIZE: int = 500  # rows deleted + committed per chunk
 
+    # --- Scanner move reconciliation ---
+    # beets (and similar taggers) MOVE/RETAG files, which changes the path-derived
+    # track_id and would otherwise insert a duplicate row + strand the original
+    # row's listening history. When a newly-seen file carries a MusicBrainz id
+    # matching an existing row whose file has vanished, repoint that row and
+    # migrate its history to the new id instead. Set false to disable.
+    SCANNER_RECONCILE_MOVES: bool = True
+
     # Media-server sync: file-existence guard. Prevents a missing-file ("ghost")
     # row from stealing a media_server_id that a present-file row currently holds
     # (the prune above removes ghosts; this guards the window before/while it
