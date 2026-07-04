@@ -176,6 +176,23 @@ async def _apply_column_migrations(conn) -> None:
         ("track_features", "lyrics_embedding", "TEXT"),
         ("track_features", "lyrics_version", "VARCHAR(16)"),
         ("track_features", "lyrics_fetched_at", "INTEGER"),
+        # --- Multi-type notification prefs on the devices table (P2) + stable
+        # device identity (goal E). The booleans are added WITHOUT a default
+        # (the type allow-list has no `BOOLEAN DEFAULT`), so legacy rows read
+        # NULL; the dispatcher treats NULL as opted-in (`isnot(False)`) to match
+        # the model default and the already-shipped iOS toggles. A fresh DB gets
+        # the proper `Boolean` columns from create_all.
+        ("devices", "notif_new_media", "BOOLEAN"),
+        ("devices", "notif_download_finished", "BOOLEAN"),
+        ("devices", "notif_recommendations", "BOOLEAN"),
+        ("devices", "device_guid", "VARCHAR(64)"),
+        ("devices", "device_name", "VARCHAR(128)"),
+        # Attribute a manual download to the requesting user so goal-B
+        # "download finished" push can target them (P3). Nullable: chart/auto
+        # acquisitions have no requesting user.
+        ("download_requests", "user_id", "VARCHAR(128)"),
+        # Newly-added-media notification marker (goal C, P4).
+        ("track_features", "new_media_notified_at", "INTEGER"),
     ]
     for table, column, col_type in migrations:
         # Validate identifiers to prevent SQL injection via migration list.
@@ -236,6 +253,22 @@ async def _apply_column_migrations(conn) -> None:
             await conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_playlists_cache_key ON playlists (cache_key)")
     except Exception as e:
         logger.warning("Migration: could not create playlists.cache_key index: %s", e)
+
+    # Plain index on devices.device_guid (goal E) for the stable-identity upsert.
+    try:
+        async with conn.begin_nested():
+            await conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_devices_device_guid ON devices (device_guid)")
+    except Exception as e:
+        logger.warning("Migration: could not create devices.device_guid index: %s", e)
+
+    # Plain index on download_requests.user_id (goal B) for the requester lookup.
+    try:
+        async with conn.begin_nested():
+            await conn.exec_driver_sql(
+                "CREATE INDEX IF NOT EXISTS ix_download_requests_user_id ON download_requests (user_id)"
+            )
+    except Exception as e:
+        logger.warning("Migration: could not create download_requests.user_id index: %s", e)
 
     # Chart snapshots (issue #75). Backfill pre-#75 rows BEFORE creating the
     # unique index: legacy rows were DELETE→INSERT so there is exactly one row

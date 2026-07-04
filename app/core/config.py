@@ -332,6 +332,27 @@ class Settings(BaseSettings):
     DISPATCH_MAX_AGE_HOURS: int = 24  # give up + mark 'failed' after this (retry-cap fallback)
     APPRISE_ENABLED: bool = True  # deliver via Apprise (required dep; guard degrades to no-op)
     APPRISE_TIMEOUT_S: float = 10.0  # per-notify soft budget (informational; Apprise owns real timeouts)
+    # Generic-outbox retry (P1): attempt-counted exponential backoff on the
+    # notification_deliveries table. A transient Apprise/relay failure re-arms
+    # next_retry_at = now + min(BACKOFF_MAX, BASE * 2**(attempt-1)); after
+    # NOTIFY_MAX_ATTEMPTS (or DISPATCH_MAX_AGE_HOURS) the row is marked 'failed'.
+    NOTIFY_MAX_ATTEMPTS: int = 6  # attempts before giving up (≈ base·(2^5) ≈ 32 min of spacing)
+    NOTIFY_BACKOFF_BASE_SECONDS: int = 60  # first retry delay; doubles each attempt
+    NOTIFY_BACKOFF_MAX_SECONDS: int = 3600  # cap on a single backoff step
+    # Newly-added media (goal C): coalesce a scan's new *playable* tracks into
+    # per-album events (debounce) rather than one-per-track. A track is a
+    # candidate only once it has a media_server_id (streamable) and hasn't been
+    # considered yet (track_features.new_media_notified_at IS NULL).
+    NOTIFY_NEW_MEDIA_ENABLED: bool = False  # master toggle for the goal-C emitter
+    # A scan that turns MORE than this many tracks newly-playable is treated as a
+    # bulk import / initial library population and BASELINED: the rows are marked
+    # processed (so they never fire) but no push is sent. This is the guard that
+    # stops a first full scan (~144k rows) from becoming a push storm. A normal
+    # download adds a handful of tracks, far under this.
+    NOTIFY_NEW_MEDIA_BASELINE_TRACKS: int = 500
+    # Of the (non-bulk) candidate albums, emit at most this many per scan
+    # (newest first); the remainder stay unprocessed and drain on later scans.
+    NOTIFY_NEW_MEDIA_MAX_ALBUMS_PER_SCAN: int = 50  # 0 = unlimited
 
     # ------------------------------------------------------------------
     # Charts (Last.fm)

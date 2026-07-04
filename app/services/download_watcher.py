@@ -37,6 +37,7 @@ import time
 
 from sqlalchemy import select
 
+from app.core.config import settings
 from app.db.session import AsyncSessionLocal
 from app.models.db import DownloadRequest
 from app.services.spotdl import get_download_client
@@ -221,8 +222,12 @@ async def _watch_loop(task_id: str, timeout_s: int, source: str | None = None) -
             terminal_error,
         )
 
-        # On success, kick off media server + GrooveIQ refreshes.
+        # On success, notify the requester (goal B) BEFORE the rescan, then kick
+        # off media server + GrooveIQ refreshes. Emitting the download event first
+        # means it wins the dedup race against the newly-added event (goal C) the
+        # rescan will produce for the same album — "download finished, never both".
         if terminal_status in _TERMINAL_SUCCESS:
+            await _emit_download_completed(task_id)
             await _trigger_post_download_refresh(task_id)
 
     except asyncio.CancelledError:
@@ -281,6 +286,58 @@ async def _mark_download_done(
         if error_message:
             record.error_message = error_message[:1024]
         await session.commit()
+
+
+# ---------------------------------------------------------------------------
+# Goal B: "download finished" notification
+# ---------------------------------------------------------------------------
+
+
+async def _emit_download_completed(task_id: str) -> None:
+    """Push "download finished" to the user who requested this download (goal B).
+
+    Best-effort and fully isolated in its own session so a notification failure
+    can never affect the download record. Skipped when push is disabled, the
+    request has no attributed user (chart/auto acquisitions — they surface via
+    goal C instead), or the row didn't complete. The delivery is keyed on the
+    album dedup key, so the later newly-added event for the same album is
+    suppressed for this user (goal D)."""
+    if not settings.push_enabled:
+        return
+    try:
+        from app.services.notification_dispatch import dispatch_pending, emit_notification, media_dedup_key
+
+        async with AsyncSessionLocal() as session:
+            record = (
+                await session.execute(select(DownloadRequest).where(DownloadRequest.task_id == task_id))
+            ).scalar_one_or_none()
+            if record is None or not record.user_id or record.status != "completed":
+                return
+            label = record.track_title or record.album_name or "Your download"
+            body = f'"{label}" finished downloading'
+            if record.artist_name:
+                body += f" — {record.artist_name}"
+            created = await emit_notification(
+                session,
+                event_type="download_completed",
+                title="Download finished",
+                body=body,
+                user_ids=[record.user_id],
+                dedup_key=media_dedup_key(record.artist_name, record.album_name),
+                # data.type is the client's tap-routing key (iOS routeTap), which
+                # is "download_finished"; the event_type discriminator stays
+                # "download_completed" for backend dispatch/pref mapping.
+                data={"type": "download_finished", "download_id": record.id},
+            )
+            await session.commit()
+
+        # Low-latency push (mirrors the reconciler): dispatch immediately rather
+        # than waiting for the backstop tick.
+        if created:
+            async with AsyncSessionLocal() as dispatch_session:
+                await dispatch_pending(dispatch_session)
+    except Exception as exc:
+        logger.warning("Watcher %s: download-completed emit failed: %s", task_id, exc)
 
 
 # ---------------------------------------------------------------------------

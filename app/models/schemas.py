@@ -806,6 +806,9 @@ class DownloadCreateRequest(BaseModel):
     artist_name: str | None = Field(None, max_length=512)
     album_name: str | None = Field(None, max_length=512)
     cover_url: str | None = Field(None, max_length=1024)
+    user_id: str | None = Field(
+        None, max_length=128, description="Requesting user, so a 'download finished' push can target them (goal B)."
+    )
 
 
 class DownloadResponse(BaseModel):
@@ -844,6 +847,9 @@ class DownloadFromHandleRequest(BaseModel):
     artist_name: str | None = Field(None, max_length=512)
     album_name: str | None = Field(None, max_length=512)
     cover_url: str | None = Field(None, max_length=1024)
+    user_id: str | None = Field(
+        None, max_length=128, description="Requesting user, so a 'download finished' push can target them (goal B)."
+    )
 
 
 class DownloadStatusResponse(BaseModel):
@@ -1050,7 +1056,19 @@ class DeviceRegister(BaseModel):
     apns_token: str | None = Field(None, min_length=1, max_length=200, description="Hex APNs device token.")
     apns_environment: str = Field("production", pattern="^(sandbox|production)$")
     apprise_urls: list[str] | None = Field(None, max_length=32, description="Optional Apprise target URLs.")
+    # Per-type notification toggles (default opt-in, matching the iOS UI). The
+    # client already sends new_media + download_finished; the backend now honors
+    # them. recommendations is future (goal F) but accepted now so no rebuild is
+    # needed to enable it.
     notif_new_releases: bool = Field(True)
+    notif_new_media: bool = Field(True)
+    notif_download_finished: bool = Field(True)
+    notif_recommendations: bool = Field(True)
+    # Stable per-frontend identity (goal E): UIDevice.identifierForVendor + a
+    # human label. Lets prefs survive a capability-URL rotation and the app list
+    # its devices. Optional for backward compat with installs that don't send it.
+    device_guid: str | None = Field(None, min_length=1, max_length=64, description="Stable per-install device id.")
+    device_name: str | None = Field(None, max_length=128, description="Human label, e.g. \"Simon's iPhone\".")
 
     @model_validator(mode="after")
     def _need_a_target(self) -> DeviceRegister:
@@ -1078,12 +1096,28 @@ class DeviceDelete(BaseModel):
 
 
 class NotificationSettingsUpdate(BaseModel):
-    notif_new_releases: bool
+    """Partial per-type toggle update. Provide any subset of the pref flags; only
+    the ones present are applied (backward compatible with a client that sends
+    just ``notif_new_releases``)."""
+
     device_id: int | None = Field(
         None,
         ge=1,
         description="Scope the toggle to one device; omitted → all of the user's devices.",
     )
+    notif_new_releases: bool | None = None
+    notif_new_media: bool | None = None
+    notif_download_finished: bool | None = None
+    notif_recommendations: bool | None = None
+
+    @model_validator(mode="after")
+    def _need_a_pref(self) -> NotificationSettingsUpdate:
+        if all(
+            getattr(self, f) is None
+            for f in ("notif_new_releases", "notif_new_media", "notif_download_finished", "notif_recommendations")
+        ):
+            raise ValueError("supply at least one notification preference to update")
+        return self
 
 
 class NotificationTest(BaseModel):
@@ -1092,3 +1126,12 @@ class NotificationTest(BaseModel):
         ge=1,
         description="Scope the test to one device; omitted → all of the user's active channels.",
     )
+
+
+class NotificationRecommendationRequest(BaseModel):
+    """POST /v1/admin/notify-recommendation — fire a recommendation push (goal F)."""
+
+    user_id: str = Field(..., min_length=1, max_length=128)
+    title: str | None = Field(None, max_length=255)
+    body: str | None = Field(None, max_length=1024)
+    playlist_id: str | None = Field(None, max_length=128, description="Dedups + deep-links to a specific mix.")

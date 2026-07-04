@@ -14,8 +14,10 @@ from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
-from app.core.security import require_admin, require_api_key
+from app.core.security import check_user_access, require_admin, require_api_key
+from app.core.user_id import validate_user_id
 from app.db.session import get_session
+from app.models.schemas import NotificationRecommendationRequest
 from app.services.analysis_health import overall_status, run_invariants
 
 router = APIRouter()
@@ -56,6 +58,37 @@ async def trigger_follow_dispatch(_key: str = Depends(require_api_key)):
 
     result = await run_dispatch_now()
     return {"status": "completed", "result": result}
+
+
+@router.post(
+    "/admin/notify-recommendation",
+    summary="Send a recommendation push to a user (goal F, dev/QA + reco-run seam)",
+)
+async def trigger_recommendation(
+    body: NotificationRecommendationRequest,
+    session: AsyncSession = Depends(get_session),
+    _key: str = Depends(require_api_key),
+):
+    """Emit a ``recommendation`` notification and dispatch it. Admin-gated. This is
+    the integration seam a recommendation run (or an inactivity nudge) calls to
+    draw a user back with a fresh mix. Off unless PUSH_ENABLED."""
+    require_admin(_key)
+    validate_user_id(body.user_id)
+    check_user_access(_key, body.user_id)
+    if not settings.push_enabled:
+        return {"status": "error", "message": "Push not enabled. Set PUSH_ENABLED=true."}
+
+    from app.services.notification_dispatch import emit_recommendation
+
+    created = await emit_recommendation(
+        session, body.user_id, title=body.title, body=body.body, playlist_id=body.playlist_id
+    )
+    await session.commit()
+
+    from app.workers.scheduler import run_dispatch_now
+
+    dispatched = await run_dispatch_now() if created else {"processed": 0}
+    return {"status": "completed", "created": created, "dispatched": dispatched}
 
 
 @router.get(
