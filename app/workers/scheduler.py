@@ -344,11 +344,55 @@ async def _event_loop_watchdog() -> None:
         await asyncio.sleep(5)
 
 
+async def _completed_scan_within(hours: int) -> bool:
+    """True if a library scan reached ``completed`` within the last ``hours``.
+
+    Used to gate the boot-time full scan: on a large library a full walk is
+    hours long, and re-running it on every container restart (deploys land
+    several times a day) both wastes I/O and congests the event loop (which
+    delays push dispatch — see issue #150). If a scan already completed inside
+    the rescan window, the periodic ``RESCAN_INTERVAL_HOURS`` job plus the
+    per-download targeted scan keep the library current without it.
+    """
+    from app.models.db import LibraryScanState
+
+    cutoff = int(time.time()) - max(1, hours) * 3600
+    async with AsyncSessionLocal() as session:
+        row = (
+            await session.execute(
+                select(LibraryScanState.scan_ended_at)
+                .where(
+                    LibraryScanState.status == "completed",
+                    LibraryScanState.scan_ended_at.isnot(None),
+                    LibraryScanState.scan_ended_at >= cutoff,
+                )
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+    return row is not None
+
+
 async def _startup_scan() -> None:
-    """On startup, resume interrupted scans or trigger a fresh one."""
+    """On startup, resume an interrupted scan, else full-scan only when stale.
+
+    Resuming an interrupted scan always wins. Otherwise we full-scan on boot
+    ONLY if no scan has completed within ``RESCAN_INTERVAL_HOURS`` — so a fresh
+    install (no completed scan on record) still indexes immediately, but a
+    routine restart shortly after a good scan doesn't kick off another
+    multi-hour full walk (issue #150). The periodic scan's first fire is one
+    interval out, so gating here never leaves the library unscanned.
+    """
     resumed = await resume_interrupted_scans()
-    if resumed is None:
-        await _periodic_library_scan()
+    if resumed is not None:
+        return
+    if await _completed_scan_within(settings.RESCAN_INTERVAL_HOURS):
+        logger.info(
+            "Startup: skipping boot full scan — a scan completed within %dh; "
+            "periodic + per-download scans keep the library current.",
+            settings.RESCAN_INTERVAL_HOURS,
+        )
+        return
+    await _periodic_library_scan()
 
 
 async def run_recommendation_pipeline_now(trigger: str = "manual") -> dict:
