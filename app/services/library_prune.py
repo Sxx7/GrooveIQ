@@ -19,11 +19,41 @@ import asyncio
 import logging
 
 from sqlalchemy import delete as sql_delete
+from sqlalchemy import update as sql_update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.db import ListenEvent, TrackFeatures, TrackInteraction
 
 logger = logging.getLogger(__name__)
+
+
+async def set_missing_since(
+    session: AsyncSession,
+    ids: list[int],
+    value: int | None,
+    *,
+    chunk_size: int = 500,
+) -> int:
+    """Bulk-set ``track_features.missing_since`` for the given row ids, committed
+    in chunks to stay under SQLite's bound-parameter limit.
+
+    ``value=<epoch>`` tombstones a newly-confirmed-missing row; ``value=None``
+    clears a tombstone when the file reappears. Returns the number of rows
+    updated. Non-destructive — the orphan-prune records how long a file has been
+    gone here, and only deletes once that exceeds the grace window.
+    """
+    updated = 0
+    for start in range(0, len(ids), max(1, chunk_size)):
+        chunk = ids[start : start + chunk_size]
+        if not chunk:
+            continue
+        r = await session.execute(
+            sql_update(TrackFeatures).where(TrackFeatures.id.in_(chunk)).values(missing_since=value)
+        )
+        updated += r.rowcount or 0
+        await session.commit()
+        await asyncio.sleep(0)  # yield between chunks
+    return updated
 
 
 async def prune_orphan_track_features(

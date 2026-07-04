@@ -713,23 +713,31 @@ def _iter_audio_files(root: Path):
 
 
 async def _prune_orphans(scan_id: int, present_paths: set[str], found_count: int) -> None:
-    """Post-scan Phase A2: remove ``track_features`` rows for files that have
-    vanished from disk (the scanner is otherwise purely additive, so the DB
-    drifts above the real on-disk count).
+    """Post-scan Phase A2: reconcile ``track_features`` against on-disk reality so
+    the row count tracks the library up AND down (the scanner is otherwise purely
+    additive).
 
-    SAFETY — deletes by default (``settings.SCANNER_AUTO_PRUNE=True``); set it
-    False to fall back to report-only (logs the confirmed-orphan count every scan
-    but deletes nothing). Several guards can abort the phase; deletion happens only
-    when every guard passes. The set-diff against the just-walked paths is only a
-    cheap PREFILTER — each candidate is re-stat'd with ``os.path.isfile`` before it
-    counts as an orphan, so a partial walk / symlink / path-normalization quirk
-    can't turn a present file into a deletion. See config § Scanner orphan prune.
+    A row whose file has vanished is TOMBSTONED (``missing_since`` stamped) rather
+    than deleted on the spot, and only deleted once it has been continuously
+    missing for ``SCANNER_PRUNE_GRACE_HOURS`` — so a transient/partial /music
+    bind-mount blip (files reappear next scan → tombstone cleared) can't wipe rows,
+    while a genuine deletion drains after the grace window. Deletion is capped at
+    ``SCANNER_PRUNE_MAX_FRACTION`` of the table per scan (blast-radius bound), so a
+    large deletion drains over several scans rather than in one shot.
+
+    SAFETY — deletes by default (``SCANNER_AUTO_PRUNE=True``); set it False for
+    report-only (logs the confirmed-missing count, writes nothing). An empty or
+    implausibly-small walk (< ``MIN_FILES``) skips the phase entirely (mount
+    clearly lost), and every candidate is re-stat'd with ``os.path.isfile`` before
+    it counts as missing. See config § Scanner orphan prune.
     """
+    now = int(time.time())
     mode = "delete" if settings.SCANNER_AUTO_PRUNE else "report-only"
 
-    # Guard 1 — empty / implausibly small walk (the bind-mount is gone or partial).
+    # Guard — empty / implausibly small walk (the bind-mount is gone or partial).
     # /music is a bind-mount; if the host unmounts it the directory still exists
-    # but the walk yields ~0 files, and a naive set-diff would flag the whole table.
+    # but the walk yields ~0 files. This is the one hard abort: with no files to
+    # trust, we neither tombstone nor delete.
     if not present_paths:
         logger.warning(f"[Scan {scan_id}] Phase A2 prune SKIPPED — walk found 0 files (mount lost?)")
         return
@@ -740,69 +748,86 @@ async def _prune_orphans(scan_id: int, present_paths: set[str], found_count: int
         )
         return
 
-    # Guard 2 — sharp drop vs the last completed scan (sudden mass disappearance).
+    # Load every row; prefilter to rows the walk did NOT see, then re-stat each to
+    # confirm it's genuinely gone. Also collect rows carrying a stale tombstone
+    # whose file is present again, so a reappeared file clears its tombstone.
     async with AsyncSessionLocal() as session:
-        prev_found = (
+        rows = (
             await session.execute(
-                select(LibraryScanState.files_found)
-                .where(LibraryScanState.status == "completed")
-                .where(LibraryScanState.id != scan_id)
-                .order_by(LibraryScanState.id.desc())
-                .limit(1)
+                select(
+                    TrackFeatures.id,
+                    TrackFeatures.track_id,
+                    TrackFeatures.file_path,
+                    TrackFeatures.missing_since,
+                )
             )
-        ).scalar_one_or_none()
-    if prev_found and found_count < prev_found * (1.0 - settings.SCANNER_PRUNE_MAX_DROP):
-        logger.warning(
-            f"[Scan {scan_id}] Phase A2 prune SKIPPED — files_found {found_count} dropped "
-            f">{settings.SCANNER_PRUNE_MAX_DROP:.0%} vs last completed scan ({prev_found})"
-        )
-        return
-
-    # Load (id, track_id, file_path) for every row; prefilter to rows the walk did
-    # NOT see, then re-stat each candidate to confirm it's genuinely gone.
-    async with AsyncSessionLocal() as session:
-        rows = (await session.execute(select(TrackFeatures.id, TrackFeatures.track_id, TrackFeatures.file_path))).all()
+        ).all()
     total_rows = len(rows)
-    candidates = [(r.id, r.track_id, r.file_path) for r in rows if not r.file_path or r.file_path not in present_paths]
+    prefilter = [r for r in rows if not r.file_path or r.file_path not in present_paths]
 
-    def _confirm_missing(cands: list[tuple[int, str, str]]) -> list[tuple[int, str]]:
+    def _confirm_missing(cands):
         # Authoritative per-candidate check — runs in a worker thread (~tens of k
         # stat() calls) so it never blocks the event loop.
-        return [(cid, tid) for (cid, tid, fp) in cands if not (fp and os.path.isfile(fp))]
+        return [(r.id, r.track_id, r.missing_since) for r in cands if not (r.file_path and os.path.isfile(r.file_path))]
 
-    confirmed = await asyncio.to_thread(_confirm_missing, candidates)
+    confirmed = await asyncio.to_thread(_confirm_missing, prefilter)
+    reappeared_ids = [
+        r.id for r in rows if r.missing_since is not None and r.file_path and r.file_path in present_paths
+    ]
 
-    # Guard 3 — fraction cap. The real orphan rate is ~20%; anything past the cap
-    # signals a systemic problem (partial mount, path drift), not real deletions.
-    if total_rows and len(confirmed) > total_rows * settings.SCANNER_PRUNE_MAX_FRACTION:
-        logger.warning(
-            f"[Scan {scan_id}] Phase A2 prune SKIPPED — {len(confirmed)} confirmed orphans exceed "
-            f"{settings.SCANNER_PRUNE_MAX_FRACTION:.0%} of {total_rows} rows (systemic issue?)"
-        )
-        return
-
-    sample = [tid for _, tid in confirmed[:5]]
     logger.info(
-        f"[Scan {scan_id}] Phase A2 prune (mode={mode}): {len(candidates)} candidates, "
-        f"{len(confirmed)} confirmed missing on disk of {total_rows} rows. sample={sample}"
+        f"[Scan {scan_id}] Phase A2 prune (mode={mode}): {len(confirmed)} confirmed missing of "
+        f"{total_rows} rows, {len(reappeared_ids)} reappeared."
     )
 
-    if not settings.SCANNER_AUTO_PRUNE or not confirmed:
+    if not settings.SCANNER_AUTO_PRUNE:
         return
 
-    from app.services.library_prune import prune_orphan_track_features
+    from app.services.library_prune import prune_orphan_track_features, set_missing_since
+
+    async with AsyncSessionLocal() as session:
+        # Clear tombstones on files that came back, then tombstone newly-missing
+        # ones (first scan we've confirmed them gone — the grace clock starts now).
+        if reappeared_ids:
+            await set_missing_since(session, reappeared_ids, None, chunk_size=settings.SCANNER_PRUNE_CHUNK_SIZE)
+        newly_missing = [cid for (cid, _tid, ms) in confirmed if ms is None]
+        if newly_missing:
+            await set_missing_since(session, newly_missing, now, chunk_size=settings.SCANNER_PRUNE_CHUNK_SIZE)
+
+    # Delete only rows missing since before the grace cutoff (i.e. tombstoned on a
+    # PRIOR scan and still gone), oldest-first, capped per scan. Newly-missing rows
+    # carry ms=None here (tombstoned above, not in the loaded snapshot) so they are
+    # never deleted the same scan they vanish.
+    grace_cutoff = now - settings.SCANNER_PRUNE_GRACE_HOURS * 3600
+    deletable = sorted(
+        [(cid, tid, ms) for (cid, tid, ms) in confirmed if ms is not None and ms <= grace_cutoff],
+        key=lambda t: t[2],
+    )
+    if not deletable:
+        if newly_missing:
+            logger.info(
+                f"[Scan {scan_id}] Phase A2 tombstoned {len(newly_missing)} newly-missing rows "
+                f"(grace {settings.SCANNER_PRUNE_GRACE_HOURS}h before deletion)."
+            )
+        return
+
+    cap = max(1, int(total_rows * settings.SCANNER_PRUNE_MAX_FRACTION))
+    to_delete = deletable[:cap]
+    deferred = len(deletable) - len(to_delete)
 
     async with AsyncSessionLocal() as session:
         counts = await prune_orphan_track_features(
             session,
-            confirmed,
+            [(cid, tid) for (cid, tid, _ms) in to_delete],
             delete_history=settings.SCANNER_PRUNE_DELETE_HISTORY,
             chunk_size=settings.SCANNER_PRUNE_CHUNK_SIZE,
         )
     logger.info(
         f"[Scan {scan_id}] Phase A2 prune DELETED {counts['deleted_track_features']} track_features, "
         f"{counts['deleted_interactions']} interactions, {counts['deleted_events']} events "
-        f"(delete_history={settings.SCANNER_PRUNE_DELETE_HISTORY})"
+        f"(delete_history={settings.SCANNER_PRUNE_DELETE_HISTORY}"
+        + (f"; {deferred} over the per-scan cap, draining next scan" if deferred else "")
+        + ")"
     )
 
 

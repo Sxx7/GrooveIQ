@@ -129,21 +129,24 @@ class Settings(BaseSettings):
     # dashboard track count only ever goes up. Phase A2 closes that gap so the
     # count tracks the library up AND down on every scan.
     #
-    # ON BY DEFAULT. Deletion is fenced by relative, library-size-agnostic guards
-    # so a lost/partial /music bind-mount can't wipe the table: the phase is
-    # skipped on an empty walk, on a >MAX_DROP drop in files_found vs the last
-    # completed scan, or when confirmed-missing rows exceed MAX_FRACTION of the
-    # table — and every candidate is re-stat'd on disk before deletion. Set
-    # SCANNER_AUTO_PRUNE=false to fall back to report-only (logs the confirmed
-    # orphan count each scan, deletes nothing).
-    SCANNER_AUTO_PRUNE: bool = True  # True = delete orphan rows each scan; False = report-only
+    # ON BY DEFAULT. A row is deleted only after its file has been confirmed gone
+    # for SCANNER_PRUNE_GRACE_HOURS (a tombstone: first-missing time is recorded,
+    # a file that reappears clears it), so a transient/partial /music bind-mount
+    # blip never wipes rows — it just tombstones them, and they come back next
+    # scan. An empty or implausibly-small walk (< MIN_FILES) skips the phase
+    # entirely (mount clearly lost), and each candidate is re-stat'd on disk
+    # before deletion. Because the grace period — not a magnitude guess — is the
+    # mount-loss guard, a genuine large deletion is no longer hard-blocked: it
+    # drains at up to MAX_FRACTION of the table per scan (blast-radius cap). Set
+    # SCANNER_AUTO_PRUNE=false for report-only (logs the orphan count, no writes).
+    SCANNER_AUTO_PRUNE: bool = True  # True = tombstone + delete past grace each scan; False = report-only
     SCANNER_PRUNE_DELETE_HISTORY: bool = False  # also delete the orphan's listen_events + interactions
-    SCANNER_PRUNE_MIN_FILES: int = 10  # token floor: skip if the walk found fewer (empty/partial mount). MAX_FRACTION is the primary mount-loss guard
-    SCANNER_PRUNE_MAX_DROP: float = 0.10  # skip if files_found dropped >this fraction vs the last completed scan
-    SCANNER_PRUNE_MAX_FRACTION: float = (
-        0.25  # primary guard: skip if confirmed orphans exceed this fraction of all rows
-    )
+    SCANNER_PRUNE_GRACE_HOURS: int = 24  # delete a row only after its file has been missing this long
+    SCANNER_PRUNE_MIN_FILES: int = 10  # skip the phase if the walk found fewer (empty/partial mount)
+    SCANNER_PRUNE_MAX_FRACTION: float = 0.25  # per-scan cap: delete at most this fraction of the table
     SCANNER_PRUNE_CHUNK_SIZE: int = 500  # rows deleted + committed per chunk
+    # Retained for env compat; superseded by the grace period (no longer gates deletion).
+    SCANNER_PRUNE_MAX_DROP: float = 0.10
 
     # --- Scanner move reconciliation ---
     # beets (and similar taggers) MOVE/RETAG files, which changes the path-derived

@@ -242,6 +242,11 @@ class TrackFeatures(Base):
     # Last successful ffmpeg pre-flight decode (or successful analysis) for the
     # current file_hash. Lets the scanner skip re-validating unchanged files.
     bitstream_validated_at = Column(Integer, nullable=True)
+    # Orphan-prune tombstone: Unix epoch the scanner first confirmed this row's
+    # file gone from disk. NULL = present. A row is only deleted once it has been
+    # missing for SCANNER_PRUNE_GRACE_HOURS, so a transient/partial mount blip
+    # (file reappears next scan -> cleared) never wipes it. See § Scanner prune.
+    missing_since = Column(Integer, nullable=True)
 
     # --- Rhythm ---
     bpm = Column(Float, nullable=True, index=True)

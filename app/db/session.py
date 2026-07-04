@@ -112,6 +112,7 @@ async def _apply_column_migrations(conn) -> None:
         ("track_features", "track_number", "INTEGER"),
         ("track_features", "duration_ms", "INTEGER"),
         ("track_features", "musicbrainz_track_id", "VARCHAR(64)"),
+        ("track_features", "missing_since", "INTEGER"),
         # Last.fm per-user integration
         ("users", "lastfm_username", "VARCHAR(128)"),
         ("users", "lastfm_session_key", "VARCHAR(512)"),
