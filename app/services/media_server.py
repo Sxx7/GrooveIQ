@@ -613,33 +613,66 @@ _RESCAN_COMPLETE_TIMEOUT_S = 360.0  # max wait for our own scan to finish
 
 _rescan_pending = False
 _rescan_task: asyncio.Task | None = None
+# GrooveIQ-visible album folders pending a Plex partial refresh (issue #150).
+# Navidrome ignores these (no partial-scan API); Plex uses exactly one to scope
+# /refresh?path=. Multiple distinct albums pending → full refresh.
+_rescan_paths: set[str] = set()
 
 
-def request_library_rescan() -> None:
+def request_library_rescan(path: str | None = None) -> None:
     """Request a media-server rescan guaranteed to run to completion AFTER this
     call. Coalescing + single-flight: safe to call once per completed download;
     overlapping calls collapse into the minimum number of scans.
+
+    ``path`` is an optional GrooveIQ-visible album folder. Plex uses it for a
+    partial ``/refresh?path=`` scan (much faster on a large library); Navidrome
+    has no partial-scan API and ignores it. If several distinct album paths are
+    pending when the coordinator drains, it falls back to a full refresh.
 
     Non-blocking — schedules a background coordinator on the running event loop.
     Plex (no scan-status API) degrades to one best-effort refresh per drain.
     """
     global _rescan_pending, _rescan_task
     _rescan_pending = True
+    if path:
+        _rescan_paths.add(path)
     if _rescan_task is not None and not _rescan_task.done():
         return
     _rescan_task = asyncio.create_task(_rescan_loop())
 
 
+def _plex_partial_path(album_dirs: set[str]) -> str | None:
+    """Translate exactly one GrooveIQ album dir into the path Plex sees, for a
+    partial refresh. Returns None (→ full refresh) unless there is exactly one
+    pending album AND ``MEDIA_SERVER_MUSIC_PATH`` is set to map GrooveIQ's mount
+    onto Plex's — a single ``/refresh?path=`` call targets one directory, and
+    without the mapping we can't hand Plex a path it recognises."""
+    if len(album_dirs) != 1:
+        return None
+    (album,) = tuple(album_dirs)
+    gi_root = settings.MUSIC_LIBRARY_PATH.rstrip("/\\").replace("\\", "/")
+    plex_root = (settings.MEDIA_SERVER_MUSIC_PATH or "").rstrip("/\\").replace("\\", "/")
+    if not plex_root or not gi_root:
+        return None
+    album_norm = album.replace("\\", "/")
+    if album_norm == gi_root or not album_norm.startswith(gi_root + "/"):
+        return None
+    return plex_root + album_norm[len(gi_root) :]
+
+
 async def _rescan_loop() -> None:
     """Drain rescan requests one clean scan at a time until none remain."""
-    global _rescan_pending
+    global _rescan_pending, _rescan_paths
     if settings.MEDIA_SERVER_TYPE.lower().strip() != "navidrome":
-        # No scan-status API to coordinate on — one best-effort refresh.
+        # No scan-status API to coordinate on — one best-effort refresh, scoped
+        # to a single mapped album folder when exactly one is pending.
         _rescan_pending = False
-        await refresh_library()
+        pending_paths, _rescan_paths = _rescan_paths, set()
+        await refresh_library(path=_plex_partial_path(pending_paths))
         return
     while _rescan_pending:
         _rescan_pending = False
+        _rescan_paths = set()  # Navidrome does full scans; album paths are irrelevant
         try:
             await _run_one_navidrome_rescan()
         except Exception as exc:  # never let the coordinator die silently

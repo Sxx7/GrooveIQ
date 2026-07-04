@@ -34,6 +34,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from pathlib import Path
 
 from sqlalchemy import select
 
@@ -173,6 +174,7 @@ async def _watch_loop(task_id: str, timeout_s: int, source: str | None = None) -
 
     terminal_status: str | None = None
     terminal_error: str = ""
+    terminal_file_path: str | None = None
 
     try:
         for delay in _BACKOFF_SCHEDULE:
@@ -206,6 +208,15 @@ async def _watch_loop(task_id: str, timeout_s: int, source: str | None = None) -
                 terminal_status = status
                 if status in _TERMINAL_ERROR:
                     terminal_error = status_data.get("error") or ""
+                else:
+                    # spotdl-api / streamrip-api report the written file's path in
+                    # their status payload; its album folder scopes the post-
+                    # download library scan (issue #150). Absent for Spotizerr /
+                    # slskd → we fall back to a full scan downstream.
+                    raw = status_data.get("raw") or {}
+                    fp = raw.get("file_path")
+                    if isinstance(fp, str) and fp:
+                        terminal_file_path = fp
                 logger.info(
                     "Watcher %s: reached terminal status %s",
                     task_id,
@@ -228,7 +239,7 @@ async def _watch_loop(task_id: str, timeout_s: int, source: str | None = None) -
         # rescan will produce for the same album — "download finished, never both".
         if terminal_status in _TERMINAL_SUCCESS:
             await _emit_download_completed(task_id)
-            await _trigger_post_download_refresh(task_id)
+            await _trigger_post_download_refresh(task_id, file_path=terminal_file_path)
 
     except asyncio.CancelledError:
         logger.info("Watcher %s cancelled", task_id)
@@ -345,13 +356,43 @@ async def _emit_download_completed(task_id: str) -> None:
 # ---------------------------------------------------------------------------
 
 
-async def _trigger_post_download_refresh(task_id: str) -> None:
+def _album_dir_for_scan(file_path: str | None) -> str | None:
+    """Resolve the album folder to scope the post-download library scan to.
+
+    spotdl-api and streamrip-api both lay tracks out as
+    ``<library>/<artist>/<album>/<track>``, so the written file's parent dir is
+    the album folder. Returns ``None`` — meaning "fall back to a full scan, no
+    regression" — when the backend reported no path (Spotizerr / slskd), the
+    path can't be resolved, or it isn't strictly inside ``MUSIC_LIBRARY_PATH``
+    (e.g. a differing mount, or a loose track sitting at the library root).
+    """
+    if not file_path:
+        return None
+    try:
+        resolved = Path(file_path).resolve()
+        root = Path(settings.MUSIC_LIBRARY_PATH).resolve()
+    except OSError:
+        return None
+    album = resolved.parent
+    # Must be a real subfolder of the library root — not the root itself.
+    if album == root or root not in album.parents:
+        return None
+    return str(album)
+
+
+async def _trigger_post_download_refresh(task_id: str, file_path: str | None = None) -> None:
     """After a download succeeds, tell the media server and GrooveIQ to scan.
 
-    Both calls are best-effort — failures are logged but don't
-    propagate, because the download itself already succeeded.
+    Both calls are best-effort — failures are logged but don't propagate,
+    because the download itself already succeeded. When the backend reported the
+    written file's path, both scans are scoped to just that album folder so a
+    download doesn't trigger an hours-long full-library walk (issue #150);
+    otherwise they fall back to a full scan.
     """
-    # 1. Media server refresh (Plex partial, Navidrome full).
+    album_dir = _album_dir_for_scan(file_path)
+    scope_desc = f"album folder {album_dir}" if album_dir else "full library (no path reported)"
+
+    # 1. Media server refresh (Plex partial when a path maps, Navidrome full).
     try:
         from app.services.media_server import is_configured, request_library_rescan
 
@@ -360,9 +401,10 @@ async def _trigger_post_download_refresh(task_id: str) -> None:
             # finish, fires one, then waits for it to complete (re-running if more
             # downloads land meanwhile) so rapid downloads aren't dropped by
             # Navidrome's non-queuing startScan. Non-blocking — runs in the
-            # background on the event loop.
-            request_library_rescan()
-            logger.info("Download %s: media server rescan requested", task_id)
+            # background on the event loop. The album path drives Plex's partial
+            # refresh; Navidrome ignores it (no partial-scan API).
+            request_library_rescan(path=album_dir)
+            logger.info("Download %s: media server rescan requested (%s)", task_id, scope_desc)
         else:
             logger.debug(
                 "Download %s: no media server configured, skipping refresh",
@@ -375,23 +417,19 @@ async def _trigger_post_download_refresh(task_id: str) -> None:
             exc,
         )
 
-    # 2. GrooveIQ library scan — only if one isn't already running.
-    #    trigger_scan() is already idempotent in that respect but we
-    #    check first to avoid the log noise.
+    # 2. GrooveIQ library scan, scoped to the album folder when known.
+    #    trigger_scan() coalesces internally — a scoped request that arrives
+    #    while another scan runs is queued (never dropped), so we DON'T pre-check
+    #    is_scan_running() here (that would silently skip this album's ingest).
     try:
-        from app.workers.library_scanner import is_scan_running, trigger_scan
+        from app.workers.library_scanner import trigger_scan
 
-        if is_scan_running():
-            logger.debug(
-                "Download %s: GrooveIQ scan already running, skipping",
-                task_id,
-            )
-            return
-        scan_id = await trigger_scan()
+        scan_id = await trigger_scan(scope_path=album_dir)
         logger.info(
-            "Download %s: GrooveIQ library scan triggered (scan_id=%s)",
+            "Download %s: GrooveIQ library scan triggered (scan_id=%s, %s)",
             task_id,
             scan_id,
+            scope_desc,
         )
     except Exception as exc:
         logger.warning(

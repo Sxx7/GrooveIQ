@@ -38,6 +38,14 @@ logger = logging.getLogger(__name__)
 
 # Active scan tracking
 _running_scan_id: int | None = None
+# Whether the in-flight scan is *scoped* (a partial walk of one or more album
+# folders) vs a full-library walk. Drives the coalescing logic in trigger_scan.
+_running_scan_scoped: bool = False
+
+# Requests that arrived while a scan was already running, drained when it ends
+# (see _drain_pending_scans). A full request subsumes queued album scopes.
+_pending_scopes: set[str] = set()
+_pending_full: bool = False
 
 # In-memory scan metadata (phase tracking, processing timestamps).
 # Avoids DB schema changes; lost on restart (acceptable — scan restarts anyway).
@@ -54,14 +62,40 @@ def is_scan_running() -> bool:
     return _running_scan_id is not None
 
 
-async def trigger_scan() -> int:
+async def trigger_scan(scope_path: str | None = None) -> int:
     """
-    Start a library scan in the background.
-    Returns the scan_id.  If a scan is already running, returns its id.
+    Start a library scan in the background.  Returns the scan_id.
+
+    ``scope_path`` limits the walk to one subtree of ``MUSIC_LIBRARY_PATH`` (a
+    freshly-downloaded album's folder). A scoped scan is *additive*: it ingests
+    new/changed files under that path but SKIPS the whole-library orphan prune
+    and media-server sync, which compare the walked set against the entire
+    library and would misfire on a partial walk. ``None`` = a full-library scan
+    (unchanged behaviour). See issue #150 — a full walk of ~150k files is hours
+    long, so a download shouldn't trigger one just to ingest ~10 new files.
+
+    Coalescing when a scan is already running:
+      - a full request marks that a full sweep must follow;
+      - a scoped request rides a running full scan (already covered) or is
+        queued to run after the current scoped scan finishes — so concurrent
+        downloads to *different* albums are never dropped.
     """
-    global _running_scan_id
+    global _pending_full
     if _running_scan_id is not None:
+        if scope_path is None:
+            _pending_full = True  # a full sweep must follow the current scan
+        elif _running_scan_scoped:
+            _pending_scopes.add(scope_path)  # queue this album for after
+        # else: a running full scan already covers this album — nothing to do.
         return _running_scan_id
+
+    return await _start_scan([scope_path] if scope_path else None)
+
+
+async def _start_scan(scope_paths: list[str] | None) -> int:
+    """Create the scan-state row and launch the background walk. Caller must
+    have already ensured no scan is running."""
+    global _running_scan_id, _running_scan_scoped
 
     async with AsyncSessionLocal() as session:
         scan = LibraryScanState(
@@ -74,9 +108,31 @@ async def trigger_scan() -> int:
         scan_id = scan.id
 
     _running_scan_id = scan_id
-    asyncio.create_task(_run_scan(scan_id))
-    logger.info(f"Library scan started (id={scan_id})")
+    _running_scan_scoped = scope_paths is not None
+    asyncio.create_task(_run_scan(scan_id, scope_paths))
+    logger.info(
+        "Library scan started (id=%s, %s)",
+        scan_id,
+        "full" if scope_paths is None else f"scoped: {len(scope_paths)} path(s)",
+    )
     return scan_id
+
+
+async def _drain_pending_scans() -> None:
+    """After a scan finishes, launch whatever was queued while it ran.
+
+    A queued full request wins and subsumes any queued album scopes; otherwise
+    queued album folders are coalesced into a single scoped scan.
+    """
+    global _pending_full, _pending_scopes
+    if _pending_full:
+        _pending_full = False
+        _pending_scopes = set()
+        await _start_scan(None)
+    elif _pending_scopes:
+        paths = sorted(_pending_scopes)
+        _pending_scopes = set()
+        await _start_scan(paths)
 
 
 async def resume_interrupted_scans() -> int | None:
@@ -186,27 +242,52 @@ async def get_scan_status(scan_id: int) -> dict | None:
 # ---------------------------------------------------------------------------
 
 
-async def _run_scan(scan_id: int) -> None:
-    global _running_scan_id
+async def _run_scan(scan_id: int, scope_paths: list[str] | None = None) -> None:
+    global _running_scan_id, _running_scan_scoped
     counters = {"found": 0, "ok": 0, "skipped": 0, "failed": 0}
     scan_start = time.time()
+    scoped = scope_paths is not None
 
     try:
         library_path = Path(settings.MUSIC_LIBRARY_PATH)
         if not library_path.exists():
             raise FileNotFoundError(f"Library path not found: {library_path}")
 
-        logger.info(f"[Scan {scan_id}] Scanning library: {library_path}")
-
         # Phase: discovering files on disk
         _scan_meta.update({"phase": "discovering", "processing_started_at": None})
 
-        # Collect all audio files first so we know total count.
-        # The walk does ~90k Path.resolve() + os.walk syscalls; running it
-        # inline blocks the asyncio loop for tens of seconds on big libraries
-        # (and our event-loop watchdog flags it). Push it to a worker thread
-        # so health checks, scheduler ticks, and HTTP handlers stay responsive.
-        audio_files = await asyncio.to_thread(lambda: list(_iter_audio_files(library_path)))
+        if scoped:
+            # Validate each scope is genuinely inside the library root before we
+            # walk it — never let a caller's path escape MUSIC_LIBRARY_PATH into
+            # arbitrary directories. Invalid/vanished scopes are dropped; if none
+            # survive, the scan completes as a clean no-op (we do NOT silently
+            # widen to a full walk — that would surprise the caller and defeat
+            # the point of scoping).
+            resolved_root = library_path.resolve()
+            walk_roots: list[Path] = []
+            for sp in scope_paths:
+                try:
+                    rp = Path(sp).resolve()
+                except OSError:
+                    continue
+                inside = rp == resolved_root or str(rp).startswith(str(resolved_root) + os.sep)
+                if not inside:
+                    logger.warning("[Scan %d] scope %s escapes library root %s — dropped", scan_id, sp, resolved_root)
+                    continue
+                if rp.exists():
+                    walk_roots.append(rp)
+            logger.info(f"[Scan {scan_id}] Scoped scan of {len(walk_roots)} folder(s): {[str(p) for p in walk_roots]}")
+            audio_files = await asyncio.to_thread(
+                lambda: sorted({f for root in walk_roots for f in _iter_audio_files(root)})
+            )
+        else:
+            logger.info(f"[Scan {scan_id}] Scanning library: {library_path}")
+            # Collect all audio files first so we know total count.
+            # The walk does ~90k Path.resolve() + os.walk syscalls; running it
+            # inline blocks the asyncio loop for tens of seconds on big libraries
+            # (and our event-loop watchdog flags it). Push it to a worker thread
+            # so health checks, scheduler ticks, and HTTP handlers stay responsive.
+            audio_files = await asyncio.to_thread(lambda: list(_iter_audio_files(library_path)))
         counters["found"] = len(audio_files)
         logger.info(f"[Scan {scan_id}] Found {counters['found']} audio files")
 
@@ -278,43 +359,54 @@ async def _run_scan(scan_id: int) -> None:
         logger.info(f"[Scan {scan_id}] Post-scan phase A (log prune): {time.time() - t_phase:.1f}s")
         await asyncio.sleep(0.05)
 
-        # Phase A2: Prune orphan rows (files that vanished from disk). The scanner
-        # is otherwise purely additive, so the DB drifts above the on-disk count.
-        # Defaults to REPORT-ONLY; runs BEFORE the media sync so a present
-        # duplicate that legitimately claims a server_id isn't pruned out from
-        # under it. Never fails the scan.
-        t_phase = time.time()
-        try:
-            await _prune_orphans(scan_id, set(audio_files), counters["found"])
-        except Exception as e:
-            logger.error(f"[Scan {scan_id}] Post-scan phase A2 (orphan prune) failed: {e}")
-        logger.info(f"[Scan {scan_id}] Post-scan phase A2 (orphan prune): {time.time() - t_phase:.1f}s")
-        await asyncio.sleep(0.05)
+        # Phases A2 + B compare the walked file set against the WHOLE library,
+        # so they are only valid after a full walk. A scoped scan walks a single
+        # album folder — running the orphan prune with that tiny present-set
+        # would tombstone the entire rest of the library, and the media sync's
+        # presence guard would misfire — so both are skipped when scoped. The
+        # next full/periodic scan reconciles orphans and populates media_server_id;
+        # playability is handled immediately by the media-server rescan the caller
+        # fires in parallel (download_watcher._trigger_post_download_refresh).
+        if scoped:
+            logger.info(f"[Scan {scan_id}] Scoped scan: skipping orphan prune + media sync (whole-library phases)")
+        else:
+            # Phase A2: Prune orphan rows (files that vanished from disk). The scanner
+            # is otherwise purely additive, so the DB drifts above the on-disk count.
+            # Defaults to REPORT-ONLY; runs BEFORE the media sync so a present
+            # duplicate that legitimately claims a server_id isn't pruned out from
+            # under it. Never fails the scan.
+            t_phase = time.time()
+            try:
+                await _prune_orphans(scan_id, set(audio_files), counters["found"])
+            except Exception as e:
+                logger.error(f"[Scan {scan_id}] Post-scan phase A2 (orphan prune) failed: {e}")
+            logger.info(f"[Scan {scan_id}] Post-scan phase A2 (orphan prune): {time.time() - t_phase:.1f}s")
+            await asyncio.sleep(0.05)
 
-        # Phase B: Sync track IDs with the media server (if configured).
-        t_phase = time.time()
-        try:
-            from app.services.media_server import is_configured, sync_track_ids
+            # Phase B: Sync track IDs with the media server (if configured).
+            t_phase = time.time()
+            try:
+                from app.services.media_server import is_configured, sync_track_ids
 
-            if is_configured():
-                async with AsyncSessionLocal() as sync_session:
-                    # Hand the freshly-walked file set to the sync so its
-                    # file-existence guard runs with no extra stat I/O.
-                    sync_result = await sync_track_ids(sync_session, present_paths=set(audio_files))
-                logger.info(
-                    f"[Scan {scan_id}] Post-scan phase B (media sync): "
-                    f"{sync_result.tracks_matched} matched, "
-                    f"{sync_result.media_server_id_updated} ids updated, "
-                    f"{sync_result.metadata_updated} metadata refreshed, "
-                    f"{time.time() - t_phase:.1f}s"
+                if is_configured():
+                    async with AsyncSessionLocal() as sync_session:
+                        # Hand the freshly-walked file set to the sync so its
+                        # file-existence guard runs with no extra stat I/O.
+                        sync_result = await sync_track_ids(sync_session, present_paths=set(audio_files))
+                    logger.info(
+                        f"[Scan {scan_id}] Post-scan phase B (media sync): "
+                        f"{sync_result.tracks_matched} matched, "
+                        f"{sync_result.media_server_id_updated} ids updated, "
+                        f"{sync_result.metadata_updated} metadata refreshed, "
+                        f"{time.time() - t_phase:.1f}s"
+                    )
+                else:
+                    logger.info(f"[Scan {scan_id}] Post-scan phase B (media sync): skipped (not configured)")
+            except Exception as e:
+                logger.error(
+                    f"[Scan {scan_id}] Post-scan phase B (media sync) failed after {time.time() - t_phase:.1f}s: {e}"
                 )
-            else:
-                logger.info(f"[Scan {scan_id}] Post-scan phase B (media sync): skipped (not configured)")
-        except Exception as e:
-            logger.error(
-                f"[Scan {scan_id}] Post-scan phase B (media sync) failed after {time.time() - t_phase:.1f}s: {e}"
-            )
-        await asyncio.sleep(0.05)
+            await asyncio.sleep(0.05)
 
         # Phase C: Rebuild FAISS index with new/updated embeddings.
         t_phase = time.time()
@@ -343,8 +435,10 @@ async def _run_scan(scan_id: int) -> None:
 
         # P1: reconcile followed-artist releases that just became streamable
         # (media_server_id was set in phase B above). Best-effort, never fatal.
+        # Skipped when scoped: phase B didn't run, so no new media_server_id was
+        # set for this reconciler to act on — the next full scan handles it.
         try:
-            if settings.follow_scan_enabled:
+            if not scoped and settings.follow_scan_enabled:
                 from app.services.release_scan import reconcile_available_releases
 
                 rec = await reconcile_available_releases()
@@ -387,7 +481,14 @@ async def _run_scan(scan_id: int) -> None:
         )
     finally:
         _running_scan_id = None
+        _running_scan_scoped = False
         _scan_meta.clear()
+        # Launch anything that was queued while this scan ran (a pending full
+        # sweep, or album folders from downloads that landed mid-scan).
+        try:
+            await _drain_pending_scans()
+        except Exception as e:  # a drain failure must not mask the scan's own outcome
+            logger.error(f"[Scan {scan_id}] Failed to drain pending scans: {e}")
 
 
 def _log_progress(scan_id: int, found: int, analyzed: int, skipped: int, failed: int, start: float) -> None:
