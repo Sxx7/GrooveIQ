@@ -123,18 +123,24 @@ class Settings(BaseSettings):
     RESCAN_INTERVAL_HOURS: int = 6  # how often to check for new files
 
     # --- Scanner orphan prune (post-scan Phase A2) ---
-    # The scanner is purely additive: it never removes rows for files that have
-    # vanished from disk, so the DB drifts above the real on-disk count (e.g.
-    # ~181k rows vs ~144k files after a beets dedup). Phase A2 closes that gap.
+    # Without this, the scanner is purely additive: it never removes rows for
+    # files that have vanished from disk, so the DB drifts above the real on-disk
+    # count (e.g. ~181k rows vs ~144k files after a beets move/dedup) and the
+    # dashboard track count only ever goes up. Phase A2 closes that gap so the
+    # count tracks the library up AND down on every scan.
     #
-    # SAFETY: defaults to REPORT-ONLY. It computes + logs the confirmed-orphan
-    # count every scan but deletes NOTHING until SCANNER_AUTO_PRUNE=true. Verify
-    # one report cycle reports the expected number before enabling deletes.
-    SCANNER_AUTO_PRUNE: bool = False  # False = report-only; True = actually delete orphan rows
+    # ON BY DEFAULT. Deletion is fenced by relative, library-size-agnostic guards
+    # so a lost/partial /music bind-mount can't wipe the table: the phase is
+    # skipped on an empty walk, on a >MAX_DROP drop in files_found vs the last
+    # completed scan, or when confirmed-missing rows exceed MAX_FRACTION of the
+    # table — and every candidate is re-stat'd on disk before deletion. Set
+    # SCANNER_AUTO_PRUNE=false to fall back to report-only (logs the confirmed
+    # orphan count each scan, deletes nothing).
+    SCANNER_AUTO_PRUNE: bool = True  # True = delete orphan rows each scan; False = report-only
     SCANNER_PRUNE_DELETE_HISTORY: bool = False  # also delete the orphan's listen_events + interactions
-    SCANNER_PRUNE_MIN_FILES: int = 100_000  # absolute floor: skip prune if the walk found fewer (mount/partial guard)
+    SCANNER_PRUNE_MIN_FILES: int = 10  # token floor: skip if the walk found fewer (empty/partial mount). MAX_FRACTION is the primary mount-loss guard
     SCANNER_PRUNE_MAX_DROP: float = 0.10  # skip if files_found dropped >this fraction vs the last completed scan
-    SCANNER_PRUNE_MAX_FRACTION: float = 0.25  # skip if confirmed orphans exceed this fraction of all rows
+    SCANNER_PRUNE_MAX_FRACTION: float = 0.25  # primary guard: skip if confirmed orphans exceed this fraction of all rows
     SCANNER_PRUNE_CHUNK_SIZE: int = 500  # rows deleted + committed per chunk
 
     # Media-server sync: file-existence guard. Prevents a missing-file ("ghost")

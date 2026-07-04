@@ -694,13 +694,13 @@ async def _prune_orphans(scan_id: int, present_paths: set[str], found_count: int
     vanished from disk (the scanner is otherwise purely additive, so the DB
     drifts above the real on-disk count).
 
-    SAFETY — defaults to REPORT-ONLY (``settings.SCANNER_AUTO_PRUNE=False``): it
-    computes and logs the confirmed-orphan count every scan but deletes nothing.
-    Several guards can abort the phase; deletion happens only when explicitly
-    enabled AND every guard passes. The set-diff against the just-walked paths is
-    only a cheap PREFILTER — each candidate is re-stat'd with ``os.path.isfile``
-    before it counts as an orphan, so a partial walk / symlink / path-normalization
-    quirk can't turn a present file into a deletion. See config § Scanner orphan prune.
+    SAFETY — deletes by default (``settings.SCANNER_AUTO_PRUNE=True``); set it
+    False to fall back to report-only (logs the confirmed-orphan count every scan
+    but deletes nothing). Several guards can abort the phase; deletion happens only
+    when every guard passes. The set-diff against the just-walked paths is only a
+    cheap PREFILTER — each candidate is re-stat'd with ``os.path.isfile`` before it
+    counts as an orphan, so a partial walk / symlink / path-normalization quirk
+    can't turn a present file into a deletion. See config § Scanner orphan prune.
     """
     mode = "delete" if settings.SCANNER_AUTO_PRUNE else "report-only"
 
