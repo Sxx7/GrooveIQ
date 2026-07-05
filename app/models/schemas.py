@@ -769,6 +769,84 @@ class RadioNextResponse(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Affinity radio (pure-similarity "closest unheard track" sessions)
+# ---------------------------------------------------------------------------
+
+
+class AffinityStartRequest(BaseModel):
+    """Start a pure-similarity ("affinity") radio session from a seed.
+
+    Unlike ``/radio``, this streams the sonically nearest library tracks to the fixed
+    seed with no drift, ranker, or diversity reranking — just cosine order.
+    """
+
+    user_id: str = Field(..., min_length=1, max_length=128)
+    seed_type: RadioSeedType
+    seed_value: str = Field(..., min_length=1, max_length=512, description="track_id, artist name, or playlist_id")
+    count: int = Field(10, ge=1, le=50, description="Number of tracks in the first batch")
+    unheard_only: bool = Field(
+        True,
+        description=(
+            "When true (default) exclude tracks you've already played, so every result is "
+            "both close to the seed and new to you. Set false for pure 'more like this', "
+            "heard or not. Disliked tracks are always excluded."
+        ),
+    )
+
+    model_config = {"use_enum_values": True}
+
+
+class AffinityTrackItem(BaseModel):
+    position: int
+    track_id: str
+    media_server_id: str | None = None
+    similarity: float  # cosine similarity to the seed embedding (higher = closer)
+    title: str | None = None
+    artist: str | None = None
+    album: str | None = None
+    genre: str | None = None
+    bpm: float | None = None
+    key: str | None = None
+    mode: str | None = None
+    energy: float | None = None
+    danceability: float | None = None
+    valence: float | None = None
+    mood_tags: list[MoodTag] | None = None
+    duration: float | None = None
+
+
+class AffinityStartResponse(BaseModel):
+    session_id: str
+    seed_type: str
+    seed_value: str
+    seed_display_name: str | None = None
+    unheard_only: bool = True
+    # True when fewer than `count` tracks came back — the reachable neighbourhood
+    # (within the library, minus heard/served/disliked) is used up.
+    exhausted: bool = False
+    tracks: list[AffinityTrackItem]
+
+
+class AffinityNextResponse(BaseModel):
+    session_id: str
+    total_served: int
+    exhausted: bool = False
+    tracks: list[AffinityTrackItem]
+
+
+class AffinitySessionResponse(BaseModel):
+    session_id: str
+    user_id: str
+    seed_type: str
+    seed_value: str
+    seed_display_name: str | None = None
+    unheard_only: bool = True
+    total_served: int
+    created_at: int
+    last_active: int
+
+
+# ---------------------------------------------------------------------------
 # Chart download request (Spotizerr integration)
 # ---------------------------------------------------------------------------
 

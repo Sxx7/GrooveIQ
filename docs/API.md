@@ -73,24 +73,25 @@ server resolves it to the canonical internal hash at ingest. Events whose
 6. [Recommendations](#recommendations)
 7. [Recommendation Audit & Replay](#recommendation-audit--replay)
 8. [Radio](#radio)
-9. [Playlists](#playlists)
-10. [Discovery](#discovery)
-11. [Fill Library](#fill-library)
-12. [Charts](#charts)
-13. [Downloads](#downloads)
-14. [Download Routing Configuration](#download-routing-configuration)
-15. [Soulseek](#soulseek)
-16. [Last.fm](#lastfm)
-17. [Artists](#artists)
-18. [News](#news)
-19. [Pipeline & Stats](#pipeline--stats)
-20. [Algorithm Configuration](#algorithm-configuration)
-21. [Lidarr Backfill](#lidarr-backfill)
-22. [Lyrics (operator)](#lyrics-operator)
-23. [Integrations](#integrations)
-24. [API Call Log](#api-call-log)
-25. [Admin](#admin)
-26. [Configuration Reference](#configuration-reference)
+9. [Affinity Radio](#affinity-radio)
+10. [Playlists](#playlists)
+11. [Discovery](#discovery)
+12. [Fill Library](#fill-library)
+13. [Charts](#charts)
+14. [Downloads](#downloads)
+15. [Download Routing Configuration](#download-routing-configuration)
+16. [Soulseek](#soulseek)
+17. [Last.fm](#lastfm)
+18. [Artists](#artists)
+19. [News](#news)
+20. [Pipeline & Stats](#pipeline--stats)
+21. [Algorithm Configuration](#algorithm-configuration)
+22. [Lidarr Backfill](#lidarr-backfill)
+23. [Lyrics (operator)](#lyrics-operator)
+24. [Integrations](#integrations)
+25. [API Call Log](#api-call-log)
+26. [Admin](#admin)
+27. [Configuration Reference](#configuration-reference)
 
 ---
 
@@ -965,6 +966,84 @@ configured).**
 
 ```json
 {"active_sessions": 3, "sessions": [ /* session metadata */ ]}
+```
+
+---
+
+## Affinity Radio
+
+Pure-similarity radio: a stateful session pinned to the **original seed** that streams
+the sonically nearest library tracks and nothing else. Unlike [Radio](#radio) — which
+blends ~10 candidate sources, a feedback-drifting taste vector, the ranker, and a
+diversity reranker — Affinity Radio is a single FAISS nearest-neighbour query against
+the frozen seed embedding, in cosine order. No drift, no ranking model, no reranking.
+
+Each `/next` spirals one step further out through the seed's neighbourhood, accumulating
+served tracks into the exclusion set so the stream never repeats. It is deliberately
+**isolated from the personalization loop**: no `reco_impression` events and no
+recommendation-audit writes, so surfacing a large neighbourhood the user may not play
+can't inject false-negative training signal into the ranker.
+
+Track objects carry a `similarity` field (cosine similarity to the seed; higher = closer)
+in place of the ranker `score`/`source` used by Radio.
+
+### `POST /v1/affinity/start`: Start a session
+
+User-scoped (on body `user_id`). Returns the first batch as `201`.
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `user_id` | string | *(required)* | 1-128 |
+| `seed_type` | enum | *(required)* | `track`, `artist`, `playlist` |
+| `seed_value` | string | *(required)* | Track ID (internal or `media_server_id`), artist name, or playlist ID (1-512) |
+| `count` | int | 10 | 1-50 |
+| `unheard_only` | bool | `true` | Exclude tracks the user has already played, so every result is both close *and* new. Disliked tracks are always excluded. Set `false` for "more like this", heard or not. |
+
+```json
+{
+  "session_id": "uuid", "seed_type": "track", "seed_value": "track_id_123",
+  "seed_display_name": "Artist — Song Title", "unheard_only": true,
+  "exhausted": false, "tracks": [ /* track objects with `similarity` */ ]
+}
+```
+
+`exhausted` is `true` when fewer than `count` tracks came back — the reachable
+neighbourhood (within the library, minus heard/served/disliked) is used up.
+
+`404` (user/seed not found), `422` (no seed embedding, or no similar tracks available).
+
+### `GET /v1/affinity/{session_id}/next`: Next batch
+
+User-scoped (session's user). Returns the next nearest tracks not yet served this
+session (and, when `unheard_only`, not already heard). `404` if the session expired.
+
+| Param | Type | Default | Description |
+|-------|------|---------|-------------|
+| `count` | int | 10 | 1-50 |
+
+```json
+{"session_id": "uuid", "total_served": 20, "exhausted": false, "tracks": [ /* track objects */ ]}
+```
+
+### `DELETE /v1/affinity/{session_id}`: Stop a session
+
+User-scoped. `404` if expired.
+
+```json
+{"status": "stopped", "session_id": "uuid"}
+```
+
+### `GET /v1/affinity`: List active sessions
+
+**User-scoped if `user_id` is given, otherwise admin-gated (when admin keys are
+configured).**
+
+| Param | Description |
+|-------|-------------|
+| `user_id` | Filter by user |
+
+```json
+{"active_sessions": 2, "sessions": [ /* session metadata incl. unheard_only */ ]}
 ```
 
 ---

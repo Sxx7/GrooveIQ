@@ -16,6 +16,7 @@ from fastapi.staticfiles import StaticFiles
 
 from app.api.routes import (
     admin,
+    affinity_radio,
     algorithm_config,
     api_calls,
     artists,
@@ -255,6 +256,7 @@ app.include_router(download_routing.router, prefix="/v1", tags=["downloads"])
 app.include_router(lastfm.router, prefix="/v1", tags=["lastfm"])
 app.include_router(artists.router, prefix="/v1", tags=["artists"])
 app.include_router(radio.router, prefix="/v1", tags=["radio"])
+app.include_router(affinity_radio.router, prefix="/v1", tags=["affinity"])
 app.include_router(algorithm_config.router, prefix="/v1", tags=["algorithm"])
 app.include_router(soulseek.router, prefix="/v1", tags=["soulseek"])
 app.include_router(integrations.router, prefix="/v1", tags=["integrations"])
