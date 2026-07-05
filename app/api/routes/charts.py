@@ -127,10 +127,17 @@ def _media_server_auth_params() -> str | None:
         if not user or not password:
             return None
         import hashlib
-        import secrets as _secrets
 
-        salt = _secrets.token_hex(8)
-        # MD5(password + salt) is mandated by the Subsonic API spec for auth tokens.
+        # Deterministic (stable) salt instead of a per-request random one. The
+        # Subsonic token is MD5(password + salt); a fresh salt every request would
+        # change every cover URL each load, busting the browser cache (Navidrome
+        # serves covers with a ~10-year max-age) and forcing a re-fetch storm that
+        # makes below-the-fold chart thumbnails flake/drop. A stable salt keeps the
+        # URL constant so covers cache and load once. No security loss: the token
+        # is already handed to the browser in the URL, and Subsonic tokens never
+        # expire, so rotating the salt bought nothing here. Derived from SECRET_KEY
+        # so it stays opaque and per-deployment.
+        salt = hashlib.sha256(f"giq-cover-salt:{settings.SECRET_KEY}".encode()).hexdigest()[:16]
         token = hashlib.md5((password + salt).encode()).hexdigest()  # nosemgrep
         return f"u={user}&t={token}&s={salt}&v=1.16.1&c=grooveiq"
     elif server_type == "plex":

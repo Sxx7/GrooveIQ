@@ -2448,6 +2448,7 @@
                 ]);
                 s.available = available;
                 s.stats = stats;
+                _chartsCachePrune(stats && stats.latest_snapshot_date);
                 setCronBadge(stats);
                 buildScopeOptions();
                 loadChart();
@@ -2476,6 +2477,22 @@
             s.loading = true;
             renderHead();
             loadSnapshots();
+
+            // Serve from the client cache when the snapshot hasn't advanced —
+            // a historical as_of view is immutable, and a latest view is valid
+            // while latest_snapshot_date (from /charts/stats) is unchanged.
+            const cacheKey = _chartsCacheKey(s);
+            const latestSnap = (s.stats && s.stats.latest_snapshot_date) || null;
+            const cached = _chartsCacheGet(cacheKey);
+            if (cached && cached.data && (s.asOf ? true : (latestSnap && cached.latestSnap === latestSnap))) {
+                s.chart = cached.data;
+                s.loading = false;
+                renderHead();
+                renderTable();
+                prefetchSibling();
+                return;
+            }
+
             panelBody.innerHTML = '<div class="vc-loading">Loading chart…</div>';
             try {
                 let url = '/v1/charts/' + encodeURIComponent(s.chartType)
@@ -2485,9 +2502,11 @@
                 if (s.asOf) url += '&as_of=' + encodeURIComponent(s.asOf);
                 const data = await GIQ.api.get(url);
                 s.chart = data;
+                _chartsCacheSet(cacheKey, { latestSnap: s.asOf ? null : latestSnap, data: data, ts: Date.now() });
                 s.loading = false;
                 renderHead();
                 renderTable();
+                prefetchSibling();
             } catch (e) {
                 s.loading = false;
                 renderHead();
@@ -2498,6 +2517,29 @@
                     panelBody.innerHTML = '<div class="reco-error">Failed to load chart: ' + GIQ.fmt.esc(e.message) + '</div>';
                 }
             }
+        }
+
+        /* Warm the *other* chart type in the background so the first
+         * tracks<->artists switch is instant (no shimmer / no refetch).
+         * Switching type always resets to the latest snapshot (as_of=''), so we
+         * prefetch exactly that key. Best-effort + snapshot-guarded: a no-op once
+         * the sibling is already cached for the current snapshot. */
+        function prefetchSibling() {
+            const other = s.chartType === 'top_tracks' ? 'top_artists' : 'top_tracks';
+            const latestSnap = (s.stats && s.stats.latest_snapshot_date) || null;
+            if (!latestSnap) return;  // can't validate freshness → skip prefetch
+            const pkey = _CHARTS_CACHE_PREFIX + [other, s.scope, s.compare || '', '', s.limit, 0].join('|');
+            const existing = _chartsCacheGet(pkey);
+            if (existing && existing.latestSnap === latestSnap) return;  // already warm
+            setTimeout(async () => {
+                try {
+                    let url = '/v1/charts/' + encodeURIComponent(other)
+                        + '?scope=' + encodeURIComponent(s.scope) + '&limit=' + s.limit + '&offset=0';
+                    if (s.compare) url += '&compare=' + encodeURIComponent(s.compare);
+                    const data = await GIQ.api.get(url);
+                    _chartsCacheSet(pkey, { latestSnap: latestSnap, data: data, ts: Date.now() });
+                } catch (_) { /* best-effort */ }
+            }, 0);
         }
 
         function renderHead() {
@@ -2662,6 +2704,60 @@
         return scope;
     }
 
+    /* Aggressive client-side cache for chart data (localStorage). Charts only
+     * change when GrooveIQ builds a new daily snapshot, so we cache each query
+     * and serve it instantly until the snapshot advances:
+     *   - a historical (?as_of=) view is immutable → always served from cache
+     *   - a "latest" view is served only while latest_snapshot_date is unchanged
+     * Superseded "latest" caches are pruned when a newer snapshot appears. */
+    const _CHARTS_CACHE_PREFIX = 'giq:charts:v1:';
+
+    function _chartsCacheKey(s) {
+        return _CHARTS_CACHE_PREFIX
+            + [s.chartType, s.scope, s.compare || '', s.asOf || '', s.limit, s.offset || 0].join('|');
+    }
+
+    function _chartsCacheGet(key) {
+        try {
+            const raw = localStorage.getItem(key);
+            return raw ? JSON.parse(raw) : null;
+        } catch (_) { return null; }
+    }
+
+    function _chartsCacheSet(key, entry) {
+        try { localStorage.setItem(key, JSON.stringify(entry)); } catch (_) { /* quota/disabled */ }
+    }
+
+    /* Drop "latest" caches whose snapshot has been superseded (keeps localStorage
+     * bounded and guarantees a new build is picked up on the next visit). */
+    function _chartsCachePrune(currentLatestSnap) {
+        try {
+            const stale = [];
+            for (let i = 0; i < localStorage.length; i++) {
+                const k = localStorage.key(i);
+                if (!k || k.indexOf(_CHARTS_CACHE_PREFIX) !== 0) continue;
+                let v = null;
+                try { v = JSON.parse(localStorage.getItem(k)); } catch (_) { stale.push(k); continue; }
+                if (v && v.latestSnap && currentLatestSnap && v.latestSnap !== currentLatestSnap) stale.push(k);
+            }
+            stale.forEach(k => localStorage.removeItem(k));
+        } catch (_) { /* ignore */ }
+    }
+
+    /* Drop all cached chart data — used after a user action (e.g. queuing a
+     * download) that changes the dynamic overlay (download_status / in_library)
+     * without advancing the snapshot, so the next view reflects it. */
+    function _chartsCacheClear() {
+        try {
+            const keys = [];
+            for (let i = 0; i < localStorage.length; i++) {
+                const k = localStorage.key(i);
+                if (k && k.indexOf(_CHARTS_CACHE_PREFIX) === 0) keys.push(k);
+            }
+            keys.forEach(k => localStorage.removeItem(k));
+        } catch (_) { /* ignore */ }
+    }
+
     /* Position-movement chip for a chart entry vs. an earlier snapshot. Only
      * called when a comparison snapshot exists (the column is hidden otherwise),
      * so every entry resolves to NEW / up / down / held — never a bare "no data"
@@ -2707,27 +2803,40 @@
         wrap.appendChild(tile);
         const primary = (entry.library && entry.library.cover_url) || '';
         const fallback = entry.image_url || '';
-        const src = primary || fallback;
-        if (src) {
-            const img = document.createElement('img');
-            img.alt = '';
-            img.loading = 'lazy';
-            img.className = 'charts-thumb-img';
-            if (primary && fallback && primary !== fallback) {
-                img.dataset.fallback = fallback;
+        // Ordered, de-duped source list: media-server cover first, then the
+        // Spotify/Last.fm image_url. Each source is retried a couple of times
+        // before we move on — a transient Navidrome/tunnel hiccup on a
+        // below-the-fold cover used to drop the thumbnail permanently (there is
+        // often no fallback for artist rows). Cover URLs are now stable+cacheable
+        // (see _media_server_auth_params), so a retry re-hits the same cacheable
+        // URL rather than a cache-busting variant.
+        const sources = (primary && fallback && primary !== fallback) ? [primary, fallback] : [primary || fallback];
+        if (!sources[0]) return wrap;
+
+        const img = document.createElement('img');
+        img.alt = '';
+        img.loading = 'lazy';
+        img.className = 'charts-thumb-img';
+        const MAX_RETRIES = 2;
+        let srcIdx = 0;
+        let attempt = 0;
+        img.addEventListener('error', () => {
+            if (attempt < MAX_RETRIES) {
+                attempt += 1;
+                const url = sources[srcIdx];
+                setTimeout(() => { if (img.isConnected) img.src = url; }, 250 * attempt);
+                return;
             }
-            img.addEventListener('error', () => {
-                const fb = img.dataset.fallback;
-                if (fb) {
-                    img.dataset.fallback = '';
-                    img.src = fb;
-                } else {
-                    img.remove();
-                }
-            });
-            img.src = src;
-            wrap.appendChild(img);
-        }
+            srcIdx += 1;
+            attempt = 0;
+            if (srcIdx < sources.length) {
+                img.src = sources[srcIdx];
+            } else {
+                img.remove();  // give up — the ♫ tile stays visible
+            }
+        });
+        img.src = sources[0];
+        wrap.appendChild(img);
         return wrap;
     }
 
@@ -2836,6 +2945,7 @@
             position: entry.position,
         }).then(data => {
             if (data && ['queued', 'downloading', 'duplicate', 'completed'].indexOf(data.status) !== -1) {
+                _chartsCacheClear();  // dynamic status changed → drop stale cache
                 btn.outerHTML = '<span class="charts-status-chip charts-status-dl">⬇ queued</span>';
                 GIQ.toast({
                     message: 'Queued — track sent to download cascade',

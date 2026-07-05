@@ -275,3 +275,32 @@ async def test_send_tracks_via_cascade_skips_already_downloaded(monkeypatch):
     assert calls == [("Sabrina Carpenter", "Espresso")]
     assert stats["already_have"] == 1
     assert stats["sent"] == 1
+
+
+# ---------------------------------------------------------------------------
+# Stable (cacheable) media-server cover auth
+# ---------------------------------------------------------------------------
+
+
+async def test_media_server_auth_is_stable_and_cacheable(monkeypatch):
+    # A stable salt/token keeps the Navidrome cover URL constant across requests
+    # so the browser's long-lived cache hits (was: random salt per request →
+    # cache-busted every load → below-the-fold thumbnails flaked).
+    from app.api.routes.charts import _media_server_auth_params
+
+    monkeypatch.setattr(settings, "MEDIA_SERVER_TYPE", "navidrome")
+    monkeypatch.setattr(settings, "MEDIA_SERVER_URL", "https://navidrome.example.com")
+    monkeypatch.setattr(settings, "MEDIA_SERVER_USER", "alice")
+    monkeypatch.setattr(settings, "MEDIA_SERVER_PASSWORD", "s3cret")
+    monkeypatch.setattr(settings, "SECRET_KEY", "test-secret")
+
+    a = _media_server_auth_params()
+    b = _media_server_auth_params()
+    assert a is not None
+    assert a == b  # deterministic → stable, cacheable cover URLs
+    assert a.startswith("u=alice&t=")
+    assert "&s=" in a and a.endswith("&v=1.16.1&c=grooveiq")
+
+    # Salt/token are keyed to SECRET_KEY (opaque + per-deployment).
+    monkeypatch.setattr(settings, "SECRET_KEY", "different-secret")
+    assert _media_server_auth_params() != a
