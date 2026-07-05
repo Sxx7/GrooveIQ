@@ -4689,6 +4689,11 @@
     color: var(--accent);
     background: rgba(168, 135, 206, 0.08);
 }
+.charts-status-done {
+    border-color: rgba(168, 135, 206, 0.6);
+    color: var(--accent);
+    background: rgba(168, 135, 206, 0.12);
+}
 .charts-status-pending {
     border-color: var(--ink-3);
     color: var(--ink-3);

@@ -19,7 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import settings
 from app.core.security import require_admin, require_api_key
 from app.db.session import get_session
-from app.models.db import ChartEntry, CoverArtCache, DiscoveryRequest, TrackFeatures
+from app.models.db import ChartEntry, CoverArtCache, DiscoveryRequest, DownloadRequest, TrackFeatures
 from app.models.schemas import ChartDownloadRequest
 from app.services.charts import _normalize as _chart_norm
 from app.services.cover_art import _normalize as _normalize_cover_key
@@ -76,18 +76,19 @@ async def _snapshot_position_map(
     """identity_key -> position for one snapshot (used to compute deltas)."""
     rows = (
         await session.execute(
-            select(ChartEntry.artist_name, ChartEntry.track_title, ChartEntry.position).where(
+            select(ChartEntry.artist_name, ChartEntry.track_title, ChartEntry.position)
+            .where(
                 ChartEntry.chart_type == chart_type,
                 ChartEntry.scope == scope,
                 ChartEntry.snapshot_date == snap_date,
             )
+            .order_by(ChartEntry.position)
         )
     ).all()
     out: dict[tuple[str, str], int] = {}
     for artist_name, track_title, position in rows:
-        # setdefault: if a normalised identity appears twice, the higher rank
-        # (lower position, encountered first under ORDER-free scan) is arbitrary
-        # but stable enough — duplicates within one snapshot are not expected.
+        # ORDER BY position + setdefault: if a normalised identity appears twice
+        # in a snapshot, keep the best (lowest-position) rank deterministically.
         out.setdefault(_identity_key(chart_type, artist_name, track_title), position)
     return out
 
@@ -95,6 +96,22 @@ async def _snapshot_position_map(
 def _shift_date(iso_date: str, days: int) -> str:
     """ISO date shifted back by ``days`` (for ?compare= anchors)."""
     return (datetime.strptime(iso_date, "%Y-%m-%d") - timedelta(days=days)).strftime("%Y-%m-%d")
+
+
+def _map_download_status(raw: str | None) -> str:
+    """Collapse a ``DownloadRequest.status`` into a chart badge state (issue #64).
+
+    Returns one of ``queued`` / ``downloading`` / ``completed`` / ``failed`` so the
+    frontend renders a stable per-row chip regardless of backend-specific wording.
+    """
+    s = (raw or "").lower()
+    if s in ("completed", "complete", "done", "duplicate"):
+        return "completed"
+    if s in ("downloading", "in_progress"):
+        return "downloading"
+    if s in ("error", "failed"):
+        return "failed"
+    return "queued"  # queued / processing / anything else in-flight
 
 
 def _media_server_auth_params() -> str | None:
@@ -472,6 +489,31 @@ async def get_chart(
             if artist_name not in lidarr_status_map:
                 lidarr_status_map[artist_name] = status
 
+    # Per-track download status (issue #64): for not-in-library *tracks*, surface
+    # the latest DownloadRequest state so each row can show queued/downloading/…
+    # Keyed by the chart-normalised (artist, title); newest row wins.
+    download_status_map: dict[tuple[str, str], str] = {}
+    if chart_type == "top_tracks":
+        dl_artists = list(
+            {e.artist_name for e in entries if not e.matched_track_id and e.artist_name and e.track_title}
+        )
+        if dl_artists:
+            dl_rows = await session.execute(
+                select(
+                    DownloadRequest.artist_name,
+                    DownloadRequest.track_title,
+                    DownloadRequest.status,
+                )
+                .where(DownloadRequest.artist_name.in_(dl_artists))
+                .order_by(DownloadRequest.created_at.desc())
+            )
+            for artist_name, track_title, status in dl_rows.all():
+                if not artist_name or not track_title:
+                    continue
+                key = (_chart_norm(artist_name), _chart_norm(track_title))
+                if key not in download_status_map:  # first seen = most recent
+                    download_status_map[key] = _map_download_status(status)
+
     items = []
     for e in entries:
         # Effective image_url: take what the chart builder stored; if absent and
@@ -511,6 +553,12 @@ async def get_chart(
                 item["lidarr_status"] = "failed"
             else:
                 item["lidarr_status"] = None  # not sent to Lidarr
+
+            # Per-track cascade download status (issue #64), tracks only.
+            if chart_type == "top_tracks" and e.artist_name and e.track_title:
+                ds = download_status_map.get((_chart_norm(e.artist_name), _chart_norm(e.track_title)))
+                if ds:
+                    item["download_status"] = ds
 
         # Enrich with local metadata if matched.
         tf = feat_map.get(e.matched_track_id) if e.matched_track_id else None
@@ -675,11 +723,14 @@ async def trigger_chart_build(
 
 @router.post(
     "/charts/download",
-    summary="Download a chart track via Spotizerr",
+    summary="Download a chart track via the backend cascade",
     description=(
-        "Trigger download of a chart track via Spotizerr. "
-        "Provide either a chart position or artist_name + track_title. "
-        "Returns the Spotizerr task_id for status tracking."
+        "Trigger download of a chart track through the configured multi-backend "
+        "download cascade (issue #64). Provide either a chart position or "
+        "artist_name + track_title. Chart downloads run on a 'fast lane' "
+        "(spotdl/YouTube first, streamrip last) so they don't queue behind the "
+        "Lidarr backfill. Returns the download task_id + status; the attempt is "
+        "recorded in GET /v1/downloads."
     ),
 )
 async def download_chart_track(
@@ -687,10 +738,13 @@ async def download_chart_track(
     session: AsyncSession = Depends(get_session),
     _key: str = Depends(require_api_key),
 ):
-    if not settings.spotizerr_enabled:
+    if not settings.download_enabled:
         raise HTTPException(
             status_code=503,
-            detail="Spotizerr not configured. Set SPOTIZERR_URL in .env.",
+            detail=(
+                "No download backend configured. Set SPOTDL_API_URL, "
+                "STREAMRIP_API_URL, SLSKD_URL, or SPOTIZERR_URL in .env."
+            ),
         )
 
     # Resolve artist + title from chart entry or request body.
@@ -726,21 +780,34 @@ async def download_chart_track(
             detail="Could not determine artist and track title for download.",
         )
 
-    from app.services.spotizerr import search_and_download
+    from app.core.security import hash_key
+    from app.services.download_chain import TrackRef, build_fast_lane_chain, try_download_chain
+    from app.services.download_dispatch import persist_cascade, spawn_watcher
 
-    result = await search_and_download(artist_name, track_title)
-    if not result:
-        raise HTTPException(
-            status_code=404,
-            detail=f"No Spotify match found for '{artist_name} - {track_title}'.",
-        )
+    # Fast lane: prefer spotdl (YouTube, independent) and defer streamrip so this
+    # on-demand download never waits behind the Lidarr backfill's streamrip lock.
+    track_ref = TrackRef(artist=artist_name, title=track_title)
+    cascade = await try_download_chain(track_ref, chain_override=build_fast_lane_chain())
+
+    record = await persist_cascade(
+        session=session,
+        cascade=cascade,
+        track_title=track_title,
+        artist_name=artist_name,
+        requested_by=hash_key(_key)[:16] if _key != "anonymous" else None,
+    )
+
+    if not cascade.success:
+        last = cascade.attempts[-1] if cascade.attempts else None
+        detail = (last.error if last else None) or f"No download source found for '{artist_name} - {track_title}'."
+        raise HTTPException(status_code=502, detail=detail)
+
+    await spawn_watcher(record, cascade)
 
     return {
-        "status": result.get("status", "unknown"),
-        "task_id": result.get("task_id", ""),
+        "status": record.status,
+        "task_id": record.task_id or "",
+        "source": record.source,
         "artist_name": artist_name,
         "track_title": track_title,
-        "spotify_id": result.get("spotify_id", ""),
-        "matched_artist": result.get("matched_artist", ""),
-        "matched_title": result.get("matched_title", ""),
     }

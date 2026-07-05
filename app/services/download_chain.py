@@ -862,15 +862,42 @@ def get_chain(purpose: str) -> list[BackendChainEntry]:
     return list(getattr(routing, purpose))
 
 
-async def try_download_chain(track_ref: TrackRef, purpose: str = "individual") -> CascadeResult:
+def build_fast_lane_chain(purpose: str = "individual") -> list[BackendChainEntry]:
+    """Reorder the ``purpose`` chain into a "fast lane" for chart downloads (issue #64).
+
+    spotdl (YouTube Music — an independent sidecar with no global lock) is moved
+    first; streamrip (the backend the Lidarr backfill saturates via its single
+    ``_streamrip_lock``) is moved last. Everything else keeps its configured order
+    in between. Each entry's ``enabled``/``min_quality``/``timeout_s`` is preserved.
+
+    This is what lets on-demand and auto-downloaded chart tracks out-run the
+    backfill: they resolve via spotdl immediately and only fall back to streamrip
+    (which may be blocked behind an in-flight backfill rip) as a last resort — so
+    the backfill itself needs no throttling.
+    """
+    chain = get_chain(purpose)
+    spotdl = [e for e in chain if e.backend == BackendName.SPOTDL]
+    streamrip = [e for e in chain if e.backend == BackendName.STREAMRIP]
+    middle = [e for e in chain if e.backend not in (BackendName.SPOTDL, BackendName.STREAMRIP)]
+    return spotdl + middle + streamrip
+
+
+async def try_download_chain(
+    track_ref: TrackRef,
+    purpose: str = "individual",
+    chain_override: list[BackendChainEntry] | None = None,
+) -> CascadeResult:
     """Walk the priority chain for ``purpose``, return the first success.
 
     Each backend is constructed fresh per attempt so config changes pick up
     immediately. Quality thresholds are evaluated against the adapter's
     declared expected quality (variable-quality backends like slskd compare
     against the actual picked file inside their adapter).
+
+    ``chain_override`` bypasses the configured chain for ``purpose`` — used by the
+    charts "fast lane" (see :func:`build_fast_lane_chain`).
     """
-    chain = get_chain(purpose)
+    chain = chain_override if chain_override is not None else get_chain(purpose)
     cascade = CascadeResult(success=False)
 
     for entry in chain:

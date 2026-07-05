@@ -396,8 +396,16 @@ class Settings(BaseSettings):
     SPOTIZERR_URL: str = ""  # e.g. http://spotizerr:7171
     SPOTIZERR_USERNAME: str = ""  # only needed if Spotizerr ENABLE_AUTH=true
     SPOTIZERR_PASSWORD: str = ""  # only needed if Spotizerr ENABLE_AUTH=true
-    CHARTS_SPOTIZERR_AUTO_ADD: bool = False  # auto-download unmatched chart tracks
-    CHARTS_SPOTIZERR_MAX_ADDS: int = 50  # max tracks to download per chart build
+    CHARTS_SPOTIZERR_AUTO_ADD: bool = False  # [legacy] superseded by CHARTS_AUTODOWNLOAD_ENABLED
+    CHARTS_SPOTIZERR_MAX_ADDS: int = 50  # [legacy] superseded by CHARTS_AUTODOWNLOAD_TOP_N
+
+    # Auto-download top chart tracks through the multi-backend download cascade
+    # (issue #64). Supersedes the Spotizerr-specific knobs above — those are still
+    # honored for back-compat via the charts_autodownload_enabled property. Tracks
+    # are fetched on a "fast lane" (spotdl/YouTube first, streamrip last) so they
+    # never queue behind the Lidarr backfill's streamrip lock.
+    CHARTS_AUTODOWNLOAD_ENABLED: bool = False  # auto-download top not-in-library chart tracks
+    CHARTS_AUTODOWNLOAD_TOP_N: int = 20  # max tracks to fetch per build (across all charts)
 
     # ------------------------------------------------------------------
     # slskd (Soulseek) — optional peer-to-peer download backend
@@ -531,6 +539,15 @@ class Settings(BaseSettings):
             if dom == "*" and month == "*" and dow == "*" and minute.isdigit() and hour.isdigit():
                 return f"daily {int(hour):02d}:{int(minute):02d} UTC"
         return self.CHARTS_CRON
+
+    @property
+    def charts_autodownload_enabled(self) -> bool:
+        """Whether to auto-download top chart tracks via the download cascade (issue #64).
+
+        Honors the legacy Spotizerr-specific flag so pre-existing configs that set
+        CHARTS_SPOTIZERR_AUTO_ADD keep auto-downloading without edits.
+        """
+        return bool(self.CHARTS_AUTODOWNLOAD_ENABLED or self.CHARTS_SPOTIZERR_AUTO_ADD)
 
     @property
     def spotdl_enabled(self) -> bool:

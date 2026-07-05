@@ -2526,9 +2526,14 @@
                 return;
             }
             const isTrack = s.chartType === 'top_tracks';
-            const showMove = !!s.compare;            // column present whenever a trend window is selected
+            const showMove = !!s.compare;            // user selected a trend window
             const cmpAvailable = !!(c && c.compared_to);
-            const moveCol = showMove ? ' 64px' : '';
+            // Only render the movement column when a comparison snapshot actually
+            // exists. Otherwise the subtitle ("no snapshot ~Nd back") explains the
+            // absence, instead of filling every row with a meaningless dash that
+            // reads as broken.
+            const moveColActive = showMove && cmpAvailable;
+            const moveCol = moveColActive ? ' 64px' : '';
 
             const table = document.createElement('div');
             table.className = 'charts-table';
@@ -2538,7 +2543,7 @@
 
             const head = document.createElement('div');
             head.className = 'charts-row charts-row-head';
-            const moveHead = showMove ? ['Δ ' + s.compare] : [];
+            const moveHead = moveColActive ? ['Δ ' + s.compare] : [];
             const headers = isTrack
                 ? ['#'].concat(moveHead, ['', 'Title', 'Artist', 'Plays', 'Listeners', 'Status'])
                 : ['#'].concat(moveHead, ['', 'Artist', 'Plays', 'Listeners', 'Tracks', 'Status']);
@@ -2559,10 +2564,10 @@
                 numCell.textContent = (entry.position + 1);
                 row.appendChild(numCell);
 
-                if (showMove) {
+                if (moveColActive) {
                     const moveCell = document.createElement('div');
                     moveCell.className = 'charts-c charts-c-move';
-                    moveCell.appendChild(_chartsMovement(entry, cmpAvailable));
+                    moveCell.appendChild(_chartsMovement(entry));
                     row.appendChild(moveCell);
                 }
 
@@ -2657,18 +2662,14 @@
         return scope;
     }
 
-    /* Position-movement chip for a chart entry vs. an earlier snapshot.
-     * positive position_change = climbed (lower rank number). previously=null
+    /* Position-movement chip for a chart entry vs. an earlier snapshot. Only
+     * called when a comparison snapshot exists (the column is hidden otherwise),
+     * so every entry resolves to NEW / up / down / held — never a bare "no data"
+     * dash. positive position_change = climbed (lower rank number); previously=null
      * marks a new/re-entered entry. Palette mirrors the reco-audit rank deltas:
      * accent = up, wine = down (not green/red). */
-    function _chartsMovement(entry, available) {
+    function _chartsMovement(entry) {
         const span = document.createElement('span');
-        if (!available) {
-            span.className = 'charts-move charts-move-none';
-            span.textContent = '—';
-            span.title = 'No earlier snapshot to compare against';
-            return span;
-        }
         const prev = entry.previously;
         if (prev === null || prev === undefined) {
             span.className = 'charts-move-new';
@@ -2686,9 +2687,13 @@
             span.textContent = '▼ ' + Math.abs(d);
             span.title = 'Down ' + Math.abs(d) + ' · was #' + (prev + 1);
         } else {
+            // Held position: a real "no change" (was and still is #N), rendered
+            // as "=" so it's unmistakably distinct from up/down/NEW — and, because
+            // the column is hidden when there's no comparison data, never confused
+            // with a missing-snapshot dash.
             span.className = 'charts-move charts-move-flat';
-            span.textContent = '–';
-            span.title = 'No change · #' + (prev + 1);
+            span.textContent = '=';
+            span.title = 'Held #' + (prev + 1) + ' — no change';
         }
         return span;
     }
@@ -2739,6 +2744,39 @@
                 c2.className = 'charts-status-chip charts-status-via-lidarr';
                 c2.textContent = 'via lidarr';
                 cell.appendChild(c2);
+            }
+            return;
+        }
+
+        /* Per-track cascade download status (issue #64) — for a track row this is
+         * more specific than the artist-level Lidarr status, so it wins. */
+        const ds = entry.download_status;
+        if (ds) {
+            const c = document.createElement('span');
+            if (ds === 'completed') {
+                c.className = 'charts-status-chip charts-status-done';
+                c.textContent = '⬇ downloaded';
+                c.title = 'Downloaded — appears in your library after the next scan';
+            } else if (ds === 'downloading') {
+                c.className = 'charts-status-chip charts-status-dl';
+                c.textContent = '⬇ downloading';
+            } else if (ds === 'failed') {
+                c.className = 'charts-status-chip charts-status-failed';
+                c.textContent = '✗ failed';
+                c.title = 'Download failed — retry below';
+            } else {
+                c.className = 'charts-status-chip charts-status-dl';
+                c.textContent = '⬇ queued';
+            }
+            cell.appendChild(c);
+            if (ds === 'failed' && (entry.track_title || entry.artist_name)) {
+                const rbtn = document.createElement('button');
+                rbtn.type = 'button';
+                rbtn.className = 'charts-get-btn';
+                rbtn.textContent = '⬇ retry';
+                rbtn.title = 'Retry download';
+                rbtn.addEventListener('click', () => _chartsDownload(rbtn, entry));
+                cell.appendChild(rbtn);
             }
             return;
         }
@@ -2797,7 +2835,7 @@
             scope: s.scope,
             position: entry.position,
         }).then(data => {
-            if (data && (data.status === 'downloading' || data.status === 'duplicate')) {
+            if (data && ['queued', 'downloading', 'duplicate', 'completed'].indexOf(data.status) !== -1) {
                 btn.outerHTML = '<span class="charts-status-chip charts-status-dl">⬇ queued</span>';
                 GIQ.toast({
                     message: 'Queued — track sent to download cascade',

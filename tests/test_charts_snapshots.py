@@ -357,20 +357,34 @@ async def test_list_charts_counts_latest_only(client):
 
 async def test_download_position_scoped_to_latest_snapshot(client, monkeypatch):
     # Two snapshots, same position present in each -> an unscoped query would
-    # raise MultipleResultsFound. Enable spotizerr + stub the downloader so we
-    # exercise the position-resolution path.
+    # raise MultipleResultsFound. Configure a backend + stub the cascade so we
+    # exercise the position-resolution path (issue #64: cascade, not Spotizerr).
     await _seed(
         [
             {"position": 0, "snapshot_date": "2024-01-01", "artist": "OldArtist", "title": "OldSong"},
             {"position": 0, "snapshot_date": "2024-01-02", "artist": "NewArtist", "title": "NewSong"},
         ]
     )
-    monkeypatch.setattr(settings, "SPOTIZERR_URL", "http://test-spotizerr")
+    monkeypatch.setattr(settings, "SPOTDL_API_URL", "http://test-spotdl")
 
-    async def fake_search_and_download(artist, title):
-        return {"status": "queued", "task_id": "t-123", "matched_artist": artist, "matched_title": title}
+    from app.services import download_chain, download_dispatch
+    from app.services.download_chain import CascadeResult
 
-    monkeypatch.setattr("app.services.spotizerr.search_and_download", fake_search_and_download)
+    captured = {}
+
+    async def fake_chain(track_ref, purpose="individual", chain_override=None):
+        captured["artist"] = track_ref.artist
+        captured["title"] = track_ref.title
+        return CascadeResult(
+            success=True, attempts=[], final_backend="spotdl", final_task_id="t-123", final_status="queued"
+        )
+
+    async def fake_spawn(record, cascade):
+        return None
+
+    monkeypatch.setattr(download_chain, "build_fast_lane_chain", lambda purpose="individual": [])
+    monkeypatch.setattr(download_chain, "try_download_chain", fake_chain)
+    monkeypatch.setattr(download_dispatch, "spawn_watcher", fake_spawn)
 
     resp = await client.post(
         "/v1/charts/download",
@@ -381,3 +395,4 @@ async def test_download_position_scoped_to_latest_snapshot(client, monkeypatch):
     # Resolved the LATEST snapshot's entry, not the old one (and didn't 500).
     assert data["artist_name"] == "NewArtist"
     assert data["track_title"] == "NewSong"
+    assert captured["title"] == "NewSong"

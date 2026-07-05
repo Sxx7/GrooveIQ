@@ -39,6 +39,7 @@ from app.services.download_chain import (
     search_via_handle,
     try_download_chain,
 )
+from app.services.download_dispatch import persist_cascade, spawn_watcher
 from app.services.download_routing import get_routing
 from app.services.spotdl import get_download_client
 
@@ -552,61 +553,27 @@ async def _persist_cascade_request(
     api_key: str,
     user_id: str | None = None,
 ) -> DownloadRequest:
-    """Write a DownloadRequest row from the cascade outcome."""
-    last = cascade.attempts[-1] if cascade.attempts else None
-    source = cascade.final_backend or (last.backend if last else "none")
-    status = cascade.final_status if cascade.success else (last.status if last else "error")
-    err_msg: str | None = None
-    if not cascade.success:
-        err_msg = (last.error if last else None) or "no backend succeeded"
+    """Write a DownloadRequest row from the cascade outcome.
 
-    slskd_username = None
-    slskd_filename = None
-    slskd_transfer_id = None
-    if cascade.success and cascade.final_backend == BackendName.SLSKD.value:
-        slskd_username = cascade.final_extra.get("username")
-        slskd_filename = cascade.final_extra.get("filename")
-        slskd_transfer_id = cascade.final_task_id
-
-    record = DownloadRequest(
+    Thin wrapper over :func:`app.services.download_dispatch.persist_cascade` that
+    resolves ``requested_by`` from the caller's API key.
+    """
+    return await persist_cascade(
+        session=session,
+        cascade=cascade,
         spotify_id=spotify_id,
-        task_id=cascade.final_task_id,
-        status=status,
-        source=source,
         track_title=track_title,
         artist_name=artist_name,
         album_name=album_name,
         cover_url=cover_url,
-        slskd_username=slskd_username,
-        slskd_filename=slskd_filename,
-        slskd_transfer_id=slskd_transfer_id,
-        attempts=[a.to_dict() for a in cascade.attempts] or None,
         requested_by=hash_key(api_key)[:16] if api_key != "anonymous" else None,
-        user_id=user_id or None,
-        error_message=err_msg,
-        updated_at=int(time.time()),
+        user_id=user_id,
     )
-    session.add(record)
-    await session.flush()
-    return record
 
 
 async def _spawn_watcher_for(record: DownloadRequest, cascade) -> None:
-    """Pick the right watcher based on which backend served the download.
-
-    spotdl/streamrip/spotizerr → ``download_watcher.start_watcher(task_id)``
-    slskd                       → ``slskd_watcher.start_watcher(record.id)``
-    """
-    if cascade.final_backend == BackendName.SLSKD.value:
-        from app.services.slskd_watcher import start_watcher as start_slskd_watcher
-
-        await start_slskd_watcher(record.id)
-        return
-
-    if record.task_id and record.status not in ("error", "unknown"):
-        from app.services.download_watcher import start_watcher
-
-        await start_watcher(record.task_id, source=cascade.final_backend)
+    """Backwards-compatible alias for :func:`download_dispatch.spawn_watcher`."""
+    await spawn_watcher(record, cascade)
 
 
 # ---------------------------------------------------------------------------

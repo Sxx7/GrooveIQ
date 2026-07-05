@@ -31,6 +31,12 @@ _STRIP_RE = re.compile(r"[^\w\s]", re.UNICODE)
 # since ~2020.  It's a grey music note — useless as a real image.
 _LASTFM_PLACEHOLDER_HASH = "2a96cbd8b46e442fc41c2b86b821562f"
 
+# DownloadRequest statuses that mean "already have it, or it's in flight" — used
+# to skip re-queuing a chart track we've already fetched (issue #64). A prior
+# *failure* is deliberately absent, so failed tracks stay eligible for retry on
+# the next daily build.
+_DL_ACTIVE_OR_DONE = ("completed", "queued", "downloading", "duplicate", "processing")
+
 
 def _pick_image_url(images: list) -> str | None:
     """Pick the best image URL from Last.fm's image array.
@@ -350,38 +356,42 @@ async def _send_artists_to_lidarr(
 
 
 # ---------------------------------------------------------------------------
-# Spotizerr integration (individual track downloads)
+# Cascade auto-download (individual chart-track downloads, issue #64)
 # ---------------------------------------------------------------------------
 
 
 async def _send_tracks_via_cascade(
     tracks: list[tuple[str, str]],
-    max_adds: int = 50,
+    max_adds: int = 20,
 ) -> dict[str, int]:
-    """Send unmatched chart tracks through the bulk_per_track download cascade.
+    """Auto-download unmatched chart tracks through the download cascade (issue #64).
 
-    The cascade walks the configured priority chain (streamrip → spotdl →
-    spotizerr → slskd by default) and stops at the first backend that
-    successfully queues the track. Each attempt — successful or not — is
-    recorded on the persisted ``DownloadRequest.attempts`` log.
+    Tracks are fetched on a **fast lane** (:func:`build_fast_lane_chain` — spotdl/
+    YouTube first, streamrip last) so they never queue behind the Lidarr backfill's
+    streamrip lock. Candidates arrive in chart-position order, so the ``max_adds``
+    cap naturally prioritises the highest-ranked not-in-library tracks.
 
-    For each successfully-queued download:
-      1. Persists a ``download_requests`` row visible in
-         ``GET /v1/downloads`` alongside user-initiated requests.
-      2. Spawns the appropriate watcher so completion triggers the
-         media-server refresh + GrooveIQ library scan.
+    Tracks already downloaded or in flight (per ``DownloadRequest`` history) are
+    skipped so a daily rebuild doesn't re-queue the same chart-toppers. Each queued
+    download persists a ``download_requests`` row (visible in ``GET /v1/downloads``)
+    and spawns the appropriate watcher so completion triggers the media-server
+    refresh + GrooveIQ library scan.
     """
     from app.models.db import DownloadRequest
-    from app.models.download_routing_schema import BackendName
-    from app.services.download_chain import TrackRef, try_download_chain
+    from app.services.download_chain import (
+        TrackRef,
+        build_fast_lane_chain,
+        try_download_chain,
+    )
+    from app.services.download_dispatch import persist_cascade, spawn_watcher
 
     if not settings.download_enabled:
         logger.warning("Charts: no download backend configured, skipping track downloads")
-        return {"sent": 0, "not_found": 0, "duplicate": 0, "errors": 0}
+        return {"sent": 0, "not_found": 0, "duplicate": 0, "errors": 0, "already_have": 0}
 
-    stats = {"sent": 0, "not_found": 0, "duplicate": 0, "errors": 0}
+    stats = {"sent": 0, "not_found": 0, "duplicate": 0, "errors": 0, "already_have": 0}
 
-    # Deduplicate by normalised artist+title.
+    # Deduplicate by normalised artist+title (within this run).
     seen: set[tuple[str, str]] = set()
     unique: list[tuple[str, str]] = []
     for artist, title in tracks:
@@ -390,54 +400,64 @@ async def _send_tracks_via_cascade(
             seen.add(key)
             unique.append((artist, title))
 
+    # Skip tracks we've already downloaded or that are in flight, so a daily
+    # rebuild doesn't re-queue the same chart-toppers every day. Only
+    # success/in-flight statuses count — a prior failure stays eligible for retry.
+    already: set[tuple[str, str]] = set()
+    try:
+        async with AsyncSessionLocal() as hist_session:
+            rows = (
+                await hist_session.execute(
+                    select(DownloadRequest.artist_name, DownloadRequest.track_title).where(
+                        DownloadRequest.status.in_(_DL_ACTIVE_OR_DONE)
+                    )
+                )
+            ).all()
+        for a, t in rows:
+            if a and t:
+                already.add((_normalize(a), _normalize(t)))
+    except Exception as exc:
+        logger.warning("Charts: could not load download history for dedup: %s", exc)
+
+    # Compute the fast-lane chain once (cheap, in-memory routing config).
+    fast_lane = build_fast_lane_chain()
+
     sent = 0
     for artist, title in unique:
         if sent >= max_adds:
             break
 
+        if (_normalize(artist), _normalize(title)) in already:
+            stats["already_have"] += 1
+            continue
+
         track_ref = TrackRef(artist=artist, title=title)
         try:
-            cascade = await try_download_chain(track_ref, purpose="bulk_per_track")
+            cascade = await try_download_chain(track_ref, chain_override=fast_lane)
         except Exception as exc:
             logger.error("Charts cascade failed for %s — %s: %s", artist, title, exc)
             stats["errors"] += 1
             continue
 
-        last = cascade.attempts[-1] if cascade.attempts else None
-        source = cascade.final_backend or (last.backend if last else "none")
-        status = cascade.final_status if cascade.success else (last.status if last else "error")
-        err_msg = None if cascade.success else (last.error if last else "no backend succeeded")
-
-        slskd_username = None
-        slskd_filename = None
-        slskd_transfer_id = None
-        if cascade.success and cascade.final_backend == BackendName.SLSKD.value:
-            slskd_username = cascade.final_extra.get("username")
-            slskd_filename = cascade.final_extra.get("filename")
-            slskd_transfer_id = cascade.final_task_id
-
-        record_id: int | None = None
         try:
             async with AsyncSessionLocal() as dl_session:
-                row = DownloadRequest(
-                    task_id=cascade.final_task_id,
-                    status=status,
-                    source=source,
+                record = await persist_cascade(
+                    session=dl_session,
+                    cascade=cascade,
                     track_title=title,
                     artist_name=artist,
-                    slskd_username=slskd_username,
-                    slskd_filename=slskd_filename,
-                    slskd_transfer_id=slskd_transfer_id,
-                    attempts=[a.to_dict() for a in cascade.attempts] or None,
                     requested_by="__charts__",
-                    error_message=err_msg,
-                    updated_at=int(time.time()),
                 )
-                dl_session.add(row)
                 await dl_session.commit()
-                record_id = row.id
+                if cascade.success:
+                    try:
+                        await spawn_watcher(record, cascade)
+                    except Exception as exc:
+                        logger.warning("Charts: watcher spawn failed for %s — %s: %s", artist, title, exc)
         except Exception as exc:
-            logger.warning("Charts: could not persist download row for %s — %s: %s", artist, title, exc)
+            logger.warning("Charts: could not persist download for %s — %s: %s", artist, title, exc)
+            stats["errors"] += 1
+            continue
 
         if not cascade.success:
             # No backend matched/succeeded — bucket between "not_found" (every
@@ -449,23 +469,12 @@ async def _send_tracks_via_cascade(
                 stats["not_found"] += 1
             continue
 
-        # Success: pick the right watcher for the chosen backend.
-        if cascade.final_backend == BackendName.SLSKD.value:
-            if record_id is not None:
-                from app.services.slskd_watcher import start_watcher as start_slskd_watcher
-
-                await start_slskd_watcher(record_id)
-        elif cascade.final_task_id:
-            from app.services.download_watcher import start_watcher
-
-            await start_watcher(cascade.final_task_id, source=cascade.final_backend)
-
-        if status == "duplicate":
+        if cascade.final_status == "duplicate":
             stats["duplicate"] += 1
         else:
             stats["sent"] += 1
             sent += 1
-            logger.info("Charts: queued %s — %s via %s", artist, title, source)
+            logger.info("Charts: queued %s — %s via %s", artist, title, cascade.final_backend)
 
     return stats
 
@@ -615,14 +624,17 @@ async def build_charts() -> dict[str, Any]:
             summary["artists_sent_to_lidarr"] = lidarr_result.get("sent", 0)
             summary["lidarr_detail"] = lidarr_result
 
-        # Send unmatched tracks to Spotizerr for individual download.
-        if spotizerr_candidates and settings.CHARTS_SPOTIZERR_AUTO_ADD and settings.spotizerr_enabled:
-            spotizerr_result = await _send_tracks_to_spotizerr(
+        # Auto-download the top not-in-library chart tracks through the download
+        # cascade (issue #64) — gated on any backend being configured, not the
+        # legacy Spotizerr-only path. Fast lane: spotdl first, streamrip last.
+        if spotizerr_candidates and settings.charts_autodownload_enabled and settings.download_enabled:
+            autodl_result = await _send_tracks_via_cascade(
                 spotizerr_candidates,
-                max_adds=settings.CHARTS_SPOTIZERR_MAX_ADDS,
+                max_adds=settings.CHARTS_AUTODOWNLOAD_TOP_N,
             )
-            summary["tracks_sent_to_spotizerr"] = spotizerr_result.get("sent", 0)
-            summary["spotizerr_detail"] = spotizerr_result
+            summary["tracks_autodownloaded"] = autodl_result.get("sent", 0)
+            summary["tracks_sent_to_spotizerr"] = autodl_result.get("sent", 0)  # back-compat key
+            summary["autodownload_detail"] = autodl_result
 
     except Exception as exc:
         logger.error("Charts build failed: %s", exc, exc_info=True)
