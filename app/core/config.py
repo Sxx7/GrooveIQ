@@ -404,8 +404,10 @@ class Settings(BaseSettings):
     # honored for back-compat via the charts_autodownload_enabled property. Tracks
     # are fetched on a "fast lane" (spotdl/YouTube first, streamrip last) so they
     # never queue behind the Lidarr backfill's streamrip lock.
-    CHARTS_AUTODOWNLOAD_ENABLED: bool = False  # auto-download top not-in-library chart tracks
-    CHARTS_AUTODOWNLOAD_TOP_N: int = 20  # max tracks to fetch per build (across all charts)
+    # On by default, but doubly gated: nothing downloads unless CHARTS_ENABLED is
+    # on AND at least one download backend is configured (download_enabled).
+    CHARTS_AUTODOWNLOAD_ENABLED: bool = True  # auto-download top not-in-library chart tracks
+    CHARTS_AUTODOWNLOAD_TOP_N: int = 50  # max tracks to fetch per build (across all charts)
 
     # ------------------------------------------------------------------
     # slskd (Soulseek) — optional peer-to-peer download backend
