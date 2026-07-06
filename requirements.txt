@@ -30,7 +30,7 @@ cryptography>=47.0.0
 redis>=8.0.0                      # optional: cross-process rate limiting (set REDIS_URL)
 
 # Logging
-structlog==24.*
+structlog==26.*
 
 # Audio metadata (ID3/Vorbis/FLAC tag reading)
 mutagen>=1.47
