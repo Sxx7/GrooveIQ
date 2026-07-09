@@ -40,6 +40,31 @@ from app.models.db import TrackFeatures
 
 logger = logging.getLogger(__name__)
 
+# title / artist / album / genre are all VARCHAR(512) on TrackFeatures.
+# Postgres rejects an over-length write with StringDataRightTruncationError,
+# which aborts the whole sync transaction — including the media_server_id
+# updates batched into the same commit — leaving freshly-scanned tracks
+# unlinked (a single classical track with a very long title starved ~20k
+# rows of their media_server_id, so clients that reference tracks by the
+# media-server ID could not start radio/affinity sessions for them). Clamp
+# incoming server metadata defensively so one bad value can't poison the run.
+_METADATA_MAX_LEN = 512
+
+
+def _clamp_meta(value: str | None, *, field: str, tf_id: int) -> str | None:
+    """Truncate an over-length metadata string to the column limit, logging the culprit."""
+    if value is not None and len(value) > _METADATA_MAX_LEN:
+        logger.warning(
+            "Media sync: clamped over-length %s (%d>%d chars) for track_features id=%s",
+            field,
+            len(value),
+            _METADATA_MAX_LEN,
+            tf_id,
+        )
+        return value[:_METADATA_MAX_LEN]
+    return value
+
+
 # Timeout for media server HTTP requests (seconds).
 _HTTP_TIMEOUT = 30.0
 
@@ -945,14 +970,21 @@ async def sync_track_ids(session: AsyncSession, present_paths: set[str] | None =
             result.tracks_matched_by_path += 1
 
         # Refresh title/artist/album/genre from the server when they've drifted.
-        if r.title != st.title or r.artist != st.artist or r.album != st.album or r.genre != st.genre:
+        # Clamp to the column limit first so a single over-length server value
+        # can't abort the whole sync transaction (and so an already-clamped row
+        # doesn't look "drifted" every sync and re-update forever).
+        s_title = _clamp_meta(st.title, field="title", tf_id=r.id)
+        s_artist = _clamp_meta(st.artist, field="artist", tf_id=r.id)
+        s_album = _clamp_meta(st.album, field="album", tf_id=r.id)
+        s_genre = _clamp_meta(st.genre, field="genre", tf_id=r.id)
+        if r.title != s_title or r.artist != s_artist or r.album != s_album or r.genre != s_genre:
             metadata_updates.append(
                 {
                     "tf_id": r.id,
-                    "title": st.title,
-                    "artist": st.artist,
-                    "album": st.album,
-                    "genre": st.genre,
+                    "title": s_title,
+                    "artist": s_artist,
+                    "album": s_album,
+                    "genre": s_genre,
                 }
             )
             result.metadata_updated += 1

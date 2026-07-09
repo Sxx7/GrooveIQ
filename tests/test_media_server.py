@@ -20,11 +20,13 @@ from app.db.session import get_session
 from app.main import app
 from app.models.db import Base, ListenEvent, TrackFeatures, TrackInteraction, User
 from app.services.media_server import (
+    _METADATA_MAX_LEN,
     MediaServerTrack,
     _aatd_key,
     _atd_key,
     _canon_artist_set,
     _canon_str,
+    _clamp_meta,
     _duration_compatible,
     _extract_mbid_from_plex_guid,
     _normalise_path,
@@ -1379,3 +1381,25 @@ class TestMatcherPriorityChain:
             # Post-#37: sync writes media_server_id, never mutates track_id.
             assert row.track_id == "old-id"
             assert row.media_server_id == "match"
+
+
+class TestMetadataClamp:
+    """Over-length server metadata must be truncated so one bad value can't
+    abort the whole sync transaction (and starve every row of media_server_id)."""
+
+    def test_short_value_passes_through(self):
+        assert _clamp_meta("Go Fast", field="title", tf_id=1) == "Go Fast"
+
+    def test_none_passes_through(self):
+        assert _clamp_meta(None, field="genre", tf_id=1) is None
+
+    def test_over_length_is_truncated_to_column_limit(self):
+        long_title = "x" * (_METADATA_MAX_LEN + 50)
+        clamped = _clamp_meta(long_title, field="title", tf_id=42)
+        assert clamped is not None
+        assert len(clamped) == _METADATA_MAX_LEN
+        assert clamped == "x" * _METADATA_MAX_LEN
+
+    def test_exactly_at_limit_is_untouched(self):
+        exact = "y" * _METADATA_MAX_LEN
+        assert _clamp_meta(exact, field="album", tf_id=7) == exact

@@ -54,6 +54,7 @@ _EPOCHS = 30
 _BATCH_SIZE = 64
 _MIN_SESSIONS = 20  # don't train with fewer sessions
 _MIN_VOCAB = 10  # don't train with fewer unique tracks
+_MAX_TRAIN_SECONDS = 300  # wall-clock safety cap so a pathological run can't wedge the pipeline
 
 
 class SASRecModel:
@@ -229,12 +230,18 @@ class SASRecModel:
                 grad = softmax.copy()
                 grad[target] -= 1.0
 
-                # Update item embeddings via output layer gradient.
-                # d_loss/d_embedding = output[t] * grad (for prediction head).
+                # Update item embeddings via output-layer gradient.
+                # d_loss/d_embedding = output[t] * grad (prediction head).
+                #
+                # Vectorised: the previous `for v in range(vocab_size)` Python
+                # loop ran once per target position, per sequence, per epoch —
+                # O(vocab) GIL-bound work that made this the pipeline's slowest
+                # step and, under memory/CPU pressure, could wedge it for hours.
+                # `np.outer` applies the identical update in one BLAS call (the
+                # skipped |grad|<=1e-6 rows only shifted by a negligible ~lr*1e-6,
+                # so dropping the threshold is numerically faithful).
                 hidden = output[t]
-                for v in range(self.vocab_size):
-                    if abs(grad[v]) > 1e-6:
-                        self.item_embeddings[v] -= lr * grad[v] * hidden
+                self.item_embeddings -= lr * np.outer(grad, hidden)
 
                 # Update the hidden state's contributing embedding.
                 embed_grad = grad @ self.item_embeddings
@@ -348,10 +355,19 @@ def _train_model_sync(
         dropout=_DROPOUT,
     )
 
+    train_deadline = time.monotonic() + _MAX_TRAIN_SECONDS
     for epoch in range(_EPOCHS):
         loss = model.train_epoch(token_sequences, lr=_LEARNING_RATE)
         if epoch % 10 == 0:
             logger.debug(f"SASRec epoch {epoch}: loss={loss:.4f}")
+        if time.monotonic() > train_deadline:
+            logger.warning(
+                "SASRec training hit the %ds wall-clock cap at epoch %d/%d; stopping early with a usable model.",
+                _MAX_TRAIN_SECONDS,
+                epoch + 1,
+                _EPOCHS,
+            )
+            break
 
     return model, vocab, inv_vocab
 

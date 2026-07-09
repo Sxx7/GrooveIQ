@@ -455,6 +455,14 @@ async def _purge_old_mixes() -> None:
         logger.info("Purged %d archived mixes older than 180 days.", deleted)
 
 
+# One recommendation-pipeline run at a time. The hourly APScheduler job is
+# max_instances=1, but the startup run is invoked directly (bypassing that),
+# so a wedged scheduled run and a startup run could otherwise stack and both
+# grind — which is what pinned the SASRec step for ~22h. This flag makes an
+# overlapping trigger a no-op instead.
+_pipeline_running = False
+
+
 async def _periodic_recommendation_pipeline(trigger: str = "scheduled") -> None:
     """
     Run the 9-step recommendation data pipeline with full instrumentation.
@@ -467,58 +475,66 @@ async def _periodic_recommendation_pipeline(trigger: str = "scheduled") -> None:
     """
     import asyncio
 
-    from app.services.pipeline_state import (
-        finish_run,
-        start_run,
-        step_complete,
-        step_failed,
-        step_start,
-    )
+    global _pipeline_running
+    if _pipeline_running:
+        logger.warning("Recommendation pipeline already running; skipping overlapping '%s' trigger.", trigger)
+        return
+    _pipeline_running = True
+    try:
+        from app.services.pipeline_state import (
+            finish_run,
+            start_run,
+            step_complete,
+            step_failed,
+            step_start,
+        )
 
-    run = start_run(trigger=trigger)
-    logger.info(f"Recommendation pipeline started (run_id={run.run_id}, trigger={trigger}).")
+        run = start_run(trigger=trigger)
+        logger.info(f"Recommendation pipeline started (run_id={run.run_id}, trigger={trigger}).")
 
-    # ── Step definitions ─────────────────────────────────────────────
-    # (step_name, display, import_path, callable_name)
-    _steps = [
-        # Replay events parked because their track wasn't linked yet — run first so
-        # recovered plays are aggregated by the same pipeline cycle.
-        ("resolve_pending", "Resolve parked events", "app.services.event_service", "resolve_pending_events_job"),
-        ("sessionizer", "Sessionizer", "app.services.sessionizer", "run_sessionizer"),
-        ("track_scoring", "Track scoring", "app.services.track_scoring", "run_track_scoring"),
-        ("taste_profiles", "Taste profiles", "app.services.taste_profile", "run_taste_profile_builder"),
-        ("collab_filter", "CF model rebuild", "app.services.collab_filter", "build_model"),
-        ("ranker", "Ranker training", "app.services.ranker", "train_model"),
-        ("session_embeddings", "Session embeddings", "app.services.session_embeddings", "train"),
-        ("lastfm_cache", "Last.fm cache", "app.services.lastfm_candidates", "build_cache"),
-        ("sasrec", "SASRec training", "app.services.sasrec", "train"),
-        ("session_gru", "Session GRU", "app.services.session_gru", "train"),
-        ("music_map", "2D music map (UMAP)", "app.services.music_map", "build_map"),
-    ]
+        # ── Step definitions ─────────────────────────────────────────────
+        # (step_name, display, import_path, callable_name)
+        _steps = [
+            # Replay events parked because their track wasn't linked yet — run first so
+            # recovered plays are aggregated by the same pipeline cycle.
+            ("resolve_pending", "Resolve parked events", "app.services.event_service", "resolve_pending_events_job"),
+            ("sessionizer", "Sessionizer", "app.services.sessionizer", "run_sessionizer"),
+            ("track_scoring", "Track scoring", "app.services.track_scoring", "run_track_scoring"),
+            ("taste_profiles", "Taste profiles", "app.services.taste_profile", "run_taste_profile_builder"),
+            ("collab_filter", "CF model rebuild", "app.services.collab_filter", "build_model"),
+            ("ranker", "Ranker training", "app.services.ranker", "train_model"),
+            ("session_embeddings", "Session embeddings", "app.services.session_embeddings", "train"),
+            ("lastfm_cache", "Last.fm cache", "app.services.lastfm_candidates", "build_cache"),
+            ("sasrec", "SASRec training", "app.services.sasrec", "train"),
+            ("session_gru", "Session GRU", "app.services.session_gru", "train"),
+            ("music_map", "2D music map (UMAP)", "app.services.music_map", "build_map"),
+        ]
 
-    for step_name, display, module_path, func_name in _steps:
-        step_start(run, step_name)
-        try:
-            import importlib
+        for step_name, display, module_path, func_name in _steps:
+            step_start(run, step_name)
+            try:
+                import importlib
 
-            # `module_path` comes from the hardcoded `_steps` list above; never user input.
-            mod = importlib.import_module(module_path)  # nosemgrep
-            func = getattr(mod, func_name)
-            result = await func()
-            metrics = result if isinstance(result, dict) else {}
-            step_complete(run, step_name, metrics=metrics)
-            logger.info(f"{display} done ({run.steps[step_name].duration_ms}ms)", extra=metrics)
-        except Exception:
-            err = traceback.format_exc()
-            step_failed(run, step_name, error=err)
-            logger.error(f"{display} failed: {err}")
-        await asyncio.sleep(0.1)  # yield to event loop between heavy steps
+                # `module_path` comes from the hardcoded `_steps` list above; never user input.
+                mod = importlib.import_module(module_path)  # nosemgrep
+                func = getattr(mod, func_name)
+                result = await func()
+                metrics = result if isinstance(result, dict) else {}
+                step_complete(run, step_name, metrics=metrics)
+                logger.info(f"{display} done ({run.steps[step_name].duration_ms}ms)", extra=metrics)
+            except Exception:
+                err = traceback.format_exc()
+                step_failed(run, step_name, error=err)
+                logger.error(f"{display} failed: {err}")
+            await asyncio.sleep(0.1)  # yield to event loop between heavy steps
 
-    finish_run(run)
-    logger.info(
-        f"Recommendation pipeline complete (run_id={run.run_id}, "
-        f"{run.status.value}, {int((run.ended_at - run.started_at) * 1000)}ms total)"
-    )
+        finish_run(run)
+        logger.info(
+            f"Recommendation pipeline complete (run_id={run.run_id}, "
+            f"{run.status.value}, {int((run.ended_at - run.started_at) * 1000)}ms total)"
+        )
+    finally:
+        _pipeline_running = False
 
 
 async def _periodic_discovery() -> None:
