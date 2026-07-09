@@ -1558,6 +1558,54 @@ GIQ.components.versionedConfigShell = function versionedConfigShell(opts) {
         }
         const value = state.working[groupKey][fieldKey];
 
+        // Boolean fields render as an on/off toggle. The slider/number controls
+        // below are numeric-only: for a bool they show a blank number box and a
+        // meaningless slider, and dragging would write a number that fails bool
+        // validation on save.
+        const boolDefault = state.defaults?.config?.[groupKey]?.[fieldKey];
+        if (typeof value === 'boolean' || typeof boolDefault === 'boolean') {
+            const toggleLbl = document.createElement('label');
+            toggleLbl.className = 'lbf-toggle-inline';
+            const cb = document.createElement('input');
+            cb.type = 'checkbox';
+            cb.checked = !!value;
+            const stateText = document.createElement('span');
+            stateText.className = 'muted';
+            stateText.textContent = cb.checked ? 'on' : 'off';
+            toggleLbl.appendChild(cb);
+            toggleLbl.appendChild(stateText);
+            ctrls.appendChild(toggleLbl);
+            row.appendChild(ctrls);
+
+            const info = document.createElement('div');
+            info.className = 'vc-field-info';
+            const desc = document.createElement('span');
+            desc.className = 'vc-field-desc';
+            desc.textContent = (meta.desc || '').replace(/\s*\[RETRAIN\]\s*/i, '');
+            info.appendChild(desc);
+            const defaultIndicator = document.createElement('span');
+            defaultIndicator.className = 'vc-field-default';
+            info.appendChild(defaultIndicator);
+            row.appendChild(info);
+
+            const syncDefault = () => {
+                defaultIndicator.textContent = fieldDeviatesFromDefault(groupKey, fieldKey)
+                    ? 'default: ' + state.defaults.config[groupKey][fieldKey]
+                    : '';
+            };
+            syncDefault();
+
+            cb.addEventListener('change', () => {
+                state.working[groupKey][fieldKey] = cb.checked;
+                stateText.textContent = cb.checked ? 'on' : 'off';
+                row.classList.toggle('dirty', fieldDirty(groupKey, fieldKey));
+                syncDefault();
+                _refreshGroupBadges(groupKey);
+                _refreshHeader();
+            });
+            return row;
+        }
+
         const slider = document.createElement('input');
         slider.type = 'range';
         slider.className = 'vc-slider';
