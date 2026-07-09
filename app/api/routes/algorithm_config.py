@@ -23,11 +23,17 @@ router = APIRouter()
 
 
 def _row_to_response(row) -> dict:
+    # Normalise the stored blob through the current schema so newly-added groups
+    # / fields (e.g. `affinity`) are always present with their defaults. Versions
+    # saved before a group existed otherwise return a config missing that key,
+    # and the dashboard editor — which renders every group in CONFIG_GROUPS —
+    # crashes on the undefined group. model_validate fills the gaps.
+    config = AlgorithmConfigData.model_validate(row.config or {}).model_dump()
     return {
         "id": row.id,
         "version": row.version,
         "name": row.name,
-        "config": row.config,
+        "config": config,
         "is_active": row.is_active,
         "created_at": row.created_at,
         "created_by": row.created_by,

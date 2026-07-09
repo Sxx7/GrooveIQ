@@ -1550,6 +1550,12 @@ GIQ.components.versionedConfigShell = function versionedConfigShell(opts) {
         const ctrls = document.createElement('div');
         ctrls.className = 'vc-field-controls';
 
+        // Defensive: a config version saved before this group existed won't carry
+        // it in the working copy. Seed it from defaults so the editor renders (and
+        // can save) the group instead of throwing on an undefined group object.
+        if (state.working[groupKey] == null) {
+            state.working[groupKey] = deepClone(state.defaults?.config?.[groupKey] || {});
+        }
         const value = state.working[groupKey][fieldKey];
 
         const slider = document.createElement('input');
