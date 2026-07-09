@@ -110,6 +110,7 @@ async def start_affinity(
         seed_value=body.seed_value,
         db=db,
         unheard_only=body.unheard_only,
+        gate=body.gate,
     )
 
     if session.seed_embedding is None:
@@ -133,6 +134,7 @@ async def start_affinity(
         seed_value=session.seed_value,
         seed_display_name=session.seed_display_name,
         unheard_only=session.unheard_only,
+        gate_active=affinity_service.gate_active(session),
         exhausted=len(tracks) < body.count,
         tracks=[AffinityTrackItem(**t) for t in tracks],
     )

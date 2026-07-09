@@ -46,6 +46,181 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
+# Genre / mood gate helpers
+#
+# Pure audio-embedding nearness spans genres (an energetic instrumental
+# electronic seed sits nearest energetic instrumental rap/pop beats that share
+# its production). The gate re-prioritises the neighbours that also share the
+# seed's *genre family* and *mood*, so results stay close but feel like the same
+# kind of music. Everything below is pure/deterministic so it is unit-testable
+# without a DB or FAISS index.
+# ---------------------------------------------------------------------------
+
+# Broad genre families keyed by substring. Order matters: the first family with
+# any matching substring wins, so less-ambiguous families (hip-hop, rock, r&b …)
+# are checked before the broad "electronic" bucket, which itself precedes "pop".
+# Labels are lower-cased before matching; the map is multilingual on purpose
+# (the dev library carries French labels: "Électronique", "Alternatif et Indé").
+_GENRE_FAMILY_KEYWORDS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("hiphop", ("hip hop", "hip-hop", "hiphop", "rap", "trap", "drill", "grime", "boom bap")),
+    ("rnb", ("r&b", "rnb", "r and b", "rhythm and blues", "soul", "funk", "motown", "neo-soul")),
+    ("reggae", ("reggae", "dancehall", "ska")),
+    ("classical", ("classiq", "classical", "orchestr", "baroque", "opera", "choral", "symphon", "concerto")),
+    ("jazz", ("jazz", "blues", "swing", "bebop", "bossa")),
+    ("latin", ("latin", "reggaeton", "salsa", "bachata", "cumbia", "flamenco")),
+    ("folk_country", ("folk", "country", "americana", "bluegrass", "singer-songwriter", "singer songwriter")),
+    (
+        "rock",
+        (
+            "rock",
+            "metal",
+            "punk",
+            "grunge",
+            "hardcore",
+            "shoegaze",
+            "emo",
+            "indie",
+            "indé",
+            "alternatif",
+            "alternative",
+            "post-rock",
+            "post rock",
+        ),
+    ),
+    (
+        "electronic",
+        (
+            "electro",
+            "électro",
+            "electronic",
+            "dance",
+            "house",
+            "techno",
+            "trance",
+            "edm",
+            "dubstep",
+            "drum and bass",
+            "drum & bass",
+            "dnb",
+            "d&b",
+            "synth",
+            "ambient",
+            "downtempo",
+            "future",
+            "garage",
+            "concrèt",
+            "concret",
+            "idm",
+            "chillwave",
+            "vaporwave",
+            "breakbeat",
+            "hardstyle",
+            "lo-fi",
+            "lofi",
+            "trip hop",
+            "trip-hop",
+            "chillout",
+            "chill-out",
+        ),
+    ),
+    ("pop", ("pop", "k-pop", "kpop", "j-pop")),
+    ("film", ("film", "soundtrack", "score", "cinematic", "ost")),
+)
+
+# Fixed order for the mood vector built from EffNet mood tags.
+_MOOD_LABELS: tuple[str, ...] = ("happy", "sad", "aggressive", "relaxed", "party")
+
+
+def _genre_family(genre: str | None) -> str | None:
+    """Map a raw (possibly multilingual) genre label to a broad family, or None."""
+    if not genre:
+        return None
+    g = genre.lower()
+    for family, keywords in _GENRE_FAMILY_KEYWORDS:
+        if any(kw in g for kw in keywords):
+            return family
+    return None
+
+
+def _mood_vec(mood_tags: Any) -> np.ndarray | None:
+    """Build a fixed-order mood vector from a track's ``mood_tags`` JSON.
+
+    ``mood_tags`` is a list of ``{"label", "confidence"}`` dicts. Returns a
+    5-dim float array in ``_MOOD_LABELS`` order, or None when unusable.
+    """
+    if not mood_tags or not isinstance(mood_tags, list):
+        return None
+    conf: dict[str, float] = {}
+    for m in mood_tags:
+        if isinstance(m, dict) and "label" in m:
+            try:
+                conf[str(m["label"]).lower()] = float(m.get("confidence", 0.0))
+            except (TypeError, ValueError):
+                continue
+    if not conf:
+        return None
+    vec = np.array([conf.get(lbl, 0.0) for lbl in _MOOD_LABELS], dtype=np.float32)
+    if float(np.linalg.norm(vec)) < 1e-9:
+        return None
+    return vec
+
+
+def _mood_cos(a: np.ndarray | None, b: np.ndarray | None) -> float:
+    """Cosine similarity of two mood vectors; neutral 0.5 when either is missing."""
+    if a is None or b is None:
+        return 0.5
+    na = float(np.linalg.norm(a))
+    nb = float(np.linalg.norm(b))
+    if na < 1e-9 or nb < 1e-9:
+        return 0.5
+    return float(np.dot(a, b) / (na * nb))
+
+
+def _gate_and_rank(
+    pool: list[tuple[str, float, str | None, np.ndarray | None]],
+    seed_families: set[str],
+    seed_mood: np.ndarray | None,
+    cfg: Any,
+    count: int,
+) -> list[tuple[str, float]]:
+    """Blend embedding cosine with genre-family + mood match, then take top ``count``.
+
+    ``pool`` is ``(track_id, emb_sim, genre_family, mood_vec)`` in descending
+    embedding-cosine order. Returns ``(track_id, emb_sim)`` pairs ordered by the
+    blended score — ``emb_sim`` is preserved so callers still report the true
+    cosine-to-seed as ``similarity``. Pure function: no I/O.
+    """
+    scored: list[tuple[str, float, float, float]] = []  # tid, emb_sim, genre_match, score
+    for tid, emb_sim, fam, mood in pool:
+        genre_match = 1.0 if (fam is not None and fam in seed_families) else 0.0
+        mood_sim = _mood_cos(mood, seed_mood)
+        score = cfg.w_embedding * emb_sim + cfg.w_genre * genre_match + cfg.w_mood * mood_sim
+        scored.append((tid, emb_sim, genre_match, score))
+
+    use_hard = cfg.hard_gate and bool(seed_families)
+    if use_hard:
+        same = [s for s in scored if s[2] >= 1.0]
+        # Only enforce the hard filter when enough same-family candidates survive,
+        # otherwise a niche seed's batch would run dry — fall back to soft.
+        if len(same) >= cfg.hard_min_results:
+            ranked = same
+        else:
+            use_hard = False
+            ranked = scored
+    else:
+        ranked = scored
+
+    if not use_hard and cfg.genre_soft_penalty < 1.0 and seed_families:
+        # Soft gate: down-weight off-family candidates (never fully unless penalty==0).
+        ranked = [
+            (tid, emb, gm, score if gm >= 1.0 else score * cfg.genre_soft_penalty) for tid, emb, gm, score in ranked
+        ]
+
+    ranked.sort(key=lambda x: x[3], reverse=True)
+    return [(tid, emb) for tid, emb, _gm, _sc in ranked[:count]]
+
+
+# ---------------------------------------------------------------------------
 # Data structures
 # ---------------------------------------------------------------------------
 
@@ -67,6 +242,16 @@ class AffinitySession:
     seed_track_ids: list[str] = field(default_factory=list)  # resolved seed tracks (excluded from results)
     seed_embedding: np.ndarray | None = None  # anchor — never changes
     seed_display_name: str | None = None
+
+    # Genre/mood gate anchor (computed once from the seed tracks, then frozen).
+    # seed_genre_families: broad families the seed belongs to; seed_mood: mean
+    # EffNet mood vector. Both feed the gate in get_next_tracks.
+    seed_genre_families: set[str] = field(default_factory=set)
+    seed_mood: np.ndarray | None = None
+
+    # Per-session gate override: None -> use the algorithm-config default,
+    # True/False -> force the gate on/off for this session (for A/B by ear).
+    gate_override: bool | None = None
 
     # When True (default) already-heard tracks are excluded, so every result is
     # both close *and* new-to-the-user. When False, only disliked/served/seed
@@ -160,17 +345,52 @@ def list_sessions(user_id: str | None = None) -> list[dict[str, Any]]:
 # ---------------------------------------------------------------------------
 
 
+async def _compute_seed_profile(db: AsyncSession, track_ids: list[str]) -> tuple[set[str], np.ndarray | None]:
+    """Derive the gate anchor from the seed tracks: the set of genre families they
+    span and their mean EffNet mood vector. One indexed query; pure otherwise.
+    """
+    if not track_ids:
+        return set(), None
+    result = await db.execute(
+        select(TrackFeatures.genre, TrackFeatures.mood_tags).where(TrackFeatures.track_id.in_(track_ids))
+    )
+    families: set[str] = set()
+    mood_vecs: list[np.ndarray] = []
+    for genre, mood_tags in result.all():
+        fam = _genre_family(genre)
+        if fam:
+            families.add(fam)
+        mv = _mood_vec(mood_tags)
+        if mv is not None:
+            mood_vecs.append(mv)
+    mood = np.mean(mood_vecs, axis=0).astype(np.float32) if mood_vecs else None
+    return families, mood
+
+
+def gate_active(session: AffinitySession) -> bool:
+    """Whether the genre/mood gate will run for this session's ``/next`` calls.
+
+    The per-session override wins over the config default, and the gate is only
+    active when the seed actually has a genre family or mood anchor to gate on.
+    """
+    cfg = get_config().affinity
+    enabled = session.gate_override if session.gate_override is not None else cfg.gate_enabled
+    return bool(enabled) and (bool(session.seed_genre_families) or session.seed_mood is not None)
+
+
 async def create_affinity_session(
     user_id: str,
     seed_type: str,
     seed_value: str,
     db: AsyncSession,
     unheard_only: bool = True,
+    gate: bool | None = None,
 ) -> AffinitySession:
     """Create and initialise an affinity session from a seed.
 
     seed_type: "track" | "artist" | "playlist"
     seed_value: internal track_id or media_server_id, artist name, or playlist_id.
+    gate: per-session genre/mood gate override (None -> config default).
 
     The seed embedding is resolved exactly as radio does (track embedding, or the
     FAISS centroid of an artist's / playlist's tracks) but is then frozen — it is the
@@ -184,6 +404,7 @@ async def create_affinity_session(
         seed_type=seed_type,
         seed_value=seed_value,
         unheard_only=unheard_only,
+        gate_override=gate,
     )
 
     if seed_type == "track":
@@ -226,6 +447,9 @@ async def create_affinity_session(
         session.seed_display_name = pl_name or f"Playlist #{seed_value}"
         if session.seed_track_ids:
             session.seed_embedding = faiss_index.get_centroid(session.seed_track_ids)
+
+    # Freeze the genre/mood gate anchor alongside the embedding anchor.
+    session.seed_genre_families, session.seed_mood = await _compute_seed_profile(db, session.seed_track_ids)
 
     store_session(session)
     return session
@@ -278,21 +502,44 @@ async def get_next_tracks(session_id: str, count: int, db: AsyncSession) -> list
 
     from app.services import faiss_index
 
+    cfg = get_config().affinity
+
     exclude = set(s.served_set)
     exclude.update(s.seed_track_ids)
     exclude.update(await _get_exclusion_set(s.user_id, db, s.unheard_only))
 
-    # search() already sorts by descending cosine and sizes its internal fetch_k to
-    # survive the exclusion set, returning at most `count` surviving neighbours.
-    results = faiss_index.search(s.seed_embedding, k=count, exclude_ids=exclude)
-    if not results:
+    if gate_active(s):
+        # Oversample the neighbourhood, then re-prioritise by genre family + mood.
+        fetch_k = max(count, count * cfg.oversample)
+        pool = faiss_index.search(s.seed_embedding, k=fetch_k, exclude_ids=exclude)
+        if not pool:
+            return []
+        pool_ids = [tid for tid, _ in pool]
+        emb_by_tid = {tid: score for tid, score in pool}
+        feat_result = await db.execute(select(TrackFeatures).where(TrackFeatures.track_id.in_(pool_ids)))
+        feat_map = {t.track_id: t for t in feat_result.scalars().all()}
+        gate_pool = [
+            (tid, emb_by_tid[tid], _genre_family(feat_map[tid].genre), _mood_vec(feat_map[tid].mood_tags))
+            for tid in pool_ids
+            if tid in feat_map
+        ]
+        selected = _gate_and_rank(gate_pool, s.seed_genre_families, s.seed_mood, cfg, count)
+        final_ids = [tid for tid, _ in selected]
+        score_by_tid = {tid: emb for tid, emb in selected}
+    else:
+        # Pure cosine order. search() already sorts by descending cosine and sizes
+        # its internal fetch_k to survive the exclusion set, returning at most
+        # `count` surviving neighbours.
+        results = faiss_index.search(s.seed_embedding, k=count, exclude_ids=exclude)
+        if not results:
+            return []
+        final_ids = [tid for tid, _ in results]
+        score_by_tid = {tid: score for tid, score in results}
+        feat_result = await db.execute(select(TrackFeatures).where(TrackFeatures.track_id.in_(final_ids)))
+        feat_map = {t.track_id: t for t in feat_result.scalars().all()}
+
+    if not final_ids:
         return []
-
-    final_ids = [tid for tid, _ in results]
-    score_by_tid = {tid: score for tid, score in results}
-
-    feat_result = await db.execute(select(TrackFeatures).where(TrackFeatures.track_id.in_(final_ids)))
-    feat_map = {t.track_id: t for t in feat_result.scalars().all()}
 
     tracks: list[dict[str, Any]] = []
     for i, tid in enumerate(final_ids):

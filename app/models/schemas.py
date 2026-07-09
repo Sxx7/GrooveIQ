@@ -792,6 +792,14 @@ class AffinityStartRequest(BaseModel):
             "heard or not. Disliked tracks are always excluded."
         ),
     )
+    gate: bool | None = Field(
+        None,
+        description=(
+            "Override the genre/mood gate for this session. None (default) uses the algorithm-config "
+            "setting; true forces the gate on (results share the seed's genre family + mood); false "
+            "forces pure embedding-cosine order. Handy for A/B-ing the gate by ear."
+        ),
+    )
 
     model_config = {"use_enum_values": True}
 
@@ -821,6 +829,9 @@ class AffinityStartResponse(BaseModel):
     seed_value: str
     seed_display_name: str | None = None
     unheard_only: bool = True
+    # Whether the genre/mood gate is active for this session (echoes the effective
+    # setting after the per-request override / config default / seed-anchor check).
+    gate_active: bool = False
     # True when fewer than `count` tracks came back — the reachable neighbourhood
     # (within the library, minus heard/served/disliked) is used up.
     exhausted: bool = False

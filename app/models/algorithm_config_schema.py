@@ -645,6 +645,63 @@ class MixesConfig(BaseModel):
     )
 
 
+class AffinityConfig(BaseModel):
+    """Affinity (pure-similarity) radio genre/mood gate.
+
+    Affinity radio streams the sonically nearest library tracks to a fixed seed
+    embedding. Pure audio-embedding nearness spans genres — an energetic
+    instrumental electronic seed sits nearest to energetic instrumental rap/pop
+    beats that share its production/timbre — which doesn't match the listener's
+    "more of *this* vibe" expectation. This gate re-prioritises the nearest
+    neighbours that *also* share the seed's genre family and mood, so results
+    stay close **and** feel like the same kind of music.
+
+    The embedding cosine remains the base signal: the gate oversamples the
+    neighbourhood (``oversample`` × the requested count), blends embedding cosine
+    with a same-genre-family match and a mood-vector similarity, and returns the
+    top ``count``. Fully reversible — ``gate_enabled=false`` restores pure cosine
+    order. TTL / capacity still come from the ``radio`` group.
+    """
+
+    gate_enabled: bool = Field(
+        True, description="Master switch. When false, affinity is pure embedding cosine order (no gate)."
+    )
+    hard_gate: bool = Field(
+        False,
+        description=(
+            "When true, drop candidates outside the seed's genre family entirely (falls back to soft "
+            "gating if too few survive). When false, off-family candidates are down-weighted, not removed."
+        ),
+    )
+    oversample: int = Field(
+        12,
+        ge=1,
+        le=50,
+        description="Fetch count×oversample nearest neighbours before gating/re-ranking (larger = more room to re-prioritise).",
+    )
+    w_embedding: float = Field(
+        0.55, ge=0, le=1, description="Weight of the raw embedding cosine in the blended affinity score."
+    )
+    w_genre: float = Field(
+        0.30, ge=0, le=1, description="Weight of the same-genre-family match (1.0 if same family, else 0) in the blend."
+    )
+    w_mood: float = Field(
+        0.15, ge=0, le=1, description="Weight of mood-vector cosine similarity (EffNet mood tags) in the blend."
+    )
+    genre_soft_penalty: float = Field(
+        0.5,
+        ge=0,
+        le=1,
+        description="Soft-mode multiplier applied to an off-family candidate's blended score (0 = exclude, 1 = no penalty).",
+    )
+    hard_min_results: int = Field(
+        5,
+        ge=0,
+        le=50,
+        description="Hard-mode safety floor: if fewer same-family candidates survive than this, fall back to soft gating so a batch never runs dry.",
+    )
+
+
 # ---------------------------------------------------------------------------
 # Top-level config
 # ---------------------------------------------------------------------------
@@ -670,6 +727,7 @@ class AlgorithmConfigData(BaseModel):
     album_reco: AlbumRecoConfig = Field(default_factory=AlbumRecoConfig)
     forgotten_favourites: ForgottenFavouritesConfig = Field(default_factory=ForgottenFavouritesConfig)
     mixes: MixesConfig = Field(default_factory=MixesConfig)
+    affinity: AffinityConfig = Field(default_factory=AffinityConfig)
 
 
 # ---------------------------------------------------------------------------
@@ -789,6 +847,17 @@ CONFIG_GROUPS: list[dict[str, Any]] = [
             "played in a long time. Score is affinity (satisfaction + likes/repeats + plays) × dormancy "
             "(time since last play), with qualification gates so only proven, dormant favourites surface. "
             "No model is trained — a read-only aggregation of track_interactions."
+        ),
+        "retrain_required": False,
+    },
+    {
+        "key": "affinity",
+        "label": "Affinity Radio Gate",
+        "description": (
+            "Genre/mood gate for the pure-similarity Affinity Radio. Pure audio-embedding nearness "
+            "spans genres, so this re-prioritises the nearest neighbours that also share the seed's "
+            "genre family and mood — results stay close but feel like the same kind of music. "
+            "Set gate_enabled=false to restore pure embedding-cosine order."
         ),
         "retrain_required": False,
     },
