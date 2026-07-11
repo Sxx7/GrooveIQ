@@ -59,6 +59,7 @@ async def _insert_tracks(n: int, seed_offset: int = 0) -> list[str]:
             session.add(
                 TrackFeatures(
                     track_id=tid,
+                    media_server_id=f"ms_{tid}",
                     file_path=f"/music/{tid}.mp3",
                     bpm=120.0 + i,
                     energy=0.5,
@@ -146,6 +147,7 @@ class TestFaissIndex:
             session.add(
                 TrackFeatures(
                     track_id="no_emb",
+                    media_server_id="ms_no_emb",
                     file_path="/music/no_emb.mp3",
                     bpm=100.0,
                     energy=0.5,
@@ -158,6 +160,35 @@ class TestFaissIndex:
 
         count = await build_index()
         assert count == 3  # only tracks with embeddings
+
+    async def test_null_media_server_id_skipped(self):
+        """Tracks with an embedding but no media_server_id are NOT indexed.
+
+        They can't be played on the media server, so surfacing them as similarity
+        neighbours would land unplayable rows on the client.
+        """
+        from app.services.faiss_index import build_index, get_embedding, index_size
+
+        await _insert_tracks(3)  # 3 playable tracks (media_server_id set)
+        async with _TestSession() as session:
+            session.add(
+                TrackFeatures(
+                    track_id="no_msid",
+                    media_server_id=None,
+                    file_path="/music/no_msid.mp3",
+                    bpm=100.0,
+                    energy=0.5,
+                    embedding=_make_embedding(999),
+                    analyzed_at=int(time.time()),
+                    analysis_version="1",
+                )
+            )
+            await session.commit()
+
+        count = await build_index()
+        assert count == 3  # the null-msid track is excluded despite its embedding
+        assert index_size() == 3
+        assert get_embedding("no_msid") is None
 
     async def test_get_centroid(self):
         """Centroid of multiple tracks returns a valid vector."""

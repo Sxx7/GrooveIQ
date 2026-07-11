@@ -76,6 +76,7 @@ async def _seed_tracks(n: int = 12) -> None:
             session.add(
                 TrackFeatures(
                     track_id=f"t{i:03d}",
+                    media_server_id=f"t{i:03d}",
                     file_path=f"/music/t{i:03d}.mp3",
                     title=f"Song {i}",
                     artist=f"Artist {i % 3}",

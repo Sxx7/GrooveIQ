@@ -542,35 +542,36 @@ async def get_next_tracks(session_id: str, count: int, db: AsyncSession) -> list
         return []
 
     tracks: list[dict[str, Any]] = []
-    for i, tid in enumerate(final_ids):
+    for tid in final_ids:
         tf = feat_map.get(tid)
         s.served.append(tid)
         s.served_set.add(tid)
         s.total_served += 1
 
+        # Skip tracks with no streamable media_server_id (unplayable on the media
+        # server). Still marked served above so the outward spiral won't re-pick
+        # them. The FAISS index already excludes null-msid tracks, so this is a
+        # defensive guard; `position` is assigned post-skip to stay contiguous.
+        if tf is None or not tf.media_server_id:
+            continue
         track_data: dict[str, Any] = {
-            "position": i,
+            "position": len(tracks),
             "track_id": tid,
             "similarity": round(score_by_tid.get(tid, 0.0), 4),
+            "media_server_id": tf.media_server_id,
+            "title": tf.title,
+            "artist": tf.artist,
+            "album": tf.album,
+            "genre": tf.genre,
+            "bpm": tf.bpm,
+            "key": tf.key,
+            "mode": tf.mode,
+            "energy": tf.energy,
+            "danceability": tf.danceability,
+            "valence": tf.valence,
+            "mood_tags": tf.mood_tags,
+            "duration": tf.duration,
         }
-        if tf:
-            track_data.update(
-                {
-                    "media_server_id": tf.media_server_id,
-                    "title": tf.title,
-                    "artist": tf.artist,
-                    "album": tf.album,
-                    "genre": tf.genre,
-                    "bpm": tf.bpm,
-                    "key": tf.key,
-                    "mode": tf.mode,
-                    "energy": tf.energy,
-                    "danceability": tf.danceability,
-                    "valence": tf.valence,
-                    "mood_tags": tf.mood_tags,
-                    "duration": tf.duration,
-                }
-            )
         tracks.append(track_data)
 
     return tracks

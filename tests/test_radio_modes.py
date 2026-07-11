@@ -93,6 +93,7 @@ if _APP_OK:
                 session.add(
                     TrackFeatures(
                         track_id=tid,
+                        media_server_id=tid,
                         file_path=f"/music/proven{i}/album/{tid}.mp3",
                         duration=210.0,
                         analyzed_at=_NOW,
@@ -116,6 +117,7 @@ if _APP_OK:
                 session.add(
                     TrackFeatures(
                         track_id=tid,
+                        media_server_id=tid,
                         file_path=f"/music/weak{i}/album/{tid}.mp3",
                         duration=200.0,
                         analyzed_at=_NOW,
@@ -306,6 +308,7 @@ if _APP_OK:
             session.add(
                 TrackFeatures(
                     track_id="hotresurface",
+                    media_server_id="hotresurface",
                     file_path="/music/hot/hotresurface.mp3",
                     duration=200.0,
                     analyzed_at=_NOW,

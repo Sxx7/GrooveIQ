@@ -798,40 +798,42 @@ async def get_next_tracks(
 
     # Build response and update session state
     tracks = []
-    for i, (tid, score) in enumerate(final):
+    for tid, score in final:
         s.played.append(tid)
         s.played_set.add(tid)
         s.total_served += 1
 
         tf = feat_map.get(tid)
+        # Skip tracks with no streamable media_server_id — unplayable on the media
+        # server, they'd be instant-skip / NULL-metadata rows on the client. Still
+        # marked played above so they drop out of future batches rather than being
+        # re-selected and re-skipped. `position` is assigned post-skip so the
+        # returned list stays contiguous.
+        if tf is None or not tf.media_server_id:
+            continue
         # `tid` is the internal GrooveIQ track_id (a stable hash of the file
         # path; never rewritten by sync). The client receives both the
         # internal id and the media_server_id so it can hand the latter to
         # Navidrome for playback.
         track_data = {
-            "position": i,
+            "position": len(tracks),
             "track_id": tid,
             "source": source_map.get(tid, "unknown"),
             "score": round(score, 4),
+            "title": tf.title,
+            "artist": tf.artist,
+            "album": tf.album,
+            "genre": tf.genre,
+            "bpm": tf.bpm,
+            "key": tf.key,
+            "mode": tf.mode,
+            "energy": tf.energy,
+            "danceability": tf.danceability,
+            "valence": tf.valence,
+            "mood_tags": tf.mood_tags,
+            "duration": tf.duration,
+            "media_server_id": tf.media_server_id,
         }
-        if tf:
-            track_data.update(
-                {
-                    "title": tf.title,
-                    "artist": tf.artist,
-                    "album": tf.album,
-                    "genre": tf.genre,
-                    "bpm": tf.bpm,
-                    "key": tf.key,
-                    "mode": tf.mode,
-                    "energy": tf.energy,
-                    "danceability": tf.danceability,
-                    "valence": tf.valence,
-                    "mood_tags": tf.mood_tags,
-                    "duration": tf.duration,
-                    "media_server_id": tf.media_server_id,
-                }
-            )
         tracks.append(track_data)
 
     if not collect_audit:

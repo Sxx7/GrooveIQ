@@ -66,6 +66,7 @@ async def _add_track(session, tid: str, *, artist: str, played: bool, proven: bo
     session.add(
         TrackFeatures(
             track_id=tid,
+            media_server_id=tid,
             file_path=f"/music/{artist}/album/{tid}.mp3",
             duration=210.0,
             analyzed_at=_NOW,
@@ -260,6 +261,7 @@ async def test_novelty_filter_excludes_liked_but_thinly_played():
         session.add(
             TrackFeatures(
                 track_id="liked",
+                media_server_id="liked",
                 file_path="/music/liked/liked.mp3",
                 duration=210.0,
                 analyzed_at=_NOW,

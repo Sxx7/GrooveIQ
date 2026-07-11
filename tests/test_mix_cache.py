@@ -249,6 +249,7 @@ if _APP_OK:
                 session.add(
                     TrackFeatures(
                         track_id=tid,
+                        media_server_id=tid,
                         file_path=f"/music/artist{i}/album/{tid}.mp3",
                         title=f"Track {i}",
                         artist=f"Artist {i}",

@@ -126,10 +126,25 @@ class FaissIndex:
         return index, track_ids, id_map, matrix, centroid, n
 
     async def rebuild(self, column: str) -> int:
-        """Load all rows where ``column`` is not null and rebuild the index."""
+        """Load all rows where ``column`` is not null and rebuild the index.
+
+        Only tracks that carry a ``media_server_id`` are indexed. A track with no
+        streamable id can't be played on the media server, so returning it as a
+        similarity neighbour would land an unplayable "not on the server" row on
+        the client. This keeps duplicate / loose-copy library files — which the
+        scanner analyses under their own ``track_id`` but which lost the UNIQUE
+        ``media_server_id`` slot during media-server sync — out of every
+        FAISS-backed surface (content candidates, affinity radio, similar-tracks,
+        path / text playlists).
+        """
         col = getattr(TrackFeatures, column)
         async with AsyncSessionLocal() as session:
-            result = await session.execute(select(TrackFeatures.track_id, col).where(col.isnot(None)))
+            result = await session.execute(
+                select(TrackFeatures.track_id, col).where(
+                    col.isnot(None),
+                    TrackFeatures.media_server_id.isnot(None),
+                )
+            )
             rows = result.all()
 
         loop = asyncio.get_running_loop()

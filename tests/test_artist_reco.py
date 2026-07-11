@@ -74,6 +74,7 @@ async def _add_track(session, tid, artist, *, emb_seed=None, energy=0.5, valence
     session.add(
         TrackFeatures(
             track_id=tid,
+            media_server_id=tid,
             file_path=f"/music/{tid}.mp3",
             artist=artist,
             title=title or tid,
@@ -221,6 +222,7 @@ async def _seed_content_vs_history(s) -> None:
     s.add(
         TrackFeatures(
             track_id="tb",
+            media_server_id="tb",
             file_path="/m/tb.mp3",
             artist="NearTaste",
             title="tb",
@@ -232,6 +234,7 @@ async def _seed_content_vs_history(s) -> None:
     s.add(
         TrackFeatures(
             track_id="ta",
+            media_server_id="ta",
             file_path="/m/ta.mp3",
             artist="FarPlayed",
             title="ta",

@@ -94,6 +94,8 @@ async def recommend_forgotten_favourites(
             TrackInteraction.last_played_at <= cutoff,
             TrackInteraction.play_count >= cfg.min_play_count,
             TrackInteraction.satisfaction_score >= cfg.min_satisfaction,
+            # Only surface tracks that can actually be played on the media server.
+            TrackFeatures.media_server_id.isnot(None),
         )
     )
     rows = (await session.execute(q)).all()

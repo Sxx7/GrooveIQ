@@ -118,13 +118,23 @@ async def _engaged_pool(db: AsyncSession, user_id: str, cfg, now: int) -> dict[s
 
 
 async def _analysed_ids(db: AsyncSession, track_ids: list[str]) -> set[str]:
-    """The subset of ``track_ids`` that have a ``track_features`` row (i.e. real,
-    hydratable tracks). Tracks absent here are legacy/deleted ids that would serve
-    as NULL title/artist/media_server_id slots inside a mix, so they are excluded."""
+    """The subset of ``track_ids`` that have a hydratable, *playable* ``track_features``
+    row — the row exists **and** carries a ``media_server_id``. Tracks absent here are
+    legacy/deleted ids, or unplayable duplicate / loose-file rows that lost the UNIQUE
+    ``media_server_id`` slot during media-server sync; either way they would serve as
+    NULL title/artist/media_server_id slots inside a mix, so they are excluded from the
+    pool before a mix is built."""
     out: set[str] = set()
     for i in range(0, len(track_ids), 400):
         chunk = track_ids[i : i + 400]
-        rows = (await db.execute(select(TrackFeatures.track_id).where(TrackFeatures.track_id.in_(chunk)))).all()
+        rows = (
+            await db.execute(
+                select(TrackFeatures.track_id).where(
+                    TrackFeatures.track_id.in_(chunk),
+                    TrackFeatures.media_server_id.isnot(None),
+                )
+            )
+        ).all()
         out.update(r[0] for r in rows)
     return out
 
@@ -495,9 +505,16 @@ async def _serialise(db: AsyncSession, mixes: list[Mix]) -> list[dict]:
         tracks = []
         for tid, pos in by_mix.get(m.id, []):
             h = meta.get(tid, {})
+            # Defensively drop any already-persisted member with no streamable
+            # media_server_id (a duplicate/loose-file row, or one whose id was
+            # cleared after the mix was built) so a stale mix can't serve an
+            # unplayable row. New mixes are already gated in the pool via
+            # _analysed_ids; position is renumbered so the list stays contiguous.
+            if not h.get("media_server_id"):
+                continue
             tracks.append(
                 {
-                    "position": pos,
+                    "position": len(tracks),
                     "track_id": tid,
                     "media_server_id": h.get("media_server_id"),
                     "title": h.get("title"),

@@ -156,6 +156,7 @@ async def _seed_clap_tracks(n: int):
             s.add(
                 TrackFeatures(
                     track_id=f"t{i:04d}",
+                    media_server_id=f"t{i:04d}",
                     file_path=f"/music/t{i:04d}.mp3",
                     title=f"t{i:04d}",
                     artist="Artist",

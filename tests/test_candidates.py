@@ -73,6 +73,7 @@ async def _setup_library(n_tracks: int = 20) -> list[str]:
             session.add(
                 TrackFeatures(
                     track_id=tid,
+                    media_server_id=f"ms_{tid}",
                     file_path=f"/music/artist{i % 3}/{tid}.mp3",
                     bpm=100.0 + i * 2,
                     energy=0.3 + (i % 10) * 0.07,
@@ -327,3 +328,50 @@ class TestMergedRetrieval:
         for c in candidates:
             assert "source" in c
             assert c["source"] in ("content", "content_profile", "cf", "popular", "artist_recall")
+
+    async def test_null_media_server_id_excluded(self):
+        """Candidates with no media_server_id (unplayable) are filtered out.
+
+        A duplicate / loose-file row is analysed under its own track_id but loses
+        the UNIQUE media_server_id slot during media-server sync; it must never
+        compete for a recommendation slot and land in the client unplayable.
+        """
+        track_ids = await _setup_library(20)
+        await _setup_user("alice", track_ids[:10], n_interactions=10)
+
+        # A track with an embedding but NO media_server_id, made a strong "popular"
+        # candidate via recent plays — without the eligibility gate it would surface.
+        async with _TestSession() as session:
+            session.add(
+                TrackFeatures(
+                    track_id="nomsid",
+                    media_server_id=None,
+                    file_path="/music/artist0/nomsid.mp3",
+                    bpm=110.0,
+                    energy=0.5,
+                    embedding=_make_embedding(3),
+                    analyzed_at=_now(),
+                    analysis_version="1",
+                )
+            )
+            session.add(
+                TrackInteraction(
+                    user_id="bob",
+                    track_id="nomsid",
+                    play_count=50,
+                    satisfaction_score=0.9,
+                    last_played_at=_now(),
+                    updated_at=_now(),
+                )
+            )
+            await session.commit()
+
+        from app.services.candidate_gen import _get_playable_ids, get_candidates
+
+        candidates = await get_candidates("alice", k=50)
+        assert "nomsid" not in {c["track_id"] for c in candidates}
+
+        # The helper resolves only the playable subset.
+        async with _TestSession() as session:
+            playable = await _get_playable_ids(["nomsid", "t0", "t1"], session)
+        assert playable == {"t0", "t1"}

@@ -590,17 +590,23 @@ async def get_recommendations(
 
     # Build response.
     tracks = []
-    for i, (tid, score) in enumerate(reranked):
+    for tid, score in reranked:
+        meta = track_meta.get(tid)
+        # Skip tracks with no streamable media_server_id — they'd render as
+        # NULL-metadata / instant-skip rows on the client (mirrors the heat
+        # guard). candidate_gen already gates these out, but this belt-and-braces
+        # covers the seed-content path and any future source that bypasses it.
+        # `position` is assigned post-skip so the list stays contiguous.
+        if not meta or not meta.get("media_server_id"):
+            continue
         track_data = {
-            "position": i,
+            "position": len(tracks),
             "track_id": tid,
             "source": source_map.get(tid, "unknown"),
             "score": round(score, 4),
             "reasons": modes_svc.derive_reasons(sources_by_tid.get(tid, []), actions_by_tid.get(tid, [])),
         }
-        meta = track_meta.get(tid)
-        if meta:
-            track_data.update(meta)
+        track_data.update(meta)
         tracks.append(track_data)
 
     response = {
@@ -1158,6 +1164,9 @@ async def get_recommended_artists(
         .where(
             TrackInteraction.user_id == user_id,
             TrackFeatures.artist.in_(artist_names),
+            # Playable copies only — don't surface an unplayable null-msid row
+            # as one of an artist's top tracks.
+            TrackFeatures.media_server_id.isnot(None),
         )
         .order_by(TrackInteraction.satisfaction_score.desc())
     )

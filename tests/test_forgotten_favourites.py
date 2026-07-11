@@ -48,6 +48,7 @@ async def _add_track(session, tid, *, artist="AAA", album="Album", title=None):
     session.add(
         TrackFeatures(
             track_id=tid,
+            media_server_id=tid,
             file_path=f"/music/{tid}.mp3",
             artist=artist,
             album=album,

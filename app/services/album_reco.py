@@ -229,7 +229,13 @@ async def _group_albums(session: AsyncSession) -> dict[tuple[str, str], dict[str
                 TrackFeatures.valence,
                 TrackFeatures.danceability,
                 TrackFeatures.bpm,
-            ).where(TrackFeatures.album.isnot(None), TrackFeatures.album != "")
+            ).where(
+                TrackFeatures.album.isnot(None),
+                TrackFeatures.album != "",
+                # Playable copies only — a null-msid duplicate/loose-file row must
+                # not stand in for an album track (or inflate album coverage).
+                TrackFeatures.media_server_id.isnot(None),
+            )
         )
     ).all()
 

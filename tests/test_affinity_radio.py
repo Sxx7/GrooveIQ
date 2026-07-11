@@ -97,6 +97,11 @@ async def _seed_track(
     emb_seed: int = 1,
 ) -> None:
     now = int(time.time())
+    # Library tracks are playable by default: give every seeded track a
+    # media_server_id unless a test overrides it. Neighbours returned by FAISS
+    # must be playable, otherwise the null-msid eligibility gate drops them.
+    if media_server_id is None:
+        media_server_id = f"ms-{internal_id}"
     async with _TestSession() as session:
         session.add(
             TrackFeatures(

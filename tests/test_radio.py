@@ -310,9 +310,11 @@ class TestRadioResponseTrackIdMapping:
         assert tracks[0]["media_server_id"] == "iDkrnC4UrRVJ6HHEa83nc9"
         assert "aaaaa1234bbbbb56" in s.played_set
 
-    async def test_response_uses_internal_when_no_media_server_id(self, monkeypatch):
-        """Tracks that the sync hasn't matched yet (media_server_id IS NULL)
-        still surface the internal id — that's all we have."""
+    async def test_null_media_server_id_track_is_skipped(self, monkeypatch):
+        """A track with media_server_id IS NULL is unplayable on the media server,
+        so radio drops it from the batch rather than surfacing an internal-only id
+        the client can't hand to Navidrome. It's still marked played so the outward
+        walk won't re-select and re-skip it every batch."""
         from app.services import radio as radio_service
 
         now = int(time.time())
@@ -347,5 +349,5 @@ class TestRadioResponseTrackIdMapping:
         async with _TestSession() as db:
             tracks = await radio_service.get_next_tracks("sess-2", 1, db)
 
-        assert tracks is not None and len(tracks) == 1
-        assert tracks[0]["track_id"] == "legacy-1"
+        assert tracks == []  # unplayable (null media_server_id) → dropped from batch
+        assert "legacy-1" in s.played_set  # still marked played so it won't recur

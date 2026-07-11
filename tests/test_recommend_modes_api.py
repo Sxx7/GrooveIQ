@@ -277,6 +277,7 @@ if _APP_OK:
                 session.add(
                     TrackFeatures(
                         track_id=tid,
+                        media_server_id=tid,
                         file_path=f"/music/proven_artist{i}/album/{tid}.mp3",
                         duration=210.0,
                         bpm=120.0,
@@ -304,6 +305,7 @@ if _APP_OK:
                 session.add(
                     TrackFeatures(
                         track_id=tid,
+                        media_server_id=tid,
                         file_path=f"/music/weak_artist{i}/album/{tid}.mp3",
                         duration=200.0,
                         bpm=118.0,

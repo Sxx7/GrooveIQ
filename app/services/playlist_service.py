@@ -180,9 +180,17 @@ def _cosine_sim(a: np.ndarray, b: np.ndarray) -> float:
 
 
 async def _load_tracks(session: AsyncSession) -> list[TrackFeatures]:
-    """Load all analyzed tracks with non-null embeddings."""
+    """Load all analyzed, *playable* tracks with non-null embeddings.
+
+    Requires a ``media_server_id`` so generated playlists (flow / mood /
+    energy_curve / key_compatible) never include an unplayable duplicate or
+    loose-file row that the scanner analysed but that lost the media-server id.
+    """
     result = await session.execute(
-        select(TrackFeatures).where(TrackFeatures.embedding.isnot(None)).where(TrackFeatures.analysis_error.is_(None))
+        select(TrackFeatures)
+        .where(TrackFeatures.embedding.isnot(None))
+        .where(TrackFeatures.analysis_error.is_(None))
+        .where(TrackFeatures.media_server_id.isnot(None))
     )
     return list(result.scalars().all())
 
@@ -573,7 +581,9 @@ async def _load_text_candidates(session: AsyncSession) -> list[tuple[str, str]]:
     worker thread.
     """
     result = await session.execute(
-        select(TrackFeatures.track_id, TrackFeatures.clap_embedding).where(TrackFeatures.clap_embedding.isnot(None))
+        select(TrackFeatures.track_id, TrackFeatures.clap_embedding)
+        .where(TrackFeatures.clap_embedding.isnot(None))
+        .where(TrackFeatures.media_server_id.isnot(None))
     )
     return [(tid, emb) for tid, emb in result.all()]
 

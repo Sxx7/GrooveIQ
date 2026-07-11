@@ -80,7 +80,13 @@ async def _build_track_lookup(
                 TrackFeatures.media_server_id,
                 TrackFeatures.artist,
                 TrackFeatures.title,
-            ).where(TrackFeatures.artist.isnot(None), TrackFeatures.title.isnot(None))
+            ).where(
+                TrackFeatures.artist.isnot(None),
+                TrackFeatures.title.isnot(None),
+                # Match Last.fm top tracks only to playable library copies so an
+                # artist card never links a null-msid duplicate/loose-file row.
+                TrackFeatures.media_server_id.isnot(None),
+            )
         )
     ).all()
     lookup: dict[tuple[str, str], tuple[str, str | None]] = {}

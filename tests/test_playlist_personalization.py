@@ -62,6 +62,7 @@ def _clap_b64(vec: np.ndarray) -> str:
 async def _add_track(s, tid, *, energy=0.5, bpm=120.0, mood_conf=0.8, emb_seed=0, clap=None):
     kw = dict(
         track_id=tid,
+        media_server_id=tid,
         file_path=f"/music/{tid}.mp3",
         title=tid,
         artist="Artist",

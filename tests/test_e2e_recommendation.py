@@ -124,6 +124,7 @@ async def _create_library():
             session.add(
                 TrackFeatures(
                     track_id=f"t{i}",
+                    media_server_id=f"t{i}",
                     file_path=f"/music/{'Metal' if is_metal else 'Chill'}/album{i % 4}/track{i}.mp3",
                     title=f"Track {i}",
                     artist=f"{'Metal' if is_metal else 'Chill'} Artist {i % 4}",

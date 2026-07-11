@@ -246,6 +246,32 @@ async def _get_recently_played_artist_tracks(user_id: str, session: AsyncSession
     return [{"track_id": tid, "score": cfg.artist_recall, "source": "artist_recall"} for tid in tracks]
 
 
+async def _get_playable_ids(track_ids: list[str], session: AsyncSession) -> set[str]:
+    """Subset of ``track_ids`` whose track carries a streamable ``media_server_id``.
+
+    A candidate without one can't be played on the media server — it would surface
+    as an unplayable "not on the server" row on the client (a duplicate / loose
+    library file that the scanner analysed but which lost the UNIQUE
+    ``media_server_id`` slot during media-server sync). The FAISS content source
+    already excludes these at index-build time, but CF / SASRec / Last.fm /
+    popular / artist-recall draw from models and interaction tables that can still
+    emit a null-msid row, so the merged pool is gated here before ranking.
+    """
+    if not track_ids:
+        return set()
+    playable: set[str] = set()
+    for i in range(0, len(track_ids), 500):
+        chunk = track_ids[i : i + 500]
+        rows = await session.execute(
+            select(TrackFeatures.track_id).where(
+                TrackFeatures.track_id.in_(chunk),
+                TrackFeatures.media_server_id.isnot(None),
+            )
+        )
+        playable.update(r[0] for r in rows.all())
+    return playable
+
+
 async def get_candidates(
     user_id: str,
     seed_track_id: str | None = None,
@@ -415,6 +441,12 @@ async def _get_candidates_impl(
                 continue
             seen.add(tid)
             merged.append(c)
+
+    # Eligibility gate: drop candidates with no streamable media_server_id so
+    # unplayable duplicate / loose-file rows can't compete for a slot and land in
+    # the client as "not on the media server" rows (see _get_playable_ids).
+    playable = await _get_playable_ids([c["track_id"] for c in merged], session)
+    merged = [c for c in merged if c["track_id"] in playable]
 
     # --- Discovery-dial: per-source weight multipliers (gated) ---
     # The dial-resolved preset can up/down-weight whole sources (e.g. boost
