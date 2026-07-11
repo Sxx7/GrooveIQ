@@ -251,6 +251,52 @@ def test_service_does_not_import_resurfacing():
         assert forbidden not in imported
 
 
+@pytest.mark.asyncio
+async def test_tap_next_skip_does_not_penalise_heat():
+    """A 'skip' after hearing most of the track (high completion) is a tap-next, not a
+    rejection — it must NOT depress heat. Only a genuine early abandon penalises."""
+    now = _now()
+    async with _Session() as s:
+        # KEEP: 6 plays, then a skip at 60% completion (tap-next) — should stay hot.
+        for i in range(6):
+            await _play(s, "KEEP", now - i * _DAY // 6)
+        s.add(ListenEvent(user_id=_USER, track_id="KEEP", event_type="skip",
+                          timestamp=now, value=0.6, dwell_ms=180_000))
+        # BAIL: 6 plays, then an early skip at 5% completion — should be penalised.
+        for i in range(6):
+            await _play(s, "BAIL", now - i * _DAY // 6)
+        s.add(ListenEvent(user_id=_USER, track_id="BAIL", event_type="skip",
+                          timestamp=now, value=0.05, dwell_ms=400))
+        await s.commit()
+    ranked, _ = await _ranked()
+    heat = {tid: h for tid, h, _ in ranked}
+    sig = {tid: sg for tid, _, sg in ranked}
+    # The tap-next skip contributes no penalty; the early skip does.
+    assert sig["KEEP"]["skips"] == 0.0
+    assert sig["BAIL"]["skips"] > 0.0
+    assert heat["KEEP"] > heat["BAIL"]
+
+
+@pytest.mark.asyncio
+async def test_legacy_seconds_value_not_counted_as_full_listen():
+    """A legacy play_end whose `value` is elapsed SECONDS (>1) for a short play must
+    not be mislabelled a full listen via the fraction path."""
+    now = _now()
+    async with _Session() as s:
+        for i in range(4):
+            s.add(ListenEvent(user_id=_USER, track_id="LEG", event_type="play_start",
+                              timestamp=now - i * 100))
+            # value=3.0 (legacy seconds, a 3-second abandon), no dwell_ms
+            s.add(ListenEvent(user_id=_USER, track_id="LEG", event_type="play_end",
+                              timestamp=now - i * 100 + 1, value=3.0))
+        await s.commit()
+    ranked, _ = await _ranked()
+    sig = {tid: sg for tid, _, sg in ranked}
+    # 4 plays, but zero full-listens (value=3.0 is legacy seconds, not a 0.8+ fraction).
+    if "LEG" in sig:
+        assert sig["LEG"]["full_listens"] == 0
+
+
 def test_heat_reason_chips():
     assert heat_playlist.heat_reason({"succession_count": 3, "plays": 5}) == "on repeat"
     assert heat_playlist.heat_reason({"succession_count": 0, "plays": 7}) == "played 7× recently"

@@ -55,9 +55,27 @@ def _decay(now: int, ts: int, half_life_s: float) -> float:
 
 
 def _is_full_listen(value, dwell_ms, cfg) -> bool:
-    if value is not None and value >= cfg.full_listen_completion:
+    """Whether a play_end represents a full listen. dwell-first (the accurate
+    signal); ``value`` is a completion FRACTION in [0, 1] — a legacy elapsed-seconds
+    value (> 1) is ignored here and left to the dwell branch, so a short legacy play
+    is never mislabelled a full listen (mirrors track_scoring after c110691)."""
+    if dwell_ms is not None and dwell_ms >= cfg.full_listen_ms:
         return True
-    return dwell_ms is not None and dwell_ms >= cfg.full_listen_ms
+    return value is not None and value <= 1.0 and value >= cfg.full_listen_completion
+
+
+def _is_early_skip(value, dwell_ms, cfg) -> bool:
+    """Whether a play_end / skip represents a genuine early abandon — a heat
+    *penalty* — as opposed to a tap-next after hearing most of the track (which must
+    NOT penalise heat; heavy-rotation tracks emit exactly those). dwell-first, then
+    the completion fraction; unknown → not a penalty."""
+    if _is_full_listen(value, dwell_ms, cfg):
+        return False
+    if value is not None and value <= 1.0:
+        return value < cfg.skip_completion
+    # No usable completion fraction (missing, or legacy seconds-form): fall back to
+    # dwell — short and not a full listen → an early skip; otherwise unknown.
+    return dwell_ms is not None and dwell_ms < cfg.full_listen_ms
 
 
 async def get_heat_tracks(
@@ -131,10 +149,14 @@ async def get_heat_tracks(
             if _is_full_listen(value, dwell_ms, cfg):
                 acc.d_full += w
                 acc.n_full += 1
-            elif value is not None and value < cfg.skip_completion:
+            elif _is_early_skip(value, dwell_ms, cfg):
                 acc.d_skip += w
         elif etype == "skip":
-            acc.d_skip += w
+            # Only a genuine early abandon is a heat penalty. A skip after hearing
+            # most of the track is a tap-next, not a rejection — counting it would
+            # penalise exactly the heavy-rotation tracks Heat exists to surface.
+            if _is_early_skip(value, dwell_ms, cfg):
+                acc.d_skip += w
 
     scored: list[tuple[str, float, dict]] = []
     hero_count = 0
