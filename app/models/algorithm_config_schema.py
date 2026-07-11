@@ -720,6 +720,69 @@ class AffinityConfig(BaseModel):
     )
 
 
+class HeatConfig(BaseModel):
+    """The "Heat playlist" surface (GET /v1/users/{user}/heat).
+
+    Ranks the user's currently-hottest tracks by RECENT play intensity plus a
+    succession bonus for tracks played back-to-back / on repeat in short
+    succession. Every count is recency-decayed at the event level and passed
+    through log1p, so a heavily-played track cleanly outranks a lightly-played
+    one WITHOUT the resurfacing full_listen<=3 cap. Fully isolated from
+    resurfacing.py — new service, on-demand, read-only, no model, no migration.
+    """
+
+    enabled: bool = Field(True, description="Master switch for the Heat surface")
+
+    window_days: int = Field(
+        21, ge=3, le=90, description="Hard window: only play events newer than this contribute to heat"
+    )
+    half_life_days: float = Field(
+        7.0, ge=0.5, le=60, description="Recency half-life applied per event: weight = 0.5**(age_days/half_life)"
+    )
+
+    # Base intensity weights (applied to log1p of the recency-decayed counts).
+    w_play: float = Field(0.6, ge=0, le=10, description="Weight on log1p(decayed play count)")
+    w_full_listen: float = Field(1.0, ge=0, le=10, description="Weight on log1p(decayed full-listen count)")
+    w_skip_penalty: float = Field(0.5, ge=0, le=10, description="Penalty weight on log1p(decayed skip count)")
+
+    # Succession bonus — the "played in short succession" signal.
+    w_succession: float = Field(1.2, ge=0, le=10, description="Weight on log1p(decayed succession count)")
+    succession_gap_minutes: float = Field(
+        20.0,
+        ge=1,
+        le=180,
+        description="Two consecutive same-track plays count as 'in succession' only if their start-to-start gap is at most this",
+    )
+
+    # Signal derivation thresholds (how a play_end becomes a full-listen or a skip).
+    full_listen_completion: float = Field(
+        0.8, ge=0, le=1, description="play_end completion ratio at/above which a play counts as a full listen"
+    )
+    full_listen_ms: int = Field(
+        30000, ge=0, le=600000, description="dwell_ms at/above which a play counts as a full listen (OR with completion)"
+    )
+    skip_completion: float = Field(
+        0.2, ge=0, le=1, description="play_end completion below which the play also counts as a skip signal"
+    )
+
+    # Qualification floor.
+    min_plays: int = Field(2, ge=1, le=50, description="Min raw play count in the window for a track to qualify")
+    min_heat: float = Field(0.5, ge=0, le=20, description="Min heat score for a track to appear in the surface")
+
+    # Conditional-hero eligibility.
+    hot_threshold: float = Field(1.5, ge=0, le=20, description="A track is 'hot' when its heat is at least this")
+    hero_window_days: int = Field(
+        7, ge=1, le=60, description="Hero counts only hot tracks whose most-recent play is within this many days"
+    )
+    hero_min_tracks: int = Field(
+        8,
+        ge=1,
+        le=50,
+        description="Heat becomes the #1 library hero when at least this many tracks are hot within hero_window_days",
+    )
+    limit: int = Field(60, ge=5, le=200, description="Default number of tracks returned by the Heat surface")
+
+
 # ---------------------------------------------------------------------------
 # Top-level config
 # ---------------------------------------------------------------------------
@@ -746,6 +809,7 @@ class AlgorithmConfigData(BaseModel):
     forgotten_favourites: ForgottenFavouritesConfig = Field(default_factory=ForgottenFavouritesConfig)
     mixes: MixesConfig = Field(default_factory=MixesConfig)
     affinity: AffinityConfig = Field(default_factory=AffinityConfig)
+    heat: HeatConfig = Field(default_factory=HeatConfig)
 
 
 # ---------------------------------------------------------------------------
@@ -876,6 +940,17 @@ CONFIG_GROUPS: list[dict[str, Any]] = [
             "spans genres, so this re-prioritises the nearest neighbours that also share the seed's "
             "genre family and mood — results stay close but feel like the same kind of music. "
             "Set gate_enabled=false to restore pure embedding-cosine order."
+        ),
+        "retrain_required": False,
+    },
+    {
+        "key": "heat",
+        "label": "Heat Playlist",
+        "description": (
+            "The Heat surface: the tracks you're currently hammering. Ranks by recent play intensity "
+            "(recency-decayed, log-scaled so it isn't capped like Keep-listening) plus a bonus for tracks "
+            "played back-to-back in short succession. Also decides when Heat is strong enough to become the "
+            "#1 library hero. No model is trained — a read-only aggregation of recent play events."
         ),
         "retrain_required": False,
     },

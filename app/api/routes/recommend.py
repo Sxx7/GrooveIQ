@@ -806,6 +806,83 @@ async def get_resurfacing(
     return {"user_id": user_id, "request_id": request_id, "stage": stage, "tracks": tracks}
 
 
+@router.get(
+    "/users/{user_id}/heat",
+    summary="The Heat playlist — the tracks the user is currently hammering",
+    description=(
+        "Returns the user's currently-hottest tracks, highest heat first: ranked by recent play "
+        "intensity (recency-decayed, log-scaled so it is not capped like 'Keep listening') plus a "
+        "bonus for tracks played back-to-back in short succession. Each track carries a `heat` score, "
+        "a `reason` chip, and a `signals` breakdown. `is_hero_eligible` says whether the set is strong "
+        "enough (enough hot tracks in the last few days) to become the #1 library hero; the client uses "
+        "it to decide whether to promote Heat above the session mixes. Read-only: writes no events. "
+        "Isolated from the resurfacing 'Keep listening' surface."
+    ),
+)
+async def get_heat_playlist(
+    user_id: str,
+    limit: int = Query(60, ge=5, le=200),
+    session: AsyncSession = Depends(get_session),
+    _key: str = Depends(require_api_key),
+):
+    from app.services import heat_playlist
+
+    validate_user_id(user_id)
+    check_user_access(_key, user_id)
+
+    result = await session.execute(select(User.user_id).where(User.user_id == user_id))
+    if result.scalar_one_or_none() is None:
+        raise HTTPException(status_code=404, detail="Not found.")
+
+    # A fresh request_id ties this served list to the client's impression/play events (the client
+    # fires reco_impression on surface "library:heat"); the endpoint itself writes nothing.
+    request_id = str(uuid.uuid4())
+    ranked, is_hero_eligible = await heat_playlist.get_heat_tracks(session, user_id, limit=limit)
+    if not ranked:
+        return {
+            "user_id": user_id,
+            "request_id": request_id,
+            "is_hero_eligible": False,
+            "count": 0,
+            "tracks": [],
+        }
+
+    feat_result = await session.execute(
+        select(TrackFeatures).where(TrackFeatures.track_id.in_([tid for tid, _, _ in ranked]))
+    )
+    feat_map = {t.track_id: t for t in feat_result.scalars().all()}
+
+    tracks = []
+    for tid, heat, signals in ranked:
+        tf = feat_map.get(tid)
+        # Skip orphans (no track_features row) and tracks with no streamable id — they would
+        # render as NULL-metadata / instant-skip rows on the client.
+        if tf is None or not tf.media_server_id:
+            continue
+        tracks.append(
+            {
+                "position": len(tracks),
+                "track_id": tid,
+                "heat": round(heat, 4),
+                "reason": heat_playlist.heat_reason(signals),
+                "signals": signals,
+                "title": tf.title,
+                "artist": tf.artist,
+                "album": tf.album,
+                "duration": tf.duration,
+                "media_server_id": tf.media_server_id,
+            }
+        )
+
+    return {
+        "user_id": user_id,
+        "request_id": request_id,
+        "is_hero_eligible": is_hero_eligible,
+        "count": len(tracks),
+        "tracks": tracks,
+    }
+
+
 @router.post(
     "/users/{user_id}/tracks/{track_id}/suppress",
     summary="Stop resurfacing a track (the dismiss action)",
