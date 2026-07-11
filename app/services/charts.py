@@ -1075,9 +1075,18 @@ async def build_single_chart(chart_type: str, scope: str, *, limit: int | None =
 
     Powers the live country/genre picker: when the UI requests a scope the
     scheduled daily build didn't cover, we fetch just that chart from Last.fm,
-    match it, resolve cover art, and write today's snapshot — so it then reads
-    back through the normal ``GET /v1/charts/{type}`` path with full
-    trend/snapshot support and starts accruing history from first view.
+    match it, and write today's snapshot — so it then reads back through the
+    normal ``GET /v1/charts/{type}`` path with full trend/snapshot support and
+    starts accruing history from first view.
+
+    **Cover art is deliberately NOT resolved here.** On a box with a download
+    backend, ``_resolve_cover_art`` fires one streamrip/spotdl *search per
+    unmatched track*, which would turn an interactive "show me Germany's top
+    tracks" click into a multi-minute wait (and hammer the download sidecar).
+    Instead, covers come from (a) matched library tracks at serve time, (b) the
+    ``cover_art_cache``, and (c) the nightly :func:`build_charts` cron, which
+    does resolve them. Track charts thus render immediately; unmatched entries
+    show the Last.fm image or a placeholder until the cron backfills.
 
     Unlike :func:`build_charts`, this does **not** queue downloads or Lidarr
     adds — merely viewing a chart must not trigger acquisition. Idempotent per
@@ -1106,11 +1115,9 @@ async def build_single_chart(chart_type: str, scope: str, *, limit: int | None =
         now = int(time.time())
         _lim = limit or settings.CHARTS_TOP_LIMIT
 
+        # No cover client on the interactive path — see docstring. Covers come
+        # from library matches (serve time), the cache, and the nightly cron.
         cover_client = None
-        if settings.download_enabled:
-            from app.services.spotdl import get_download_client
-
-            cover_client = get_download_client()
 
         try:
             async with AsyncSessionLocal() as session:
