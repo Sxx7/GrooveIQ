@@ -207,7 +207,10 @@ class _ChartClient:
         except httpx.HTTPStatusError as exc:
             logger.warning("tag.getTopTracks failed for %r: %s", tag, exc)
             return []
-        tracks = data.get("toptracks", {}).get("track", [])
+        # NB: tag.getTopTracks JSON root is "tracks" (the XML element is
+        # <toptracks>, but Last.fm's JSON serialisation renames it), unlike
+        # tag.getTopArtists ("topartists") / tag.getTopAlbums ("albums").
+        tracks = data.get("tracks", {}).get("track", [])
         return tracks if isinstance(tracks, list) else [tracks]
 
     async def get_tag_top_artists(self, tag: str, limit: int = 100) -> list[dict[str, Any]]:

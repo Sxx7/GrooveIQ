@@ -99,6 +99,24 @@ async def test_resolve_artist_fetch_scope_parsing():
         await ch.close()
 
 
+async def test_tag_top_tracks_parses_tracks_key(monkeypatch):
+    # Regression: tag.getTopTracks' JSON root is "tracks" (the XML element is
+    # <toptracks>, but Last.fm's JSON renames it). Reading "toptracks" silently
+    # yielded 0 genre track charts.
+    ch = _ChartClient("fake-key")
+
+    async def fake_get(params):
+        assert params["method"] == "tag.getTopTracks"
+        return {"tracks": {"track": [{"name": "A", "artist": {"name": "X"}}], "@attr": {}}}
+
+    monkeypatch.setattr(ch, "_get", fake_get)
+    try:
+        tracks = await ch.get_tag_top_tracks("rock", 3)
+        assert len(tracks) == 1 and tracks[0]["name"] == "A"
+    finally:
+        await ch.close()
+
+
 # ---------------------------------------------------------------------------
 # Cross-snapshot identity keys
 # ---------------------------------------------------------------------------
