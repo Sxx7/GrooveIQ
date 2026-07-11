@@ -659,12 +659,13 @@ class ChartEntry(Base):
     __tablename__ = "chart_entries"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    chart_type = Column(String(32), nullable=False, index=True)  # top_tracks, top_artists
+    chart_type = Column(String(32), nullable=False, index=True)  # top_tracks, top_artists, top_albums
     scope = Column(String(128), nullable=False, index=True)  # global, tag:rock, geo:germany
     position = Column(Integer, nullable=False)  # 0-based chart position
 
-    # Track/artist info from Last.fm
-    track_title = Column(String(512), nullable=True)  # null for artist charts
+    # Track/artist/album info from Last.fm
+    track_title = Column(String(512), nullable=True)  # null except for track charts
+    album_name = Column(String(512), nullable=True)  # null except for album charts
     artist_name = Column(String(512), nullable=False)
     artist_mbid = Column(String(64), nullable=True)
     playcount = Column(BigInteger, nullable=True)

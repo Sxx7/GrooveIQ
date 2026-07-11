@@ -10,6 +10,7 @@ Charts are rebuilt periodically (default: every 24h) by the scheduler.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 import time
@@ -225,6 +226,44 @@ class _ChartClient:
         artists = data.get("topartists", {}).get("artist", [])
         return artists if isinstance(artists, list) else [artists]
 
+    async def get_geo_top_artists(self, country: str, limit: int = 100, page: int = 1) -> list[dict[str, Any]]:
+        """Top artists by country (geo.getTopArtists)."""
+        try:
+            data = await self._get(
+                {
+                    "method": "geo.getTopArtists",
+                    "country": country,
+                    "limit": limit,
+                    "page": page,
+                }
+            )
+        except httpx.HTTPStatusError as exc:
+            logger.warning("geo.getTopArtists failed for %r: %s", country, exc)
+            return []
+        artists = data.get("topartists", {}).get("artist", [])
+        return artists if isinstance(artists, list) else [artists]
+
+    async def get_tag_top_albums(self, tag: str, limit: int = 100, page: int = 1) -> list[dict[str, Any]]:
+        """Top albums by genre tag (tag.getTopAlbums).
+
+        Last.fm exposes album charts only per-tag — there is no global or geo
+        album chart — so album scopes are always ``tag:<genre>``.
+        """
+        try:
+            data = await self._get(
+                {
+                    "method": "tag.getTopAlbums",
+                    "tag": tag,
+                    "limit": limit,
+                    "page": page,
+                }
+            )
+        except httpx.HTTPStatusError as exc:
+            logger.warning("tag.getTopAlbums failed for %r: %s", tag, exc)
+            return []
+        albums = data.get("albums", {}).get("album", [])
+        return albums if isinstance(albums, list) else [albums]
+
 
 # ---------------------------------------------------------------------------
 # Library matching
@@ -270,6 +309,33 @@ async def _build_artist_lookup(session: AsyncSession) -> dict[str, list[str]]:
     for track_id, artist in rows:
         norm = _normalize(artist)
         lookup.setdefault(norm, []).append(track_id)
+    return lookup
+
+
+async def _build_album_lookup(session: AsyncSession) -> dict[tuple[str, str], list[str]]:
+    """Build (normalized_artist, normalized_album) -> [track_id, ...] lookup.
+
+    Prefers ``album_artist`` over ``artist`` for the key when present, since a
+    chart album's credited artist is the album artist (matters for compilations
+    and "feat." tracks). Powers library matching for genre album charts.
+    """
+    rows = (
+        await session.execute(
+            select(
+                TrackFeatures.track_id,
+                TrackFeatures.artist,
+                TrackFeatures.album_artist,
+                TrackFeatures.album,
+            ).where(TrackFeatures.album.isnot(None))
+        )
+    ).all()
+    lookup: dict[tuple[str, str], list[str]] = {}
+    for track_id, artist, album_artist, album in rows:
+        credited = album_artist or artist
+        if not credited or not album:
+            continue
+        key = (_normalize(credited), _normalize(album))
+        lookup.setdefault(key, []).append(track_id)
     return lookup
 
 
@@ -525,6 +591,7 @@ async def build_charts() -> dict[str, Any]:
         async with AsyncSessionLocal() as session:
             track_lookup = await _build_library_lookup(session)
             artist_lookup = await _build_artist_lookup(session)
+            album_lookup = await _build_album_lookup(session)
 
             # Collect candidates for external download services.
             lidarr_candidates: list[tuple[str, str | None]] = []
@@ -590,8 +657,21 @@ async def build_charts() -> dict[str, Any]:
                     now=now,
                     summary=summary,
                 )
+                # Genre album chart (Last.fm exposes albums only per-tag).
+                await _build_album_chart(
+                    client,
+                    session,
+                    album_lookup,
+                    chart_type="top_albums",
+                    scope=f"tag:{tag}",
+                    fetch_fn=lambda lim=100, pg=1, t=tag: client.get_tag_top_albums(t, lim, pg),
+                    limit=settings.CHARTS_TOP_LIMIT,
+                    now=now,
+                    summary=summary,
+                    cover_client=cover_client,
+                )
 
-            # --- 4. Country charts ---
+            # --- 4. Country charts (tracks + artists) ---
             for country in settings.charts_countries_list:
                 await _build_track_chart(
                     client,
@@ -607,6 +687,18 @@ async def build_charts() -> dict[str, Any]:
                     now=now,
                     summary=summary,
                     cover_client=cover_client,
+                )
+                await _build_artist_chart(
+                    client,
+                    session,
+                    artist_lookup,
+                    lidarr_candidates,
+                    chart_type="top_artists",
+                    scope=f"geo:{country}",
+                    fetch_fn=lambda lim=100, pg=1, c=country: client.get_geo_top_artists(c, lim, pg),
+                    limit=settings.CHARTS_TOP_LIMIT,
+                    now=now,
+                    summary=summary,
                 )
 
             await session.commit()
@@ -841,3 +933,249 @@ async def _build_artist_chart(
             summary["library_matches"] += 1
 
     summary["charts_built"] += 1
+
+
+async def _build_album_chart(
+    client: _ChartClient,
+    session: AsyncSession,
+    album_lookup: dict[tuple[str, str], list[str]],
+    *,
+    chart_type: str,
+    scope: str,
+    fetch_fn,
+    limit: int,
+    now: int,
+    summary: dict[str, Any],
+    cover_client=None,
+) -> None:
+    """Fetch a genre album chart, match to library, persist entries.
+
+    Album charts are **library-only** this pass: entries are matched against
+    owned tracks (by album artist + album title) and cover art is resolved, but
+    no per-row acquisition is queued (unlike track charts, which auto-download).
+    """
+    try:
+        raw_albums = await fetch_fn(limit)
+    except Exception as exc:
+        logger.warning("Failed to fetch chart %s/%s: %s", chart_type, scope, exc)
+        summary["errors"] += 1
+        return
+
+    if not raw_albums:
+        return
+
+    from app.services.cover_art import resolve_cover_art as _resolve_cover_art
+
+    # Per-day delete (issue #75) — see _build_track_chart for rationale.
+    snapshot_date = _snapshot_date(now)
+    await session.execute(
+        delete(ChartEntry).where(
+            ChartEntry.chart_type == chart_type,
+            ChartEntry.scope == scope,
+            ChartEntry.snapshot_date == snapshot_date,
+        )
+    )
+
+    for i, album in enumerate(raw_albums[:limit]):
+        artist_name = ""
+        mbid = None
+        if isinstance(album.get("artist"), dict):
+            artist_name = album["artist"].get("name", "")
+            mbid = album["artist"].get("mbid") or None
+        elif isinstance(album.get("artist"), str):
+            artist_name = album["artist"]
+
+        album_name = album.get("name", "")
+        # tag.getTopAlbums carries no listeners and only sometimes a playcount.
+        playcount = int(album.get("playcount", 0) or 0)
+        image_url = _pick_image_url(album.get("image", []))
+
+        # Match (album artist, album title) to owned library tracks.
+        owned: list[str] = []
+        artist_norm = _normalize(artist_name)
+        album_norm = _normalize(album_name)
+        if artist_norm and album_norm:
+            owned = album_lookup.get((artist_norm, album_norm), [])
+        matched_track_id = owned[0] if owned else None
+
+        # Cover-art fallback via spotdl-api (Last.fm dropped real images ~2020).
+        if image_url is None and cover_client is not None and artist_name and album_name:
+            resolved = await _resolve_cover_art(
+                session,
+                artist_name,
+                album_name,
+                client=cover_client,
+            )
+            if resolved:
+                image_url = resolved
+                summary["cover_art_resolved"] += 1
+
+        session.add(
+            ChartEntry(
+                chart_type=chart_type,
+                scope=scope,
+                position=i,
+                album_name=album_name,
+                artist_name=artist_name,
+                artist_mbid=mbid,
+                playcount=playcount,
+                listeners=0,
+                image_url=image_url,
+                matched_track_id=matched_track_id,
+                in_library=len(owned) > 0,
+                library_track_count=len(owned),
+                fetched_at=now,
+                snapshot_date=snapshot_date,
+            )
+        )
+        summary["total_entries"] += 1
+        if owned:
+            summary["library_matches"] += 1
+
+    summary["charts_built"] += 1
+
+
+# ---------------------------------------------------------------------------
+# On-demand single-chart build (live country/genre picker)
+# ---------------------------------------------------------------------------
+
+# Per-scope locks so two concurrent "view Japan's chart" requests don't both
+# fire a Last.fm fetch + delete/insert race for the same snapshot.
+_single_build_locks: dict[str, asyncio.Lock] = {}
+
+
+def _resolve_track_fetch(client: _ChartClient, scope: str):
+    """Return a ``fetch_fn(limit)`` for a track chart scope, or None if invalid."""
+    if scope == "global":
+        return client.get_top_tracks
+    if scope.startswith("tag:"):
+        tag = scope[4:]
+        return lambda lim=100, pg=1: client.get_tag_top_tracks(tag, lim, pg)
+    if scope.startswith("geo:"):
+        country = scope[4:]
+        return lambda lim=100, pg=1: client.get_geo_top_tracks(country, lim, pg)
+    return None
+
+
+def _resolve_artist_fetch(client: _ChartClient, scope: str):
+    """Return a ``fetch_fn(limit)`` for an artist chart scope, or None if invalid."""
+    if scope == "global":
+        return client.get_top_artists
+    if scope.startswith("tag:"):
+        tag = scope[4:]
+        return lambda lim=100: client.get_tag_top_artists(tag, lim)
+    if scope.startswith("geo:"):
+        country = scope[4:]
+        return lambda lim=100, pg=1: client.get_geo_top_artists(country, lim, pg)
+    return None
+
+
+async def build_single_chart(chart_type: str, scope: str, *, limit: int | None = None) -> dict[str, Any]:
+    """Build + persist ONE chart (chart_type/scope) on demand, matched to library.
+
+    Powers the live country/genre picker: when the UI requests a scope the
+    scheduled daily build didn't cover, we fetch just that chart from Last.fm,
+    match it, resolve cover art, and write today's snapshot — so it then reads
+    back through the normal ``GET /v1/charts/{type}`` path with full
+    trend/snapshot support and starts accruing history from first view.
+
+    Unlike :func:`build_charts`, this does **not** queue downloads or Lidarr
+    adds — merely viewing a chart must not trigger acquisition. Idempotent per
+    (chart_type, scope, UTC-day): the underlying ``_build_*_chart`` deletes
+    today's rows for the scope first, so a repeat call just refreshes them.
+    """
+    if not settings.LASTFM_API_KEY:
+        return {"status": "skipped", "reason": "no_lastfm_api_key"}
+    if chart_type not in ("top_tracks", "top_artists", "top_albums"):
+        return {"status": "error", "reason": "bad_chart_type"}
+    if chart_type == "top_albums" and not scope.startswith("tag:"):
+        # Last.fm only exposes album charts per-tag (no global/geo album chart).
+        return {"status": "error", "reason": "albums_require_tag_scope"}
+
+    lock = _single_build_locks.setdefault(f"{chart_type}|{scope}", asyncio.Lock())
+    async with lock:
+        client = _ChartClient(settings.LASTFM_API_KEY)
+        summary: dict[str, Any] = {
+            "status": "completed",
+            "charts_built": 0,
+            "total_entries": 0,
+            "library_matches": 0,
+            "cover_art_resolved": 0,
+            "errors": 0,
+        }
+        now = int(time.time())
+        _lim = limit or settings.CHARTS_TOP_LIMIT
+
+        cover_client = None
+        if settings.download_enabled:
+            from app.services.spotdl import get_download_client
+
+            cover_client = get_download_client()
+
+        try:
+            async with AsyncSessionLocal() as session:
+                if chart_type == "top_tracks":
+                    fetch_fn = _resolve_track_fetch(client, scope)
+                    if fetch_fn is None:
+                        return {"status": "error", "reason": "bad_scope"}
+                    track_lookup = await _build_library_lookup(session)
+                    artist_lookup = await _build_artist_lookup(session)
+                    # Throwaway candidate lists: on-demand views never dispatch.
+                    await _build_track_chart(
+                        client,
+                        session,
+                        track_lookup,
+                        artist_lookup,
+                        [],
+                        [],
+                        chart_type="top_tracks",
+                        scope=scope,
+                        fetch_fn=fetch_fn,
+                        limit=_lim,
+                        now=now,
+                        summary=summary,
+                        cover_client=cover_client,
+                    )
+                elif chart_type == "top_artists":
+                    fetch_fn = _resolve_artist_fetch(client, scope)
+                    if fetch_fn is None:
+                        return {"status": "error", "reason": "bad_scope"}
+                    artist_lookup = await _build_artist_lookup(session)
+                    await _build_artist_chart(
+                        client,
+                        session,
+                        artist_lookup,
+                        [],
+                        chart_type="top_artists",
+                        scope=scope,
+                        fetch_fn=fetch_fn,
+                        limit=_lim,
+                        now=now,
+                        summary=summary,
+                    )
+                else:  # top_albums (tag scope, validated above)
+                    tag = scope[4:]
+                    album_lookup = await _build_album_lookup(session)
+                    await _build_album_chart(
+                        client,
+                        session,
+                        album_lookup,
+                        chart_type="top_albums",
+                        scope=scope,
+                        fetch_fn=lambda lim=100, pg=1, t=tag: client.get_tag_top_albums(t, lim, pg),
+                        limit=_lim,
+                        now=now,
+                        summary=summary,
+                        cover_client=cover_client,
+                    )
+                await session.commit()
+        except Exception as exc:
+            logger.error("Single chart build failed for %s/%s: %s", chart_type, scope, exc, exc_info=True)
+            summary["status"] = "error"
+            summary["error"] = str(exc)
+        finally:
+            await client.close()
+            if cover_client is not None:
+                await cover_client.close()
+
+        return summary

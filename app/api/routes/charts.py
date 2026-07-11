@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 import re
+import time
 from datetime import datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -20,7 +21,7 @@ from app.core.config import settings
 from app.core.security import require_admin, require_api_key
 from app.db.session import get_session
 from app.models.db import ChartEntry, CoverArtCache, DiscoveryRequest, DownloadRequest, TrackFeatures
-from app.models.schemas import ChartDownloadRequest
+from app.models.schemas import ChartDownloadRequest, ChartFetchRequest
 from app.services.charts import _normalize as _chart_norm
 from app.services.cover_art import _normalize as _normalize_cover_key
 
@@ -55,15 +56,23 @@ async def _resolve_snapshot_date(
     return (await session.execute(q)).scalar()
 
 
-def _identity_key(chart_type: str, artist_name: str | None, track_title: str | None) -> tuple[str, str]:
+def _identity_key(
+    chart_type: str,
+    artist_name: str | None,
+    track_title: str | None,
+    album_name: str | None = None,
+) -> tuple[str, str]:
     """Cross-snapshot identity for delta matching.
 
-    Tracks are keyed by (artist, title); artists by (artist, ""). Normalised so
-    casing / punctuation / "the " drift between days doesn't break matching.
+    Tracks are keyed by (artist, title); albums by (artist, album); artists by
+    (artist, ""). Normalised so casing / punctuation / "the " drift between days
+    doesn't break matching.
     """
     a = _chart_norm(artist_name or "")
     if chart_type == "top_tracks":
         return (a, _chart_norm(track_title or ""))
+    if chart_type == "top_albums":
+        return (a, _chart_norm(album_name or ""))
     return (a, "")
 
 
@@ -76,7 +85,12 @@ async def _snapshot_position_map(
     """identity_key -> position for one snapshot (used to compute deltas)."""
     rows = (
         await session.execute(
-            select(ChartEntry.artist_name, ChartEntry.track_title, ChartEntry.position)
+            select(
+                ChartEntry.artist_name,
+                ChartEntry.track_title,
+                ChartEntry.album_name,
+                ChartEntry.position,
+            )
             .where(
                 ChartEntry.chart_type == chart_type,
                 ChartEntry.scope == scope,
@@ -86,10 +100,10 @@ async def _snapshot_position_map(
         )
     ).all()
     out: dict[tuple[str, str], int] = {}
-    for artist_name, track_title, position in rows:
+    for artist_name, track_title, album_name, position in rows:
         # ORDER BY position + setdefault: if a normalised identity appears twice
         # in a snapshot, keep the best (lowest-position) rank deterministically.
-        out.setdefault(_identity_key(chart_type, artist_name, track_title), position)
+        out.setdefault(_identity_key(chart_type, artist_name, track_title, album_name), position)
     return out
 
 
@@ -316,8 +330,8 @@ async def get_chart(
     session: AsyncSession = Depends(get_session),
     _key: str = Depends(require_api_key),
 ):
-    if chart_type not in ("top_tracks", "top_artists"):
-        raise HTTPException(status_code=400, detail="chart_type must be 'top_tracks' or 'top_artists'")
+    if chart_type not in ("top_tracks", "top_artists", "top_albums"):
+        raise HTTPException(status_code=400, detail="chart_type must be 'top_tracks', 'top_artists', or 'top_albums'")
     if as_of is not None and not _DATE_RE.match(as_of):
         raise HTTPException(status_code=400, detail="as_of must be a date in YYYY-MM-DD form")
 
@@ -402,6 +416,7 @@ async def get_chart(
     # that day, not today's.
     if is_latest:
         from app.services.charts import (
+            _build_album_lookup,
             _build_artist_lookup,
             _build_library_lookup,
         )
@@ -429,6 +444,17 @@ async def get_chart(
                 # and legacy rows where the boolean drifted from the id.
                 if e.matched_track_id and not e.in_library:
                     e.in_library = True
+        elif chart_type == "top_albums":
+            live_album_lookup = await _build_album_lookup(session)
+            for e in entries:
+                if not e.artist_name or not e.album_name:
+                    continue
+                owned = live_album_lookup.get((_chart_norm(e.artist_name), _chart_norm(e.album_name)), [])
+                if owned:
+                    if not e.matched_track_id:
+                        e.matched_track_id = owned[0]
+                    e.in_library = True
+                    e.library_track_count = len(owned)
         else:  # top_artists
             live_artist_lookup = await _build_artist_lookup(session)
             for e in entries:
@@ -465,10 +491,13 @@ async def get_chart(
     keys_a: set[str] = set()
     keys_t: set[str] = set()
     for e in entries:
-        if e.image_url or not e.artist_name or not e.track_title:
+        # For album charts the cover was cached under the album title; fall back
+        # to it so album rows also benefit from the cover_art_cache.
+        cover_title = e.track_title or e.album_name
+        if e.image_url or not e.artist_name or not cover_title:
             continue
         a_norm = _normalize_cover_key(e.artist_name)
-        t_norm = _normalize_cover_key(e.track_title)
+        t_norm = _normalize_cover_key(cover_title)
         if a_norm and t_norm:
             keys_a.add(a_norm)
             keys_t.add(t_norm)
@@ -526,10 +555,11 @@ async def get_chart(
         # Effective image_url: take what the chart builder stored; if absent and
         # we have a cover_art_cache hit, use that instead (fixes stale-match and
         # never-resolved cases at render time).
+        cover_title = e.track_title or e.album_name
         eff_image_url = e.image_url
-        if not eff_image_url and e.artist_name and e.track_title:
+        if not eff_image_url and e.artist_name and cover_title:
             a_norm = _normalize_cover_key(e.artist_name)
-            t_norm = _normalize_cover_key(e.track_title)
+            t_norm = _normalize_cover_key(cover_title)
             eff_image_url = cover_cache_map.get((a_norm, t_norm))
 
         item = {
@@ -543,6 +573,10 @@ async def get_chart(
         }
         if chart_type == "top_tracks":
             item["track_title"] = e.track_title
+
+        if chart_type == "top_albums":
+            item["album_name"] = e.album_name
+            item["library_track_count"] = e.library_track_count
 
         if chart_type == "top_artists":
             item["library_track_count"] = e.library_track_count
@@ -610,7 +644,7 @@ async def get_chart(
         if cmp_date and cmp_date < target_date:
             prev_map = await _snapshot_position_map(session, chart_type, scope, cmp_date)
             for item, e in zip(items, entries):
-                prev_pos = prev_map.get(_identity_key(chart_type, e.artist_name, e.track_title))
+                prev_pos = prev_map.get(_identity_key(chart_type, e.artist_name, e.track_title, e.album_name))
                 item["previously"] = prev_pos
                 item["position_change"] = None if prev_pos is None else prev_pos - e.position
         else:
@@ -633,8 +667,8 @@ async def list_chart_snapshots(
     session: AsyncSession = Depends(get_session),
     _key: str = Depends(require_api_key),
 ):
-    if chart_type not in ("top_tracks", "top_artists"):
-        raise HTTPException(status_code=400, detail="chart_type must be 'top_tracks' or 'top_artists'")
+    if chart_type not in ("top_tracks", "top_artists", "top_albums"):
+        raise HTTPException(status_code=400, detail="chart_type must be 'top_tracks', 'top_artists', or 'top_albums'")
     rows = (
         (
             await session.execute(
@@ -670,8 +704,8 @@ async def get_chart_entry_history(
     session: AsyncSession = Depends(get_session),
     _key: str = Depends(require_api_key),
 ):
-    if chart_type not in ("top_tracks", "top_artists"):
-        raise HTTPException(status_code=400, detail="chart_type must be 'top_tracks' or 'top_artists'")
+    if chart_type not in ("top_tracks", "top_artists", "top_albums"):
+        raise HTTPException(status_code=400, detail="chart_type must be 'top_tracks', 'top_artists', or 'top_albums'")
 
     conds = [
         ChartEntry.chart_type == chart_type,
@@ -681,6 +715,9 @@ async def get_chart_entry_history(
     ]
     if chart_type == "top_tracks":
         conds.append(func.lower(ChartEntry.track_title) == title.strip().lower())
+    elif chart_type == "top_albums":
+        # For album charts `title` carries the album name.
+        conds.append(func.lower(ChartEntry.album_name) == title.strip().lower())
 
     rows = (
         await session.execute(
@@ -726,6 +763,73 @@ async def trigger_chart_build(
 
     result = await build_charts()
     return {"status": "completed", "result": result}
+
+
+@router.post(
+    "/charts/fetch",
+    summary="Fetch one chart on demand (live country/genre picker)",
+    description=(
+        "Builds a single chart (chart_type + scope) from Last.fm right now and "
+        "persists today's snapshot, so it reads back through GET /v1/charts/{type} "
+        "with full trend/snapshot support. Powers the dashboard's live country and "
+        "genre pickers: a scope the scheduled daily build didn't cover is fetched "
+        "on first view and starts accruing history.\n\n"
+        "No-op (returns `built: false`) if today's snapshot for the scope already "
+        "exists, unless `force: true`. Album charts (`top_albums`) require a "
+        "`tag:<genre>` scope — Last.fm has no global or country album chart. "
+        "Unlike the daily build, this never queues downloads or Lidarr adds."
+    ),
+)
+async def fetch_chart_live(
+    body: ChartFetchRequest,
+    session: AsyncSession = Depends(get_session),
+    _key: str = Depends(require_api_key),
+):
+    if body.chart_type not in ("top_tracks", "top_artists", "top_albums"):
+        raise HTTPException(status_code=400, detail="chart_type must be 'top_tracks', 'top_artists', or 'top_albums'")
+    if body.chart_type == "top_albums" and not body.scope.startswith("tag:"):
+        raise HTTPException(
+            status_code=400,
+            detail="Album charts are only available per genre — scope must be 'tag:<genre>'.",
+        )
+    if not settings.LASTFM_API_KEY:
+        raise HTTPException(status_code=503, detail="LASTFM_API_KEY not configured — charts unavailable.")
+
+    today = time.strftime("%Y-%m-%d", time.gmtime())
+
+    # Idempotent per (scope, UTC-day): skip the Last.fm round-trip + write if
+    # today's snapshot already exists, so re-viewing a chart is free.
+    if not body.force:
+        latest = await _resolve_snapshot_date(session, body.chart_type, body.scope)
+        if latest == today:
+            return {
+                "status": "cached",
+                "built": False,
+                "chart_type": body.chart_type,
+                "scope": body.scope,
+                "snapshot_date": today,
+            }
+
+    from app.services.charts import build_single_chart
+
+    result = await build_single_chart(body.chart_type, body.scope)
+    if result.get("status") == "skipped":
+        raise HTTPException(status_code=503, detail="Charts unavailable: " + str(result.get("reason")))
+    if result.get("status") != "completed":
+        raise HTTPException(
+            status_code=502,
+            detail="Live chart fetch failed: " + str(result.get("reason") or result.get("error") or "unknown"),
+        )
+
+    return {
+        "status": "ok",
+        "built": (result.get("total_entries") or 0) > 0,
+        "chart_type": body.chart_type,
+        "scope": body.scope,
+        "snapshot_date": today,
+        "entries": result.get("total_entries") or 0,
+        "library_matches": result.get("library_matches") or 0,
+    }
 
 
 @router.post(

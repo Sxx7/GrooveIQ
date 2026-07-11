@@ -2299,8 +2299,63 @@
 
     /* ── Charts ─────────────────────────────────────────────────────── */
 
+    /* Country list for the live geo picker (ISO 3166-1 names Last.fm accepts).
+     * value = lowercase (matches CHARTS_COUNTRIES scopes so the scope string /
+     * cache align); label = display form. */
+    const CHART_COUNTRIES = [
+        ['united states', 'United States'], ['united kingdom', 'United Kingdom'],
+        ['germany', 'Germany'], ['france', 'France'], ['canada', 'Canada'],
+        ['australia', 'Australia'], ['brazil', 'Brazil'], ['japan', 'Japan'],
+        ['mexico', 'Mexico'], ['spain', 'Spain'], ['italy', 'Italy'],
+        ['netherlands', 'Netherlands'], ['sweden', 'Sweden'], ['norway', 'Norway'],
+        ['denmark', 'Denmark'], ['finland', 'Finland'], ['poland', 'Poland'],
+        ['russia', 'Russia'], ['ukraine', 'Ukraine'], ['ireland', 'Ireland'],
+        ['belgium', 'Belgium'], ['switzerland', 'Switzerland'], ['austria', 'Austria'],
+        ['portugal', 'Portugal'], ['greece', 'Greece'], ['turkey', 'Turkey'],
+        ['india', 'India'], ['indonesia', 'Indonesia'], ['philippines', 'Philippines'],
+        ['south korea', 'South Korea'], ['china', 'China'], ['taiwan', 'Taiwan'],
+        ['thailand', 'Thailand'], ['vietnam', 'Vietnam'], ['malaysia', 'Malaysia'],
+        ['singapore', 'Singapore'], ['new zealand', 'New Zealand'],
+        ['argentina', 'Argentina'], ['chile', 'Chile'], ['colombia', 'Colombia'],
+        ['peru', 'Peru'], ['south africa', 'South Africa'], ['nigeria', 'Nigeria'],
+        ['egypt', 'Egypt'], ['israel', 'Israel'], ['united arab emirates', 'United Arab Emirates'],
+        ['czech republic', 'Czech Republic'], ['hungary', 'Hungary'], ['romania', 'Romania'],
+        ['iceland', 'Iceland'],
+    ];
+
+    /* Genre list for the live tag picker (common Last.fm tags). */
+    const CHART_GENRES = [
+        ['rock', 'Rock'], ['pop', 'Pop'], ['hip-hop', 'Hip-Hop'],
+        ['electronic', 'Electronic'], ['indie', 'Indie'], ['metal', 'Metal'],
+        ['jazz', 'Jazz'], ['classical', 'Classical'], ['r&b', 'R&B'],
+        ['country', 'Country'], ['folk', 'Folk'], ['punk', 'Punk'],
+        ['blues', 'Blues'], ['soul', 'Soul'], ['reggae', 'Reggae'],
+        ['funk', 'Funk'], ['house', 'House'], ['techno', 'Techno'],
+        ['ambient', 'Ambient'], ['k-pop', 'K-Pop'], ['latin', 'Latin'],
+        ['disco', 'Disco'], ['gospel', 'Gospel'], ['soundtrack', 'Soundtrack'],
+        ['alternative', 'Alternative'], ['dance', 'Dance'], ['shoegaze', 'Shoegaze'],
+        ['drum and bass', 'Drum and Bass'],
+    ];
+
+    /* Derive the mode/country/genre picker state from a scope string. */
+    function _chartsScopeToFields(scope) {
+        if (scope && scope.indexOf('geo:') === 0) return { mode: 'country', country: scope.substring(4), genre: '' };
+        if (scope && scope.indexOf('tag:') === 0) return { mode: 'genre', country: '', genre: scope.substring(4) };
+        return { mode: 'global', country: '', genre: '' };
+    }
+
+    /* Compose the scope string from the current picker state. */
+    function _chartsComposeScope(s) {
+        if (s.mode === 'country') return s.country ? 'geo:' + s.country : 'global';
+        if (s.mode === 'genre') return s.genre ? 'tag:' + s.genre : 'global';
+        return 'global';
+    }
+
     GIQ.state.charts = GIQ.state.charts || {
         scope: 'global',
+        mode: 'global',
+        country: '',
+        genre: '',
         chartType: 'top_tracks',
         offset: 0,
         limit: 100,
@@ -2316,12 +2371,15 @@
     GIQ.pages.explore.charts = function renderCharts(root) {
         if (!GIQ.state.charts) {
             GIQ.state.charts = {
-                scope: 'global', chartType: 'top_tracks', offset: 0, limit: 100,
+                scope: 'global', mode: 'global', country: '', genre: '',
+                chartType: 'top_tracks', offset: 0, limit: 100,
                 compare: '7d', asOf: '', snapshots: null,
                 available: null, stats: null, chart: null, loading: false,
             };
         }
         const s = GIQ.state.charts;
+        // Backfill picker fields for state persisted before this UI existed.
+        if (s.mode === undefined) Object.assign(s, _chartsScopeToFields(s.scope || 'global'));
 
         const right = document.createElement('div');
         right.className = 'charts-header-controls';
@@ -2345,25 +2403,79 @@
         filterBar.className = 'charts-filter-bar';
         body.appendChild(filterBar);
 
-        const scopeWrap = document.createElement('div');
-        scopeWrap.className = 'charts-filter-field';
-        scopeWrap.innerHTML = '<div class="eyebrow">Scope</div>';
-        const scopeSel = document.createElement('select');
-        scopeSel.className = 'reco-select';
-        scopeSel.innerHTML = '<option value="global">Global</option>';
-        scopeWrap.appendChild(scopeSel);
-        filterBar.appendChild(scopeWrap);
+        // Scope mode: Global / By Country / By Genre.
+        const modeWrap = document.createElement('div');
+        modeWrap.className = 'charts-filter-field';
+        modeWrap.innerHTML = '<div class="eyebrow">Scope</div>';
+        const modeSel = document.createElement('select');
+        modeSel.className = 'reco-select';
+        modeSel.innerHTML = '<option value="global">Global</option>'
+            + '<option value="country">By Country</option>'
+            + '<option value="genre">By Genre</option>';
+        modeSel.value = s.mode || 'global';
+        modeWrap.appendChild(modeSel);
+        filterBar.appendChild(modeWrap);
+
+        // Country picker (shown only in country mode).
+        const countryWrap = document.createElement('div');
+        countryWrap.className = 'charts-filter-field';
+        countryWrap.innerHTML = '<div class="eyebrow">Country</div>';
+        const countrySel = document.createElement('select');
+        countrySel.className = 'reco-select';
+        countrySel.innerHTML = CHART_COUNTRIES.map(
+            c => '<option value="' + GIQ.fmt.esc(c[0]) + '">' + GIQ.fmt.esc(c[1]) + '</option>'
+        ).join('');
+        // If a country scope was configured that isn't in our list, add it.
+        if (s.country && !CHART_COUNTRIES.some(c => c[0] === s.country)) {
+            const o = document.createElement('option');
+            o.value = s.country; o.textContent = s.country.replace(/\b\w/g, m => m.toUpperCase());
+            countrySel.insertBefore(o, countrySel.firstChild);
+        }
+        countrySel.value = s.country || CHART_COUNTRIES[0][0];
+        countryWrap.appendChild(countrySel);
+        filterBar.appendChild(countryWrap);
+
+        // Genre picker (shown only in genre mode).
+        const genreWrap = document.createElement('div');
+        genreWrap.className = 'charts-filter-field';
+        genreWrap.innerHTML = '<div class="eyebrow">Genre</div>';
+        const genreSel = document.createElement('select');
+        genreSel.className = 'reco-select';
+        genreSel.innerHTML = CHART_GENRES.map(
+            g => '<option value="' + GIQ.fmt.esc(g[0]) + '">' + GIQ.fmt.esc(g[1]) + '</option>'
+        ).join('');
+        if (s.genre && !CHART_GENRES.some(g => g[0] === s.genre)) {
+            const o = document.createElement('option');
+            o.value = s.genre; o.textContent = s.genre;
+            genreSel.insertBefore(o, genreSel.firstChild);
+        }
+        genreSel.value = s.genre || CHART_GENRES[0][0];
+        genreWrap.appendChild(genreSel);
+        filterBar.appendChild(genreWrap);
 
         const typeWrap = document.createElement('div');
         typeWrap.className = 'charts-filter-field';
         typeWrap.innerHTML = '<div class="eyebrow">Type</div>';
         const typeSel = document.createElement('select');
         typeSel.className = 'reco-select';
-        typeSel.innerHTML = '<option value="top_tracks">Top Tracks</option>'
-            + '<option value="top_artists">Top Artists</option>';
-        typeSel.value = s.chartType;
         typeWrap.appendChild(typeSel);
         filterBar.appendChild(typeWrap);
+
+        // Show/hide the country & genre selects and the Albums option for the
+        // current mode (Last.fm only has album charts per-genre). Preserves the
+        // selected type when still valid, else falls back to Top Tracks.
+        function syncScopeControls() {
+            countryWrap.style.display = s.mode === 'country' ? '' : 'none';
+            genreWrap.style.display = s.mode === 'genre' ? '' : 'none';
+            const allowAlbums = s.mode === 'genre';
+            let opts = '<option value="top_tracks">Top Tracks</option>'
+                + '<option value="top_artists">Top Artists</option>';
+            if (allowAlbums) opts += '<option value="top_albums">Top Albums</option>';
+            typeSel.innerHTML = opts;
+            if (s.chartType === 'top_albums' && !allowAlbums) s.chartType = 'top_tracks';
+            typeSel.value = s.chartType;
+        }
+        syncScopeControls();
 
         const compareWrap = document.createElement('div');
         compareWrap.className = 'charts-filter-field';
@@ -2387,7 +2499,16 @@
         snapWrap.appendChild(snapSel);
         filterBar.appendChild(snapWrap);
 
-        scopeSel.addEventListener('change', () => { s.scope = scopeSel.value; s.offset = 0; s.asOf = ''; loadChart(); });
+        modeSel.addEventListener('change', () => {
+            s.mode = modeSel.value;
+            if (s.mode === 'country' && !s.country) s.country = countrySel.value;
+            if (s.mode === 'genre' && !s.genre) s.genre = genreSel.value;
+            syncScopeControls();
+            s.offset = 0; s.asOf = '';
+            loadChart();
+        });
+        countrySel.addEventListener('change', () => { s.country = countrySel.value; s.offset = 0; s.asOf = ''; loadChart(); });
+        genreSel.addEventListener('change', () => { s.genre = genreSel.value; s.offset = 0; s.asOf = ''; loadChart(); });
         typeSel.addEventListener('change', () => { s.chartType = typeSel.value; s.offset = 0; s.asOf = ''; loadChart(); });
         compareSel.addEventListener('change', () => { s.compare = compareSel.value; s.offset = 0; loadChart(); });
         snapSel.addEventListener('change', () => { s.asOf = snapSel.value; s.offset = 0; loadChart(); });
@@ -2422,24 +2543,6 @@
             }
         }
 
-        function buildScopeOptions() {
-            const charts = (s.available && s.available.charts) || [];
-            const scopes = [];
-            const seen = {};
-            charts.forEach(c => {
-                if (!seen[c.scope]) { seen[c.scope] = true; scopes.push(c.scope); }
-            });
-            if (!scopes.includes('global')) scopes.unshift('global');
-            scopeSel.innerHTML = '';
-            scopes.forEach(sc => {
-                const o = document.createElement('option');
-                o.value = sc;
-                o.textContent = _scopeLabel(sc);
-                if (sc === s.scope) o.selected = true;
-                scopeSel.appendChild(o);
-            });
-        }
-
         async function loadAvailable() {
             try {
                 const [available, stats] = await Promise.all([
@@ -2450,7 +2553,6 @@
                 s.stats = stats;
                 _chartsCachePrune(stats && stats.latest_snapshot_date);
                 setCronBadge(stats);
-                buildScopeOptions();
                 loadChart();
             } catch (e) {
                 panelBody.innerHTML = '<div class="reco-error">Failed to load charts: ' + GIQ.fmt.esc(e.message) + '</div>';
@@ -2473,7 +2575,19 @@
             snapSel.value = s.asOf || '';
         }
 
+        function _chartUrl() {
+            let url = '/v1/charts/' + encodeURIComponent(s.chartType)
+                + '?scope=' + encodeURIComponent(s.scope)
+                + '&limit=' + s.limit + '&offset=' + s.offset;
+            if (s.compare) url += '&compare=' + encodeURIComponent(s.compare);
+            if (s.asOf) url += '&as_of=' + encodeURIComponent(s.asOf);
+            return url;
+        }
+
         async function loadChart() {
+            // Compose the scope from the current mode/country/genre picker before
+            // anything reads s.scope (cache key, snapshots, requests).
+            s.scope = _chartsComposeScope(s);
             s.loading = true;
             renderHead();
             loadSnapshots();
@@ -2493,26 +2607,49 @@
                 return;
             }
 
-            panelBody.innerHTML = '<div class="vc-loading">Loading chart…</div>';
-            try {
-                let url = '/v1/charts/' + encodeURIComponent(s.chartType)
-                    + '?scope=' + encodeURIComponent(s.scope)
-                    + '&limit=' + s.limit + '&offset=' + s.offset;
-                if (s.compare) url += '&compare=' + encodeURIComponent(s.compare);
-                if (s.asOf) url += '&as_of=' + encodeURIComponent(s.asOf);
-                const data = await GIQ.api.get(url);
+            const applyData = (data) => {
                 s.chart = data;
                 _chartsCacheSet(cacheKey, { latestSnap: s.asOf ? null : latestSnap, data: data, ts: Date.now() });
                 s.loading = false;
                 renderHead();
                 renderTable();
                 prefetchSibling();
+            };
+
+            panelBody.innerHTML = '<div class="vc-loading">Loading chart…</div>';
+            try {
+                applyData(await GIQ.api.get(_chartUrl()));
             } catch (e) {
+                // Not built yet (and viewing the latest, not a historical date) →
+                // fetch just this scope live from Last.fm, persist it, then re-GET.
+                if (e.status === 404 && !s.asOf) {
+                    const label = _scopeLabel(s.scope);
+                    panelBody.innerHTML = '<div class="vc-loading">Fetching ' + GIQ.fmt.esc(label)
+                        + ' chart from Last.fm…</div>';
+                    try {
+                        await GIQ.api.post('/v1/charts/fetch', { chart_type: s.chartType, scope: s.scope });
+                        applyData(await GIQ.api.get(_chartUrl()));
+                        s._snapKey = null;   // this scope now has a snapshot — refresh the picker
+                        loadSnapshots();
+                        return;
+                    } catch (e2) {
+                        s.loading = false;
+                        renderHead();
+                        if (e2.status === 404) {
+                            panelBody.innerHTML = '<div class="reco-empty">Last.fm has no '
+                                + (s.chartType === 'top_albums' ? 'album' : s.chartType === 'top_artists' ? 'artist' : 'track')
+                                + ' chart for ' + GIQ.fmt.esc(label) + '.</div>';
+                        } else {
+                            panelBody.innerHTML = '<div class="reco-error">Couldn\'t fetch this chart: '
+                                + GIQ.fmt.esc(e2.message || '') + '</div>';
+                        }
+                        return;
+                    }
+                }
                 s.loading = false;
                 renderHead();
                 if (e.status === 404) {
-                    panelBody.innerHTML = '<div class="reco-empty">' + GIQ.fmt.esc(e.message)
-                        + '<br><br>Build charts via Actions → Charts.</div>';
+                    panelBody.innerHTML = '<div class="reco-empty">' + GIQ.fmt.esc(e.message) + '</div>';
                 } else {
                     panelBody.innerHTML = '<div class="reco-error">Failed to load chart: ' + GIQ.fmt.esc(e.message) + '</div>';
                 }
@@ -2556,7 +2693,7 @@
             }
             panelHead.innerHTML = '<div class="panel-head-left"><div class="panel-title-row">'
                 + '<div class="panel-title">' + GIQ.fmt.esc(_scopeLabel(s.scope)) + ' — '
-                + (isTrack ? 'Top Tracks' : 'Top Artists') + '</div></div>'
+                + _chartTypeLabel(s.chartType) + '</div></div>'
                 + '<div class="panel-sub mono">' + subParts.join(' · ') + '</div></div>';
         }
 
@@ -2568,6 +2705,8 @@
                 return;
             }
             const isTrack = s.chartType === 'top_tracks';
+            const isAlbum = s.chartType === 'top_albums';
+            const isArtist = s.chartType === 'top_artists';
             const showMove = !!s.compare;            // user selected a trend window
             const cmpAvailable = !!(c && c.compared_to);
             // Only render the movement column when a comparison snapshot actually
@@ -2579,16 +2718,24 @@
 
             const table = document.createElement('div');
             table.className = 'charts-table';
-            table.style.gridTemplateColumns = isTrack
-                ? '40px' + moveCol + ' 56px minmax(180px, 2fr) minmax(120px, 1fr) 80px 80px minmax(140px, 1.2fr)'
-                : '40px' + moveCol + ' 56px minmax(180px, 2fr) 80px 80px 80px minmax(140px, 1.2fr)';
+            // Tracks and albums share a layout (Title/Album + Artist + Plays +
+            // one metric); artists get an extra column. Album's 4th metric is
+            // owned-track count instead of listeners (Last.fm ships none).
+            table.style.gridTemplateColumns = isArtist
+                ? '40px' + moveCol + ' 56px minmax(180px, 2fr) 80px 80px 80px minmax(140px, 1.2fr)'
+                : '40px' + moveCol + ' 56px minmax(180px, 2fr) minmax(120px, 1fr) 80px 80px minmax(140px, 1.2fr)';
 
             const head = document.createElement('div');
             head.className = 'charts-row charts-row-head';
             const moveHead = moveColActive ? ['Δ ' + s.compare] : [];
-            const headers = isTrack
-                ? ['#'].concat(moveHead, ['', 'Title', 'Artist', 'Plays', 'Listeners', 'Status'])
-                : ['#'].concat(moveHead, ['', 'Artist', 'Plays', 'Listeners', 'Tracks', 'Status']);
+            let headers;
+            if (isTrack) {
+                headers = ['#'].concat(moveHead, ['', 'Title', 'Artist', 'Plays', 'Listeners', 'Status']);
+            } else if (isAlbum) {
+                headers = ['#'].concat(moveHead, ['', 'Album', 'Artist', 'Plays', 'Tracks', 'Status']);
+            } else {
+                headers = ['#'].concat(moveHead, ['', 'Artist', 'Plays', 'Listeners', 'Tracks', 'Status']);
+            }
             headers.forEach(h => {
                 const cell = document.createElement('div');
                 cell.className = 'charts-h';
@@ -2618,17 +2765,19 @@
                 thumbCell.appendChild(_chartsThumbnail(entry));
                 row.appendChild(thumbCell);
 
-                if (isTrack) {
+                // Title column: track title, or album name for album charts.
+                if (isTrack || isAlbum) {
                     const titleCell = document.createElement('div');
                     titleCell.className = 'charts-c charts-c-title';
-                    titleCell.innerHTML = '<strong>' + GIQ.fmt.esc(entry.track_title || '—') + '</strong>';
+                    const t = isAlbum ? entry.album_name : entry.track_title;
+                    titleCell.innerHTML = '<strong>' + GIQ.fmt.esc(t || '—') + '</strong>';
                     row.appendChild(titleCell);
                 }
                 const artistCell = document.createElement('div');
                 artistCell.className = 'charts-c charts-c-artist';
-                artistCell.innerHTML = isTrack
-                    ? GIQ.fmt.esc(entry.artist_name || '—')
-                    : '<strong>' + GIQ.fmt.esc(entry.artist_name || '—') + '</strong>';
+                artistCell.innerHTML = isArtist
+                    ? '<strong>' + GIQ.fmt.esc(entry.artist_name || '—') + '</strong>'
+                    : GIQ.fmt.esc(entry.artist_name || '—');
                 row.appendChild(artistCell);
 
                 const playsCell = document.createElement('div');
@@ -2636,12 +2785,16 @@
                 playsCell.textContent = GIQ.fmt.fmtNumber(entry.playcount);
                 row.appendChild(playsCell);
 
-                const listenersCell = document.createElement('div');
-                listenersCell.className = 'charts-c mono';
-                listenersCell.textContent = GIQ.fmt.fmtNumber(entry.listeners);
-                row.appendChild(listenersCell);
+                // Listeners (tracks + artists). Albums have none.
+                if (isTrack || isArtist) {
+                    const listenersCell = document.createElement('div');
+                    listenersCell.className = 'charts-c mono';
+                    listenersCell.textContent = GIQ.fmt.fmtNumber(entry.listeners);
+                    row.appendChild(listenersCell);
+                }
 
-                if (!isTrack) {
+                // Owned-track count (albums + artists).
+                if (isAlbum || isArtist) {
                     const tracksCell = document.createElement('div');
                     tracksCell.className = 'charts-c mono';
                     tracksCell.textContent = String(entry.library_track_count || 0);
@@ -2702,6 +2855,12 @@
         if (scope.indexOf('tag:') === 0) return 'Genre: ' + scope.substring(4);
         if (scope.indexOf('geo:') === 0) return 'Country: ' + scope.substring(4);
         return scope;
+    }
+
+    function _chartTypeLabel(t) {
+        if (t === 'top_artists') return 'Top Artists';
+        if (t === 'top_albums') return 'Top Albums';
+        return 'Top Tracks';
     }
 
     /* Aggressive client-side cache for chart data (localStorage). Charts only
@@ -2842,18 +3001,30 @@
 
     function _chartsStatus(entry, cell, _idx) {
         cell.innerHTML = '';
+        const isAlbum = GIQ.state.charts && GIQ.state.charts.chartType === 'top_albums';
         const ls = entry.lidarr_status;
         if (entry.in_library) {
             const chip = document.createElement('span');
             chip.className = 'charts-status-chip charts-status-in-lib';
             chip.textContent = 'in library';
             cell.appendChild(chip);
-            if (ls === 'in_lidarr' || ls === 'downloading') {
+            if (!isAlbum && (ls === 'in_lidarr' || ls === 'downloading')) {
                 const c2 = document.createElement('span');
                 c2.className = 'charts-status-chip charts-status-via-lidarr';
                 c2.textContent = 'via lidarr';
                 cell.appendChild(c2);
             }
+            return;
+        }
+
+        // Album charts are library-only this pass — surface presence only, no
+        // per-row acquisition (the track-download cascade needs a track title,
+        // which album entries don't carry).
+        if (isAlbum) {
+            const chip = document.createElement('span');
+            chip.className = 'charts-status-chip charts-status-none';
+            chip.textContent = 'not in library';
+            cell.appendChild(chip);
             return;
         }
 

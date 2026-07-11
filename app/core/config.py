@@ -373,8 +373,16 @@ class Settings(BaseSettings):
         24  # freshness window (hours) for the Monitor staleness banner; build cadence is CHARTS_CRON
     )
     CHARTS_TOP_LIMIT: int = 100  # entries per chart (max 200)
-    CHARTS_TAGS: str = ""  # comma-separated genre tags, e.g. "rock,electronic,hip-hop"
-    CHARTS_COUNTRIES: str = ""  # comma-separated country names, e.g. "germany,united states"
+    # Sensible default genre + country sets so the daily build (when
+    # CHARTS_ENABLED=true) covers a useful spread out of the box and accrues
+    # trend history for popular scopes. The dashboard's live picker fetches any
+    # other genre/country on demand, so trim these to bound daily-build cost.
+    CHARTS_TAGS: str = (  # comma-separated genre tags (tag.getTop{Tracks,Artists,Albums})
+        "rock,pop,hip-hop,electronic,indie,metal,jazz,classical,r&b,country,folk,punk,blues,soul"
+    )
+    CHARTS_COUNTRIES: str = (  # comma-separated ISO 3166 country names (geo.getTop{Tracks,Artists})
+        "united states,united kingdom,germany,france,canada,australia,brazil,japan,mexico,spain,italy,netherlands"
+    )
     CHARTS_LIDARR_AUTO_ADD: bool = False  # auto-add chart artists to Lidarr
     CHARTS_LIDARR_MAX_ADDS: int = 50  # max artists to add to Lidarr per build
 

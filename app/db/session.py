@@ -122,6 +122,9 @@ async def _apply_column_migrations(conn) -> None:
         ("playlists", "created_by", "VARCHAR(128)"),
         # Chart entry images
         ("chart_entries", "image_url", "VARCHAR(1024)"),
+        # Genre album charts (tag.getTopAlbums): album title on the entry. Null
+        # for track/artist charts. Additive + nullable so existing rows are fine.
+        ("chart_entries", "album_name", "VARCHAR(512)"),
         # Daily chart snapshots (issue #75): keep prior days instead of
         # overwriting. ISO 'YYYY-MM-DD' string (the type allow-list has no DATE).
         ("chart_entries", "snapshot_date", "VARCHAR(10)"),

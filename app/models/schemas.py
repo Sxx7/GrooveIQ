@@ -882,6 +882,19 @@ class ChartDownloadRequest(BaseModel):
         return self
 
 
+class ChartFetchRequest(BaseModel):
+    """Request body for POST /v1/charts/fetch — build one chart on demand.
+
+    Powers the live country/genre picker: fetch a single chart (chart_type +
+    scope) from Last.fm and persist today's snapshot so it reads back through
+    the normal GET path. No-op if today's snapshot already exists (unless force).
+    """
+
+    chart_type: str = Field("top_tracks", max_length=32, description="top_tracks | top_artists | top_albums")
+    scope: str = Field("global", max_length=128, description="global, tag:<genre>, geo:<country>")
+    force: bool = Field(False, description="Rebuild even if today's snapshot already exists")
+
+
 # ---------------------------------------------------------------------------
 # Downloads (Spotizerr proxy)
 # ---------------------------------------------------------------------------
@@ -1157,7 +1170,7 @@ class DeviceRegister(BaseModel):
     # human label. Lets prefs survive a capability-URL rotation and the app list
     # its devices. Optional for backward compat with installs that don't send it.
     device_guid: str | None = Field(None, min_length=1, max_length=64, description="Stable per-install device id.")
-    device_name: str | None = Field(None, max_length=128, description="Human label, e.g. \"Simon's iPhone\".")
+    device_name: str | None = Field(None, max_length=128, description='Human label, e.g. "Simon\'s iPhone".')
 
     @model_validator(mode="after")
     def _need_a_target(self) -> DeviceRegister:
