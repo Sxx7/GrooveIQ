@@ -355,15 +355,34 @@ def _compute_delta(events: list) -> dict:
             ctx_skip_map = _get_context_skip_weights()
             cfg = _get_scoring_weights()
             skip_w = ctx_skip_map.get(ctx, cfg.w_early_skip) if ctx else cfg.w_early_skip
-            # A skip event without a preceding play_end: classify by value (seconds elapsed).
-            if ev.value is not None:
-                elapsed_ms = int(ev.value * 1000)
-                if elapsed_ms < cfg.early_skip_ms:
+            # Classify skip depth. Prefer dwell_ms — the actual milliseconds listened, which
+            # the client populates on skips — exactly as play_end is classified above. Only
+            # fall back to `value`, and interpret it correctly: modern clients send a
+            # completion FRACTION in [0, 1]; legacy clients sent elapsed SECONDS (> 1). The
+            # old code assumed seconds unconditionally, so a fraction like 0.5 became 500 ms
+            # and ~97% of this user's skips were mislabelled harsh "early skips" even though
+            # they had 30 s+ of dwell — corrupting satisfaction_score (the ranker's own label).
+            bucket_ms: int | None = None
+            if ev.dwell_ms is not None:
+                bucket_ms = ev.dwell_ms
+            elif ev.value is not None and ev.value > 1.0:
+                # Legacy client: value is elapsed seconds.
+                bucket_ms = int(ev.value * 1000)
+            if bucket_ms is not None:
+                if bucket_ms < cfg.early_skip_ms:
                     early_skip_count += 1
                     context_skip_penalty += skip_w
-                elif elapsed_ms < cfg.mid_skip_ms:
+                elif bucket_ms < cfg.mid_skip_ms:
                     mid_skip_count += 1
                     context_skip_penalty += skip_w * 0.4
+                # bucket_ms >= mid_skip_ms: a skip after a long listen is a next-track
+                # advance, not a rejection — no penalty.
+            elif ev.value is not None:
+                # Modern client sent a completion fraction with no dwell_ms; without the
+                # track duration we cannot map it to ms, so count a mild (mid) skip rather
+                # than a harsh early skip. Never re-introduce the value*1000 seconds bug.
+                mid_skip_count += 1
+                context_skip_penalty += skip_w * 0.4
 
         elif et == "like":
             like_count += 1
