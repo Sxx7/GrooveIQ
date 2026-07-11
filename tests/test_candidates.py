@@ -375,3 +375,72 @@ class TestMergedRetrieval:
         async with _TestSession() as session:
             playable = await _get_playable_ids(["nomsid", "t0", "t1"], session)
         assert playable == {"t0", "t1"}
+
+
+class TestLastfmBoost:
+    """Phase 1: multi-source blend + reserved Last.fm slots (external-CF boost)."""
+
+    def _cand(self, tid, score, sources):
+        return {"track_id": tid, "score": score, "source": sources[0], "sources": list(sources)}
+
+    def test_reserve_promotes_lastfm_from_tail(self):
+        """Low-scored Last.fm picks below the cut displace the weakest non-LF."""
+        from app.services.candidate_gen import _reserve_lastfm
+
+        merged = (
+            [self._cand(f"c{i}", 10.0 - i, ["content"]) for i in range(5)]  # top 5, non-LF
+            + [self._cand("lf1", 2.0, ["lastfm_similar"]), self._cand("lf2", 1.0, ["lastfm_similar"])]
+        )
+        merged.sort(key=lambda c: c["score"], reverse=True)
+        out = _reserve_lastfm(merged, k=5, reserve=2)
+        ids = {c["track_id"] for c in out}
+        assert len(out) == 5  # pool size preserved
+        assert "lf1" in ids and "lf2" in ids  # both LF reserved
+        # The two weakest non-LF (c3, c4) were displaced.
+        assert "c0" in ids and "c1" in ids and "c2" in ids
+
+    def test_reserve_noop_when_enough_lastfm_present(self):
+        from app.services.candidate_gen import _reserve_lastfm
+
+        merged = [
+            self._cand("lf0", 9.0, ["lastfm_similar"]),
+            self._cand("lf1", 8.0, ["lastfm_similar"]),
+            self._cand("c0", 7.0, ["content"]),
+            self._cand("c1", 6.0, ["cf"]),
+        ]
+        out = _reserve_lastfm(merged, k=3, reserve=2)
+        assert [c["track_id"] for c in out] == ["lf0", "lf1", "c0"]
+
+    def test_reserve_zero_is_plain_truncation(self):
+        from app.services.candidate_gen import _reserve_lastfm
+
+        merged = [self._cand(f"c{i}", 10.0 - i, ["content"]) for i in range(4)]
+        merged.append(self._cand("lf1", 0.5, ["lastfm_similar"]))
+        merged.sort(key=lambda c: c["score"], reverse=True)
+        out = _reserve_lastfm(merged, k=3, reserve=0)
+        assert "lf1" not in {c["track_id"] for c in out}
+        assert len(out) == 3
+
+    def test_reserve_detects_lastfm_in_multisource(self):
+        """A blended candidate whose primary tag is content but sources include
+        lastfm_similar still counts as a reserved Last.fm pick."""
+        from app.services.candidate_gen import _reserve_lastfm
+
+        merged = [self._cand(f"c{i}", 10.0 - i, ["content"]) for i in range(5)]
+        merged.append({"track_id": "blend", "score": 0.5, "source": "content", "sources": ["content", "lastfm_similar"]})
+        merged.sort(key=lambda c: c["score"], reverse=True)
+        out = _reserve_lastfm(merged, k=5, reserve=1)
+        assert "blend" in {c["track_id"] for c in out}
+
+    async def test_merged_candidates_carry_sources_list(self):
+        """Every merged candidate exposes a ``sources`` list containing its tag."""
+        track_ids = await _setup_library(20)
+        await _setup_user("alice", track_ids[:10], n_interactions=10)
+
+        from app.services.candidate_gen import get_candidates
+
+        candidates = await get_candidates("alice", k=15)
+        assert candidates
+        for c in candidates:
+            assert isinstance(c.get("sources"), list) and c["sources"]
+            assert c["source"] in c["sources"]

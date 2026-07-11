@@ -186,7 +186,9 @@ async def generate_recommendation_payload(
     # Per-candidate source attribution (a candidate may surface from multiple sources).
     sources_by_tid: dict[str, list[str]] = {}
     for c in candidates:
-        sources_by_tid.setdefault(c["track_id"], []).append(c["source"])
+        # Candidates now carry the full multi-source ``sources`` list (a track may
+        # surface from content + lastfm_similar + …); fall back to the primary tag.
+        sources_by_tid[c["track_id"]] = list(c.get("sources", [c["source"]]))
     candidates_by_source_counts: dict[str, int] = {}
     for src_list in sources_by_tid.values():
         for s in src_list:

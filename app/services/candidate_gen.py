@@ -272,6 +272,39 @@ async def _get_playable_ids(track_ids: list[str], session: AsyncSession) -> set[
     return playable
 
 
+def _reserve_lastfm(merged: list[dict[str, Any]], k: int, reserve: int) -> list[dict[str, Any]]:
+    """Return the top-``k`` candidates, guaranteeing up to ``reserve`` Last.fm
+    (external-CF) picks survive by displacing the weakest non-Last.fm ones.
+
+    ``merged`` must already be sorted by score descending. The returned pool size
+    stays ``k`` (a displaced non-Last.fm track is swapped out one-for-one).
+    """
+    if k <= 0:
+        return []
+    if reserve <= 0 or len(merged) <= k:
+        return merged[:k]
+
+    def _is_lf(c: dict[str, Any]) -> bool:
+        return "lastfm_similar" in c.get("sources", [c.get("source")])
+
+    head = merged[:k]
+    have = sum(1 for c in head if _is_lf(c))
+    if have >= reserve:
+        return head
+
+    tail_lf = [c for c in merged[k:] if _is_lf(c)]
+    non_lf_head_ids = [c["track_id"] for c in head if not _is_lf(c)]
+    # Swap in at most as many Last.fm tail picks as there are weak non-LF entries
+    # to displace, so the pool never grows beyond k.
+    n = min(reserve - have, len(tail_lf), len(non_lf_head_ids))
+    if n <= 0:
+        return head
+    drop_ids = set(non_lf_head_ids[-n:])  # weakest non-LF (head is score-sorted)
+    kept = [c for c in head if c["track_id"] not in drop_ids] + tail_lf[:n]
+    kept.sort(key=lambda c: c["score"], reverse=True)
+    return kept
+
+
 async def get_candidates(
     user_id: str,
     seed_track_id: str | None = None,
@@ -422,10 +455,16 @@ async def _get_candidates_impl(
     popular = await _get_popular_tracks(session, k=50)
     artist_recall = await _get_recently_played_artist_tracks(user_id, session, k=50)
 
-    # Merge and deduplicate (first occurrence wins — preserves source priority).
-    seen: set[str] = set()
-    merged: list[dict[str, Any]] = []
-
+    # Merge with a multi-source BLEND (was first-occurrence-wins, which silently
+    # discarded a source's score whenever an earlier source had already surfaced
+    # the same track — that zeroed out Last.fm's external-CF signal everywhere it
+    # overlapped content/cf/sasrec). Now every source that surfaced a track is
+    # recorded in ``sources``; the score is the best single-source score plus a
+    # ``corroboration_bonus`` per extra agreeing source (a track that BOTH sounds
+    # similar AND is crowd-CF similar is a stronger pick, not a redundant one); and
+    # Last.fm is promoted to the primary ``source`` tag so external-CF stays
+    # visible in the debug / audit trail instead of being masked by content/cf.
+    by_tid: dict[str, dict[str, Any]] = {}
     for candidate_list in [
         content_candidates,
         cf_candidates,
@@ -437,10 +476,23 @@ async def _get_candidates_impl(
     ]:
         for c in candidate_list:
             tid = c["track_id"]
-            if tid in seen or tid in exclude:
+            if tid in exclude:
                 continue
-            seen.add(tid)
-            merged.append(c)
+            row = by_tid.get(tid)
+            if row is None:
+                by_tid[tid] = {
+                    "track_id": tid,
+                    "score": c["score"],
+                    "source": c["source"],
+                    "sources": [c["source"]],
+                }
+            else:
+                row["sources"].append(c["source"])
+                row["score"] = max(row["score"], c["score"]) + cfg.corroboration_bonus * c["score"]
+                # Promote external CF to the primary tag so it stays visible.
+                if c["source"] == "lastfm_similar":
+                    row["source"] = "lastfm_similar"
+    merged: list[dict[str, Any]] = list(by_tid.values())
 
     # Eligibility gate: drop candidates with no streamable media_server_id so
     # unplayable duplicate / loose-file rows can't compete for a slot and land in
@@ -463,9 +515,14 @@ async def _get_candidates_impl(
     if preset.novelty_filter:
         merged = await apply_novelty_filter(merged, user_id, session, preset)
 
-    # Sort by score descending, return up to k.
+    # Sort by score descending.
     merged.sort(key=lambda c: c["score"], reverse=True)
-    return merged[:k]
+
+    # Reserve guaranteed slots for Last.fm external-CF so crowd-CF candidates
+    # survive truncation to reach the ranker. Their raw getSimilar match scores
+    # (0-1, often small) are scaled differently from FAISS cosine, so even when
+    # up-weighted they can lose the top-k race; a hard floor guarantees exposure.
+    return _reserve_lastfm(merged, k, cfg.lastfm_reserve_slots)
 
 
 async def apply_novelty_filter(

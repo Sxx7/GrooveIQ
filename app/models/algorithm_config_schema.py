@@ -97,10 +97,30 @@ class CandidateSourceConfig(BaseModel):
     )
     cf: float = Field(1.0, ge=0, le=5, description="Collaborative filtering")
     session_skipgram: float = Field(0.8, ge=0, le=5, description="Session skip-gram behavioural co-occurrence")
-    lastfm_similar: float = Field(0.7, ge=0, le=5, description="Last.fm similar tracks (external CF)")
+    lastfm_similar: float = Field(
+        1.5, ge=0, le=5, description="Last.fm similar tracks (external CF — the only crowd-CF source)"
+    )
     sasrec: float = Field(0.6, ge=0, le=5, description="SASRec transformer next-track prediction")
     popular: float = Field(0.3, ge=0, le=5, description="Global popularity fallback")
     artist_recall: float = Field(0.2, ge=0, le=5, description="Recently heard artist tracks")
+    corroboration_bonus: float = Field(
+        0.25,
+        ge=0,
+        le=2,
+        description=(
+            "Bonus added to a candidate's score for each additional source that also surfaced it "
+            "(cross-source agreement reward). 0 = keep only the single best source score."
+        ),
+    )
+    lastfm_reserve_slots: int = Field(
+        15,
+        ge=0,
+        le=100,
+        description=(
+            "Guaranteed slots in the merged candidate pool reserved for Last.fm external-CF "
+            "candidates, so crowd-CF picks survive score truncation and reach the ranker."
+        ),
+    )
 
 
 class TasteProfileConfig(BaseModel):
