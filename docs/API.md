@@ -1177,6 +1177,13 @@ Last.fm-sourced charts with library matching, cover art, daily snapshots, and
 optional auto-download. Rebuilt on a daily cron (`CHARTS_CRON`, default
 `0 3 * * *` = 03:00 UTC) or on demand. One snapshot is stamped per calendar day.
 
+Three chart types — `top_tracks`, `top_artists`, and `top_albums` — over three
+scope shapes: `global`, `tag:<genre>`, and `geo:<country>`. Album charts exist
+only per genre (Last.fm has no global/geo album chart). The daily build covers
+the configured `CHARTS_COUNTRIES` / `CHARTS_TAGS`; any other country/genre is
+fetched on demand via `POST /v1/charts/fetch` (below) — this powers the
+dashboard's live country/genre picker.
+
 ### `GET /v1/charts`: List available charts
 
 All chart type + scope combos (latest-snapshot entry counts).
@@ -1194,8 +1201,8 @@ deltas. (Re-matches against the library when serving the latest snapshot.)
 
 | Param | Type | Default | Description |
 |-------|------|---------|-------------|
-| `chart_type` | path | – | `top_tracks` or `top_artists` |
-| `scope` | string | `global` | `global`, genre tag, or country name |
+| `chart_type` | path | – | `top_tracks`, `top_artists`, or `top_albums` |
+| `scope` | string | `global` | `global`, `tag:<genre>`, or `geo:<country>` (album charts require a `tag:<genre>` scope) |
 | `limit` | int | 100 | 1-200 |
 | `offset` | int | 0 | – |
 | `as_of` | date | – | `YYYY-MM-DD` to fetch a historical snapshot |
@@ -1203,7 +1210,10 @@ deltas. (Re-matches against the library when serving the latest snapshot.)
 
 Each entry includes `in_library`, `matched_track_id`, `image_url`, and a
 `library` object (`track_id`, `media_server_id`, `cover_url`, metadata) when
-matched. Prefer `library.cover_url`, fall back to `image_url`.
+matched. Prefer `library.cover_url`, fall back to `image_url`. `top_tracks`
+entries add `track_title`; `top_albums` entries add `album_name` +
+`library_track_count` (owned tracks off the album); `top_artists` entries add
+`library_track_count`.
 
 When `compare=Nd` is set, the response adds `compared_to` (the snapshot date
 diffed against, or `null` if none is old enough) and each entry gains
@@ -1219,12 +1229,34 @@ position, `null` = new/re-entry). Deltas are relative to the served snapshot, so
 
 ### `GET /v1/charts/{chart_type}/track/{artist}/{title}/history`: Position trajectory
 
-Position history for one entry over snapshots. (`title` is ignored for
-`top_artists`.)
+Position history for one entry over snapshots. (`title` is the album name for
+`top_albums`, and ignored for `top_artists`.)
 
 | Param | Default | Description |
 |-------|---------|-------------|
 | `scope` | `global` | Chart scope |
+
+### `POST /v1/charts/fetch`: Build one chart on demand
+
+Powers the live country/genre picker. Builds a single chart (`chart_type` +
+`scope`) from Last.fm right now and persists today's snapshot, so it reads back
+through `GET /v1/charts/{chart_type}` with full trend/snapshot support and
+starts accruing history from first view. No-op (`built: false`) if today's
+snapshot for the scope already exists, unless `force: true`. Unlike the daily
+build, this never queues downloads or Lidarr adds, and does **not** resolve
+cover art inline (covers come from library matches, the cache, and the nightly
+build) — so an interactive fetch returns in ~1s instead of blocking on a
+per-track cover search.
+
+```json
+{"chart_type": "top_tracks", "scope": "geo:japan", "force": false}
+```
+
+Body (`ChartFetchRequest`): `chart_type` (default `top_tracks`), `scope`
+(default `global`), `force` (default `false`). `400` if `chart_type` is invalid
+or `top_albums` is requested with a non-`tag:` scope; `503` if `LASTFM_API_KEY`
+is not configured. Returns `{status, built, chart_type, scope, snapshot_date,
+entries, library_matches}`.
 
 ### `POST /v1/charts/build`: Trigger chart rebuild
 
@@ -2119,7 +2151,7 @@ Navidrome is the only supported media server. The `plex` value and the
 | `CHARTS_CRON` | `0 3 * * *` | Daily build schedule, UTC (wall-clock cron; survives restarts) |
 | `CHARTS_INTERVAL_HOURS` | `24` | Freshness window (h) for the Monitor staleness banner; cadence is `CHARTS_CRON` |
 | `CHARTS_TOP_LIMIT` | `100` | Entries per chart (max 200) |
-| `CHARTS_TAGS` / `CHARTS_COUNTRIES` | `""` | Genre tags / countries (CSV) |
+| `CHARTS_TAGS` / `CHARTS_COUNTRIES` | 14 genres / 12 countries | Genre tags (`tag.getTop*`) / ISO country names (`geo.getTop*`) for the daily build, CSV. Non-empty defaults cover a useful spread; the live picker (`POST /v1/charts/fetch`) covers the long tail on demand, so trim these to bound build cost |
 | `CHARTS_LIDARR_AUTO_ADD` / `CHARTS_LIDARR_MAX_ADDS` | `false` / `50` | Auto-add chart artists to Lidarr |
 | `CHARTS_SPOTIZERR_AUTO_ADD` / `CHARTS_SPOTIZERR_MAX_ADDS` | `false` / `50` | Auto-download unmatched chart tracks |
 
