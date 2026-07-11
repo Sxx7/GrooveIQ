@@ -633,6 +633,24 @@ class MixesConfig(BaseModel):
     min_satisfaction: float = Field(
         0.0, ge=0, le=1, description="Optional floor on normalised satisfaction_score for a track to be mix-eligible"
     )
+    min_plays_for_pool: int = Field(
+        2,
+        ge=1,
+        le=20,
+        description=(
+            "Proven-ness gate: a track needs at least this many plays to enter the mix pool "
+            "(a like or repeat always qualifies). 2 = 'listened more than once'. A single full "
+            "listen no longer admits a track, so mixes stay dominated by genuinely proven tracks. "
+            "Raise toward 3-4 to tighten further."
+        ),
+    )
+    rank_by_engagement: bool = Field(
+        True,
+        description=(
+            "Serve each mix proven-first: order tracks by engagement (satisfaction / play depth) "
+            "descending at write time, so the strongest tracks lead instead of frozen rotation order."
+        ),
+    )
 
     nostalgia_dormancy_days: float = Field(
         45.0,

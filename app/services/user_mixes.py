@@ -105,17 +105,28 @@ async def _engaged_pool(db: AsyncSession, user_id: str, cfg, now: int) -> dict[s
         .all()
     )
     pool: dict[str, float] = {}
+    min_plays = getattr(cfg, "min_plays_for_pool", 2)
     for r in rows:
-        if (
-            (r.play_count or 0) >= 2
-            or (r.like_count or 0) > 0
-            or (r.repeat_count or 0) > 0
-            or (r.full_listen_count or 0) > 0
-        ):
+        # Proven-ness gate: a track must have been played more than once (or explicitly
+        # liked / repeated) to be mix-eligible. A single full listen is NOT enough — that
+        # was the leak that flooded mixes with unproven, played-once-long-ago tracks.
+        if (r.play_count or 0) >= min_plays or (r.like_count or 0) > 0 or (r.repeat_count or 0) > 0:
             score = _engagement_score(r)
             if score >= cfg.min_satisfaction:
                 pool[r.track_id] = score
     return pool
+
+
+async def _analysed_ids(db: AsyncSession, track_ids: list[str]) -> set[str]:
+    """The subset of ``track_ids`` that have a ``track_features`` row (i.e. real,
+    hydratable tracks). Tracks absent here are legacy/deleted ids that would serve
+    as NULL title/artist/media_server_id slots inside a mix, so they are excluded."""
+    out: set[str] = set()
+    for i in range(0, len(track_ids), 400):
+        chunk = track_ids[i : i + 400]
+        rows = (await db.execute(select(TrackFeatures.track_id).where(TrackFeatures.track_id.in_(chunk)))).all()
+        out.update(r[0] for r in rows)
+    return out
 
 
 async def _embeddings(db: AsyncSession, track_ids: list[str]) -> dict[str, np.ndarray]:
@@ -230,7 +241,14 @@ async def _ordered_member_ids(db: AsyncSession, mix_id: int) -> list[str]:
 async def _write_members(
     db: AsyncSession, mix: Mix, members: list[str], pool: dict[str, float], provisional: set[str], now: int
 ) -> None:
-    """Replace a mix's MixTrack rows, preserving ``added_at`` for retained tracks."""
+    """Replace a mix's MixTrack rows, preserving ``added_at`` for retained tracks.
+
+    When ``rank_by_engagement`` is on (default), the stored positions are ordered by
+    engagement descending so the mix is served proven-first — the rotation logic still
+    decides *membership*, this only decides the *order* the client plays them in."""
+    cfg = get_config().mixes
+    if getattr(cfg, "rank_by_engagement", True):
+        members = sorted(members, key=lambda t: -pool.get(t, 0.0))
     old_added = await _member_added(db, mix.id)
     await db.execute(delete(MixTrack).where(MixTrack.mix_id == mix.id))
     for pos, tid in enumerate(members):
@@ -263,6 +281,11 @@ async def rebuild_user_mixes(db: AsyncSession, user_id: str, *, now: int | None 
         se.load_latest()
 
     pool = await _engaged_pool(db, user_id, cfg, now)
+    # Drop tracks with no track_features row: they cannot be hydrated and would surface
+    # as NULL title/artist/media_server_id slots inside a mix (one such orphan even led
+    # a mix at position 0). Excluding them keeps every mix slot real.
+    analysed = await _analysed_ids(db, list(pool.keys()))
+    pool = {t: s for t, s in pool.items() if t in analysed}
     vec_map = se.get_vectors(list(pool.keys()))  # session vectors (in-vocab only)
     backbone = [t for t in pool if t in vec_map]
 

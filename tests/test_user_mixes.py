@@ -354,3 +354,105 @@ async def test_acoustic_fallback_placed_provisional(monkeypatch):
         provisional = (await s.execute(select(MixTrack).where(MixTrack.provisional.is_(True)))).scalars().all()
     assert res["fallback"] >= 1
     assert any(r.track_id.startswith("F") for r in provisional)
+
+
+# --------------------------------------------------------------------------
+# Proven-ness pool gate + orphan exclusion + engagement ordering (2026-07)
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_pool_rejects_single_full_listen_but_keeps_proven():
+    """A single full listen no longer admits a track; >=2 plays or a like/repeat does.
+    This is the gate that stops mixes filling with played-once 'unproven' tracks."""
+    user = "u_pool"
+    now = _now()
+    async with _Session() as s:
+        s.add(User(user_id=user, taste_profile={}))
+        for t in ("A_0", "A_1", "A_2", "A_3"):
+            await _add_track(s, t)
+        # played once, fully listened, not liked -> EXCLUDED under the new gate
+        s.add(TrackInteraction(user_id=user, track_id="A_0", play_count=1, full_listen_count=1,
+                               satisfaction_score=0.5, last_played_at=now - _DAY, updated_at=now))
+        s.add(TrackInteraction(user_id=user, track_id="A_1", play_count=2,  # >=2 plays -> in
+                               satisfaction_score=0.5, last_played_at=now - _DAY, updated_at=now))
+        s.add(TrackInteraction(user_id=user, track_id="A_2", play_count=1, like_count=1,  # liked -> in
+                               satisfaction_score=0.5, last_played_at=now - _DAY, updated_at=now))
+        s.add(TrackInteraction(user_id=user, track_id="A_3", play_count=1, repeat_count=1,  # repeated -> in
+                               satisfaction_score=0.5, last_played_at=now - _DAY, updated_at=now))
+        await s.commit()
+    async with _Session() as s:
+        pool = await user_mixes._engaged_pool(s, user, _cfg().mixes, now)
+    assert "A_0" not in pool  # a single full listen is not "proven"
+    assert set(pool) == {"A_1", "A_2", "A_3"}
+
+
+@pytest.mark.asyncio
+async def test_min_plays_for_pool_is_tunable():
+    """Raising min_plays_for_pool tightens the proven gate."""
+    user = "u_tune"
+    now = _now()
+    async with _Session() as s:
+        s.add(User(user_id=user, taste_profile={}))
+        for t in ("A_0", "A_1"):
+            await _add_track(s, t)
+        s.add(TrackInteraction(user_id=user, track_id="A_0", play_count=2,
+                               satisfaction_score=0.5, last_played_at=now - _DAY, updated_at=now))
+        s.add(TrackInteraction(user_id=user, track_id="A_1", play_count=3,
+                               satisfaction_score=0.5, last_played_at=now - _DAY, updated_at=now))
+        await s.commit()
+    async with _Session() as s:
+        pool = await user_mixes._engaged_pool(s, user, _cfg(min_plays_for_pool=3).mixes, now)
+    assert "A_0" not in pool  # play_count 2 < 3
+    assert "A_1" in pool
+
+
+@pytest.mark.asyncio
+async def test_orphan_without_track_features_never_reaches_a_mix():
+    """A well-engaged track with NO track_features row must not surface in a mix —
+    it would render as a NULL title/artist/media_server_id slot on the client."""
+    user = "u_orphan"
+    now = _now()
+    async with _Session() as s:
+        s.add(User(user_id=user, taste_profile={}))
+        for i in range(10):  # real, analysed backbone
+            await _add_track(s, f"A_{i}")
+            await _add_inter(s, user, f"A_{i}", play_count=5, last_played=now - _DAY, satisfaction=0.6)
+        # orphan: strongly engaged, has an A-family session vector, but NO track_features row
+        s.add(TrackInteraction(user_id=user, track_id="A_99", play_count=20, full_listen_count=15,
+                               satisfaction_score=0.99, last_played_at=now - _DAY, updated_at=now))
+        await s.commit()
+    async with _Session() as s:
+        # it WOULD qualify on engagement...
+        pool = await user_mixes._engaged_pool(s, user, _cfg().mixes, now)
+        assert "A_99" in pool
+        # ...but rebuild drops it, so no served track is the orphan and none hydrate to null
+        await user_mixes.rebuild_user_mixes(s, user, now=now)
+    async with _Session() as s:
+        served = await user_mixes.get_session_mixes(s, user)
+    all_tracks = [t for mix in served for t in mix["tracks"]]
+    assert all_tracks, "expected at least one mix to be built"
+    assert all(t["track_id"] != "A_99" for t in all_tracks)
+    assert all(t["title"] is not None for t in all_tracks)  # no NULL-metadata slots
+
+
+@pytest.mark.asyncio
+async def test_write_members_serves_proven_first():
+    """rank_by_engagement (default) stores mix positions in engagement-desc order."""
+    user = "u_order"
+    now = _now()
+    async with _Session() as s:
+        s.add(User(user_id=user, taste_profile={}))
+        m = Mix(user_id=user, kind="session", state="active", created_at=now)
+        s.add(m)
+        await s.flush()
+        pool = {"A_0": 0.1, "A_1": 0.9, "A_2": 0.5}
+        # members handed over in NON-engagement order
+        await user_mixes._write_members(s, m, ["A_0", "A_1", "A_2"], pool, set(), now)
+        await s.commit()
+        mid = m.id
+    async with _Session() as s:
+        rows = (
+            await s.execute(select(MixTrack.track_id).where(MixTrack.mix_id == mid).order_by(MixTrack.position))
+        ).all()
+    assert [r[0] for r in rows] == ["A_1", "A_2", "A_0"]  # 0.9, 0.5, 0.1 -> strongest leads
