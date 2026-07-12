@@ -422,6 +422,33 @@ class TestLastfmCfFeature:
         assert result["features"].shape[1] == len(FEATURE_COLUMNS)
         assert float(result["features"][0, idx]) == 0.0
 
+    async def test_lastfm_cf_score_populated_from_cache(self):
+        """With a warm Last.fm cache, candidates that are similars of the user's
+        top tracks get a non-zero lastfm_cf_score; others stay 0.0."""
+        import time as _time
+
+        import app.services.lastfm_candidates as lfc
+        from app.services.feature_eng import FEATURE_COLUMNS, build_features
+
+        await _seed_data()  # user0 top_tracks = t0..t9
+        # Seed the in-memory cache: top track t0 is similar to t15 and t16.
+        saved = dict(lfc._similar_cache)
+        try:
+            lfc._similar_cache = {"t0": [("t15", 0.91), ("t16", 0.42)]}
+            lfc._built_at = int(_time.time())
+            assert lfc.is_ready()
+
+            async with _TestSession() as session:
+                result = await build_features("user0", ["t15", "t16", "t17"], session)
+            idx = FEATURE_COLUMNS.index("lastfm_cf_score")
+            by_tid = {t: result["features"][i, idx] for i, t in enumerate(result["track_ids"])}
+            assert abs(by_tid["t15"] - 0.91) < 1e-4
+            assert abs(by_tid["t16"] - 0.42) < 1e-4
+            assert by_tid["t17"] == 0.0  # not a similar of any top track
+        finally:
+            lfc._similar_cache = saved
+            lfc._built_at = 0
+
     async def test_score_candidates_falls_back_on_width_mismatch(self):
         """A stale narrower model (pre-feature) must NOT crash serving — the guard
         falls back to satisfaction_score until the ranker is retrained."""
