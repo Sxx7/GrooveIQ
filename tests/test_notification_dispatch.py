@@ -589,3 +589,123 @@ async def test_download_exempt_from_quiet_hours(monkeypatch):
 
     assert summary["sent"] == 1  # the one push the user is waiting for goes through quiet hours
     assert (await _delivery(d)).dispatch_state == "sent"
+
+
+# ── Phase 3: digest rollup ───────────────────────────────────────────────────
+
+
+def test_humanize_list():
+    assert nd._humanize_list([]) == ""
+    assert nd._humanize_list(["A"]) == "A"
+    assert nd._humanize_list(["A", "B"]) == "A and B"
+    assert nd._humanize_list(["A", "B", "C"]) == "A, B and C"
+
+
+def test_build_digest_single_keeps_original():
+    e = NotificationEvent(
+        event_type="newly_added", title="New music added", body='Kind of Blue added', data={"type": "new_media"}
+    )
+    title, body, data = nd._build_digest("newly_added", [e])
+    assert (title, body) == ("New music added", "Kind of Blue added")
+    assert data == {"type": "new_media"}
+
+
+def test_build_digest_multi_counts_and_names():
+    e1 = NotificationEvent(event_type="newly_added", title="t", body="b", data={"type": "new_media", "artist": "Miles Davis"})
+    e2 = NotificationEvent(event_type="newly_added", title="t", body="b", data={"type": "new_media", "artist": "Portishead"})
+    title, body, data = nd._build_digest("newly_added", [e1, e2])
+    assert title == "2 new albums added"
+    assert "Miles Davis" in body and "Portishead" in body
+    assert data == {"type": "new_media", "digest": True, "count": 2}
+
+
+def test_build_digest_new_release_and_download_wording():
+    r1 = NotificationEvent(event_type="new_release", title="t", body="b", data={"type": "new_release", "artist": "Beach House"})
+    r2 = NotificationEvent(event_type="new_release", title="t", body="b", data={"type": "new_release", "artist": "Aphex Twin"})
+    assert nd._build_digest("new_release", [r1, r2])[0] == "2 new releases"
+    d1 = NotificationEvent(event_type="download_completed", title="t", body="b", data={"type": "download_finished"})
+    d2 = NotificationEvent(event_type="download_completed", title="t", body="b", data={"type": "download_finished"})
+    title, body, _ = nd._build_digest("download_completed", [d1, d2])
+    assert title == "Downloads ready" and body == "2 downloads finished."
+
+
+async def test_digest_coalesces_same_type_burst(monkeypatch):
+    monkeypatch.setattr(settings, "NOTIF_DIGEST_ENABLED", True, raising=False)
+    calls: list = []
+    monkeypatch.setattr(nd, "_apprise_notify", lambda urls, title, body: calls.append((title, body)) or True)
+    ids = [await _seed_delivery(user_id="u", event_type="newly_added", apprise_urls=["jsons://r/u"], dedup_key="a1")]
+    ids.append(await _seed_delivery(user_id="u", event_type="newly_added", dedup_key="a2", with_device=False))
+    ids.append(await _seed_delivery(user_id="u", event_type="newly_added", dedup_key="a3", with_device=False))
+
+    async with _TestSession() as s:
+        summary = await dispatch_pending(s)
+
+    assert summary["sent"] == 3  # three deliveries marked sent
+    assert summary["pushes"] == 1  # via a single coalesced push
+    assert len(calls) == 1 and calls[0][0] == "3 new albums added"
+    for d_id in ids:
+        assert (await _delivery(d_id)).dispatch_state == "sent"
+
+
+async def test_digest_off_sends_per_item(monkeypatch):
+    calls: list = []  # default NOTIF_DIGEST_ENABLED is False
+    monkeypatch.setattr(nd, "_apprise_notify", lambda urls, title, body: calls.append(title) or True)
+    await _seed_delivery(user_id="u", event_type="newly_added", apprise_urls=["jsons://r/u"], dedup_key="a1")
+    await _seed_delivery(user_id="u", event_type="newly_added", dedup_key="a2", with_device=False)
+
+    async with _TestSession() as s:
+        summary = await dispatch_pending(s)
+
+    assert summary["sent"] == 2
+    assert "pushes" not in summary  # no coalescing → one push each
+    assert len(calls) == 2
+
+
+async def test_digest_is_per_type_not_cross_type(monkeypatch):
+    monkeypatch.setattr(settings, "NOTIF_DIGEST_ENABLED", True, raising=False)
+    calls: list = []
+    monkeypatch.setattr(nd, "_apprise_notify", lambda urls, title, body: calls.append(title) or True)
+    await _seed_delivery(user_id="u", event_type="newly_added", apprise_urls=["jsons://r/u"], dedup_key="m1")
+    await _seed_delivery(user_id="u", event_type="newly_added", dedup_key="m2", with_device=False)
+    await _seed_delivery(user_id="u", event_type="new_release", dedup_key="r1", with_device=False)
+    await _seed_delivery(user_id="u", event_type="new_release", dedup_key="r2", with_device=False)
+
+    async with _TestSession() as s:
+        summary = await dispatch_pending(s)
+
+    assert summary["sent"] == 4
+    assert summary["pushes"] == 2  # one digest per type-family, not one across both
+    assert set(calls) == {"2 new albums added", "2 new releases"}
+
+
+async def test_digest_counts_as_one_budget_unit(monkeypatch):
+    monkeypatch.setattr(settings, "NOTIF_DIGEST_ENABLED", True, raising=False)
+    monkeypatch.setattr(settings, "NOTIF_DAILY_BUDGET", 1, raising=False)
+    await _seed_delivery(user_id="u", event_type="newly_added", apprise_urls=["jsons://r/u"], dedup_key="a1")
+    for i in range(2, 6):
+        await _seed_delivery(user_id="u", event_type="newly_added", dedup_key=f"a{i}", with_device=False)
+
+    async with _TestSession() as s:
+        summary = await dispatch_pending(s)
+
+    assert summary["sent"] == 5  # five albums coalesce into one push = one budget unit
+    assert summary["pushes"] == 1
+    assert "budget_dropped" not in summary
+
+
+async def test_digest_group_held_together_in_quiet_hours(monkeypatch):
+    start, end = _window_containing_now()
+    monkeypatch.setattr(settings, "NOTIF_DIGEST_ENABLED", True, raising=False)
+    monkeypatch.setattr(settings, "QUIET_HOURS_ENABLED", True, raising=False)
+    monkeypatch.setattr(settings, "QUIET_HOURS_START", start, raising=False)
+    monkeypatch.setattr(settings, "QUIET_HOURS_END", end, raising=False)
+    calls: list = []
+    monkeypatch.setattr(nd, "_apprise_notify", lambda u, t, b: calls.append(u) or True)
+    await _seed_delivery(user_id="u", event_type="newly_added", apprise_urls=["jsons://r/u"], device_tz="UTC", dedup_key="a1")
+    await _seed_delivery(user_id="u", event_type="newly_added", device_tz="UTC", dedup_key="a2", with_device=False)
+
+    async with _TestSession() as s:
+        summary = await dispatch_pending(s)
+
+    assert summary.get("held") == 2  # the whole group is deferred together
+    assert not calls

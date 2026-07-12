@@ -382,6 +382,9 @@ async def _fanout(session: AsyncSession, ev: ReleaseEvent, now: int, eligible_co
                 "release_event_id": ev.id,
                 "artist_mbid": ev.artist_mbid,
                 "release_key": ev.release_key,
+                # Names for the dispatch-time digest ("N new releases / New from X, Y").
+                "artist": ev.artist_name,
+                "album": ev.album_title,
             },
             now=now,
         )

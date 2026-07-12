@@ -292,6 +292,66 @@ def _quiet_window_open(now_epoch: int, tz_name: str | None, start_h: int, end_h:
     return int(target.timestamp())
 
 
+# --- Digest rollup (notifications Phase 3) ------------------------------------
+# When a burst produces several same-type pending deliveries for one user (a scan
+# adding 30 albums, a reconcile stamping several new releases), coalesce them into
+# ONE summary push instead of one-per-item. A group of one keeps its original
+# per-item message, so enabling the digest only changes the >=2 case.
+
+
+def _humanize_list(names: list[str]) -> str:
+    """"A" / "A and B" / "A, B and C" (Oxford-comma-free, em-dash-free)."""
+    if not names:
+        return ""
+    if len(names) == 1:
+        return names[0]
+    if len(names) == 2:
+        return f"{names[0]} and {names[1]}"
+    return f"{', '.join(names[:-1])} and {names[-1]}"
+
+
+def _example_names(events: list[NotificationEvent], limit: int = 3) -> list[str]:
+    """Up to ``limit`` distinct artist/album display names pulled from the events'
+    structured ``data`` (order-preserving). Empty when a type carries no names."""
+    out: list[str] = []
+    for e in events:
+        d = e.data or {}
+        name = d.get("artist") or d.get("album")
+        if name and name not in out:
+            out.append(name)
+            if len(out) >= limit:
+                break
+    return out
+
+
+def _build_digest(event_type: str, events: list[NotificationEvent]) -> tuple[str, str, dict[str, Any]]:
+    """(title, body, data) for a coalesced group. One event → its original message;
+    two or more → a synthesized count digest routed to the type's tap surface."""
+    if len(events) == 1:
+        e = events[0]
+        return e.title, e.body, (e.data or {"type": event_type})
+
+    n = len(events)
+    route = (events[0].data or {}).get("type") or event_type  # keep the client tap-route
+    incl = _humanize_list(_example_names(events))
+    if event_type == "newly_added":
+        title = f"{n} new albums added"
+        body = f"Including {incl}. Tap to browse." if incl else "Tap to browse your new music."
+    elif event_type == "new_release":
+        title = f"{n} new releases"
+        body = f"New from {incl}." if incl else "New releases from artists you follow."
+    elif event_type == "download_completed":
+        title = "Downloads ready"
+        body = f"{n} downloads finished."
+    elif event_type == "recommendation":
+        title = "New mixes for you"
+        body = f"{n} fresh mixes are ready."
+    else:
+        title = f"{n} updates"
+        body = "Tap to view."
+    return title, body, {"type": route, "digest": True, "count": n}
+
+
 async def _user_tz(session: AsyncSession, user_id: str) -> str | None:
     """The IANA tz of the user's most-recently-seen active device that reports one
     (None if none). Used to evaluate quiet hours in the user's local time."""
@@ -323,12 +383,13 @@ async def dispatch_pending(session: AsyncSession, *, limit: int = 200) -> dict[s
     to re-run: a ``sent`` row is never reselected, and a failed/held row is deferred
     by ``next_retry_at`` so the inline call + backstop tick don't double-send.
 
-    Phase-2 volume controls, both OFF by default (dispatch is unchanged until you
-    opt in): a per-user/UTC-day BUDGET drops the lowest-priority pending type first,
-    and a per-user local QUIET-HOURS window HOLDS non-urgent deliveries until it
-    closes. ``download_completed`` is exempt from both (it still counts toward the
-    budget). Rows are processed in precedence order so budget/quiet decisions favor
-    the more important type.
+    Volume controls, all OFF by default (dispatch is unchanged until you opt in):
+    a per-user/UTC-day BUDGET drops the lowest-priority pending type first; a
+    per-user local QUIET-HOURS window HOLDS non-urgent deliveries until it closes;
+    and the DIGEST coalesces a same-type burst for one user into a single summary
+    push. ``download_completed`` is exempt from budget + quiet hours (it still counts
+    toward the budget). Rows are processed in precedence order so budget/quiet
+    decisions favor the more important type; each group is one push = one budget unit.
     """
     if not settings.push_enabled:
         return {"skipped": "disabled"}
@@ -355,75 +416,96 @@ async def dispatch_pending(session: AsyncSession, *, limit: int = 200) -> dict[s
 
     budget = settings.NOTIF_DAILY_BUDGET
     quiet_on = settings.QUIET_HOURS_ENABLED
+    digest_on = settings.NOTIF_DIGEST_ENABLED
     day_start = now - (now % _DAY_SECONDS)
     tally: dict[str, int] = await _sent_today_by_user(session, day_start) if budget > 0 else {}
     tz_cache: dict[str, str | None] = {}
 
-    sent = failed = suppressed = retry = errored = held = budget_dropped = 0
+    # Coalesce a same-type burst for one user into a single push. With the digest
+    # OFF each delivery is its own group (unchanged per-item behavior). Rows arrive
+    # in precedence order, so the ordered dict keeps groups in that order and the
+    # budget still favors the higher-priority type.
+    groups: dict[Any, list] = {}
     for delivery, event in rows:
-        # Per-delivery isolation: a DB error while resolving channels for ONE row
-        # must not abort the drain and discard the state changes (incl. already-
-        # sent rows) accumulated so far — that would re-send on the next tick.
-        # An errored row is left untouched (pending) and retried next tick.
-        try:
-            uid = delivery.user_id
-            exempt = delivery.event_type in _EXEMPT_EVENT_TYPES
+        key = (delivery.user_id, delivery.event_type) if digest_on else (delivery.id,)
+        groups.setdefault(key, []).append((delivery, event))
 
-            # Quiet-hours hold: defer a non-urgent delivery to the window close. It
-            # stays pending (attempt_count untouched — a hold is not a failure); the
-            # ready-filter reselects it once next_retry_at passes.
+    sent = failed = suppressed = retry = errored = held = budget_dropped = pushes = 0
+    for members in groups.values():
+        # Per-group isolation: a DB error resolving ONE group must not abort the
+        # drain and discard state changes (incl. already-sent rows) — that would
+        # re-send on the next tick. An errored group's rows are left pending.
+        deliveries = [d for d, _ in members]
+        events = [e for _, e in members]
+        uid = deliveries[0].user_id
+        et = deliveries[0].event_type
+        exempt = et in _EXEMPT_EVENT_TYPES
+        try:
+            # Quiet-hours hold (whole group): defer to the window close. Rows stay
+            # pending (attempt_count untouched — a hold is not a failure).
             if quiet_on and not exempt:
                 if uid not in tz_cache:
                     tz_cache[uid] = await _user_tz(session, uid)
                 if _in_quiet_hours(now, tz_cache[uid], settings.QUIET_HOURS_START, settings.QUIET_HOURS_END):
-                    delivery.next_retry_at = _quiet_window_open(
+                    hold_at = _quiet_window_open(
                         now, tz_cache[uid], settings.QUIET_HOURS_START, settings.QUIET_HOURS_END
                     )
-                    delivery.last_error = "quiet_hours_hold"
-                    held += 1
+                    for d in deliveries:
+                        d.next_retry_at = hold_at
+                        d.last_error = "quiet_hours_hold"
+                    held += len(deliveries)
                     continue
 
-            # Daily budget: drop a non-urgent delivery once the user hit the cap
-            # (terminal — the digest phase is what will coalesce instead of drop).
+            # Daily budget: one group = one push = one budget unit. Drop the whole
+            # (non-urgent) group once the user hit the cap.
             if budget > 0 and not exempt and tally.get(uid, 0) >= budget:
-                delivery.dispatch_state = "suppressed"
-                delivery.last_error = "daily_budget_exceeded"
-                budget_dropped += 1
+                for d in deliveries:
+                    d.dispatch_state = "suppressed"
+                    d.last_error = "daily_budget_exceeded"
+                budget_dropped += len(deliveries)
                 continue
 
-            urls = await _channels_for(session, uid, delivery.event_type)
+            urls = await _channels_for(session, uid, et)
             if not urls:
-                delivery.dispatch_state = "suppressed"  # nothing to deliver to; never retried
-                suppressed += 1
+                for d in deliveries:
+                    d.dispatch_state = "suppressed"  # nothing to deliver to; never retried
+                suppressed += len(deliveries)
                 continue
 
-            # Apprise is a sync lib → offload to a thread (bounded by
-            # APPRISE_TIMEOUT_S) so it can't block the loop or hang on a wedged relay.
-            ok = await _apprise_notify_bounded(urls, event.title, event.body)
+            # One synthesized message for the group (a group of one keeps its own).
+            # Apprise is a sync lib → offload to a thread (bounded by APPRISE_TIMEOUT_S)
+            # so it can't block the loop or hang on a wedged relay.
+            title, body, _data = _build_digest(et, events)
+            ok = await _apprise_notify_bounded(urls, title, body)
             if ok:
-                delivery.dispatch_state = "sent"
-                delivery.notified_at = now
-                delivery.last_error = None
-                tally[uid] = tally.get(uid, 0) + 1  # count every send (download included) toward the budget
-                sent += 1
+                for d in deliveries:
+                    d.dispatch_state = "sent"
+                    d.notified_at = now
+                    d.last_error = None
+                tally[uid] = tally.get(uid, 0) + 1  # one push per group counts toward the budget
+                sent += len(deliveries)
+                pushes += 1
                 continue
 
-            # Transient failure: attempt-counted exponential backoff, with an age cap.
-            delivery.attempt_count = (delivery.attempt_count or 0) + 1
-            delivery.last_error = "apprise_notify_failed"
-            age_h = (now - (delivery.created_at or now)) / 3600.0
-            if delivery.attempt_count >= settings.NOTIFY_MAX_ATTEMPTS or age_h >= settings.DISPATCH_MAX_AGE_HOURS:
-                delivery.dispatch_state = "failed"
-                failed += 1
-            else:
-                delivery.next_retry_at = now + _backoff_seconds(delivery.attempt_count)
-                retry += 1
+            # Transient failure: back off every member of the group together.
+            for d in deliveries:
+                d.attempt_count = (d.attempt_count or 0) + 1
+                d.last_error = "apprise_notify_failed"
+                age_h = (now - (d.created_at or now)) / 3600.0
+                if d.attempt_count >= settings.NOTIFY_MAX_ATTEMPTS or age_h >= settings.DISPATCH_MAX_AGE_HOURS:
+                    d.dispatch_state = "failed"
+                    failed += 1
+                else:
+                    d.next_retry_at = now + _backoff_seconds(d.attempt_count)
+                    retry += 1
         except Exception as exc:
-            logger.warning("dispatch: delivery %s errored, left pending: %s", delivery.id, exc)
-            errored += 1
+            logger.warning("dispatch: group (%s, %s) errored, left pending: %s", uid, et, exc)
+            errored += len(deliveries)
 
     await session.commit()
     summary = {"processed": len(rows), "sent": sent, "failed": failed, "suppressed": suppressed, "retry": retry}
+    if pushes and pushes != sent:
+        summary["pushes"] = pushes  # coalescing happened: fewer pushes than deliveries
     if held:
         summary["held"] = held
     if budget_dropped:

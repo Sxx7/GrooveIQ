@@ -327,7 +327,7 @@ async def _emit_download_completed(task_id: str) -> None:
             label = record.track_title or record.album_name or "Your download"
             body = f'"{label}" finished downloading'
             if record.artist_name:
-                body += f" — {record.artist_name}"
+                body += f" ({record.artist_name})"
             created = await emit_notification(
                 session,
                 event_type="download_completed",

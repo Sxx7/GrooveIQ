@@ -379,6 +379,11 @@ class Settings(BaseSettings):
     QUIET_HOURS_ENABLED: bool = False  # hold non-urgent pushes during the local quiet window
     QUIET_HOURS_START: int = 22  # local hour [0-23] the quiet window opens
     QUIET_HOURS_END: int = 8  # local hour [0-23] it closes (wraps midnight when END <= START)
+    # Digest rollup (Phase 3): coalesce a burst of same-type pending deliveries for
+    # one user into a single summary push ("30 new albums added") instead of one
+    # push per item. Off by default → per-item behavior is unchanged. A group of one
+    # still sends its original message, so enabling only changes the >=2 case.
+    NOTIF_DIGEST_ENABLED: bool = False
 
     # ------------------------------------------------------------------
     # Charts (Last.fm)
