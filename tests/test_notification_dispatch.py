@@ -186,6 +186,43 @@ async def test_null_dedup_key_singles_do_not_collide():
     assert await _count(NotificationDelivery) == 2
 
 
+# ── capability-URL tap-routing ───────────────────────────────────────────────
+
+
+def test_augment_capability_url_renames_type_to_route():
+    # `type` MUST become `route` (Apprise reserves `type`); other scalars pass through.
+    out = nd._augment_capability_url(
+        "jsons://relay/v1/apprise/abc",
+        {"type": "new_media", "digest": True, "count": 3, "playlist_id": "p1"},
+    )
+    assert out == "jsons://relay/v1/apprise/abc?:route=new_media&:digest=true&:count=3&:playlist_id=p1"
+
+
+def test_augment_capability_url_scoped_to_json_scheme():
+    # Non-capability channels (ntfy/telegram/...) are returned byte-for-byte unchanged.
+    assert nd._augment_capability_url("ntfy://topic", {"type": "new_release"}) == "ntfy://topic"
+    assert nd._augment_capability_url("tgram://bottoken/chatid", {"type": "recommendation"}) == "tgram://bottoken/chatid"
+    # Non-TLS json:// is also a capability scheme.
+    assert nd._augment_capability_url("json://relay/x", {"type": "new_release"}) == "json://relay/x?:route=new_release"
+
+
+def test_augment_capability_url_empty_data_and_nonscalars_noop():
+    assert nd._augment_capability_url("jsons://relay/x", None) == "jsons://relay/x"
+    assert nd._augment_capability_url("jsons://relay/x", {}) == "jsons://relay/x"
+    # A dict/list value is skipped (scalars only); with nothing to add, url is unchanged.
+    assert nd._augment_capability_url("jsons://relay/x", {"type": ["nope"]}) == "jsons://relay/x"
+
+
+def test_augment_capability_url_appends_with_ampersand_when_query_present():
+    out = nd._augment_capability_url("jsons://relay/x?foo=bar", {"type": "new_release"})
+    assert out == "jsons://relay/x?foo=bar&:route=new_release"
+
+
+def test_augment_capability_url_percent_encodes_values():
+    out = nd._augment_capability_url("jsons://relay/x", {"type": "a b&c"})
+    assert out == "jsons://relay/x?:route=a%20b%26c"
+
+
 # ── dispatch ─────────────────────────────────────────────────────────────────
 
 
@@ -201,7 +238,8 @@ async def test_apprise_delivery_marks_sent(monkeypatch):
     row = await _delivery(d_id)
     assert row.dispatch_state == "sent"
     assert row.notified_at is not None
-    assert calls and calls[0][0] == ["jsons://relay/v1/apprise/abc"]
+    # The capability URL carries the tap-route as an Apprise add-param (type→route).
+    assert calls and calls[0][0] == ["jsons://relay/v1/apprise/abc?:route=new_release"]
 
 
 async def test_apprise_failure_backs_off_and_stays_pending(monkeypatch):
@@ -373,7 +411,8 @@ async def test_duplicate_url_across_devices_sent_once(monkeypatch):
         summary = await dispatch_pending(s)
 
     assert summary["sent"] == 1
-    assert captured == [["jsons://relay/same-cap"]]  # deduped to a single target
+    # Deduped to a single target; the tap-route rides as an add-param (type→route).
+    assert captured == [["jsons://relay/same-cap?:route=new_release"]]
 
 
 # ── producer: emit_notification + dedup ──────────────────────────────────────

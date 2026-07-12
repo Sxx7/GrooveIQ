@@ -37,6 +37,7 @@ import logging
 import time
 from datetime import datetime, timedelta
 from typing import Any
+from urllib.parse import quote
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from sqlalchemy import case, func, select
@@ -606,11 +607,16 @@ async def dispatch_pending(session: AsyncSession, *, limit: int = 200) -> dict[s
                 # One synthesized message for the group (a group of one keeps its own).
                 # Apprise is a sync lib → offload to a thread (bounded by
                 # APPRISE_TIMEOUT_S) so it can't block the loop or hang on a wedged relay.
-                # NOTE: the structured `data` (tap-routing type/digest/count) is NOT
-                # forwarded — Apprise's json:// payload reserves `type`, and delivering
-                # it needs a coordinated APN-relay change (out of scope). See the audit.
-                title, body, _data = _build_digest(et, events)
-                ok = await _apprise_notify_bounded(urls, title, body)
+                # Tap-routing: fold the event's structured `data` (type/digest/count/...)
+                # onto the relay capability URLs as Apprise `:key=value` add-params so a
+                # tapped push deep-links to the right surface. `type` rides as `route`
+                # (Apprise reserves `type`); the relay maps it back to `data.type`. A
+                # missing `route` is harmless (the relay keeps today's default), so
+                # grooveiq and the relay may deploy in either order. Non-relay channels
+                # pass through untouched — see _augment_capability_url.
+                title, body, data = _build_digest(et, events)
+                routed_urls = [_augment_capability_url(u, data) for u in urls]
+                ok = await _apprise_notify_bounded(routed_urls, title, body)
                 if ok:
                     for d in deliveries:
                         d.dispatch_state = "sent"
@@ -709,6 +715,53 @@ async def send_test_notification(
     body = "Test notification from GrooveIQ. If you can see this, your channel works."
     ok = await _apprise_notify_bounded(urls, title, body)
     return {"sent": bool(ok), "channels": len(urls)}
+
+
+# Keys from a notification event's structured ``data`` that are forwarded to the
+# relay for TAP-ROUTING, appended to a capability URL as Apprise "add" params
+# (``:key=value``, which the json:// notifier injects verbatim into the POSTed JSON
+# body). ``type`` is deliberately RENAMED to ``route``: Apprise's json:// payload
+# RESERVES ``type`` for the notify severity, and the ``:type=`` form REMAPS it
+# (yielding ``{"<value>": "info"}``) instead of adding a ``type`` key — which would
+# corrupt EVERY push, including the working download-finished one. ``route`` is
+# non-reserved and adds cleanly; the relay maps it back to ``data.type`` for the app.
+_ROUTE_SOURCE_KEYS: tuple[str, ...] = ("type", "digest", "count", "playlist_id")
+
+
+def _augment_capability_url(url: str, data: dict[str, Any] | None) -> str:
+    """Return ``url`` with tap-routing fields from ``data`` appended as Apprise
+    ``:key=value`` add-params, so a tapped push can deep-link to the right surface.
+
+    Scoped to the relay's ``json://`` / ``jsons://`` capability scheme — every other
+    channel (ntfy/telegram/...) is returned byte-for-byte unchanged, so this can't
+    perturb a non-iOS delivery. ``type`` is emitted as ``route`` (see
+    ``_ROUTE_SOURCE_KEYS``); booleans become ``true``/``false``; non-scalars are
+    skipped. ANY problem — empty data, a non-capability scheme, or an unexpected
+    error — returns the ORIGINAL url, so a hiccup degrades to today's bare-URL
+    delivery instead of dropping the push. Deterministic, so two device rows sharing
+    one capability URL stay identical and de-dupe as before."""
+    try:
+        if not data:
+            return url
+        scheme = url.split("://", 1)[0].lower()
+        if scheme not in ("json", "jsons"):
+            return url
+        parts: list[str] = []
+        for src in _ROUTE_SOURCE_KEYS:
+            if src not in data:
+                continue
+            val = data[src]
+            if not isinstance(val, (str, int, float, bool)):
+                continue  # scalars only (bool is an int subclass — normalized below)
+            out_key = "route" if src == "type" else src
+            sval = ("true" if val else "false") if isinstance(val, bool) else str(val)
+            parts.append(f":{quote(out_key, safe='')}={quote(sval, safe='')}")
+        if not parts:
+            return url
+        return url + ("&" if "?" in url else "?") + "&".join(parts)
+    except Exception as exc:  # never let tap-routing break delivery
+        logger.warning("dispatch: capability-URL route augmentation failed (%s); sending bare URL", exc)
+        return url
 
 
 async def _apprise_notify_bounded(urls: list[str], title: str, body: str) -> bool:
