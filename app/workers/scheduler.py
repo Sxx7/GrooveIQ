@@ -216,6 +216,23 @@ async def start_scheduler() -> None:
         replace_existing=True,
     )
 
+    # Daily recommendation push (goal F) — one "your daily mix is ready" per
+    # opted-in user, 10 min after the 03:30 rebuild so the fresh mixes exist. The
+    # producer keys each push on reco:daily:{user}:{date}, so this fixed cadence is
+    # safe even if a rebuild occasionally overruns (a re-run is idempotent within
+    # the day). Off by default; gate on the flag only (the producer re-checks
+    # push_enabled), so toggling needs no restart of the other jobs.
+    if settings.NOTIFY_RECOMMENDATIONS_ENABLED:
+        _scheduler.add_job(
+            _periodic_reco_notify,
+            trigger=CronTrigger(hour=3, minute=40, timezone="UTC"),
+            id="reco_daily_notify",
+            replace_existing=True,
+            coalesce=True,
+            max_instances=1,
+            misfire_grace_time=300,
+        )
+
     # Lidarr backfill engine — drains /wanted/missing through streamrip-api.
     # Both jobs are gated on the persisted config's `enabled` flag; the API
     # route calls `apply_lidarr_backfill_config()` to register / remove /
@@ -436,6 +453,22 @@ async def _periodic_user_mixes(trigger: str = "scheduled") -> dict:
 async def run_user_mixes_now(trigger: str = "manual") -> dict:
     """Rebuild all users' session mixes on demand (admin / startup helper)."""
     return await _periodic_user_mixes(trigger=trigger)
+
+
+async def _periodic_reco_notify(trigger: str = "scheduled") -> dict:
+    """Goal F: send the daily "your mix is ready" push after the mix rebuild.
+    Self-gates on NOTIFY_RECOMMENDATIONS_ENABLED (+ push_enabled); idempotent
+    within the UTC day via the producer's date-scoped dedup key."""
+    from app.services.reco_notify import notify_daily_mixes
+
+    summary = await notify_daily_mixes()
+    logger.info("Daily reco notify (trigger=%s): %s", trigger, summary)
+    return summary
+
+
+async def run_reco_notify_now(trigger: str = "manual") -> dict:
+    """Fire the daily recommendation push on demand (admin / QA helper)."""
+    return await _periodic_reco_notify(trigger=trigger)
 
 
 async def _purge_old_mixes() -> None:

@@ -191,6 +191,7 @@ async def emit_recommendation(
     title: str | None = None,
     body: str | None = None,
     playlist_id: str | None = None,
+    dedup_key: str | None = None,
     data_extra: dict[str, Any] | None = None,
     now: int | None = None,
 ) -> int:
@@ -199,22 +200,27 @@ async def emit_recommendation(
     (a discover-weekly cron, an inactivity nudge, ...); the caller owns the
     commit + dispatch.
 
-    Dedup key ``reco:{playlist_id}`` (distinct namespace from the media key, so it
-    never collides with A/B/C) makes re-running the same mix idempotent; NULL when
-    no playlist id is given. ``data.type = "recommendation"`` rides on the event so
-    a tap can open the recommendations surface once the relay forwards it."""
+    Dedup: ``reco:*`` keys live in a distinct namespace from the media key, so a
+    reco never collides with A/B/C. An explicit ``dedup_key`` wins — the daily-mix
+    producer passes a date-scoped ``reco:daily:{user}:{YYYY-MM-DD}`` so ONE push
+    lands per user per day no matter how many mixes (or fresh playlist ids) a
+    rebuild produced. When omitted it falls back to ``reco:{playlist_id}`` (NULL
+    when no playlist id), keeping the admin/QA seam idempotent per mix.
+    ``data.type = "recommendation"`` rides on the event so a tap can open the
+    recommendations surface once the relay forwards it."""
     data: dict[str, Any] = {"type": "recommendation"}
     if playlist_id:
         data["playlist_id"] = playlist_id
     if data_extra:
         data.update(data_extra)
+    key = dedup_key if dedup_key is not None else (f"reco:{playlist_id}" if playlist_id else None)
     return await emit_notification(
         session,
         event_type="recommendation",
         title=title or "A new mix for you",
         body=body or "We put together a fresh mix based on your recent listening.",
         user_ids=[user_id],
-        dedup_key=f"reco:{playlist_id}" if playlist_id else None,
+        dedup_key=key,
         data=data,
         now=now,
     )
