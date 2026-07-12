@@ -1390,6 +1390,10 @@ class Device(Base):
     quiet_hours_enabled = Column(Boolean, nullable=True)
     quiet_hours_start = Column(Integer, nullable=True)
     quiet_hours_end = Column(Integer, nullable=True)
+    # Per-type cadence override (notifications Phase 6): {pref_field: "instant"|"daily"}.
+    # A type set to "daily" is held until the daily digest hour, then coalesced. NULL /
+    # absent key → "instant". Resolved per-user from the most-recently-seen device.
+    notif_cadence = Column(JSON, nullable=True)
 
 
 # ---------------------------------------------------------------------------

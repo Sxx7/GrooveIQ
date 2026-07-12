@@ -83,6 +83,7 @@ async def _seed_delivery(
     device_qh_enabled=None,
     device_qh_start=None,
     device_qh_end=None,
+    device_cadence=None,
     notified_at=None,
 ) -> int:
     """Create one event + one delivery (+ optional device). Returns delivery id."""
@@ -114,6 +115,7 @@ async def _seed_delivery(
                     quiet_hours_enabled=device_qh_enabled,
                     quiet_hours_start=device_qh_start,
                     quiet_hours_end=device_qh_end,
+                    notif_cadence=device_cadence,
                     **prefs,
                 )
             )
@@ -792,3 +794,84 @@ async def test_global_quiet_hours_applies_without_user_override(monkeypatch):
 
     assert summary.get("held") == 1
     assert (await _delivery(d)).dispatch_state == "pending"
+
+
+# ── Phase 6: per-type daily cadence ──────────────────────────────────────────
+
+
+def _hour_not_now() -> int:
+    return (time.gmtime().tm_hour + 3) % 24
+
+
+def test_next_daily_time_is_future_at_hour():
+    now = 1_700_000_000  # 2023-11-14 22:13:20 UTC
+    for hour in (0, 9, 22, 23):
+        t = nd._next_daily_time(now, hour)
+        assert t > now
+        assert time.gmtime(t).tm_hour == hour
+
+
+async def test_daily_cadence_holds_outside_digest_window(monkeypatch):
+    monkeypatch.setattr(settings, "NOTIF_DAILY_DIGEST_HOUR", _hour_not_now(), raising=False)
+    calls: list = []
+    monkeypatch.setattr(nd, "_apprise_notify", lambda u, t, b: calls.append(u) or True)
+    d = await _seed_delivery(
+        user_id="u", event_type="newly_added", apprise_urls=["jsons://r/u"],
+        device_cadence={"notif_new_media": "daily"},
+    )
+
+    async with _TestSession() as sess:
+        summary = await dispatch_pending(sess)
+
+    assert summary.get("deferred") == 1  # held for the daily digest window
+    assert not calls
+    row = await _delivery(d)
+    assert row.dispatch_state == "pending"
+    assert row.next_retry_at is not None and row.next_retry_at > int(time.time())
+    assert row.attempt_count == 0  # a cadence hold is not a failure
+    assert row.last_error == "daily_cadence_hold"
+
+
+async def test_daily_cadence_releases_in_digest_window(monkeypatch):
+    monkeypatch.setattr(settings, "NOTIF_DAILY_DIGEST_HOUR", time.gmtime().tm_hour, raising=False)  # window = now
+    d = await _seed_delivery(
+        user_id="u", event_type="newly_added", apprise_urls=["jsons://r/u"],
+        device_cadence={"notif_new_media": "daily"},
+    )
+
+    async with _TestSession() as sess:
+        summary = await dispatch_pending(sess)
+
+    assert summary["sent"] == 1  # digest window → the hold lifts and it sends
+    assert "deferred" not in summary
+    assert (await _delivery(d)).dispatch_state == "sent"
+
+
+async def test_instant_cadence_not_deferred(monkeypatch):
+    monkeypatch.setattr(settings, "NOTIF_DAILY_DIGEST_HOUR", _hour_not_now(), raising=False)
+    await _seed_delivery(
+        user_id="u", event_type="newly_added", apprise_urls=["jsons://r/u"],
+        device_cadence={"notif_new_media": "instant"},
+    )
+
+    async with _TestSession() as sess:
+        summary = await dispatch_pending(sess)
+
+    assert summary["sent"] == 1  # instant is unaffected
+    assert "deferred" not in summary
+
+
+async def test_daily_cadence_only_affects_its_type(monkeypatch):
+    # new_media set to daily; a new_release delivery keeps the instant default.
+    monkeypatch.setattr(settings, "NOTIF_DAILY_DIGEST_HOUR", _hour_not_now(), raising=False)
+    d = await _seed_delivery(
+        user_id="u", event_type="new_release", apprise_urls=["jsons://r/u"],
+        device_cadence={"notif_new_media": "daily"}, dedup_key="rel",
+    )
+
+    async with _TestSession() as sess:
+        summary = await dispatch_pending(sess)
+
+    assert summary["sent"] == 1  # new_release has no daily cadence → sent now
+    assert "deferred" not in summary
+    assert (await _delivery(d)).dispatch_state == "sent"

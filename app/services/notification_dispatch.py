@@ -73,6 +73,7 @@ NOTIFICATION_TYPES: list[dict[str, str]] = [
         "pref_field": "notif_new_releases",
         "label": "New Releases",
         "description": "A followed artist releases something new that's playable in your library.",
+        "cadences": ["instant", "daily"],
     },
     {
         "key": "new_media",
@@ -80,6 +81,7 @@ NOTIFICATION_TYPES: list[dict[str, str]] = [
         "pref_field": "notif_new_media",
         "label": "New Media",
         "description": "New music becomes available in your library, from any source.",
+        "cadences": ["instant", "daily"],
     },
     {
         "key": "downloads",
@@ -105,6 +107,10 @@ NOTIFICATION_TYPES: list[dict[str, str]] = [
 NOTIF_PREF_COLUMNS: dict[str, str] = {t["event_type"]: t["pref_field"] for t in NOTIFICATION_TYPES}
 # All gating pref columns (for validation / bulk reads).
 NOTIF_PREF_FIELDS: tuple[str, ...] = tuple(t["pref_field"] for t in NOTIFICATION_TYPES)
+# pref_field -> allowed cadences, for the types a user can switch to a daily digest
+# ("instant" is always the default). Keyed by pref_field so it lines up with the
+# per-device pref columns + the client's toggle keys.
+NOTIF_CADENCES: dict[str, list[str]] = {t["pref_field"]: t["cadences"] for t in NOTIFICATION_TYPES if "cadences" in t}
 
 _KIND_NOUN = {"album": "the album", "ep": "the EP", "single": "the single", "track": "the track"}
 
@@ -292,6 +298,17 @@ def _quiet_window_open(now_epoch: int, tz_name: str | None, start_h: int, end_h:
     return int(target.timestamp())
 
 
+def _next_daily_time(now_epoch: int, hour: int) -> int:
+    """Epoch of the next UTC occurrence of ``hour`` — the 'hold until' time for a
+    daily-cadence delivery (notifications Phase 6). Global UTC (not per-user local)
+    to keep the release a single once-a-day window the minute-tick can catch."""
+    utc = datetime.fromtimestamp(now_epoch, ZoneInfo("UTC"))
+    target = utc.replace(hour=hour, minute=0, second=0, microsecond=0)
+    if target <= utc:
+        target += timedelta(days=1)
+    return int(target.timestamp())
+
+
 # --- Digest rollup (notifications Phase 3) ------------------------------------
 # When a burst produces several same-type pending deliveries for one user (a scan
 # adding 30 albums, a reconcile stamping several new releases), coalesce them into
@@ -399,6 +416,30 @@ async def _user_quiet_hours(session: AsyncSession, user_id: str) -> tuple[bool, 
     )
 
 
+async def _any_device_cadence(session: AsyncSession) -> bool:
+    """True if any active device set a per-type cadence, so dispatch can skip all
+    per-user cadence resolution when nobody chose a daily digest (the default)."""
+    return (
+        await session.execute(
+            select(Device.id).where(Device.disabled_at.is_(None), Device.notif_cadence.isnot(None)).limit(1)
+        )
+    ).first() is not None
+
+
+async def _user_cadence(session: AsyncSession, user_id: str) -> dict[str, str]:
+    """Per-type cadence for a user ({pref_field: 'instant'|'daily'}) from the
+    most-recently-seen device that set one, else ``{}`` (all instant)."""
+    row = (
+        await session.execute(
+            select(Device.notif_cadence)
+            .where(Device.user_id == user_id, Device.disabled_at.is_(None), Device.notif_cadence.isnot(None))
+            .order_by(Device.last_seen_at.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    return row or {}
+
+
 async def _sent_today_by_user(session: AsyncSession, day_start: int) -> dict[str, int]:
     """Per-user count of deliveries already SENT this UTC day — the budget tally's
     starting point (this dispatch run increments it in-memory as it sends)."""
@@ -453,10 +494,17 @@ async def dispatch_pending(session: AsyncSession, *, limit: int = 200) -> dict[s
     # Quiet hours may apply via the global default OR a per-user override; skip all
     # per-user resolution entirely when neither is in play (the default fast path).
     quiet_possible = settings.QUIET_HOURS_ENABLED or await _any_device_quiet_hours(session)
+    # Daily cadence: a type a user set to "daily" is held until the digest hour (UTC).
+    # During that hour the hold lifts (the gate below is skipped) so the accumulated
+    # deliveries fall through and coalesce. Only resolve per-user when someone opted in.
+    digest_hour = settings.NOTIF_DAILY_DIGEST_HOUR
+    is_digest_window = time.gmtime(now).tm_hour == digest_hour
+    cadence_possible = await _any_device_cadence(session)
     day_start = now - (now % _DAY_SECONDS)
     tally: dict[str, int] = await _sent_today_by_user(session, day_start) if budget > 0 else {}
     tz_cache: dict[str, str | None] = {}
     qh_cache: dict[str, tuple[bool, int, int]] = {}  # per-user (enabled, start, end)
+    cad_cache: dict[str, dict[str, str]] = {}  # per-user {pref_field: cadence}
 
     # Coalesce a same-type burst for one user into a single push. With the digest
     # OFF each delivery is its own group (unchanged per-item behavior). Rows arrive
@@ -467,7 +515,7 @@ async def dispatch_pending(session: AsyncSession, *, limit: int = 200) -> dict[s
         key = (delivery.user_id, delivery.event_type) if digest_on else (delivery.id,)
         groups.setdefault(key, []).append((delivery, event))
 
-    sent = failed = suppressed = retry = errored = held = budget_dropped = pushes = 0
+    sent = failed = suppressed = retry = errored = held = budget_dropped = pushes = deferred = 0
     for members in groups.values():
         # Per-group isolation: a DB error resolving ONE group must not abort the
         # drain and discard state changes (incl. already-sent rows) — that would
@@ -478,6 +526,23 @@ async def dispatch_pending(session: AsyncSession, *, limit: int = 200) -> dict[s
         et = deliveries[0].event_type
         exempt = et in _EXEMPT_EVENT_TYPES
         try:
+            # Daily-cadence hold: outside the digest hour, defer a type the user set
+            # to "daily" to the next digest window (UTC). During the window this gate
+            # is skipped, so the day's accumulation falls through and coalesces. The
+            # target is a FUTURE time, so a held row isn't reselected until then (no
+            # churn); it's a hold, not a failure, so attempt_count is untouched.
+            if cadence_possible and not exempt and not is_digest_window:
+                if uid not in cad_cache:
+                    cad_cache[uid] = await _user_cadence(session, uid)
+                pref = NOTIF_PREF_COLUMNS.get(et)
+                if pref is not None and cad_cache[uid].get(pref) == "daily":
+                    hold_at = _next_daily_time(now, digest_hour)
+                    for d in deliveries:
+                        d.next_retry_at = hold_at
+                        d.last_error = "daily_cadence_hold"
+                    deferred += len(deliveries)
+                    continue
+
             # Quiet-hours hold (whole group): defer to the window close. Rows stay
             # pending (attempt_count untouched — a hold is not a failure). The window
             # is resolved per-user (the app's override, else the global default).
@@ -548,6 +613,8 @@ async def dispatch_pending(session: AsyncSession, *, limit: int = 200) -> dict[s
         summary["pushes"] = pushes  # coalescing happened: fewer pushes than deliveries
     if held:
         summary["held"] = held
+    if deferred:
+        summary["deferred"] = deferred  # held for a daily-cadence digest window
     if budget_dropped:
         summary["budget_dropped"] = budget_dropped
     if errored:

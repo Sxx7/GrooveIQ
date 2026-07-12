@@ -1180,6 +1180,20 @@ class DeviceRegister(BaseModel):
     quiet_hours_enabled: bool | None = Field(None, description="Per-user quiet-hours on/off (null = use global default).")
     quiet_hours_start: int | None = Field(None, ge=0, le=23, description="Local hour the quiet window opens.")
     quiet_hours_end: int | None = Field(None, ge=0, le=23, description="Local hour the quiet window closes.")
+    # Per-type cadence override (notifications Phase 6): {pref_field: "instant"|"daily"}.
+    # A type set to "daily" is held until the daily digest hour, then coalesced.
+    notif_cadence: dict[str, str] | None = Field(
+        None, description='Per-type cadence, e.g. {"notif_new_media": "daily"}.'
+    )
+
+    @field_validator("notif_cadence")
+    @classmethod
+    def _valid_cadences(cls, v: dict[str, str] | None) -> dict[str, str] | None:
+        if v is not None:
+            bad = {val for val in v.values() if val not in ("instant", "daily")}
+            if bad:
+                raise ValueError(f"cadence must be 'instant' or 'daily', got {sorted(bad)}")
+        return v
 
     @model_validator(mode="after")
     def _need_a_target(self) -> DeviceRegister:

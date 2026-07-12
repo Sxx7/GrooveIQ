@@ -59,6 +59,7 @@ def _device_view(d: Device) -> dict:
         "quiet_hours_enabled": d.quiet_hours_enabled,
         "quiet_hours_start": d.quiet_hours_start,
         "quiet_hours_end": d.quiet_hours_end,
+        "notif_cadence": d.notif_cadence,
         "apprise_urls": d.apprise_urls,
         "disabled_at": d.disabled_at,
         # Per-type toggles. NULL (legacy row) reads as True to match the opt-in
@@ -139,6 +140,9 @@ async def register_device(
         device.quiet_hours_enabled = body.quiet_hours_enabled
         device.quiet_hours_start = body.quiet_hours_start
         device.quiet_hours_end = body.quiet_hours_end
+    # Per-type cadence override (absent → leave whatever was stored).
+    if body.notif_cadence is not None:
+        device.notif_cadence = body.notif_cadence
     device.last_seen_at = now
     device.disabled_at = None  # clear on re-register (reactivates a pruned token)
     await session.flush()  # assign id
@@ -226,7 +230,14 @@ async def get_notification_types(_key: str = Depends(require_api_key)):
     notification-settings."""
     return {
         "types": [
-            {"key": t["key"], "label": t["label"], "description": t["description"], "pref_field": t["pref_field"]}
+            {
+                "key": t["key"],
+                "label": t["label"],
+                "description": t["description"],
+                "pref_field": t["pref_field"],
+                # Cadence options the client can offer (absent → instant-only).
+                "cadences": t.get("cadences", ["instant"]),
+            }
             for t in NOTIFICATION_TYPES
         ]
     }

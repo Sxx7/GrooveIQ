@@ -196,6 +196,9 @@ async def _apply_column_migrations(conn) -> None:
         ("devices", "quiet_hours_enabled", "BOOLEAN"),
         ("devices", "quiet_hours_start", "INTEGER"),
         ("devices", "quiet_hours_end", "INTEGER"),
+        # Per-type cadence override, set from the app (notifications Phase 6). TEXT
+        # like the other JSON columns — the SQLAlchemy JSON type serializes over it.
+        ("devices", "notif_cadence", "TEXT"),
         # Attribute a manual download to the requesting user so goal-B
         # "download finished" push can target them (P3). Nullable: chart/auto
         # acquisitions have no requesting user.

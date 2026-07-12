@@ -384,6 +384,12 @@ class Settings(BaseSettings):
     # push per item. Off by default → per-item behavior is unchanged. A group of one
     # still sends its original message, so enabling only changes the >=2 case.
     NOTIF_DIGEST_ENABLED: bool = False
+    # Per-type cadence (notifications Phase 6): a type a user set to "daily" is held
+    # until this UTC hour, when the once-per-minute dispatch releases the whole day's
+    # accumulation and the Phase-3 digest coalesces it into one push. "instant"
+    # (default) is unchanged. Works best with NOTIF_DIGEST_ENABLED (else the daily
+    # release is a burst, still bounded by the daily budget).
+    NOTIF_DAILY_DIGEST_HOUR: int = 9  # UTC hour [0-23] the daily digest is released
 
     # ------------------------------------------------------------------
     # Charts (Last.fm)
