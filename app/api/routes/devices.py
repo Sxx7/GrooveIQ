@@ -55,6 +55,7 @@ def _device_view(d: Device) -> dict:
         "apns_environment": d.apns_environment,
         "device_guid": d.device_guid,
         "device_name": d.device_name,
+        "tz": d.tz,
         "apprise_urls": d.apprise_urls,
         "disabled_at": d.disabled_at,
         # Per-type toggles. NULL (legacy row) reads as True to match the opt-in
@@ -126,6 +127,8 @@ async def register_device(
         device.device_guid = body.device_guid
     if body.device_name is not None:
         device.device_name = body.device_name
+    if body.tz is not None:
+        device.tz = body.tz
     device.last_seen_at = now
     device.disabled_at = None  # clear on re-register (reactivates a pruned token)
     await session.flush()  # assign id

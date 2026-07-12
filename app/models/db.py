@@ -1378,6 +1378,10 @@ class Device(Base):
     # NULL for legacy rows registered before the client sent it (URL-dedup path).
     device_guid = Column(String(64), nullable=True, index=True)
     device_name = Column(String(128), nullable=True)  # human label, e.g. "Simon's iPhone"
+    # IANA timezone (e.g. "Europe/Zurich") reported by the client, for quiet-hours
+    # (notifications Phase 2). NULL on legacy rows / clients that don't send it →
+    # the dispatcher falls back to a global UTC window.
+    tz = Column(String(64), nullable=True)
 
 
 # ---------------------------------------------------------------------------

@@ -368,6 +368,17 @@ class Settings(BaseSettings):
     # date key is load-bearing (a naive daily cron keyed on a fresh playlist_id
     # would push unbounded).
     NOTIFY_RECOMMENDATIONS_ENABLED: bool = False
+    # Anti-spam volume controls (notifications redesign, Phase 2). Both OFF by
+    # default (0 / False) so dispatch behavior is unchanged until you opt in.
+    # Deliveries are processed in precedence order (download > new_release >
+    # newly_added > recommendation), so when the budget is tight the lowest-priority
+    # type is dropped first. download_finished is EXEMPT from budget suppression and
+    # quiet hours (the one push the user is actively waiting for) but each download
+    # still counts toward the day's tally.
+    NOTIF_DAILY_BUDGET: int = 0  # max pushes per user per UTC day; 0 = unlimited (off)
+    QUIET_HOURS_ENABLED: bool = False  # hold non-urgent pushes during the local quiet window
+    QUIET_HOURS_START: int = 22  # local hour [0-23] the quiet window opens
+    QUIET_HOURS_END: int = 8  # local hour [0-23] it closes (wraps midnight when END <= START)
 
     # ------------------------------------------------------------------
     # Charts (Last.fm)

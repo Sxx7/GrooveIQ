@@ -35,9 +35,11 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from datetime import datetime, timedelta
 from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from sqlalchemy import select
+from sqlalchemy import case, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -45,6 +47,19 @@ from app.core.config import settings
 from app.models.db import Device, NotificationDelivery, NotificationEvent, ReleaseEvent
 
 logger = logging.getLogger(__name__)
+
+# Precedence for the daily budget (notifications Phase 2): when a user's budget is
+# tight, deliveries are processed in this order so the LOWEST-priority type is the
+# one that gets dropped. download_completed is highest (the push the user is
+# actively waiting for) and is additionally exempt from suppression + quiet hours.
+_EVENT_PRIORITY: dict[str, int] = {
+    "download_completed": 0,
+    "new_release": 1,
+    "newly_added": 2,
+    "recommendation": 3,
+}
+_EXEMPT_EVENT_TYPES = frozenset({"download_completed"})  # never budget-suppressed, never quiet-held
+_DAY_SECONDS = 86_400
 
 # Single source of truth for notification types. ``key`` is the client/user-facing
 # category (server-driven via GET /v1/notification-types, so a new type needs no
@@ -239,15 +254,90 @@ def _backoff_seconds(attempt: int) -> int:
     return int(min(step, settings.NOTIFY_BACKOFF_MAX_SECONDS))
 
 
+# --- Quiet hours (notifications Phase 2) --------------------------------------
+# A per-user local window during which non-urgent pushes are HELD (deferred to the
+# window's close) rather than sent. The tz comes from the user's most-recently-seen
+# device; a tz-less legacy row falls back to a global UTC window.
+
+
+def _zone(tz_name: str | None) -> ZoneInfo:
+    if not tz_name:
+        return ZoneInfo("UTC")
+    try:
+        return ZoneInfo(tz_name)
+    except (ZoneInfoNotFoundError, ValueError):
+        return ZoneInfo("UTC")
+
+
+def _in_quiet_hours(now_epoch: int, tz_name: str | None, start_h: int, end_h: int) -> bool:
+    """True if the user's LOCAL hour is inside [start_h, end_h) (wrapping midnight
+    when end_h <= start_h). A zero-width window (start == end) means "no quiet hours"."""
+    if start_h == end_h:
+        return False
+    h = datetime.fromtimestamp(now_epoch, _zone(tz_name)).hour
+    if start_h < end_h:
+        return start_h <= h < end_h
+    return h >= start_h or h < end_h  # window wraps past midnight (e.g. 22 → 8)
+
+
+def _quiet_window_open(now_epoch: int, tz_name: str | None, start_h: int, end_h: int) -> int:
+    """Epoch of the next instant the quiet window CLOSES (local ``end_h``) — the
+    'hold until' time for a deferred delivery. Always strictly after ``now`` when
+    currently inside the window, and never itself inside quiet hours."""
+    tz = _zone(tz_name)
+    local = datetime.fromtimestamp(now_epoch, tz)
+    target = local.replace(hour=end_h, minute=0, second=0, microsecond=0)
+    if target <= local:
+        target += timedelta(days=1)
+    return int(target.timestamp())
+
+
+async def _user_tz(session: AsyncSession, user_id: str) -> str | None:
+    """The IANA tz of the user's most-recently-seen active device that reports one
+    (None if none). Used to evaluate quiet hours in the user's local time."""
+    return (
+        await session.execute(
+            select(Device.tz)
+            .where(Device.user_id == user_id, Device.disabled_at.is_(None), Device.tz.isnot(None))
+            .order_by(Device.last_seen_at.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+
+
+async def _sent_today_by_user(session: AsyncSession, day_start: int) -> dict[str, int]:
+    """Per-user count of deliveries already SENT this UTC day — the budget tally's
+    starting point (this dispatch run increments it in-memory as it sends)."""
+    rows = (
+        await session.execute(
+            select(NotificationDelivery.user_id, func.count())
+            .where(NotificationDelivery.dispatch_state == "sent", NotificationDelivery.notified_at >= day_start)
+            .group_by(NotificationDelivery.user_id)
+        )
+    ).all()
+    return {uid: n for uid, n in rows}
+
+
 async def dispatch_pending(session: AsyncSession, *, limit: int = 200) -> dict[str, Any]:
     """Drain ready ``notification_deliveries`` (any event type). Idempotent + safe
-    to re-run: a ``sent`` row is never reselected, and a failed row is deferred by
-    ``next_retry_at`` so the inline call + backstop tick don't double-send.
+    to re-run: a ``sent`` row is never reselected, and a failed/held row is deferred
+    by ``next_retry_at`` so the inline call + backstop tick don't double-send.
+
+    Phase-2 volume controls, both OFF by default (dispatch is unchanged until you
+    opt in): a per-user/UTC-day BUDGET drops the lowest-priority pending type first,
+    and a per-user local QUIET-HOURS window HOLDS non-urgent deliveries until it
+    closes. ``download_completed`` is exempt from both (it still counts toward the
+    budget). Rows are processed in precedence order so budget/quiet decisions favor
+    the more important type.
     """
     if not settings.push_enabled:
         return {"skipped": "disabled"}
 
     now = int(time.time())
+    # Precedence order (download → new_release → newly_added → recommendation, then
+    # unknowns) so that when the budget is tight the lowest-priority type is the one
+    # dropped, and important pushes go out first within a run.
+    priority = case(_EVENT_PRIORITY, value=NotificationDelivery.event_type, else_=len(_EVENT_PRIORITY))
     rows = (
         await session.execute(
             select(NotificationDelivery, NotificationEvent)
@@ -256,21 +346,52 @@ async def dispatch_pending(session: AsyncSession, *, limit: int = 200) -> dict[s
                 NotificationDelivery.dispatch_state == "pending",
                 (NotificationDelivery.next_retry_at.is_(None)) | (NotificationDelivery.next_retry_at <= now),
             )
-            .order_by(NotificationDelivery.id)
+            .order_by(priority, NotificationDelivery.id)
             .limit(limit)
         )
     ).all()
     if not rows:
         return {"processed": 0}
 
-    sent = failed = suppressed = retry = errored = 0
+    budget = settings.NOTIF_DAILY_BUDGET
+    quiet_on = settings.QUIET_HOURS_ENABLED
+    day_start = now - (now % _DAY_SECONDS)
+    tally: dict[str, int] = await _sent_today_by_user(session, day_start) if budget > 0 else {}
+    tz_cache: dict[str, str | None] = {}
+
+    sent = failed = suppressed = retry = errored = held = budget_dropped = 0
     for delivery, event in rows:
         # Per-delivery isolation: a DB error while resolving channels for ONE row
         # must not abort the drain and discard the state changes (incl. already-
         # sent rows) accumulated so far — that would re-send on the next tick.
         # An errored row is left untouched (pending) and retried next tick.
         try:
-            urls = await _channels_for(session, delivery.user_id, delivery.event_type)
+            uid = delivery.user_id
+            exempt = delivery.event_type in _EXEMPT_EVENT_TYPES
+
+            # Quiet-hours hold: defer a non-urgent delivery to the window close. It
+            # stays pending (attempt_count untouched — a hold is not a failure); the
+            # ready-filter reselects it once next_retry_at passes.
+            if quiet_on and not exempt:
+                if uid not in tz_cache:
+                    tz_cache[uid] = await _user_tz(session, uid)
+                if _in_quiet_hours(now, tz_cache[uid], settings.QUIET_HOURS_START, settings.QUIET_HOURS_END):
+                    delivery.next_retry_at = _quiet_window_open(
+                        now, tz_cache[uid], settings.QUIET_HOURS_START, settings.QUIET_HOURS_END
+                    )
+                    delivery.last_error = "quiet_hours_hold"
+                    held += 1
+                    continue
+
+            # Daily budget: drop a non-urgent delivery once the user hit the cap
+            # (terminal — the digest phase is what will coalesce instead of drop).
+            if budget > 0 and not exempt and tally.get(uid, 0) >= budget:
+                delivery.dispatch_state = "suppressed"
+                delivery.last_error = "daily_budget_exceeded"
+                budget_dropped += 1
+                continue
+
+            urls = await _channels_for(session, uid, delivery.event_type)
             if not urls:
                 delivery.dispatch_state = "suppressed"  # nothing to deliver to; never retried
                 suppressed += 1
@@ -283,6 +404,7 @@ async def dispatch_pending(session: AsyncSession, *, limit: int = 200) -> dict[s
                 delivery.dispatch_state = "sent"
                 delivery.notified_at = now
                 delivery.last_error = None
+                tally[uid] = tally.get(uid, 0) + 1  # count every send (download included) toward the budget
                 sent += 1
                 continue
 
@@ -302,6 +424,10 @@ async def dispatch_pending(session: AsyncSession, *, limit: int = 200) -> dict[s
 
     await session.commit()
     summary = {"processed": len(rows), "sent": sent, "failed": failed, "suppressed": suppressed, "retry": retry}
+    if held:
+        summary["held"] = held
+    if budget_dropped:
+        summary["budget_dropped"] = budget_dropped
     if errored:
         summary["errored"] = errored
     return summary

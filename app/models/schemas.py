@@ -1171,6 +1171,9 @@ class DeviceRegister(BaseModel):
     # its devices. Optional for backward compat with installs that don't send it.
     device_guid: str | None = Field(None, min_length=1, max_length=64, description="Stable per-install device id.")
     device_name: str | None = Field(None, max_length=128, description='Human label, e.g. "Simon\'s iPhone".')
+    # IANA timezone for quiet-hours (notifications Phase 2). Optional; a client
+    # that omits it leaves the device tz-less and the dispatcher uses a UTC window.
+    tz: str | None = Field(None, max_length=64, description="IANA timezone, e.g. Europe/Zurich, for quiet-hours.")
 
     @model_validator(mode="after")
     def _need_a_target(self) -> DeviceRegister:

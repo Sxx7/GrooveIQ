@@ -190,6 +190,8 @@ async def _apply_column_migrations(conn) -> None:
         ("devices", "notif_recommendations", "BOOLEAN"),
         ("devices", "device_guid", "VARCHAR(64)"),
         ("devices", "device_name", "VARCHAR(128)"),
+        # Client-reported IANA timezone for quiet-hours (notifications Phase 2).
+        ("devices", "tz", "VARCHAR(64)"),
         # Attribute a manual download to the requesting user so goal-B
         # "download finished" push can target them (P3). Nullable: chart/auto
         # acquisitions have no requesting user.

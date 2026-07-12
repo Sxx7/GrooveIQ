@@ -79,6 +79,8 @@ async def _seed_delivery(
     next_retry_at=None,
     created_at=None,
     with_device=True,
+    device_tz=None,
+    notified_at=None,
 ) -> int:
     """Create one event + one delivery (+ optional device). Returns delivery id."""
     now = int(time.time())
@@ -105,6 +107,7 @@ async def _seed_delivery(
                     created_at=now,
                     last_seen_at=now,
                     disabled_at=disabled_at,
+                    tz=device_tz,
                     **prefs,
                 )
             )
@@ -117,6 +120,7 @@ async def _seed_delivery(
             attempt_count=attempt_count,
             next_retry_at=next_retry_at,
             created_at=created_at if created_at is not None else now,
+            notified_at=notified_at,
         )
         s.add(d)
         await s.commit()
@@ -462,3 +466,126 @@ async def test_recommendation_does_not_collide_with_media():
         await s.commit()
 
     assert await _count(NotificationDelivery) == 2
+
+
+# ── Phase 2: quiet-hours helpers (pure) ──────────────────────────────────────
+
+_EPOCH_2213_UTC = 1_700_000_000  # 2023-11-14 22:13:20 UTC → local hour 22 (UTC)
+
+
+def test_in_quiet_hours_utc_wrap_and_zero_width():
+    assert nd._in_quiet_hours(_EPOCH_2213_UTC, "UTC", 22, 8) is True  # 22 in wrapping [22,8)
+    assert nd._in_quiet_hours(_EPOCH_2213_UTC, "UTC", 8, 22) is False  # 22 not in [8,22)
+    assert nd._in_quiet_hours(_EPOCH_2213_UTC, "UTC", 0, 0) is False  # zero-width → disabled
+
+
+def test_in_quiet_hours_respects_timezone():
+    # 22:13 UTC is 17:13 in New York (UTC-5 in Nov) → outside a 22→8 window.
+    assert nd._in_quiet_hours(_EPOCH_2213_UTC, "America/New_York", 22, 8) is False
+    # A bad/unknown tz falls back to UTC, so it reads as quiet like the UTC case.
+    assert nd._in_quiet_hours(_EPOCH_2213_UTC, "Not/AZone", 22, 8) is True
+    assert nd._in_quiet_hours(_EPOCH_2213_UTC, None, 22, 8) is True  # tz-less → UTC
+
+
+def test_quiet_window_open_is_after_now_and_not_itself_quiet():
+    w = nd._quiet_window_open(_EPOCH_2213_UTC, "UTC", 22, 8)
+    assert w > _EPOCH_2213_UTC
+    assert nd._in_quiet_hours(w, "UTC", 22, 8) is False  # opens exactly when the window closes
+
+
+# ── Phase 2: daily budget + quiet-hours dispatch gating ──────────────────────
+
+
+def _window_containing_now() -> tuple[int, int]:
+    """A 2h quiet window [h, h+2) that contains the current UTC hour, so a
+    UTC-tz device is deterministically inside quiet hours during the test."""
+    h = time.gmtime().tm_hour
+    return h, (h + 2) % 24
+
+
+async def test_daily_budget_drops_lowest_priority(monkeypatch):
+    monkeypatch.setattr(settings, "NOTIF_DAILY_BUDGET", 1, raising=False)
+    nr = await _seed_delivery(user_id="u", event_type="new_release", apprise_urls=["jsons://r/u"], dedup_key="nr")
+    rc = await _seed_delivery(user_id="u", event_type="recommendation", dedup_key=None, with_device=False)
+
+    async with _TestSession() as s:
+        summary = await dispatch_pending(s)
+
+    assert summary["sent"] == 1
+    assert summary.get("budget_dropped") == 1
+    assert (await _delivery(nr)).dispatch_state == "sent"  # higher-priority type kept
+    rc_row = await _delivery(rc)
+    assert rc_row.dispatch_state == "suppressed"  # lowest-priority dropped when budget is tight
+    assert rc_row.last_error == "daily_budget_exceeded"
+
+
+async def test_budget_zero_is_unlimited(monkeypatch):
+    monkeypatch.setattr(settings, "NOTIF_DAILY_BUDGET", 0, raising=False)
+    await _seed_delivery(user_id="u", event_type="new_release", apprise_urls=["jsons://r/u"], dedup_key="a")
+    await _seed_delivery(user_id="u", event_type="newly_added", dedup_key="b", with_device=False)
+    await _seed_delivery(user_id="u", event_type="recommendation", dedup_key=None, with_device=False)
+
+    async with _TestSession() as s:
+        summary = await dispatch_pending(s)
+
+    assert summary["sent"] == 3
+    assert "budget_dropped" not in summary
+
+
+async def test_download_exempt_from_budget(monkeypatch):
+    monkeypatch.setattr(settings, "NOTIF_DAILY_BUDGET", 1, raising=False)
+    now = int(time.time())
+    # A prior send today already fills the user's budget.
+    await _seed_delivery(
+        user_id="u",
+        event_type="new_release",
+        apprise_urls=["jsons://r/u"],
+        dedup_key="prior",
+        dispatch_state="sent",
+        notified_at=now,
+    )
+    dl = await _seed_delivery(user_id="u", event_type="download_completed", dedup_key="dl", with_device=False)
+
+    async with _TestSession() as s:
+        summary = await dispatch_pending(s)
+
+    assert (await _delivery(dl)).dispatch_state == "sent"  # exempt: sent despite a full budget
+    assert summary["sent"] == 1
+    assert "budget_dropped" not in summary
+
+
+async def test_quiet_hours_holds_non_urgent(monkeypatch):
+    start, end = _window_containing_now()
+    monkeypatch.setattr(settings, "QUIET_HOURS_ENABLED", True, raising=False)
+    monkeypatch.setattr(settings, "QUIET_HOURS_START", start, raising=False)
+    monkeypatch.setattr(settings, "QUIET_HOURS_END", end, raising=False)
+    calls: list = []
+    monkeypatch.setattr(nd, "_apprise_notify", lambda u, t, b: calls.append(u) or True)
+    d = await _seed_delivery(user_id="u", event_type="new_release", apprise_urls=["jsons://r/u"], device_tz="UTC")
+
+    async with _TestSession() as s:
+        summary = await dispatch_pending(s)
+
+    assert summary.get("held") == 1
+    assert not calls  # nothing actually delivered during quiet hours
+    row = await _delivery(d)
+    assert row.dispatch_state == "pending"  # deferred, not dropped
+    assert row.next_retry_at is not None and row.next_retry_at > int(time.time())
+    assert row.attempt_count == 0  # a hold is not a failed attempt
+    assert row.last_error == "quiet_hours_hold"
+
+
+async def test_download_exempt_from_quiet_hours(monkeypatch):
+    start, end = _window_containing_now()
+    monkeypatch.setattr(settings, "QUIET_HOURS_ENABLED", True, raising=False)
+    monkeypatch.setattr(settings, "QUIET_HOURS_START", start, raising=False)
+    monkeypatch.setattr(settings, "QUIET_HOURS_END", end, raising=False)
+    d = await _seed_delivery(
+        user_id="u", event_type="download_completed", apprise_urls=["jsons://r/u"], device_tz="UTC"
+    )
+
+    async with _TestSession() as s:
+        summary = await dispatch_pending(s)
+
+    assert summary["sent"] == 1  # the one push the user is waiting for goes through quiet hours
+    assert (await _delivery(d)).dispatch_state == "sent"
