@@ -238,6 +238,25 @@ async def train_model() -> dict[str, Any]:
     return stats
 
 
+def _model_n_features(model: object) -> int | None:
+    """Best-effort count of features the loaded ranker was trained with.
+
+    Works for both engines: LightGBM ``Booster.num_feature()`` and the sklearn
+    regressor's ``n_features_in_``. Returns None if it can't be determined.
+    """
+    try:
+        num_feature = getattr(model, "num_feature", None)
+        if callable(num_feature):
+            return int(num_feature())
+    except Exception:
+        pass
+    for attr in ("n_features_in_", "n_features_"):
+        val = getattr(model, attr, None)
+        if isinstance(val, int):
+            return val
+    return None
+
+
 async def score_candidates(
     user_id: str,
     candidate_track_ids: list[str],
@@ -276,6 +295,21 @@ async def score_candidates(
 
     if not track_ids:
         return []
+
+    # Guard the training/serving feature-width transition: a model trained before
+    # a new feature was added (e.g. lastfm_cf_score, 39 -> 40) cannot predict on
+    # the wider vectors and would raise. Fall back to the satisfaction_score
+    # baseline until the next pipeline run retrains the ranker at the new width.
+    if model is not None:
+        expected = _model_n_features(model)
+        if expected is not None and expected != features.shape[1]:
+            logger.warning(
+                "Ranker feature-width mismatch (model expects %d, features are %d wide); "
+                "falling back to satisfaction_score until the ranker is retrained.",
+                expected,
+                features.shape[1],
+            )
+            model = None
 
     if model is not None:
         scores = model.predict(features)

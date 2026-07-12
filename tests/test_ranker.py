@@ -385,3 +385,62 @@ class TestFeatureEngineeringContext:
 
         dev_idx = FEATURE_COLUMNS.index("device_affinity")
         assert abs(result["features"][0, dev_idx] - 0.75) < 0.01
+
+
+class TestLastfmCfFeature:
+    """Phase 2: lastfm_cf_score ranking feature + feature-width transition guard."""
+
+    def test_lastfm_cf_score_is_present_and_last(self):
+        from app.services.feature_eng import FEATURE_COLUMNS, NUM_FEATURES
+
+        assert "lastfm_cf_score" in FEATURE_COLUMNS
+        assert FEATURE_COLUMNS[-1] == "lastfm_cf_score"
+        assert NUM_FEATURES == 40
+
+    def test_model_n_features_reads_both_engines(self):
+        from app.services.ranker import _model_n_features
+
+        class _Sklearn:
+            n_features_in_ = 39
+
+        class _Booster:
+            def num_feature(self):
+                return 40
+
+        assert _model_n_features(_Sklearn()) == 39
+        assert _model_n_features(_Booster()) == 40
+        assert _model_n_features(object()) is None
+
+    async def test_lastfm_cf_score_zero_without_cache(self):
+        """With no Last.fm cache built, the feature is present and 0.0 (harmless)."""
+        from app.services.feature_eng import FEATURE_COLUMNS, build_features
+
+        await _seed_data()
+        async with _TestSession() as session:
+            result = await build_features("user0", ["t0", "t1"], session)
+        idx = FEATURE_COLUMNS.index("lastfm_cf_score")
+        assert result["features"].shape[1] == len(FEATURE_COLUMNS)
+        assert float(result["features"][0, idx]) == 0.0
+
+    async def test_score_candidates_falls_back_on_width_mismatch(self):
+        """A stale narrower model (pre-feature) must NOT crash serving — the guard
+        falls back to satisfaction_score until the ranker is retrained."""
+        import app.services.ranker as r
+        from app.services.feature_eng import NUM_FEATURES
+        from app.services.ranker import score_candidates
+
+        await _seed_data()
+
+        class _StaleModel:
+            # Trained before the feature was added -> one column short.
+            n_features_in_ = NUM_FEATURES - 1
+
+            def predict(self, X):
+                raise AssertionError("predict must not be called on a width mismatch")
+
+        r._model = _StaleModel()
+        async with _TestSession() as session:
+            scored = await score_candidates("user0", ["t0", "t1", "t2"], session)
+
+        assert len(scored) == 3  # served via fallback, no crash
+        assert all(isinstance(s, float) for _, s in scored)

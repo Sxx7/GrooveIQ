@@ -79,6 +79,8 @@ FEATURE_COLUMNS = [
     "sequential_score",
     # Session GRU taste drift score (similarity to predicted next-session embedding)
     "taste_drift_score",
+    # Last.fm external-CF score (crowd collaborative filtering — the only crowd signal)
+    "lastfm_cf_score",
 ]
 
 NUM_FEATURES = len(FEATURE_COLUMNS)
@@ -195,6 +197,30 @@ async def build_features(
     except Exception:
         pass  # model not trained yet
 
+    # --- Last.fm external-CF scores (crowd collaborative filtering) ---
+    # The only crowd-sourced signal in the pipeline: how strongly listeners who
+    # share this user's top tracks also gravitate to each candidate (Last.fm
+    # track.getSimilar). Mirrors the SASRec/GRU pattern above and, like them, reads
+    # the in-memory cache from the previous pipeline cycle at training time (the
+    # ranker trains before the lastfm_cache step, exactly as it does before sasrec/
+    # gru). 0.0 when the cache isn't built yet, so the feature is harmless-when-cold
+    # and informative-when-warm.
+    lastfm_scores: dict[str, float] = {}
+    try:
+        from app.services import lastfm_candidates
+
+        if lastfm_candidates.is_ready():
+            lf_top_ids = [t["track_id"] for t in taste_profile.get("top_tracks", []) if "track_id" in t][:20]
+            if lf_top_ids:
+                cand_set = set(candidate_track_ids)
+                lastfm_scores = {
+                    tid: score
+                    for tid, score in lastfm_candidates.get_similar_for_user(lf_top_ids, k=100000)
+                    if tid in cand_set
+                }
+    except Exception:
+        pass  # cache not built yet
+
     # --- Build feature rows ---
     rows: list[np.ndarray] = []
     valid_ids: list[str] = []
@@ -263,6 +289,9 @@ async def build_features(
         # Session GRU taste drift score.
         drift_score = gru_scores.get(tid, 0.0)
 
+        # Last.fm external-CF score (crowd collaborative filtering).
+        lastfm_cf = lastfm_scores.get(tid, 0.0)
+
         row = np.array(
             [
                 bpm,
@@ -304,6 +333,7 @@ async def build_features(
                 popularity_pref,
                 seq_score,
                 drift_score,
+                lastfm_cf,
             ],
             dtype=np.float32,
         )
