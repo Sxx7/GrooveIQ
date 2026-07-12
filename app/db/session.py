@@ -199,6 +199,11 @@ async def _apply_column_migrations(conn) -> None:
         # Per-type cadence override, set from the app (notifications Phase 6). TEXT
         # like the other JSON columns — the SQLAlchemy JSON type serializes over it.
         ("devices", "notif_cadence", "TEXT"),
+        # Per-type enable override for future server-driven categories (notif fixes).
+        ("devices", "notif_extra", "TEXT"),
+        # Push-head marker so the daily budget counts pushes, not deliveries — a
+        # coalesced digest is one push (notif fixes). NULL on legacy/non-sent rows.
+        ("notification_deliveries", "budget_counted", "BOOLEAN"),
         # Attribute a manual download to the requesting user so goal-B
         # "download finished" push can target them (P3). Nullable: chart/auto
         # acquisitions have no requesting user.

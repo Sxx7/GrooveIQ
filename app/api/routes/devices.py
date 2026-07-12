@@ -60,6 +60,7 @@ def _device_view(d: Device) -> dict:
         "quiet_hours_start": d.quiet_hours_start,
         "quiet_hours_end": d.quiet_hours_end,
         "notif_cadence": d.notif_cadence,
+        "notif_extra": d.notif_extra,
         "apprise_urls": d.apprise_urls,
         "disabled_at": d.disabled_at,
         # Per-type toggles. NULL (legacy row) reads as True to match the opt-in
@@ -143,6 +144,9 @@ async def register_device(
     # Per-type cadence override (absent → leave whatever was stored).
     if body.notif_cadence is not None:
         device.notif_cadence = body.notif_cadence
+    # Per-type enable override for server-driven types (absent → leave stored).
+    if body.notif_extra is not None:
+        device.notif_extra = body.notif_extra
     device.last_seen_at = now
     device.disabled_at = None  # clear on re-register (reactivates a pruned token)
     await session.flush()  # assign id

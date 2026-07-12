@@ -440,13 +440,20 @@ async def _user_cadence(session: AsyncSession, user_id: str) -> dict[str, str]:
     return row or {}
 
 
-async def _sent_today_by_user(session: AsyncSession, day_start: int) -> dict[str, int]:
-    """Per-user count of deliveries already SENT this UTC day — the budget tally's
-    starting point (this dispatch run increments it in-memory as it sends)."""
+async def _pushes_today_by_user(session: AsyncSession, day_start: int) -> dict[str, int]:
+    """Per-user count of PUSHES already sent this UTC day — the budget tally's
+    starting point (this dispatch run increments it in-memory as it sends).
+
+    Counts ``budget_counted`` HEAD rows, not raw sent deliveries: a coalesced digest
+    of N albums is ONE push (one head row), so the daily budget stays a *push* budget
+    across dispatch runs. (Counting deliveries here would let a single N-album digest
+    consume N budget units and lock the user out for the rest of the day.) Legacy sent
+    rows predating the column read NULL and are not counted — a harmless one-time
+    under-count that only relaxes the cap on the first day after the column ships."""
     rows = (
         await session.execute(
             select(NotificationDelivery.user_id, func.count())
-            .where(NotificationDelivery.dispatch_state == "sent", NotificationDelivery.notified_at >= day_start)
+            .where(NotificationDelivery.budget_counted.is_(True), NotificationDelivery.notified_at >= day_start)
             .group_by(NotificationDelivery.user_id)
         )
     ).all()
@@ -483,6 +490,12 @@ async def dispatch_pending(session: AsyncSession, *, limit: int = 200) -> dict[s
                 (NotificationDelivery.next_retry_at.is_(None)) | (NotificationDelivery.next_retry_at <= now),
             )
             .order_by(priority, NotificationDelivery.id)
+            # Claim the drained rows so a concurrent dispatch — the 60s backstop tick
+            # racing an inline producer dispatch, or two inline dispatches on the same
+            # event loop — can't reselect them and double-send / double-count the
+            # budget. SKIP LOCKED makes the loser skip claimed rows instead of blocking.
+            # No-op on SQLite (it serializes writers anyway); effective on Postgres.
+            .with_for_update(skip_locked=True, of=NotificationDelivery)
             .limit(limit)
         )
     ).all()
@@ -501,7 +514,7 @@ async def dispatch_pending(session: AsyncSession, *, limit: int = 200) -> dict[s
     is_digest_window = time.gmtime(now).tm_hour == digest_hour
     cadence_possible = await _any_device_cadence(session)
     day_start = now - (now % _DAY_SECONDS)
-    tally: dict[str, int] = await _sent_today_by_user(session, day_start) if budget > 0 else {}
+    tally: dict[str, int] = await _pushes_today_by_user(session, day_start) if budget > 0 else {}
     tz_cache: dict[str, str | None] = {}
     qh_cache: dict[str, tuple[bool, int, int]] = {}  # per-user (enabled, start, end)
     cad_cache: dict[str, dict[str, str]] = {}  # per-user {pref_field: cadence}
@@ -517,92 +530,109 @@ async def dispatch_pending(session: AsyncSession, *, limit: int = 200) -> dict[s
 
     sent = failed = suppressed = retry = errored = held = budget_dropped = pushes = deferred = 0
     for members in groups.values():
-        # Per-group isolation: a DB error resolving ONE group must not abort the
-        # drain and discard state changes (incl. already-sent rows) — that would
-        # re-send on the next tick. An errored group's rows are left pending.
+        # Per-group isolation via a SAVEPOINT: a DB error resolving ONE group (e.g. a
+        # transient failure in a per-user query) rolls back only that group instead of
+        # poisoning the whole Postgres transaction. Without it, one error aborts the tx
+        # so every later group errors AND the final commit fails, discarding the state
+        # of groups whose push already went out — which re-sends them next tick. An
+        # errored group is left pending; earlier groups' committed state survives.
         deliveries = [d for d, _ in members]
         events = [e for _, e in members]
         uid = deliveries[0].user_id
         et = deliveries[0].event_type
         exempt = et in _EXEMPT_EVENT_TYPES
         try:
-            # Daily-cadence hold: outside the digest hour, defer a type the user set
-            # to "daily" to the next digest window (UTC). During the window this gate
-            # is skipped, so the day's accumulation falls through and coalesces. The
-            # target is a FUTURE time, so a held row isn't reselected until then (no
-            # churn); it's a hold, not a failure, so attempt_count is untouched.
-            if cadence_possible and not exempt and not is_digest_window:
-                if uid not in cad_cache:
-                    cad_cache[uid] = await _user_cadence(session, uid)
-                pref = NOTIF_PREF_COLUMNS.get(et)
-                if pref is not None and cad_cache[uid].get(pref) == "daily":
-                    hold_at = _next_daily_time(now, digest_hour)
-                    for d in deliveries:
-                        d.next_retry_at = hold_at
-                        d.last_error = "daily_cadence_hold"
-                    deferred += len(deliveries)
-                    continue
-
-            # Quiet-hours hold (whole group): defer to the window close. Rows stay
-            # pending (attempt_count untouched — a hold is not a failure). The window
-            # is resolved per-user (the app's override, else the global default).
-            if quiet_possible and not exempt:
-                if uid not in qh_cache:
-                    qh_cache[uid] = await _user_quiet_hours(session, uid)
-                qh_enabled, qh_start, qh_end = qh_cache[uid]
-                if qh_enabled:
-                    if uid not in tz_cache:
-                        tz_cache[uid] = await _user_tz(session, uid)
-                    if _in_quiet_hours(now, tz_cache[uid], qh_start, qh_end):
-                        hold_at = _quiet_window_open(now, tz_cache[uid], qh_start, qh_end)
+            async with session.begin_nested():
+                # Daily-cadence hold: outside the digest hour, defer a type the user
+                # set to "daily" to the next digest window (UTC). During the window
+                # this gate is skipped, so the day's accumulation falls through and
+                # coalesces. A hold sets a FUTURE next_retry_at + last_error only, never
+                # attempt_count (a hold is not a failure).
+                #
+                # `not already_quiet_held` breaks a stuck-forever loop: a daily row
+                # reaches the quiet gate ONLY during the digest window (this gate holds
+                # it otherwise), so last_error == "quiet_hours_hold" means the digest
+                # window already passed and it is now only waiting for quiet to close.
+                # Re-holding it to the next UTC digest hour would ping-pong it against
+                # the user's LOCAL quiet-close (the two clocks never align) and it would
+                # never send. Skipping the cadence gate lets the quiet gate release it.
+                already_quiet_held = deliveries[0].last_error == "quiet_hours_hold"
+                if cadence_possible and not exempt and not is_digest_window and not already_quiet_held:
+                    if uid not in cad_cache:
+                        cad_cache[uid] = await _user_cadence(session, uid)
+                    pref = NOTIF_PREF_COLUMNS.get(et)
+                    if pref is not None and cad_cache[uid].get(pref) == "daily":
+                        hold_at = _next_daily_time(now, digest_hour)
                         for d in deliveries:
                             d.next_retry_at = hold_at
-                            d.last_error = "quiet_hours_hold"
-                        held += len(deliveries)
+                            d.last_error = "daily_cadence_hold"
+                        deferred += len(deliveries)
                         continue
 
-            # Daily budget: one group = one push = one budget unit. Drop the whole
-            # (non-urgent) group once the user hit the cap.
-            if budget > 0 and not exempt and tally.get(uid, 0) >= budget:
-                for d in deliveries:
-                    d.dispatch_state = "suppressed"
-                    d.last_error = "daily_budget_exceeded"
-                budget_dropped += len(deliveries)
-                continue
+                # Quiet-hours hold (whole group): defer to the window close. Rows stay
+                # pending (attempt_count untouched — a hold is not a failure). The
+                # window is resolved per-user (the app's override, else the global).
+                if quiet_possible and not exempt:
+                    if uid not in qh_cache:
+                        qh_cache[uid] = await _user_quiet_hours(session, uid)
+                    qh_enabled, qh_start, qh_end = qh_cache[uid]
+                    if qh_enabled:
+                        if uid not in tz_cache:
+                            tz_cache[uid] = await _user_tz(session, uid)
+                        if _in_quiet_hours(now, tz_cache[uid], qh_start, qh_end):
+                            hold_at = _quiet_window_open(now, tz_cache[uid], qh_start, qh_end)
+                            for d in deliveries:
+                                d.next_retry_at = hold_at
+                                d.last_error = "quiet_hours_hold"
+                            held += len(deliveries)
+                            continue
 
-            urls = await _channels_for(session, uid, et)
-            if not urls:
-                for d in deliveries:
-                    d.dispatch_state = "suppressed"  # nothing to deliver to; never retried
-                suppressed += len(deliveries)
-                continue
+                # Daily budget: one group = one push = one budget unit. Drop the whole
+                # (non-urgent) group once the user hit the cap.
+                if budget > 0 and not exempt and tally.get(uid, 0) >= budget:
+                    for d in deliveries:
+                        d.dispatch_state = "suppressed"
+                        d.last_error = "daily_budget_exceeded"
+                    budget_dropped += len(deliveries)
+                    continue
 
-            # One synthesized message for the group (a group of one keeps its own).
-            # Apprise is a sync lib → offload to a thread (bounded by APPRISE_TIMEOUT_S)
-            # so it can't block the loop or hang on a wedged relay.
-            title, body, _data = _build_digest(et, events)
-            ok = await _apprise_notify_bounded(urls, title, body)
-            if ok:
-                for d in deliveries:
-                    d.dispatch_state = "sent"
-                    d.notified_at = now
-                    d.last_error = None
-                tally[uid] = tally.get(uid, 0) + 1  # one push per group counts toward the budget
-                sent += len(deliveries)
-                pushes += 1
-                continue
+                urls = await _channels_for(session, uid, et)
+                if not urls:
+                    for d in deliveries:
+                        d.dispatch_state = "suppressed"  # nothing to deliver to; never retried
+                    suppressed += len(deliveries)
+                    continue
 
-            # Transient failure: back off every member of the group together.
-            for d in deliveries:
-                d.attempt_count = (d.attempt_count or 0) + 1
-                d.last_error = "apprise_notify_failed"
-                age_h = (now - (d.created_at or now)) / 3600.0
-                if d.attempt_count >= settings.NOTIFY_MAX_ATTEMPTS or age_h >= settings.DISPATCH_MAX_AGE_HOURS:
-                    d.dispatch_state = "failed"
-                    failed += 1
-                else:
-                    d.next_retry_at = now + _backoff_seconds(d.attempt_count)
-                    retry += 1
+                # One synthesized message for the group (a group of one keeps its own).
+                # Apprise is a sync lib → offload to a thread (bounded by
+                # APPRISE_TIMEOUT_S) so it can't block the loop or hang on a wedged relay.
+                # NOTE: the structured `data` (tap-routing type/digest/count) is NOT
+                # forwarded — Apprise's json:// payload reserves `type`, and delivering
+                # it needs a coordinated APN-relay change (out of scope). See the audit.
+                title, body, _data = _build_digest(et, events)
+                ok = await _apprise_notify_bounded(urls, title, body)
+                if ok:
+                    for d in deliveries:
+                        d.dispatch_state = "sent"
+                        d.notified_at = now
+                        d.last_error = None
+                    deliveries[0].budget_counted = True  # one head row per push = the budget unit
+                    tally[uid] = tally.get(uid, 0) + 1  # one push per group counts toward the budget
+                    sent += len(deliveries)
+                    pushes += 1
+                    continue
+
+                # Transient failure: back off every member of the group together.
+                for d in deliveries:
+                    d.attempt_count = (d.attempt_count or 0) + 1
+                    d.last_error = "apprise_notify_failed"
+                    age_h = (now - (d.created_at or now)) / 3600.0
+                    if d.attempt_count >= settings.NOTIFY_MAX_ATTEMPTS or age_h >= settings.DISPATCH_MAX_AGE_HOURS:
+                        d.dispatch_state = "failed"
+                        failed += 1
+                    else:
+                        d.next_retry_at = now + _backoff_seconds(d.attempt_count)
+                        retry += 1
         except Exception as exc:
             logger.warning("dispatch: group (%s, %s) errored, left pending: %s", uid, et, exc)
             errored += len(deliveries)
@@ -625,14 +655,19 @@ async def dispatch_pending(session: AsyncSession, *, limit: int = 200) -> dict[s
 async def _channels_for(session: AsyncSession, user_id: str, event_type: str) -> list[str]:
     """Apprise URLs of a user's active devices opted-in for ``event_type``.
 
-    The per-type pref column (``NOTIF_PREF_COLUMNS``) is matched with
+    A known type's dedicated pref column (``NOTIF_PREF_COLUMNS``) is matched with
     ``isnot(False)`` so a legacy device that predates the column (NULL) is treated
-    as opted-in, matching the server-side default + the shipped iOS toggles."""
+    as opted-in, matching the server-side default + the shipped iOS toggles. A
+    server-driven type whose pref_field has no dedicated column yet is gated
+    per-device by the ``notif_extra`` JSON map (absent/True = opted-in), so the
+    client can turn a future category off. An event_type with no pref mapping at all
+    fails OPEN so a new producer is never silently dropped."""
     query = select(Device).where(Device.user_id == user_id, Device.disabled_at.is_(None))
     pref = NOTIF_PREF_COLUMNS.get(event_type)
-    if pref is not None:
+    pref_is_column = pref is not None and pref in Device.__table__.columns
+    if pref_is_column:
         query = query.where(getattr(Device, pref).isnot(False))
-    else:
+    elif pref is None:
         # Unknown type (no producer should hit this) → fail OPEN to all active
         # devices rather than silently drop a new notification type.
         logger.warning(
@@ -641,6 +676,10 @@ async def _channels_for(session: AsyncSession, user_id: str, event_type: str) ->
     devices = (await session.execute(query)).scalars().all()
     urls: list[str] = []
     for d in devices:
+        # Future server-driven type (pref_field without a column): honor the
+        # per-device notif_extra override; absent/True stays opted-in (fail open).
+        if pref is not None and not pref_is_column and (d.notif_extra or {}).get(pref) is False:
+            continue
         if d.apprise_urls:
             urls.extend(d.apprise_urls)
     # Dedupe across devices: two rows can share one capability URL (a pre-guid row

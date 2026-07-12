@@ -1185,6 +1185,13 @@ class DeviceRegister(BaseModel):
     notif_cadence: dict[str, str] | None = Field(
         None, description='Per-type cadence, e.g. {"notif_new_media": "daily"}.'
     )
+    # Per-type enable override for future server-driven categories that have no
+    # dedicated notif_* field yet ({pref_field: bool}); lets the client toggle a
+    # backend-added category without an app rebuild. Known types keep their
+    # dedicated notif_* fields above.
+    notif_extra: dict[str, bool] | None = Field(
+        None, description='Enable override for server-driven types, e.g. {"notif_podcasts": false}.'
+    )
 
     @field_validator("notif_cadence")
     @classmethod

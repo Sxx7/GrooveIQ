@@ -84,7 +84,9 @@ async def _seed_delivery(
     device_qh_start=None,
     device_qh_end=None,
     device_cadence=None,
+    device_extra=None,
     notified_at=None,
+    last_error=None,
 ) -> int:
     """Create one event + one delivery (+ optional device). Returns delivery id."""
     now = int(time.time())
@@ -116,6 +118,7 @@ async def _seed_delivery(
                     quiet_hours_start=device_qh_start,
                     quiet_hours_end=device_qh_end,
                     notif_cadence=device_cadence,
+                    notif_extra=device_extra,
                     **prefs,
                 )
             )
@@ -129,6 +132,7 @@ async def _seed_delivery(
             next_retry_at=next_retry_at,
             created_at=created_at if created_at is not None else now,
             notified_at=notified_at,
+            last_error=last_error,
         )
         s.add(d)
         await s.commit()
@@ -875,3 +879,91 @@ async def test_daily_cadence_only_affects_its_type(monkeypatch):
     assert summary["sent"] == 1  # new_release has no daily cadence → sent now
     assert "deferred" not in summary
     assert (await _delivery(d)).dispatch_state == "sent"
+
+
+# ── Fix regressions ──────────────────────────────────────────────────────────
+
+
+async def test_budget_counts_pushes_not_deliveries(monkeypatch):
+    # Fix #2: a prior digest of 5 albums is ONE push, so a later recommendation must
+    # still be allowed under a budget of 3. The old code counted 5 sent DELIVERIES
+    # and wrongly suppressed everything else for the rest of the UTC day.
+    monkeypatch.setattr(settings, "NOTIF_DIGEST_ENABLED", True, raising=False)
+    monkeypatch.setattr(settings, "NOTIF_DAILY_BUDGET", 3, raising=False)
+    # Run 1: a 5-album newly_added burst coalesces into one push.
+    await _seed_delivery(user_id="u", event_type="newly_added", apprise_urls=["jsons://r/u"], dedup_key="a0")
+    for i in range(1, 5):
+        await _seed_delivery(user_id="u", event_type="newly_added", dedup_key=f"a{i}", with_device=False)
+    async with _TestSession() as s:
+        r1 = await dispatch_pending(s)
+    assert r1["sent"] == 5 and r1["pushes"] == 1
+
+    # Run 2 (same UTC day): a recommendation. Budget is a PUSH budget → 1 of 3 used.
+    rc = await _seed_delivery(user_id="u", event_type="recommendation", dedup_key="rc", with_device=False)
+    async with _TestSession() as s:
+        r2 = await dispatch_pending(s)
+    assert (await _delivery(rc)).dispatch_state == "sent"
+    assert "budget_dropped" not in r2
+
+
+async def test_daily_cadence_quiet_held_row_is_released_not_re_held(monkeypatch):
+    # Fix #1: a daily-cadence row already parked by quiet hours must not be re-grabbed
+    # by the cadence gate (UTC digest hour), or it ping-pongs against the user's local
+    # quiet-close forever. Simulate the post-quiet-hold moment: outside the digest
+    # window and no longer in quiet.
+    now = int(time.time())
+    monkeypatch.setattr(settings, "NOTIF_DAILY_DIGEST_HOUR", _hour_not_now(), raising=False)
+    monkeypatch.setattr(settings, "QUIET_HOURS_ENABLED", False, raising=False)
+    d = await _seed_delivery(
+        user_id="u", event_type="new_release", apprise_urls=["jsons://r/u"],
+        device_cadence={"notif_new_releases": "daily"},
+        last_error="quiet_hours_hold", next_retry_at=now - 1, dedup_key="rel",
+    )
+    async with _TestSession() as s:
+        summary = await dispatch_pending(s)
+    assert (await _delivery(d)).dispatch_state == "sent"  # released, not re-deferred
+    assert summary.get("deferred", 0) == 0
+
+
+async def test_group_error_does_not_abort_the_drain(monkeypatch):
+    # Fix #4: one group's error must leave earlier groups' sent state intact and not
+    # blow up the whole drain (the per-group savepoint keeps the tx healthy on
+    # Postgres; on SQLite this proves the session stays usable after a mid-group raise).
+    d1 = await _seed_delivery(user_id="u1", event_type="new_release", apprise_urls=["jsons://r/u1"], dedup_key="k1")
+    d2 = await _seed_delivery(user_id="u2", event_type="new_release", apprise_urls=["jsons://r/u2"], dedup_key="k2")
+    real = nd._channels_for
+
+    async def flaky(session, user_id, event_type):
+        if user_id == "u2":
+            raise RuntimeError("boom")
+        return await real(session, user_id, event_type)
+
+    monkeypatch.setattr(nd, "_channels_for", flaky)
+    async with _TestSession() as s:
+        summary = await dispatch_pending(s)
+    assert (await _delivery(d1)).dispatch_state == "sent"  # earlier group committed
+    assert (await _delivery(d2)).dispatch_state == "pending"  # errored group left pending
+    assert summary.get("errored", 0) == 1
+
+
+async def test_notif_extra_gates_future_server_driven_type(monkeypatch):
+    # Fix #6: a server-driven type whose pref_field has no dedicated column is gated
+    # per-device by notif_extra (absent/True = opted-in, False = opted-out).
+    monkeypatch.setitem(nd.NOTIF_PREF_COLUMNS, "podcast_new", "notif_podcasts")
+    monkeypatch.setattr(nd, "_apprise_notify", lambda urls, title, body: True)
+    off = await _seed_delivery(
+        user_id="off", event_type="podcast_new", apprise_urls=["jsons://r/off"], dedup_key="p1",
+        device_extra={"notif_podcasts": False},
+    )
+    on = await _seed_delivery(
+        user_id="on", event_type="podcast_new", apprise_urls=["jsons://r/on"], dedup_key="p2",
+        device_extra={"notif_podcasts": True},
+    )
+    absent = await _seed_delivery(
+        user_id="abs", event_type="podcast_new", apprise_urls=["jsons://r/abs"], dedup_key="p3",
+    )
+    async with _TestSession() as s:
+        await dispatch_pending(s)
+    assert (await _delivery(off)).dispatch_state == "suppressed"  # opted out
+    assert (await _delivery(on)).dispatch_state == "sent"  # opted in
+    assert (await _delivery(absent)).dispatch_state == "sent"  # absent = opted in (fail open)

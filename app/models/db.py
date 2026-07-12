@@ -1394,6 +1394,12 @@ class Device(Base):
     # A type set to "daily" is held until the daily digest hour, then coalesced. NULL /
     # absent key → "instant". Resolved per-user from the most-recently-seen device.
     notif_cadence = Column(JSON, nullable=True)
+    # Per-type enable override for SERVER-DRIVEN categories that have no dedicated
+    # notif_* column yet ({pref_field: bool}). Lets the client toggle a future
+    # category (added to GET /v1/notification-types) without an app rebuild, so its
+    # on/off actually reaches the dispatcher. Absent key / NULL → opted-in (matches
+    # the fail-open channel filter). Known types keep using their dedicated column.
+    notif_extra = Column(JSON, nullable=True)
 
 
 # ---------------------------------------------------------------------------
@@ -1454,6 +1460,10 @@ class NotificationDelivery(Base):
     next_retry_at = Column(Integer, nullable=True)  # earliest next attempt (backoff); NULL = ready now
     last_error = Column(String(255), nullable=True)
     notified_at = Column(Integer, nullable=True)
+    # True on exactly ONE delivery per PUSH (the group head), so the per-user daily
+    # budget counts pushes, not deliveries — a digest of N albums is one push, not N.
+    # NULL on legacy rows + on non-sent rows. See dispatch_pending / _pushes_today_by_user.
+    budget_counted = Column(Boolean, nullable=True)
     created_at = Column(Integer, nullable=False, default=lambda: int(time.time()))
 
     __table_args__ = (
