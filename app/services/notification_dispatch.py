@@ -365,6 +365,40 @@ async def _user_tz(session: AsyncSession, user_id: str) -> str | None:
     ).scalar_one_or_none()
 
 
+async def _any_device_quiet_hours(session: AsyncSession) -> bool:
+    """True if any active device carries a per-user quiet-hours override, so
+    dispatch can skip all per-user resolution when quiet hours is globally off and
+    nobody opted in (the default fast path)."""
+    return (
+        await session.execute(
+            select(Device.id).where(Device.disabled_at.is_(None), Device.quiet_hours_enabled.isnot(None)).limit(1)
+        )
+    ).first() is not None
+
+
+async def _user_quiet_hours(session: AsyncSession, user_id: str) -> tuple[bool, int, int]:
+    """Per-user (enabled, start, end): the most-recently-seen device's override when
+    set, else the global ``QUIET_HOURS_*`` default. A non-NULL per-user flag replaces
+    the global for this user (so a user can enable quiet hours the operator left off,
+    pick their own window, or opt out of a globally-on window)."""
+    row = (
+        await session.execute(
+            select(Device.quiet_hours_enabled, Device.quiet_hours_start, Device.quiet_hours_end)
+            .where(Device.user_id == user_id, Device.disabled_at.is_(None), Device.quiet_hours_enabled.isnot(None))
+            .order_by(Device.last_seen_at.desc())
+            .limit(1)
+        )
+    ).first()
+    if row is None:
+        return settings.QUIET_HOURS_ENABLED, settings.QUIET_HOURS_START, settings.QUIET_HOURS_END
+    enabled, start, end = row
+    return (
+        bool(enabled),
+        start if start is not None else settings.QUIET_HOURS_START,
+        end if end is not None else settings.QUIET_HOURS_END,
+    )
+
+
 async def _sent_today_by_user(session: AsyncSession, day_start: int) -> dict[str, int]:
     """Per-user count of deliveries already SENT this UTC day — the budget tally's
     starting point (this dispatch run increments it in-memory as it sends)."""
@@ -415,11 +449,14 @@ async def dispatch_pending(session: AsyncSession, *, limit: int = 200) -> dict[s
         return {"processed": 0}
 
     budget = settings.NOTIF_DAILY_BUDGET
-    quiet_on = settings.QUIET_HOURS_ENABLED
     digest_on = settings.NOTIF_DIGEST_ENABLED
+    # Quiet hours may apply via the global default OR a per-user override; skip all
+    # per-user resolution entirely when neither is in play (the default fast path).
+    quiet_possible = settings.QUIET_HOURS_ENABLED or await _any_device_quiet_hours(session)
     day_start = now - (now % _DAY_SECONDS)
     tally: dict[str, int] = await _sent_today_by_user(session, day_start) if budget > 0 else {}
     tz_cache: dict[str, str | None] = {}
+    qh_cache: dict[str, tuple[bool, int, int]] = {}  # per-user (enabled, start, end)
 
     # Coalesce a same-type burst for one user into a single push. With the digest
     # OFF each delivery is its own group (unchanged per-item behavior). Rows arrive
@@ -442,19 +479,22 @@ async def dispatch_pending(session: AsyncSession, *, limit: int = 200) -> dict[s
         exempt = et in _EXEMPT_EVENT_TYPES
         try:
             # Quiet-hours hold (whole group): defer to the window close. Rows stay
-            # pending (attempt_count untouched — a hold is not a failure).
-            if quiet_on and not exempt:
-                if uid not in tz_cache:
-                    tz_cache[uid] = await _user_tz(session, uid)
-                if _in_quiet_hours(now, tz_cache[uid], settings.QUIET_HOURS_START, settings.QUIET_HOURS_END):
-                    hold_at = _quiet_window_open(
-                        now, tz_cache[uid], settings.QUIET_HOURS_START, settings.QUIET_HOURS_END
-                    )
-                    for d in deliveries:
-                        d.next_retry_at = hold_at
-                        d.last_error = "quiet_hours_hold"
-                    held += len(deliveries)
-                    continue
+            # pending (attempt_count untouched — a hold is not a failure). The window
+            # is resolved per-user (the app's override, else the global default).
+            if quiet_possible and not exempt:
+                if uid not in qh_cache:
+                    qh_cache[uid] = await _user_quiet_hours(session, uid)
+                qh_enabled, qh_start, qh_end = qh_cache[uid]
+                if qh_enabled:
+                    if uid not in tz_cache:
+                        tz_cache[uid] = await _user_tz(session, uid)
+                    if _in_quiet_hours(now, tz_cache[uid], qh_start, qh_end):
+                        hold_at = _quiet_window_open(now, tz_cache[uid], qh_start, qh_end)
+                        for d in deliveries:
+                            d.next_retry_at = hold_at
+                            d.last_error = "quiet_hours_hold"
+                        held += len(deliveries)
+                        continue
 
             # Daily budget: one group = one push = one budget unit. Drop the whole
             # (non-urgent) group once the user hit the cap.

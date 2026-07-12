@@ -192,6 +192,10 @@ async def _apply_column_migrations(conn) -> None:
         ("devices", "device_name", "VARCHAR(128)"),
         # Client-reported IANA timezone for quiet-hours (notifications Phase 2).
         ("devices", "tz", "VARCHAR(64)"),
+        # Per-user quiet-hours override, set from the app (notifications Phase 5).
+        ("devices", "quiet_hours_enabled", "BOOLEAN"),
+        ("devices", "quiet_hours_start", "INTEGER"),
+        ("devices", "quiet_hours_end", "INTEGER"),
         # Attribute a manual download to the requesting user so goal-B
         # "download finished" push can target them (P3). Nullable: chart/auto
         # acquisitions have no requesting user.

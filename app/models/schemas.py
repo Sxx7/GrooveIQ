@@ -1174,6 +1174,12 @@ class DeviceRegister(BaseModel):
     # IANA timezone for quiet-hours (notifications Phase 2). Optional; a client
     # that omits it leaves the device tz-less and the dispatcher uses a UTC window.
     tz: str | None = Field(None, max_length=64, description="IANA timezone, e.g. Europe/Zurich, for quiet-hours.")
+    # Per-user quiet-hours override (notifications Phase 5). Sent only once the user
+    # configures it in the app; omitted (null) → the server's global default applies.
+    # A non-null `quiet_hours_enabled` replaces the global for this user.
+    quiet_hours_enabled: bool | None = Field(None, description="Per-user quiet-hours on/off (null = use global default).")
+    quiet_hours_start: int | None = Field(None, ge=0, le=23, description="Local hour the quiet window opens.")
+    quiet_hours_end: int | None = Field(None, ge=0, le=23, description="Local hour the quiet window closes.")
 
     @model_validator(mode="after")
     def _need_a_target(self) -> DeviceRegister:

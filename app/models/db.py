@@ -1382,6 +1382,14 @@ class Device(Base):
     # (notifications Phase 2). NULL on legacy rows / clients that don't send it →
     # the dispatcher falls back to a global UTC window.
     tz = Column(String(64), nullable=True)
+    # Per-user quiet-hours override, set from the app. NULL ``quiet_hours_enabled``
+    # means "not configured" → the dispatcher uses the global QUIET_HOURS_* default;
+    # a non-NULL value (true/false) is an explicit per-user choice that replaces the
+    # global for this user. start/end are local hours [0-23] (wraps midnight when
+    # end <= start). Resolved per-user from the most-recently-seen device, like tz.
+    quiet_hours_enabled = Column(Boolean, nullable=True)
+    quiet_hours_start = Column(Integer, nullable=True)
+    quiet_hours_end = Column(Integer, nullable=True)
 
 
 # ---------------------------------------------------------------------------

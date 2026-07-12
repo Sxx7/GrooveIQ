@@ -80,6 +80,9 @@ async def _seed_delivery(
     created_at=None,
     with_device=True,
     device_tz=None,
+    device_qh_enabled=None,
+    device_qh_start=None,
+    device_qh_end=None,
     notified_at=None,
 ) -> int:
     """Create one event + one delivery (+ optional device). Returns delivery id."""
@@ -108,6 +111,9 @@ async def _seed_delivery(
                     last_seen_at=now,
                     disabled_at=disabled_at,
                     tz=device_tz,
+                    quiet_hours_enabled=device_qh_enabled,
+                    quiet_hours_start=device_qh_start,
+                    quiet_hours_end=device_qh_end,
                     **prefs,
                 )
             )
@@ -709,3 +715,80 @@ async def test_digest_group_held_together_in_quiet_hours(monkeypatch):
 
     assert summary.get("held") == 2  # the whole group is deferred together
     assert not calls
+
+
+# ── Phase 5: per-user quiet-hours override ───────────────────────────────────
+
+
+def _window_not_containing_now() -> tuple[int, int]:
+    """A 2h window that does NOT contain the current UTC hour (so a UTC-tz device
+    is deterministically OUTSIDE quiet hours during the test)."""
+    h = time.gmtime().tm_hour
+    return (h + 3) % 24, (h + 5) % 24
+
+
+async def test_per_user_quiet_hours_enables_when_global_off(monkeypatch):
+    monkeypatch.setattr(settings, "QUIET_HOURS_ENABLED", False, raising=False)  # global OFF
+    s, e = _window_containing_now()
+    calls: list = []
+    monkeypatch.setattr(nd, "_apprise_notify", lambda u, t, b: calls.append(u) or True)
+    d = await _seed_delivery(
+        user_id="u", event_type="new_release", apprise_urls=["jsons://r/u"],
+        device_tz="UTC", device_qh_enabled=True, device_qh_start=s, device_qh_end=e,
+    )
+
+    async with _TestSession() as sess:
+        summary = await dispatch_pending(sess)
+
+    assert summary.get("held") == 1  # per-user override turns quiet hours on
+    assert not calls
+    assert (await _delivery(d)).dispatch_state == "pending"
+
+
+async def test_per_user_quiet_hours_optout_overrides_global_on(monkeypatch):
+    s, e = _window_containing_now()
+    monkeypatch.setattr(settings, "QUIET_HOURS_ENABLED", True, raising=False)  # global ON, window now
+    monkeypatch.setattr(settings, "QUIET_HOURS_START", s, raising=False)
+    monkeypatch.setattr(settings, "QUIET_HOURS_END", e, raising=False)
+    d = await _seed_delivery(
+        user_id="u", event_type="new_release", apprise_urls=["jsons://r/u"],
+        device_tz="UTC", device_qh_enabled=False,  # explicit per-user opt-out
+    )
+
+    async with _TestSession() as sess:
+        summary = await dispatch_pending(sess)
+
+    assert summary["sent"] == 1  # opted out → sent despite the global window
+    assert "held" not in summary
+    assert (await _delivery(d)).dispatch_state == "sent"
+
+
+async def test_per_user_quiet_hours_custom_window_not_now(monkeypatch):
+    monkeypatch.setattr(settings, "QUIET_HOURS_ENABLED", False, raising=False)  # global OFF
+    s, e = _window_not_containing_now()
+    d = await _seed_delivery(
+        user_id="u", event_type="new_release", apprise_urls=["jsons://r/u"],
+        device_tz="UTC", device_qh_enabled=True, device_qh_start=s, device_qh_end=e,
+    )
+
+    async with _TestSession() as sess:
+        summary = await dispatch_pending(sess)
+
+    assert summary["sent"] == 1  # the user's own window does not cover now → sent
+    assert "held" not in summary
+    assert (await _delivery(d)).dispatch_state == "sent"
+
+
+async def test_global_quiet_hours_applies_without_user_override(monkeypatch):
+    s, e = _window_containing_now()
+    monkeypatch.setattr(settings, "QUIET_HOURS_ENABLED", True, raising=False)  # global ON, window now
+    monkeypatch.setattr(settings, "QUIET_HOURS_START", s, raising=False)
+    monkeypatch.setattr(settings, "QUIET_HOURS_END", e, raising=False)
+    # device has NO quiet-hours override (enabled NULL) → falls back to the global.
+    d = await _seed_delivery(user_id="u", event_type="new_release", apprise_urls=["jsons://r/u"], device_tz="UTC")
+
+    async with _TestSession() as sess:
+        summary = await dispatch_pending(sess)
+
+    assert summary.get("held") == 1
+    assert (await _delivery(d)).dispatch_state == "pending"

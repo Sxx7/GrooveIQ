@@ -56,6 +56,9 @@ def _device_view(d: Device) -> dict:
         "device_guid": d.device_guid,
         "device_name": d.device_name,
         "tz": d.tz,
+        "quiet_hours_enabled": d.quiet_hours_enabled,
+        "quiet_hours_start": d.quiet_hours_start,
+        "quiet_hours_end": d.quiet_hours_end,
         "apprise_urls": d.apprise_urls,
         "disabled_at": d.disabled_at,
         # Per-type toggles. NULL (legacy row) reads as True to match the opt-in
@@ -129,6 +132,13 @@ async def register_device(
         device.device_name = body.device_name
     if body.tz is not None:
         device.tz = body.tz
+    # Per-user quiet-hours override. Only overwrite when the client sends the
+    # on/off flag (i.e. the user configured it); an omitted block leaves whatever
+    # was stored, so a pref-only re-POST doesn't wipe a prior window.
+    if body.quiet_hours_enabled is not None:
+        device.quiet_hours_enabled = body.quiet_hours_enabled
+        device.quiet_hours_start = body.quiet_hours_start
+        device.quiet_hours_end = body.quiet_hours_end
     device.last_seen_at = now
     device.disabled_at = None  # clear on re-register (reactivates a pruned token)
     await session.flush()  # assign id
