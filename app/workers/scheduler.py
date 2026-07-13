@@ -216,17 +216,32 @@ async def start_scheduler() -> None:
         replace_existing=True,
     )
 
-    # Daily recommendation push (goal F) — one "your daily mix is ready" per
-    # opted-in user, 10 min after the 03:30 rebuild so the fresh mixes exist. The
-    # producer keys each push on reco:daily:{user}:{date}, so this fixed cadence is
-    # safe even if a rebuild occasionally overruns (a re-run is idempotent within
-    # the day). Off by default; gate on the flag only (the producer re-checks
-    # push_enabled), so toggling needs no restart of the other jobs.
+    # Daily mix recommendations for the Activity feed — a few rich "Your Mix N"
+    # rows per opted-in user, 10 min after the 03:30 rebuild so the fresh mixes
+    # exist. The producer keys each row on reco:mix:{user}:{mix_id}, so a re-run
+    # (or an unchanged rebuild) is idempotent and only genuinely new mixes notify.
+    # Off by default; gate on the flag only (the producer re-checks push_enabled),
+    # so toggling needs no restart of the other jobs.
     if settings.NOTIFY_RECOMMENDATIONS_ENABLED:
         _scheduler.add_job(
             _periodic_reco_notify,
             trigger=CronTrigger(hour=3, minute=40, timezone="UTC"),
             id="reco_daily_notify",
+            replace_existing=True,
+            coalesce=True,
+            max_instances=1,
+            misfire_grace_time=300,
+        )
+
+    # Daily album recommendations for the in-app Activity feed — a few "an album
+    # you might like" rows per opted-in user, 20 min after the 03:30 rebuild.
+    # Shares the recommendations umbrella flag with the daily-mix push; per-(user,
+    # album) dedup keeps re-runs idempotent and digest/budget keep the push sparse.
+    if settings.NOTIFY_RECOMMENDATIONS_ENABLED:
+        _scheduler.add_job(
+            _periodic_album_reco_notify,
+            trigger=CronTrigger(hour=3, minute=50, timezone="UTC"),
+            id="album_reco_notify",
             replace_existing=True,
             coalesce=True,
             max_instances=1,
@@ -469,6 +484,22 @@ async def _periodic_reco_notify(trigger: str = "scheduled") -> dict:
 async def run_reco_notify_now(trigger: str = "manual") -> dict:
     """Fire the daily recommendation push on demand (admin / QA helper)."""
     return await _periodic_reco_notify(trigger=trigger)
+
+
+async def _periodic_album_reco_notify(trigger: str = "scheduled") -> dict:
+    """Emit the daily album-recommendation rows for the Activity feed. Self-gates
+    on NOTIFY_RECOMMENDATIONS_ENABLED (+ push_enabled); idempotent per (user,
+    album) via the producer's dedup key."""
+    from app.services.album_reco_notify import notify_album_recommendations
+
+    summary = await notify_album_recommendations()
+    logger.info("Album reco notify (trigger=%s): %s", trigger, summary)
+    return summary
+
+
+async def run_album_reco_notify_now(trigger: str = "manual") -> dict:
+    """Fire the album-recommendation feed producer on demand (admin / QA helper)."""
+    return await _periodic_album_reco_notify(trigger=trigger)
 
 
 async def _purge_old_mixes() -> None:

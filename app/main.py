@@ -35,6 +35,7 @@ from app.api.routes import (
     lyrics,
     mixes,
     news,
+    notifications,
     playlists,
     radio,
     reco_audit,
@@ -243,6 +244,7 @@ app.include_router(tracks.router, prefix="/v1", tags=["tracks"])
 app.include_router(users.router, prefix="/v1", tags=["users"])
 app.include_router(follows.router, prefix="/v1", tags=["follows"])
 app.include_router(feed.router, prefix="/v1", tags=["feed"])
+app.include_router(notifications.router, prefix="/v1", tags=["notifications"])
 app.include_router(devices.router, prefix="/v1", tags=["devices"])
 app.include_router(playlists.router, prefix="/v1", tags=["playlists"])
 app.include_router(stats.router, prefix="/v1", tags=["stats"])

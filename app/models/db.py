@@ -1464,6 +1464,12 @@ class NotificationDelivery(Base):
     # budget counts pushes, not deliveries — a digest of N albums is one push, not N.
     # NULL on legacy rows + on non-sent rows. See dispatch_pending / _pushes_today_by_user.
     budget_counted = Column(Boolean, nullable=True)
+    # In-app feed read-state for the unified Activity notification feed: stamped
+    # (epoch secs) when the user views this notification in the sheet. NULL =
+    # unseen, which drives the bell-badge unseen_count. Distinct from notified_at
+    # (push send time) — a delivery can be seen in-app without ever being pushed
+    # (e.g. a budget-suppressed recommendation still appears in the feed).
+    seen_at = Column(Integer, nullable=True)
     created_at = Column(Integer, nullable=False, default=lambda: int(time.time()))
 
     __table_args__ = (

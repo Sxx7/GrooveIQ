@@ -93,12 +93,12 @@ async def trigger_recommendation(
 
 @router.post(
     "/admin/reco-notify",
-    summary="Send the daily 'your mix is ready' push to all opted-in users (goal F, dev/QA)",
+    summary="Emit daily mix-recommendation feed rows for opted-in users (goal F, dev/QA)",
 )
 async def trigger_reco_notify(_key: str = Depends(require_api_key)):
-    """Run the daily-mix recommendation producer synchronously — one push per
-    opted-in user who has a fresh session mix. Admin-gated. Idempotent within the
-    UTC day (the date-scoped dedup key), so re-running is a no-op. Off unless
+    """Run the daily-mix recommendation producer synchronously — a few rich mix
+    rows per opted-in user with a fresh session mix. Admin-gated. Idempotent per
+    (user, mix), so re-running only adds genuinely new mixes. Off unless
     NOTIFY_RECOMMENDATIONS_ENABLED (+ PUSH_ENABLED)."""
     require_admin(_key)
     if not settings.NOTIFY_RECOMMENDATIONS_ENABLED:
@@ -109,6 +109,27 @@ async def trigger_reco_notify(_key: str = Depends(require_api_key)):
     from app.workers.scheduler import run_reco_notify_now
 
     result = await run_reco_notify_now()
+    return {"status": "completed", "result": result}
+
+
+@router.post(
+    "/admin/album-reco-notify",
+    summary="Emit daily album-recommendation feed rows for opted-in users (dev/QA)",
+)
+async def trigger_album_reco_notify(_key: str = Depends(require_api_key)):
+    """Run the album-recommendation producer synchronously — a few "an album you
+    might like" rows per opted-in user. Admin-gated. Idempotent per (user, album),
+    so re-running only adds genuinely new albums. Off unless
+    NOTIFY_RECOMMENDATIONS_ENABLED (+ PUSH_ENABLED)."""
+    require_admin(_key)
+    if not settings.NOTIFY_RECOMMENDATIONS_ENABLED:
+        return {
+            "status": "error",
+            "message": "Recommendation push not enabled. Set NOTIFY_RECOMMENDATIONS_ENABLED=true (and PUSH_ENABLED=true).",
+        }
+    from app.workers.scheduler import run_album_reco_notify_now
+
+    result = await run_album_reco_notify_now()
     return {"status": "completed", "result": result}
 
 

@@ -204,6 +204,9 @@ async def _apply_column_migrations(conn) -> None:
         # Push-head marker so the daily budget counts pushes, not deliveries — a
         # coalesced digest is one push (notif fixes). NULL on legacy/non-sent rows.
         ("notification_deliveries", "budget_counted", "BOOLEAN"),
+        # In-app feed read-state for the unified Activity notification feed. NULL =
+        # unseen (drives the bell-badge unseen_count); stamped when viewed in-app.
+        ("notification_deliveries", "seen_at", "INTEGER"),
         # Attribute a manual download to the requesting user so goal-B
         # "download finished" push can target them (P3). Nullable: chart/auto
         # acquisitions have no requesting user.

@@ -223,13 +223,14 @@ async def emit_recommendation(
     commit + dispatch.
 
     Dedup: ``reco:*`` keys live in a distinct namespace from the media key, so a
-    reco never collides with A/B/C. An explicit ``dedup_key`` wins — the daily-mix
-    producer passes a date-scoped ``reco:daily:{user}:{YYYY-MM-DD}`` so ONE push
-    lands per user per day no matter how many mixes (or fresh playlist ids) a
-    rebuild produced. When omitted it falls back to ``reco:{playlist_id}`` (NULL
-    when no playlist id), keeping the admin/QA seam idempotent per mix.
-    ``data.type = "recommendation"`` rides on the event so a tap can open the
-    recommendations surface once the relay forwards it."""
+    reco never collides with A/B/C. An explicit ``dedup_key`` wins — the feed
+    producers pass a per-media key (``reco:mix:{user}:{mix_id}`` /
+    ``reco:album:{user}:{artist}|{album}``) so each mix/album notifies a user once
+    and a re-run is idempotent; digest + the daily budget keep the push sparse.
+    When omitted it falls back to ``reco:{playlist_id}`` (NULL when no playlist
+    id), keeping the admin/QA seam idempotent per mix. ``data.type =
+    "recommendation"`` rides on the event so a tap can open the recommendations
+    surface once the relay forwards it."""
     data: dict[str, Any] = {"type": "recommendation"}
     if playlist_id:
         data["playlist_id"] = playlist_id

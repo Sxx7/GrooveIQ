@@ -385,6 +385,11 @@ async def _fanout(session: AsyncSession, ev: ReleaseEvent, now: int, eligible_co
                 # Names for the dispatch-time digest ("N new releases / New from X, Y").
                 "artist": ev.artist_name,
                 "album": ev.album_title,
+                # Rich fields for the in-app Activity feed row. The push forwards
+                # only the routing whitelist; the /notifications feed reads the full
+                # data JSON, so the cover + kind render the release like the old feed.
+                "cover_url": ev.cover_url,
+                "kind": ev.kind,
             },
             now=now,
         )

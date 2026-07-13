@@ -361,12 +361,11 @@ class Settings(BaseSettings):
     # Of the (non-bulk) candidate albums, emit at most this many per scan
     # (newest first); the remainder stay unprocessed and drain on later scans.
     NOTIFY_NEW_MEDIA_MAX_ALBUMS_PER_SCAN: int = 50  # 0 = unlimited
-    # Recommendations (goal F): after the nightly user-mixes rebuild, send at most
-    # ONE "your daily mix is ready" push per opted-in user per day. Off by default.
-    # The producer keys every push on reco:daily:{user}:{YYYY-MM-DD}, so a re-run
-    # (or a user's six freshly-rebuilt mixes) collapses to a single delivery — the
-    # date key is load-bearing (a naive daily cron keyed on a fresh playlist_id
-    # would push unbounded).
+    # Recommendations (goal F): after the nightly user-mixes rebuild, emit a few
+    # rich mix + album recommendation rows per opted-in user for the in-app feed.
+    # Off by default. Producers key each row per media (reco:mix:{user}:{mix_id} /
+    # reco:album:{user}:{artist}|{album}), so a re-run is idempotent and only new
+    # picks notify; digest + the daily budget collapse the burst into one push.
     NOTIFY_RECOMMENDATIONS_ENABLED: bool = False
     # Anti-spam volume controls (notifications redesign, Phase 2). Both OFF by
     # default (0 / False) so dispatch behavior is unchanged until you opt in.
