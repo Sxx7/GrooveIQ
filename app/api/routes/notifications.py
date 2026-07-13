@@ -27,6 +27,7 @@ from fastapi import APIRouter, Body, Depends, Path, Query
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import settings
 from app.core.security import check_user_access, require_api_key
 from app.core.user_id import validate_user_id
 from app.db.session import get_session
@@ -55,6 +56,12 @@ async def get_notifications(
     validate_user_id(user_id)
     check_user_access(_key, user_id)
 
+    # Retention window: never surface notifications older than the horizon. The
+    # nightly prune deletes them too; this filter keeps the boundary exact between
+    # runs (and honours retention even if the prune is disabled). 0 = keep forever.
+    retention_days = settings.NOTIFICATION_RETENTION_DAYS
+    cutoff = int(time.time()) - retention_days * 86_400 if retention_days > 0 else None
+
     q = (
         select(NotificationDelivery, NotificationEvent)
         .join(NotificationEvent, NotificationEvent.id == NotificationDelivery.event_id)
@@ -64,6 +71,8 @@ async def get_notifications(
         )
         .order_by(NotificationEvent.created_at.desc(), NotificationDelivery.id.desc())
     )
+    if cutoff is not None:
+        q = q.where(NotificationEvent.created_at >= cutoff)
     if before is not None:
         q = q.where(NotificationEvent.created_at < before)
     if unseen_only:
@@ -86,15 +95,18 @@ async def get_notifications(
     ]
     next_before = items[-1]["created_at"] if (has_more and items) else None
 
+    # unseen badge count — same retention window, on the delivery's own created_at
+    # (== the event's, set together at emit) so it needs no join.
+    unseen_where = [
+        NotificationDelivery.user_id == user_id,
+        NotificationDelivery.event_type.in_(_ACTIVITY_EVENT_TYPES),
+        NotificationDelivery.seen_at.is_(None),
+    ]
+    if cutoff is not None:
+        unseen_where.append(NotificationDelivery.created_at >= cutoff)
     unseen_count = (
         await session.scalar(
-            select(func.count())
-            .select_from(NotificationDelivery)
-            .where(
-                NotificationDelivery.user_id == user_id,
-                NotificationDelivery.event_type.in_(_ACTIVITY_EVENT_TYPES),
-                NotificationDelivery.seen_at.is_(None),
-            )
+            select(func.count()).select_from(NotificationDelivery).where(*unseen_where)
         )
     ) or 0
 

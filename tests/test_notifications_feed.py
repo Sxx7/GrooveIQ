@@ -181,3 +181,40 @@ async def test_unseen_only_and_paging(client):
     ).json()
     assert [i["title"] for i in p2["items"]] == ["mid", "old-seen"]
     assert p2["next_before"] is None
+
+
+@pytest.mark.asyncio
+async def test_retention_window_hides_old_from_feed(client):
+    now = int(time.time())
+    await _seed("alice", "recommendation", title="fresh", body="b",
+                data={"type": "recommendation"}, created_at=now)
+    await _seed("alice", "new_release", title="ancient", body="b",
+                data={"type": "new_release"}, created_at=now - 40 * 86_400)  # > 30d retention
+
+    body = (await client.get("/v1/users/alice/notifications")).json()
+    assert [i["title"] for i in body["items"]] == ["fresh"]  # 40d-old dropped by the 30d window
+    assert body["unseen_count"] == 1  # badge excludes the aged-out row too
+
+
+@pytest.mark.asyncio
+async def test_prune_deletes_old_keeps_recent():
+    from sqlalchemy import func, select
+
+    from app.models.db import NotificationDelivery, NotificationEvent
+    from app.services.notification_dispatch import prune_old_notifications
+
+    now = int(time.time())
+    await _seed("alice", "recommendation", title="fresh", body="b",
+                data={"type": "recommendation"}, created_at=now)
+    await _seed("alice", "new_release", title="ancient", body="b",
+                data={"type": "new_release"}, created_at=now - 40 * 86_400)
+
+    async with _TestSession() as s:
+        result = await prune_old_notifications(s, now=now)
+        await s.commit()
+    assert result == {"deliveries": 1, "events": 1}  # only the 40d-old pair pruned
+
+    async with _TestSession() as s:
+        deliveries = (await s.execute(select(func.count()).select_from(NotificationDelivery))).scalar_one()
+        events = (await s.execute(select(func.count()).select_from(NotificationEvent))).scalar_one()
+    assert deliveries == 1 and events == 1  # the fresh pair survives

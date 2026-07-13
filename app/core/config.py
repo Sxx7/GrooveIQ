@@ -367,6 +367,10 @@ class Settings(BaseSettings):
     # reco:album:{user}:{artist}|{album}), so a re-run is idempotent and only new
     # picks notify; digest + the daily budget collapse the burst into one push.
     NOTIFY_RECOMMENDATIONS_ENABLED: bool = False
+    # In-app notification feed retention: notifications older than this many days
+    # drop off the feed (server-side filter) and are pruned from the outbox nightly
+    # so the tables stay bounded. 0 = keep forever (no filter, no prune).
+    NOTIFICATION_RETENTION_DAYS: int = 30
     # Anti-spam volume controls (notifications redesign, Phase 2). Both OFF by
     # default (0 / False) so dispatch behavior is unchanged until you opt in.
     # Deliveries are processed in precedence order (download > new_release >

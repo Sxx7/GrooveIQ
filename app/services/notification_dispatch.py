@@ -40,7 +40,7 @@ from typing import Any
 from urllib.parse import quote
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from sqlalchemy import case, func, select
+from sqlalchemy import case, delete, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -247,6 +247,37 @@ async def emit_recommendation(
         data=data,
         now=now,
     )
+
+
+async def prune_old_notifications(
+    session: AsyncSession,
+    *,
+    now: int | None = None,
+    retention_days: int | None = None,
+) -> dict[str, int]:
+    """Age out the outbox: delete deliveries — then any event no delivery still
+    references — older than the retention horizon, so the in-app feed drops stale
+    rows and the tables stay bounded. Deliveries go first (the FK); an event fans
+    out to many users, so it must outlive the horizon while ANY user's delivery
+    does (hence the not-in guard, not a blind age delete). ``retention_days`` <= 0
+    is a no-op — keep forever (the config flag defaults to 30). Caller owns the
+    commit."""
+    days = retention_days if retention_days is not None else settings.NOTIFICATION_RETENTION_DAYS
+    if days <= 0:
+        return {"deliveries": 0, "events": 0}
+    now = now or int(time.time())
+    horizon = now - days * 86_400
+
+    deliv = await session.execute(
+        delete(NotificationDelivery).where(NotificationDelivery.created_at < horizon)
+    )
+    events = await session.execute(
+        delete(NotificationEvent).where(
+            NotificationEvent.created_at < horizon,
+            NotificationEvent.id.not_in(select(NotificationDelivery.event_id)),
+        )
+    )
+    return {"deliveries": deliv.rowcount or 0, "events": events.rowcount or 0}
 
 
 # ---------------------------------------------------------------------------

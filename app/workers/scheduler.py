@@ -216,6 +216,16 @@ async def start_scheduler() -> None:
         replace_existing=True,
     )
 
+    # Notification feed retention — prune deliveries + orphan events past the
+    # NOTIFICATION_RETENTION_DAYS horizon nightly so the outbox stays bounded. The
+    # prune self-gates on retention > 0, so registering it unconditionally is safe.
+    _scheduler.add_job(
+        _purge_old_notifications,
+        trigger=CronTrigger(hour=4, minute=10, timezone="UTC"),
+        id="notification_prune",
+        replace_existing=True,
+    )
+
     # Daily mix recommendations for the Activity feed — a few rich "Your Mix N"
     # rows per opted-in user, 10 min after the 03:30 rebuild so the fresh mixes
     # exist. The producer keys each row on reco:mix:{user}:{mix_id}, so a re-run
@@ -517,6 +527,24 @@ async def _purge_old_mixes() -> None:
         deleted = result.rowcount
     if deleted:
         logger.info("Purged %d archived mixes older than 180 days.", deleted)
+
+
+async def _purge_old_notifications() -> None:
+    """Age out the notification feed: delete deliveries + orphaned events past the
+    NOTIFICATION_RETENTION_DAYS horizon so the outbox stays bounded. Self-gates on
+    retention > 0 (a no-op when set to 0 = keep forever)."""
+    from app.services.notification_dispatch import prune_old_notifications
+
+    async with AsyncSessionLocal() as session:
+        result = await prune_old_notifications(session)
+        await session.commit()
+    if result["deliveries"] or result["events"]:
+        logger.info(
+            "Notification prune: deleted %d deliveries, %d events (retention=%dd).",
+            result["deliveries"],
+            result["events"],
+            settings.NOTIFICATION_RETENTION_DAYS,
+        )
 
 
 # One recommendation-pipeline run at a time. The hourly APScheduler job is
