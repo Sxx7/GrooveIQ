@@ -58,8 +58,45 @@ logger = logging.getLogger("spotdl-api")
 
 app = FastAPI(title="spotdl-api", version="1.0.0")
 
-# Thread pool for blocking spotDL calls (spotDL is sync internally)
-_executor = ThreadPoolExecutor(max_workers=MAX_THREADS)
+# spotDL binds its event loop to the *thread* that constructs the Spotdl
+# instance: Downloader.__init__ creates a fresh loop and calls
+# asyncio.set_event_loop(loop) — which is thread-local. Later,
+# Downloader.download_multiple_songs() runs
+# `self.loop.run_until_complete(asyncio.gather(*tasks))`, and asyncio.gather()
+# resolves the loop for its child tasks via get_event_loop() on the *calling*
+# thread. So a download MUST run on the same thread that built the instance —
+# otherwise get_event_loop() finds no loop in that worker thread and raises
+# "There is no current event loop in thread 'ThreadPoolExecutor-N_M'". Running
+# build + downloads on a shared multi-worker pool meant downloads almost always
+# landed on a non-builder thread, so every download failed with that error.
+#
+# Fix: run instance construction and all downloads on a single dedicated worker
+# thread. Co-location guarantees the loop is present; a lone worker also
+# serialises downloads, which is required for correctness because a shared event
+# loop cannot be run_until_complete()'d from two threads at once ("This event
+# loop is already running"). Searches are synchronous and loop-free, so they get
+# their own pool to stay responsive while a download holds the download thread.
+
+
+def _install_thread_loop() -> None:
+    """Executor-thread initializer: give the worker its own event loop so any
+    get_event_loop() call resolves instead of raising in a non-main thread."""
+    asyncio.set_event_loop(asyncio.new_event_loop())
+
+
+# Build + downloads: one dedicated thread that owns the spotDL event loop.
+_download_executor = ThreadPoolExecutor(
+    max_workers=1,
+    thread_name_prefix="spotdl-dl",
+    initializer=_install_thread_loop,
+)
+# Searches (parse_query) are synchronous and never touch the loop; keep them on
+# a separate pool so search stays responsive while a download is in flight.
+_search_executor = ThreadPoolExecutor(
+    max_workers=MAX_THREADS,
+    thread_name_prefix="spotdl-search",
+    initializer=_install_thread_loop,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -194,8 +231,10 @@ async def _get_spotdl():
         async with _spotdl_lock:
             if _spotdl_instance is None:
                 loop = asyncio.get_running_loop()
+                # Build on the download thread so the instance's event loop is
+                # bound there; downloads run on that same thread (see above).
                 _spotdl_instance = await loop.run_in_executor(
-                    _executor, _build_spotdl
+                    _download_executor, _build_spotdl
                 )
     return _spotdl_instance
 
@@ -420,7 +459,7 @@ async def search(
     loop = asyncio.get_running_loop()
     try:
         results = await loop.run_in_executor(
-            _executor, _do_search, spotdl, q, limit
+            _search_executor, _do_search, spotdl, q, limit
         )
     except Exception as exc:
         logger.error("Search failed for %r: %s", q, exc)
@@ -450,9 +489,12 @@ async def download(body: DownloadRequest):
     )
     _tasks[task_id] = task
 
-    # Fire and forget — download runs in the thread pool
+    # Fire and forget — download runs on the dedicated single spotDL thread
+    # (co-located with the instance build; serialised across requests).
     loop = asyncio.get_running_loop()
-    loop.run_in_executor(_executor, _do_download, spotdl, task_id, spotify_url)
+    loop.run_in_executor(
+        _download_executor, _do_download, spotdl, task_id, spotify_url
+    )
 
     logger.info(
         "Download queued: task=%s spotify_id=%s", task_id, body.spotify_id
@@ -508,5 +550,6 @@ async def startup():
 
 @app.on_event("shutdown")
 async def shutdown():
-    _executor.shutdown(wait=False)
+    _download_executor.shutdown(wait=False)
+    _search_executor.shutdown(wait=False)
     logger.info("spotdl-api shutting down")
