@@ -1634,8 +1634,9 @@ def _compute_vinet_embedding(audio: np.ndarray, sr: int, vinet_session: object) 
 
     Chain (must match the reference exactly — see docs/HANDOFF_DISCOGS_VINET.md §1):
       librosa.cqt(hop=512, n_bins=84, bins_per_octave=12) → |·| → float16→float32
-      → transpose to (T, 84) → clip(0) → mean_downsample(×20) → scale to [0,1]
-      → (1, 1, 84, T') → CQTNet CNN → 512-d (L2-normed by the graph).
+      → transpose to (T, 84) → pad short tracks up to CONTEXT_LENGTH → mean_
+      downsample(×20) → clip(0) → scale to [0,1] → (1, 1, 84, T') → CQTNet CNN
+      → 512-d (L2-normed by the graph).
     """
     import librosa
 
@@ -1662,10 +1663,17 @@ def _compute_vinet_embedding(audio: np.ndarray, sr: int, vinet_session: object) 
         # Magnitude; float16 round-trip matches the stored-feature dtype in the
         # repo, then back to float32. librosa.cqt is (F, T) → transpose to (T, F).
         cqt = np.abs(cqt).astype(np.float16).astype(np.float32).T
-        cqt = np.clip(cqt, 0, None)
-        cqt = _mean_downsample_cqt(cqt, settings.VINET_DOWNSAMPLE_FACTOR)  # (T//20, 84)
+        # Pad short tracks up to the raw context length BEFORE downsampling
+        # (matches the reference InferenceDataset) so the CNN always gets its
+        # ~380-frame context; tracks shorter than ~2.9 min would otherwise be
+        # too short for the conv stack. Long tracks are fed whole (track mode).
+        ctx = settings.VINET_CONTEXT_LENGTH
+        if ctx > 0 and cqt.shape[0] < ctx:
+            cqt = np.pad(cqt, ((0, ctx - cqt.shape[0]), (0, 0)), "constant", constant_values=0)
+        cqt = _mean_downsample_cqt(cqt, settings.VINET_DOWNSAMPLE_FACTOR)  # (~T/20, 84)
         if cqt.shape[0] == 0:
             return None
+        cqt = np.clip(cqt, 0, None)  # match reference order (post-downsample; no-op on magnitudes)
         cqt = cqt / (cqt.max() + 1e-6)
         x = cqt.T[np.newaxis, np.newaxis, :, :].astype(np.float32)  # (1, 1, 84, T')
 

@@ -231,6 +231,11 @@ class Settings(BaseSettings):
     VINET_CQT_BINS: int = 84
     VINET_CQT_BINS_PER_OCTAVE: int = 12
     VINET_DOWNSAMPLE_FACTOR: int = 20
+    # Raw CQT frames the checkpoint was trained/inferred at. Short tracks are
+    # zero-padded up to this length BEFORE the ×20 downsample (matching the
+    # reference InferenceDataset), so the CNN always gets its ~380-frame context
+    # — otherwise tracks shorter than ~2.9 min fail the conv stack. 0 disables.
+    VINET_CONTEXT_LENGTH: int = 7600
     VINET_MAX_SECONDS: float = 0.0  # 0 = whole track; set >0 to cap CQT cost on long tracks
     VINET_ORT_THREADS: int = 1  # intra-op threads per worker session (avoid oversubscription)
     # Nearest-neighbour version threshold (cosine) — CALIBRATE on a labelled
