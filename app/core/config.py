@@ -238,9 +238,12 @@ class Settings(BaseSettings):
     VINET_CONTEXT_LENGTH: int = 7600
     VINET_MAX_SECONDS: float = 0.0  # 0 = whole track; set >0 to cap CQT cost on long tracks
     VINET_ORT_THREADS: int = 1  # intra-op threads per worker session (avoid oversubscription)
-    # Nearest-neighbour version threshold (cosine) — CALIBRATE on a labelled
-    # sample before trusting auto-grouping; conservative default:
-    VINET_MATCH_THRESHOLD: float = 0.60
+    # Nearest-neighbour version threshold (cosine) for the /versions audio tier.
+    # 0.55 is the F1 optimum measured on a ~165k-track library (same-artist
+    # version pairs: mean cosine 0.79; random different songs: p99 0.48) —
+    # ~0.99 precision / ~0.89 recall. Re-calibrate per library if needed; lower
+    # toward 0.50 to reach more cross-artist covers (which sit at lower cosine).
+    VINET_MATCH_THRESHOLD: float = 0.55
 
     # ------------------------------------------------------------------
     # Lyrics acquisition (optional, off by default)
