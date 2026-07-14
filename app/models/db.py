@@ -287,6 +287,13 @@ class TrackFeatures(Base):
     # existing FAISS/ranker code is untouched.
     clap_embedding = Column(Text, nullable=True)  # base64-encoded float32 array (512-dim)
 
+    # --- Discogs-VINet version/remix embedding (optional, 512-dim, L2-normalised) ---
+    # When populated (VINET_ENABLED=true), its nearest neighbours are *other
+    # versions of the same song* (covers, remixes, live, remaster) — the audio
+    # tier of the remix/versions finder. Stored separately from `embedding` /
+    # `clap_embedding` so existing FAISS/ranker code is untouched.
+    version_embedding = Column(Text, nullable=True)  # base64-encoded float32 array (512-dim)
+
     # --- 2D music-map coordinates (UMAP projection of `embedding`) ---
     # Populated by the music-map pipeline step; both null until first build.
     map_x = Column(Float, nullable=True)

@@ -211,6 +211,33 @@ class Settings(BaseSettings):
     CLAP_TOKENIZER_URL: str = "https://huggingface.co/Xenova/larger_clap_music_and_speech/resolve/main/tokenizer.json"
 
     # ------------------------------------------------------------------
+    # Discogs-VINet version/remix embedding (optional, off by default, CPU-only)
+    #
+    # When enabled, each analysed track gets a third 512-dim embedding in
+    # the Discogs-VINet (CQTNet) version-identification space, whose nearest
+    # neighbours are *other versions of the same song* (covers, remixes,
+    # live, remaster). Powers the audio tier of the remix/versions finder.
+    #
+    # Ship the ONNX export of the CQTNet CNN (see docs/HANDOFF_DISCOGS_VINET.md
+    # §4 / scripts/export_vinet_onnx.py) into VINET_MODEL_DIR before enabling.
+    # CQT is computed with librosa in-worker (no torch in the image). CPU-only.
+    # ------------------------------------------------------------------
+    VINET_ENABLED: bool = False
+    VINET_MODEL_DIR: str = "/data/models/vinet"  # where vinet_cqtnet.onnx lives
+    VINET_MODEL_FILE: str = "vinet_cqtnet.onnx"
+    VINET_EMBEDDING_DIM: int = 512
+    VINET_AUDIO_SR: int = 22050  # librosa CQT rate the checkpoint was trained on
+    VINET_CQT_HOP: int = 512
+    VINET_CQT_BINS: int = 84
+    VINET_CQT_BINS_PER_OCTAVE: int = 12
+    VINET_DOWNSAMPLE_FACTOR: int = 20
+    VINET_MAX_SECONDS: float = 0.0  # 0 = whole track; set >0 to cap CQT cost on long tracks
+    VINET_ORT_THREADS: int = 1  # intra-op threads per worker session (avoid oversubscription)
+    # Nearest-neighbour version threshold (cosine) — CALIBRATE on a labelled
+    # sample before trusting auto-grouping; conservative default:
+    VINET_MATCH_THRESHOLD: float = 0.60
+
+    # ------------------------------------------------------------------
     # Lyrics acquisition (optional, off by default)
     #
     # Lyrics are acquired through a priority cascade — real sources first,

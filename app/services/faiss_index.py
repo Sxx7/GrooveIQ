@@ -5,13 +5,17 @@ Maintains one or more in-memory ANN indices over track embeddings for
 fast similarity search. Index instances are module-level singletons
 that can be atomically swapped via ``rebuild()``.
 
-Two indices are exposed:
+Three indices are exposed:
 
   - ``effnet_index`` (64-dim)  — primary embedding from the EffNet-Discogs
     backbone; drives similar tracks, playlists, radio, and ranker features.
   - ``clap_index`` (512-dim)  — optional joint text-audio embedding from
     LAION-CLAP; enables natural-language track search. Only built when
     ``CLAP_ENABLED=true`` and at least one track has a ``clap_embedding``.
+  - ``version_index`` (512-dim)  — optional Discogs-VINet (CQTNet) version
+    embedding; nearest neighbours are *other versions of the same song*
+    (covers, remixes, live). Only built when ``VINET_ENABLED=true`` and at
+    least one track has a ``version_embedding``.
 
 Index strategy per instance:
   - <50k tracks → ``IndexFlatIP`` (exact inner product, no training needed)
@@ -264,6 +268,7 @@ class FaissIndex:
 
 effnet_index = FaissIndex(dim=64, name="effnet", center=True)
 clap_index = FaissIndex(dim=512, name="clap")
+version_index = FaissIndex(dim=512, name="vinet")  # Discogs-VINet version embeddings
 
 
 # ---------------------------------------------------------------------------
@@ -274,14 +279,16 @@ clap_index = FaissIndex(dim=512, name="clap")
 async def build_index() -> int:
     """Build the primary 64-dim EffNet FAISS index."""
     n = await effnet_index.rebuild(column="embedding")
-    # Also rebuild the CLAP index if enabled and populated.
+    # Also rebuild the optional 512-dim indices if enabled and populated.
     try:
         from app.core.config import settings
 
         if settings.CLAP_ENABLED:
             await clap_index.rebuild(column="clap_embedding")
+        if settings.VINET_ENABLED:
+            await version_index.rebuild(column="version_embedding")
     except Exception as e:
-        logger.warning("CLAP index rebuild failed: %s", e)
+        logger.warning("optional index rebuild failed: %s", e)
     return n
 
 

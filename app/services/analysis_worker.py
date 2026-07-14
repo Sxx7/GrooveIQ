@@ -208,7 +208,7 @@ class AnalysisWorkerPool:
         future = loop.create_future()
         self._pending[request_id] = future
 
-        self._input_queue.put((request_id, file_path, cached))
+        self._input_queue.put((request_id, file_path, cached, "analyze"))
 
         try:
             return await asyncio.wait_for(future, timeout=settings.ANALYSIS_TIMEOUT)
@@ -221,6 +221,31 @@ class AnalysisWorkerPool:
                 "analyzed_at": int(time.time()),
                 "analysis_version": ANALYSIS_VERSION,
             }
+
+    async def compute_vinet_only(self, file_path: str) -> str | None:
+        """Compute ONLY the Discogs-VINet version embedding for one file.
+
+        Runs decode@22050 → CQT → CQTNet in a worker, skipping the full
+        Essentia+EffNet analysis (unlike ``analyze``, which the CLAP backfill
+        wastefully reuses). Returns the base64-encoded 512-dim vector, or
+        ``None`` (VINet disabled / model missing / decode failure / timeout).
+        Used by ``vinet_backfill.backfill_vinet_embeddings``.
+        """
+        from app.core.config import settings
+
+        request_id = uuid4().hex
+        loop = asyncio.get_running_loop()
+        future = loop.create_future()
+        self._pending[request_id] = future
+
+        self._input_queue.put((request_id, file_path, None, "vinet"))
+
+        try:
+            return await asyncio.wait_for(future, timeout=settings.ANALYSIS_TIMEOUT)
+        except TimeoutError:
+            self._pending.pop(request_id, None)
+            self._kill_worker_holding(request_id, settings.ANALYSIS_TIMEOUT)
+            return None
 
     async def shutdown(self) -> None:
         """Stop all workers and the collector task."""
@@ -406,17 +431,19 @@ def _worker_main(
 
     onnx_sessions = _init_onnx_sessions()
     clap_audio_session = _init_clap_audio_session()
+    vinet_session = _init_vinet_session()
 
     # Pre-compute projection matrix (deterministic, same across all workers)
     rng = np.random.RandomState(seed=20240101)
     proj_matrix = (rng.randn(_EFFNET_DIM, _EMBEDDING_DIM) / np.sqrt(_EMBEDDING_DIM)).astype(np.float32)
 
     logger.info(
-        "Analysis worker %d ready: essentia=%s, onnx_models=%d, clap_audio=%s",
+        "Analysis worker %d ready: essentia=%s, onnx_models=%d, clap_audio=%s, vinet=%s",
         worker_id,
         has_essentia,
         len(onnx_sessions),
         clap_audio_session is not None,
+        vinet_session is not None,
     )
 
     my_pid = os.getpid()
@@ -425,7 +452,13 @@ def _worker_main(
         if item is None:
             break  # poison pill → graceful exit
 
-        request_id, file_path, cached = item
+        # Input protocol is a 4-tuple ``(request_id, file_path, cached, task)``.
+        # ``task`` defaults to "analyze" (full pipeline); "vinet" runs the
+        # compute-only version-embedding path (decode@22050 → CQT → CQTNet)
+        # used by the backfill, skipping Essentia+EffNet. Unpack defensively so
+        # a legacy 3-tuple still works.
+        request_id, file_path, cached, *rest = item
+        task = rest[0] if rest else "analyze"
         # Heartbeat so the pool's collector can record which worker (by pid)
         # is processing this request. Lets analyze()'s timeout path SIGKILL
         # the right subprocess if we hang in libavcodec C code. (#30)
@@ -435,7 +468,11 @@ def _worker_main(
             pass  # if the queue is broken we'll fail loudly on the result put
 
         try:
-            if not has_essentia:
+            if task == "vinet":
+                # Compute-only version embedding (base64 str or None); does not
+                # touch Essentia DSP / EffNet.
+                result = _compute_vinet_file(file_path, es, vinet_session) if has_essentia else None
+            elif not has_essentia:
                 result = {
                     "file_path": file_path,
                     "analysis_error": "Essentia not installed",
@@ -450,14 +487,19 @@ def _worker_main(
                     onnx_sessions,
                     proj_matrix,
                     clap_audio_session,
+                    vinet_session,
                 )
         except Exception as e:
-            result = {
-                "file_path": file_path,
-                "analysis_error": str(e),
-                "analyzed_at": int(time.time()),
-                "analysis_version": _get_version(),
-            }
+            if task == "vinet":
+                result = None
+                logger.debug("VINet-only task failed for %s: %s", file_path, e)
+            else:
+                result = {
+                    "file_path": file_path,
+                    "analysis_error": str(e),
+                    "analyzed_at": int(time.time()),
+                    "analysis_version": _get_version(),
+                }
 
         output_queue.put((request_id, "result", result))
 
@@ -679,6 +721,49 @@ def _init_clap_audio_session() -> object | None:
         return None
 
 
+def _init_vinet_session() -> object | None:
+    """Load the Discogs-VINet CQTNet ONNX session (CPU-only), if VINet is
+    enabled and the model file is present. Returns an
+    ``onnxruntime.InferenceSession`` or ``None``.
+
+    The exported ONNX (see docs/HANDOFF_DISCOGS_VINET.md §4 /
+    scripts/export_vinet_onnx.py) is placed by the operator in
+    ``VINET_MODEL_DIR`` (there is no runtime auto-download). We pin
+    ``CPUExecutionProvider`` and cap intra-op threads so N workers don't
+    oversubscribe cores. Fails soft so workers still boot when disabled or the
+    model is missing.
+    """
+    from app.core.config import settings
+
+    if not settings.VINET_ENABLED:
+        return None
+
+    try:
+        import onnxruntime as ort
+    except ImportError:
+        logger.warning("onnxruntime missing — VINet embedding disabled")
+        return None
+
+    model_path = os.path.join(settings.VINET_MODEL_DIR, settings.VINET_MODEL_FILE)
+    if not os.path.exists(model_path):
+        logger.warning(
+            "VINET_ENABLED=true but model not found at %s — version embeddings will be skipped",
+            model_path,
+        )
+        return None
+
+    try:
+        so = ort.SessionOptions()
+        so.intra_op_num_threads = max(1, settings.VINET_ORT_THREADS)
+        so.inter_op_num_threads = 1
+        session = ort.InferenceSession(model_path, sess_options=so, providers=["CPUExecutionProvider"])
+        logger.info("VINet CQTNet loaded: %s (CPU)", os.path.basename(model_path))
+        return session
+    except Exception as e:
+        logger.warning("Failed to load VINet model: %s", e)
+        return None
+
+
 def _init_onnx_sessions() -> dict:
     """Initialise ONNX Runtime sessions for all models.  Returns {filename: session}."""
     try:
@@ -741,6 +826,7 @@ def _analyze_file(
     onnx_sessions: dict,
     proj_matrix: np.ndarray,
     clap_audio_session: object | None = None,
+    vinet_session: object | None = None,
 ) -> dict | None:
     """
     Full single-pass analysis for one audio file.
@@ -900,6 +986,19 @@ def _analyze_file(
                     result["clap_embedding"] = base64.b64encode(clap_vec.astype(np.float32).tobytes()).decode("ascii")
             except Exception as e:
                 logger.debug("CLAP audio embedding failed for %s: %s", file_path, e)
+
+        # --- Discogs-VINet version embedding (optional, 512-dim, CPU) ---
+        # Decodes its own 22050 Hz signal from the file (for parity with the
+        # checkpoint's training decode) rather than reusing the 16 kHz `audio`.
+        if vinet_session is not None:
+            try:
+                t0 = time.monotonic()
+                vb64 = _compute_vinet_file(file_path, es, vinet_session)
+                timings["vinet"] = time.monotonic() - t0
+                if vb64 is not None:
+                    result["version_embedding"] = vb64
+            except Exception as e:
+                logger.debug("VINet embedding failed for %s: %s", file_path, e)
 
         total = sum(timings.values())
         timing_str = " | ".join(f"{k}={v:.1f}s" for k, v in timings.items())
@@ -1491,3 +1590,113 @@ def _compute_clap_embedding(
     if norm < 1e-9:
         return None
     return (vec / norm).astype(np.float32)
+
+
+# ---------------------------------------------------------------------------
+# Discogs-VINet version/remix embedding (optional, 512-dim, CPU-only)
+#
+# CQTNet (github.com/raraz15/Discogs-VINet, MIT). The CQT front-end is computed
+# off-graph in librosa/numpy (there is no torch/nnAudio CQT layer); only the
+# small CNN was exported to ONNX, so no torch is needed in the image. The whole
+# path is dormant unless VINET_ENABLED=true and the model file is present.
+# ---------------------------------------------------------------------------
+
+# Cached ONNX input name (resolved once per worker on first inference).
+_VINET_INPUT_NAME: str | None = None
+
+
+def _mean_downsample_cqt(cqt: np.ndarray, mean_window_length: int) -> np.ndarray:
+    """Downsample the CQT by averaging every ``mean_window_length`` frames,
+    non-overlapping. Copied VERBATIM from Discogs-VINet
+    (``model/dataset/dataset_utils.py``) to guarantee bit-parity with the
+    checkpoint's training preprocessing — do NOT reimplement.
+
+    Note: the trailing partial window is discarded (``T // window``), and an
+    input shorter than one window yields a ``(0, F)`` array (the caller guards
+    against that).
+    """
+    cqt_T, cqt_F = cqt.shape
+    # Discard the last frame
+    new_T = int(cqt_T // mean_window_length)
+    new_cqt = np.zeros((new_T, cqt_F), dtype=cqt.dtype)
+    for i in range(new_T):
+        new_cqt[i, :] = cqt[i * mean_window_length : (i + 1) * mean_window_length, :].mean(axis=0)
+    return new_cqt
+
+
+def _compute_vinet_embedding(audio: np.ndarray, sr: int, vinet_session: object) -> np.ndarray | None:
+    """Encode ``audio`` into a 512-dim Discogs-VINet version embedding.
+
+    Returns an L2-normalised float32 vector, or ``None`` on failure. ``audio``
+    should already be a mono signal at ``VINET_AUDIO_SR`` (22050 Hz — decoded
+    that way for parity with the checkpoint); a mismatched ``sr`` is resampled
+    with librosa as a defensive fallback.
+
+    Chain (must match the reference exactly — see docs/HANDOFF_DISCOGS_VINET.md §1):
+      librosa.cqt(hop=512, n_bins=84, bins_per_octave=12) → |·| → float16→float32
+      → transpose to (T, 84) → clip(0) → mean_downsample(×20) → scale to [0,1]
+      → (1, 1, 84, T') → CQTNet CNN → 512-d (L2-normed by the graph).
+    """
+    import librosa
+
+    from app.core.config import settings
+
+    global _VINET_INPUT_NAME
+    try:
+        y = np.asarray(audio, dtype=np.float32)
+        if sr != settings.VINET_AUDIO_SR:
+            y = librosa.resample(y, orig_sr=sr, target_sr=settings.VINET_AUDIO_SR)
+            sr = settings.VINET_AUDIO_SR
+        if settings.VINET_MAX_SECONDS > 0:
+            y = y[: int(settings.VINET_MAX_SECONDS * sr)]
+        if y.size == 0:
+            return None
+
+        cqt = librosa.core.cqt(
+            y=y,
+            sr=sr,
+            hop_length=settings.VINET_CQT_HOP,
+            n_bins=settings.VINET_CQT_BINS,
+            bins_per_octave=settings.VINET_CQT_BINS_PER_OCTAVE,
+        )
+        # Magnitude; float16 round-trip matches the stored-feature dtype in the
+        # repo, then back to float32. librosa.cqt is (F, T) → transpose to (T, F).
+        cqt = np.abs(cqt).astype(np.float16).astype(np.float32).T
+        cqt = np.clip(cqt, 0, None)
+        cqt = _mean_downsample_cqt(cqt, settings.VINET_DOWNSAMPLE_FACTOR)  # (T//20, 84)
+        if cqt.shape[0] == 0:
+            return None
+        cqt = cqt / (cqt.max() + 1e-6)
+        x = cqt.T[np.newaxis, np.newaxis, :, :].astype(np.float32)  # (1, 1, 84, T')
+
+        if _VINET_INPUT_NAME is None:
+            _VINET_INPUT_NAME = vinet_session.get_inputs()[0].name
+        emb = np.asarray(vinet_session.run(None, {_VINET_INPUT_NAME: x})[0], dtype=np.float32).reshape(-1)
+        norm = float(np.linalg.norm(emb))
+        if norm < 1e-9:
+            return None
+        return (emb / norm).astype(np.float32)
+    except Exception as e:
+        logger.debug("VINet embedding failed: %s", e)
+        return None
+
+
+def _compute_vinet_file(file_path: str, es, vinet_session: object | None) -> str | None:
+    """Decode ``file_path`` at 22050 Hz (matching the checkpoint's training
+    decode for parity) and return the base64-encoded 512-dim VINet embedding,
+    or ``None``. Shared by the scan path and the compute-only backfill so both
+    use the identical, parity-safe decode. Fails soft.
+    """
+    if vinet_session is None:
+        return None
+    from app.core.config import settings
+
+    try:
+        audio = es.MonoLoader(filename=file_path, sampleRate=settings.VINET_AUDIO_SR)()
+    except Exception as e:
+        logger.debug("VINet decode failed for %s: %s", file_path, e)
+        return None
+    vec = _compute_vinet_embedding(audio, settings.VINET_AUDIO_SR, vinet_session)
+    if vec is None:
+        return None
+    return base64.b64encode(vec.astype(np.float32).tobytes()).decode("ascii")

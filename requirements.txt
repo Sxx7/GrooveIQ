@@ -46,6 +46,21 @@ numpy>=2.4.6,<3
 # For Intel iGPU acceleration, install onnxruntime-openvino instead.
 onnxruntime>=1.26.0
 
+# Discogs-VINet CQT front-end (optional version/remix embedding, VINET_ENABLED).
+# Pinned to the version the checkpoint was trained on for bit-parity of
+# librosa.cqt (a different version silently breaks parity with the checkpoint).
+# Pulls numba/scipy/soundfile (~150 MB) — far below torch's ~1 GB. The CQTNet
+# CNN itself runs under the onnxruntime already required above (no torch in the
+# image). Inert unless VINET_ENABLED=true and the ONNX model is present.
+librosa==0.10.1
+# librosa 0.10.1 does ``from pkg_resources import resource_filename`` at import
+# time, but setuptools >=81 (the current default) removed pkg_resources — so a
+# bare ``import librosa`` hard-fails on a modern Python 3.12 image. Pin
+# setuptools below the removal so pkg_resources is present. (Bumping librosa to
+# drop the pkg_resources use would silently shift the CQT distribution vs the
+# checkpoint and break parity, so we keep 0.10.1 and pin setuptools instead.)
+setuptools<81
+
 # HuggingFace tokenizers — required by the CLAP text encoder (clap_text.py).
 # CLAP playlists (POST /v1/playlists strategy=text) silently 503 without it.
 tokenizers>=0.15

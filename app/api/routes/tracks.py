@@ -10,6 +10,8 @@ GET  /v1/tracks/{track_id}/similar – get acoustically similar tracks
 from __future__ import annotations
 
 import logging
+import re
+import unicodedata
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import asc, desc, func, select
@@ -53,6 +55,71 @@ def _serialize_track_ids(tf: TrackFeatures) -> dict:
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+
+# ---------------------------------------------------------------------------
+# Title / artist normalisation for the /versions finder (Tier 1: title match).
+# Self-contained (no rapidfuzz/unidecode): exact base-title match after
+# stripping version descriptors already captures ~all same-artist recall
+# (see memory/project_remix_finder.md). NFKC + casefold handles most accents.
+# ---------------------------------------------------------------------------
+
+# Descriptor words that mark a *variant* of a base title.
+_VERSION_WORDS = (
+    r"remix|mix|edit|version|remaster(?:ed)?|re-?master(?:ed)?|live|acoustic|"
+    r"instrumental|radio(?:\s+edit)?|extended|club|dub|rework|bootleg|vip|demo|"
+    r"mono|stereo|reprise|cover|karaoke|session|take|single|album\s+version|"
+    r"original(?:\s+mix)?|unplugged|orchestral|piano|slowed|sped\s+up"
+)
+_PAREN_VERSION_TAIL = re.compile(rf"\s*[\(\[][^)\]]*\b(?:{_VERSION_WORDS})\b[^)\]]*[\)\]]\s*$", re.IGNORECASE)
+_DASH_VERSION_TAIL = re.compile(rf"\s+-\s+[^-]*\b(?:{_VERSION_WORDS})\b.*$", re.IGNORECASE)
+_FEAT = re.compile(r"\s*[\(\[]?\b(?:feat\.?|ft\.?|featuring|with)\b[^)\]]*[\)\]]?", re.IGNORECASE)
+_TRAILING_YEAR = re.compile(r"\s*[\(\[]?\s*(?:19|20)\d{2}\s*[\)\]]?\s*$")
+_LEADING_ARTICLE = re.compile(r"^(?:the|a|an)\s+", re.IGNORECASE)
+_ARTIST_SPLIT = re.compile(r"\s*(?:feat\.?|ft\.?|featuring|with|&|,|;|\bx\b|\bvs\.?\b|/)\s*", re.IGNORECASE)
+_NON_ALNUM = re.compile(r"[^\w\s]", re.UNICODE)
+_WS = re.compile(r"\s+")
+
+
+def _nfkc_fold(s: str) -> str:
+    return unicodedata.normalize("NFKC", s).casefold().strip()
+
+
+def _base_title(title: str | None) -> str:
+    """Strip version descriptors / feat / trailing year → a base-title key.
+
+    Two tracks sharing a base title (and primary artist) are candidate versions
+    of the same song. Returns "" for empty/None input.
+    """
+    if not title:
+        return ""
+    s = _nfkc_fold(title)
+    s = _FEAT.sub(" ", s)
+    prev = None
+    while prev != s:  # peel nested/multiple parenthetical descriptor tails
+        prev = s
+        s = _PAREN_VERSION_TAIL.sub("", s).strip()
+    s = _DASH_VERSION_TAIL.sub("", s).strip()
+    s = _TRAILING_YEAR.sub("", s).strip()
+    s = _LEADING_ARTICLE.sub("", s)
+    s = _NON_ALNUM.sub(" ", s)
+    return _WS.sub(" ", s).strip()
+
+
+def _primary_artist(artist: str | None) -> str:
+    """First credited artist, normalised (drops feat/collab tail). "" if empty."""
+    if not artist:
+        return ""
+    s = _nfkc_fold(artist)
+    s = _ARTIST_SPLIT.split(s)[0].strip()
+    s = _LEADING_ARTICLE.sub("", s)
+    s = _NON_ALNUM.sub(" ", s)
+    return _WS.sub(" ", s).strip()
+
+
+def _escape_like(s: str) -> str:
+    """Escape LIKE/ILIKE wildcards so an artist containing % or _ blocks safely."""
+    return s.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
 # ---------------------------------------------------------------------------
@@ -1028,4 +1095,217 @@ async def text_search_tracks(
             }
             for c in candidates
         ],
+    }
+
+
+# ---------------------------------------------------------------------------
+# Discogs-VINet version/remix embedding: backfill, stats, and /versions finder
+# ---------------------------------------------------------------------------
+
+
+@router.post(
+    "/tracks/vinet/backfill",
+    status_code=202,
+    summary="Backfill Discogs-VINet version embeddings for existing tracks",
+    description="""
+Fires a background task that computes the Discogs-VINet version embedding for
+every track missing one, using a compute-only path (decode → CQT → CQTNet) that
+does **not** re-run Essentia/EffNet. Useful after first enabling
+``VINET_ENABLED=true`` on a library that was scanned beforehand.
+
+Admin-only. Returns immediately with ``{status: "accepted", pending: <count>}``;
+progress is visible through the logs and by polling ``GET /v1/tracks/vinet/stats``.
+""",
+)
+async def trigger_vinet_backfill(
+    limit: int | None = Query(None, ge=1, le=50000),
+    session: AsyncSession = Depends(get_session),
+    _key: str = Depends(require_api_key),
+):
+    require_admin(_key)
+
+    from app.core.config import settings
+
+    if not settings.VINET_ENABLED:
+        raise HTTPException(
+            status_code=400,
+            detail="VINET_ENABLED=false; enable VINet and provide the ONNX model before backfilling.",
+        )
+
+    from sqlalchemy import func as sqlfunc
+
+    pending = await session.scalar(
+        select(sqlfunc.count())
+        .select_from(TrackFeatures)
+        .where(TrackFeatures.version_embedding.is_(None))
+        .where(TrackFeatures.analysis_error.is_(None))
+    )
+
+    import asyncio as _asyncio
+
+    from app.services.vinet_backfill import backfill_vinet_embeddings
+
+    # Run in the background so the HTTP call returns quickly.
+    _asyncio.create_task(backfill_vinet_embeddings(limit=limit))
+
+    return {"status": "accepted", "pending": pending, "limit": limit}
+
+
+@router.get(
+    "/tracks/vinet/stats",
+    summary="Discogs-VINet version embedding coverage stats",
+)
+async def get_vinet_stats(
+    session: AsyncSession = Depends(get_session),
+    _key: str = Depends(require_api_key),
+):
+    from sqlalchemy import func as sqlfunc
+
+    from app.core.config import settings
+
+    total = await session.scalar(select(sqlfunc.count()).select_from(TrackFeatures))
+    with_version = await session.scalar(
+        select(sqlfunc.count()).select_from(TrackFeatures).where(TrackFeatures.version_embedding.isnot(None))
+    )
+    return {
+        "enabled": settings.VINET_ENABLED,
+        "total_tracks": total or 0,
+        "with_version_embedding": with_version or 0,
+        "coverage": round((with_version or 0) / max(1, total or 1), 4),
+    }
+
+
+@router.get(
+    "/tracks/{track_id}/versions",
+    summary="Find other versions/remixes/covers of a track",
+    description="""
+Returns library tracks that appear to be *other versions of the same song* —
+covers, remixes, live, remaster, instrumental — fusing up to three evidence
+tiers (see docs/HANDOFF_DISCOGS_VINET.md §9):
+
+- **title** (same primary artist, matching base title after stripping version
+  descriptors) — high confidence, always available.
+- **audio** (Discogs-VINet nearest neighbours above ``VINET_MATCH_THRESHOLD``) —
+  catches cross-artist covers + instrumentals title alone misses; medium
+  confidence. Only active when ``VINET_ENABLED=true`` and the version index is
+  built.
+
+Each result carries an ``evidence`` list and a ``confidence`` grade. Audio-only
+matches near the threshold are surfaced with a badge, **never auto-merged**.
+""",
+)
+async def get_track_versions(
+    track_id: str,
+    limit: int = Query(20, ge=1, le=100),
+    session: AsyncSession = Depends(get_session),
+    _key: str = Depends(require_api_key),
+):
+    from app.core.config import settings
+
+    seed = (await session.execute(select(TrackFeatures).where(TrackFeatures.track_id == track_id))).scalar_one_or_none()
+    if seed is None:
+        raise HTTPException(status_code=404, detail="Not found.")
+
+    # evidence[track_id] -> set of tiers; sim[track_id] -> VINet cosine
+    evidence: dict[str, set[str]] = {}
+    sim: dict[str, float] = {}
+
+    # --- Tier 1: title, same primary artist, matching base title ---------
+    seed_primary = _primary_artist(seed.artist)
+    seed_base = _base_title(seed.title)
+    if seed_primary and seed_base:
+        # Block on the most selective *token* of the primary artist so we never
+        # scan the whole library; then confirm the full normalised primary
+        # artist + base title in Python. We must anchor on a token, NOT the whole
+        # normalised primary: normalisation strips punctuation ("Panic! at the
+        # Disco" -> "panic at the disco", "Blink-182" -> "blink 182"), which is
+        # not a contiguous substring of the raw `artist` column, so a
+        # `%normalised%` LIKE would miss every punctuated-name track. A single
+        # token always appears verbatim (case-insensitively) in the raw credit,
+        # so it's a safe superset pre-filter; the exact match is verified below.
+        anchor = max(seed_primary.split(), key=len, default="")
+        rows_q = select(
+            TrackFeatures.track_id,
+            TrackFeatures.title,
+            TrackFeatures.artist,
+        ).where(TrackFeatures.track_id != track_id)
+        if anchor:
+            rows_q = rows_q.where(TrackFeatures.artist.ilike(f"%{_escape_like(anchor)}%", escape="\\"))
+        artist_rows = (await session.execute(rows_q.limit(2000))).all()
+        for tid, title, artist in artist_rows:
+            if _primary_artist(artist) == seed_primary and _base_title(title) == seed_base:
+                evidence.setdefault(tid, set()).add("title")
+
+    # --- Tier 3: Discogs-VINet audio nearest-version neighbours ----------
+    audio_ready = False
+    if settings.VINET_ENABLED:
+        from app.services.faiss_index import version_index
+
+        if version_index.is_ready():
+            audio_ready = True
+            hits = version_index.search_by_track_id(track_id, k=limit * 3)
+            for tid, cos in hits:
+                if cos >= settings.VINET_MATCH_THRESHOLD:
+                    evidence.setdefault(tid, set()).add("audio")
+                    sim[tid] = max(sim.get(tid, 0.0), float(cos))
+
+    if not evidence:
+        return {
+            "track_id": track_id,
+            "title": seed.title,
+            "artist": seed.artist,
+            "count": 0,
+            "tiers": {"title": bool(seed_primary and seed_base), "lyrics": False, "audio": audio_ready},
+            "versions": [],
+        }
+
+    # --- Load features for all candidates + build the fused response -----
+    cand_ids = list(evidence.keys())
+    feat_map = {
+        t.track_id: t
+        for t in (await session.execute(select(TrackFeatures).where(TrackFeatures.track_id.in_(cand_ids))))
+        .scalars()
+        .all()
+    }
+
+    versions = []
+    for tid in cand_ids:
+        c = feat_map.get(tid)
+        if c is None:
+            continue
+        ev = sorted(evidence[tid])
+        # High confidence when title (same-artist) evidence is present;
+        # audio-only near the threshold is medium and needs human confirm.
+        confidence = "high" if "title" in ev else "medium"
+        versions.append(
+            {
+                "track_id": c.track_id,
+                "media_server_id": c.media_server_id,
+                "title": c.title,
+                "artist": c.artist,
+                "album": c.album,
+                "evidence": ev,
+                "confidence": confidence,
+                "similarity": round(sim[tid], 4) if tid in sim else None,
+            }
+        )
+
+    # Order: high-confidence first, then by audio similarity desc, then title.
+    _conf_rank = {"high": 0, "medium": 1}
+    versions.sort(
+        key=lambda v: (
+            _conf_rank.get(v["confidence"], 9),
+            -(v["similarity"] if v["similarity"] is not None else -1.0),
+            (v["title"] or "").casefold(),
+        )
+    )
+    versions = versions[:limit]
+
+    return {
+        "track_id": track_id,
+        "title": seed.title,
+        "artist": seed.artist,
+        "count": len(versions),
+        "tiers": {"title": bool(seed_primary and seed_base), "lyrics": False, "audio": audio_ready},
+        "versions": versions,
     }
